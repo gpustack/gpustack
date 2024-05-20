@@ -1,4 +1,3 @@
-import os
 import uvicorn
 import uvicorn.config
 
@@ -6,10 +5,8 @@ import uvicorn.config
 from ..core.app import app
 from ..core.config import configs
 from ..core.db import init_db
-from ..core.runtime.ray import RayRuntime
-from ..core.services import start_redis_server
-from ..logging import logger, uvicorn_log_config
-from ..utils import get_first_non_loopback_ip, is_command_available
+from ..logging import uvicorn_log_config
+from ..utils import get_first_non_loopback_ip
 
 
 def setup_init_cmd(subparsers):
@@ -51,18 +48,11 @@ def setup_init_cmd(subparsers):
         type=str,
         help="URL of the database. Example: postgresql://user:password@hostname:port/db_name",
     )
-    group.add_argument(
-        "--redis-url",
-        type=str,
-        help="URL of the redis server. Example: redis://hostname:port",
-    )
     parser_init.set_defaults(func=run)
 
 
 def run(args):
     set_configs(args)
-
-    preflight_check()
 
     bootstrap_dependencies()
 
@@ -80,38 +70,8 @@ def run(args):
 
 
 def bootstrap_dependencies():
-    redis_dir = f"{configs.data_dir}/redis"
-    redis_log_file = f"{redis_dir}/redis-server.log"
-
-    if not os.path.exists(redis_dir):
-        try:
-            os.makedirs(redis_dir)
-        except Exception as e:
-            logger.error(f"Failed to create Redis directory: {e}")
-
-    if not os.path.exists(redis_log_file):
-        try:
-            open(redis_log_file, "a").close()
-        except Exception as e:
-            logger.error(f"Failed to create Redis log file: {e}")
-
-    start_redis_server(
-        executable="redis-server",
-        stderr_file=redis_log_file,
-        stdout_file=redis_log_file,
-    )
 
     init_db()
-
-    RayRuntime()
-
-
-def preflight_check():
-    if not is_command_available("redis-server"):
-        raise Exception(
-            "CLI `redis-server` is not available. Please install it first. "
-            "Note: this prerequisite will be removed in the future."
-        )
 
 
 def set_configs(args):
@@ -136,6 +96,3 @@ def set_configs(args):
         configs.database_url = args.database_url
     else:
         configs.database_url = f"sqlite:///{configs.data_dir}/database.db"
-
-    if args.redis_url:
-        configs.redis_url = args.redis_url

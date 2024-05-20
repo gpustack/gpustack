@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException
 
 
 from ..core.deps import ListParamsDep, SessionDep
-from ..core.runtime.ray import RayRuntime
 from ..schemas.models import Model, ModelCreate, ModelUpdate, ModelPublic, ModelsPublic
 
 router = APIRouter()
@@ -32,8 +31,6 @@ async def get_model(session: SessionDep, id: int):
 @router.post("", response_model=ModelPublic)
 async def create_model(session: SessionDep, model_in: ModelCreate):
     model = Model.model_validate(model_in)
-
-    RayRuntime().serve_model(model, blocking=False)
 
     return model.save(session)
 

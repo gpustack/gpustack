@@ -10,11 +10,9 @@ python = "^3.11"
 fastapi = "^0.111.0"
 sqlmodel = "^0.0.18"
 transformers = "^4.40.2"
-ray = {extras = ["serve"], version = "^2.21.0"}
 pydantic-settings = "^2.2.1"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
-redis = "^5.0.4"
 torch = "^2.3.0"
 accelerate = "^0.30.0"
 bcrypt = "4.0.1"

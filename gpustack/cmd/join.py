@@ -1,5 +1,4 @@
 from ..utils import get_first_non_loopback_ip
-from ..core.runtime.ray import RayRuntime
 from ..core.config import configs
 
 
@@ -25,10 +24,6 @@ def setup_join_cmd(subparsers):
 
 def run(args):
     set_configs(args)
-
-    RayRuntime.start_worker(
-        address=configs.address, node_ip_address=configs.node_ip_address
-    )
 
 
 def set_configs(args):

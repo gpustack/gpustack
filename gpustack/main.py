@@ -2,15 +2,12 @@ import argparse
 import signal
 import sys
 
-from .core.runtime.ray import RayRuntime
-
 from .cmd.init import setup_init_cmd
 from .cmd.join import setup_join_cmd
 from .core.services import at_exit as subprocess_at_exit
 
 
 def handle_signal(sig, frame):
-    RayRuntime().shutdown()
     subprocess_at_exit()
     sys.exit(0)
 

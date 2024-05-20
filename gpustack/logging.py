@@ -12,9 +12,6 @@ logger = logging.getLogger("gpustack")
 logger.setLevel(logging_level)
 logger.addHandler(handler)
 
-ray_logger = logging.getLogger("ray")
-ray_logger.handlers = [handler]
-
 
 uvicorn_log_config = uvicorn.config.LOGGING_CONFIG
 uvicorn_log_config["formatters"]["default"]["fmt"] = logging_format

@@ -6,7 +6,6 @@ from ..logging import logger
 from ..core.security import get_password_hash
 from ..schemas.models import Model
 from ..schemas.users import User, UserCreate
-from ..core.runtime.ray import RayRuntime
 
 
 _engine = None
@@ -55,8 +54,6 @@ def init_model(session: Session):
             huggingface_model_id=huggingface_model_id,
         )
         model.save(session)
-
-        RayRuntime().serve_model(model)
 
         logger.info("Created model: %s", model_name)
 

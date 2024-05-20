@@ -1,14 +1,13 @@
 from datetime import datetime
-import logging
 import time
 import uuid
 from starlette.requests import Request
-from ray import serve
 import json
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from starlette.responses import StreamingResponse
 from typing import Final
 
+from ...logging import logger
 from ...schemas.models import Model
 from ...schemas.completion import (
     ChatCompletionChunk,
@@ -22,8 +21,6 @@ CHAT_COMPLETION_TRUNK: Final = "chat.completion.chunk"
 CHAT_COMPLETION: Final = "chat.completion"
 ROLE_ASSISTANT: Final = "assistant"
 FINISH_REASON_STOP: Final = "stop"
-
-logger = logging.getLogger("ray.serve")
 
 
 def time_decorator(func):
@@ -41,7 +38,6 @@ def time_decorator(func):
     return wrapper
 
 
-@serve.deployment()
 class TorchInferenceService:
 
     @time_decorator
