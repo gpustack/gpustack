@@ -1,24 +1,45 @@
+from datetime import datetime
 from pydantic import BaseModel
+from sqlmodel import Field, SQLModel
+
+from gpustack.mixins import BaseModelMixin
 
 from .common import PaginatedList
 
 
 class ResourceSummary(BaseModel):
-    total: float | None = None
-    used: float | None = None
-    free: float | None = None
-    percent: float | None = None
+    Capacity: dict[str, float] = {}
+    allocatable: dict[str, float] = {}
 
 
-class Node(BaseModel):
+class NodeBase(SQLModel):
     id: str
     name: str
     hostname: str
     address: str
-    alive: bool
-    resources: dict[str, ResourceSummary] = {}
     labels: dict[str, str] = {}
+    resources: ResourceSummary
+    state: str
 
 
-NodePublic = Node
-NodesPublic = PaginatedList[Node]
+class Node(NodeBase, BaseModelMixin, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+
+class NodeCreate(NodeBase):
+    pass
+
+
+class NodeUpdate(NodeBase):
+    pass
+
+
+class NodePublic(
+    NodeBase,
+):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+
+NodesPublic = PaginatedList[NodePublic]
