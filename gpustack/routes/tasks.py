@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 
 
-from ..core.deps import ListParamsDep, SessionDep
-from ..schemas.tasks import Task, TaskCreate, TaskUpdate, TaskPublic, TasksPublic
+from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.schemas.tasks import Task, TaskCreate, TaskUpdate, TaskPublic, TasksPublic
 
 router = APIRouter()
 

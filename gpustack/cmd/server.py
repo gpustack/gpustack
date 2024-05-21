@@ -3,11 +3,11 @@ import uvicorn
 import uvicorn.config
 
 
-from ..core.app import app
-from ..core.config import configs
-from ..core.db import init_db
-from ..logging import uvicorn_log_config
-from ..utils import get_first_non_loopback_ip
+from gpustack.server.server import Server
+from gpustack.server.config import ServerConfig
+from gpustack.server.db import init_db
+from gpustack.logging import uvicorn_log_config
+from gpustack.utils import get_first_non_loopback_ip
 
 
 def setup_server_cmd(subparsers: argparse._SubParsersAction):
@@ -30,7 +30,7 @@ def setup_server_cmd(subparsers: argparse._SubParsersAction):
 
     group = parser_server.add_argument_group("Node settings")
     group.add_argument(
-        "--node-ip-address",
+        "--node-ip",
         type=str,
         help="IP address of the node. Auto-detected by default.",
     )
@@ -51,30 +51,32 @@ def setup_server_cmd(subparsers: argparse._SubParsersAction):
 
 
 def run_server(args):
-    set_configs(args)
+    cfg = to_config(args)
 
-    init_db()
+    server = Server(cfg)
 
-    # Start FastAPI server
-    uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
+    server.start()
 
 
-def set_configs(args):
+def to_config(args) -> ServerConfig:
+    cfg = ServerConfig()
     if args.model:
-        configs.model = args.model
+        cfg.model = args.model
 
     if args.debug:
-        configs.debug = args.debug
+        cfg.debug = args.debug
 
-    if args.node_ip_address:
-        configs.node_ip_address = args.node_ip_address
+    if args.node_ip:
+        cfg.node_ip = args.node_ip
     else:
-        configs.node_ip_address = get_first_non_loopback_ip()
+        cfg.node_ip = get_first_non_loopback_ip()
 
     if args.data_dir:
-        configs.data_dir = args.data_dir
+        cfg.data_dir = args.data_dir
 
     if args.database_url:
-        configs.database_url = args.database_url
+        cfg.database_url = args.database_url
     else:
-        configs.database_url = f"sqlite:///{configs.data_dir}/database.db"
+        cfg.database_url = f"sqlite:///{cfg.data_dir}/database.db"
+
+    return cfg

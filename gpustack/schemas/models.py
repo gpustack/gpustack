@@ -2,8 +2,8 @@ from datetime import datetime
 from typing import Literal
 from sqlmodel import Field, SQLModel
 
-from .common import PaginatedList
-from ..mixins import BaseModelMixin
+from gpustack.schemas.common import PaginatedList
+from gpustack.mixins import BaseModelMixin
 
 
 class ModelBase(SQLModel):

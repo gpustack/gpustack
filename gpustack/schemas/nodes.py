@@ -8,7 +8,7 @@ from .common import PaginatedList
 
 
 class ResourceSummary(BaseModel):
-    Capacity: dict[str, float] = {}
+    capacity: dict[str, float] = {}
     allocatable: dict[str, float] = {}
 
 

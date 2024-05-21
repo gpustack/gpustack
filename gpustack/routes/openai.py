@@ -3,10 +3,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi import HTTPException, Request
 import httpx
 
-from ..core.deps import SessionDep
-from ..logging import logger
-from ..utils import normalize_route_path
-from ..schemas.models import Model
+from gpustack.server.deps import SessionDep
+from gpustack.logging import logger
+from gpustack.utils import normalize_route_path
+from gpustack.schemas.models import Model
 
 router = APIRouter()
 

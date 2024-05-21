@@ -1,6 +1,6 @@
 import argparse
-from ..utils import get_first_non_loopback_ip
-from ..core.config import configs
+from gpustack.agent.agent import Agent
+from gpustack.agent.config import AgentConfig
 
 
 def setup_agent_cmd(subparsers):
@@ -25,16 +25,17 @@ def setup_agent_cmd(subparsers):
 
 
 def run_agent(args):
-    set_configs(args)
+    cfg = to_config(args)
+
+    agent = Agent(cfg)
+
+    agent.start()
 
 
-def set_configs(args):
-    if args.address:
-        configs.address = args.address
+def to_config(args) -> AgentConfig:
+    if args.server:
+        pass
     else:
-        raise ValueError("Address of the head node is required.")
+        raise ValueError("Server address is required.")
 
-    if args.node_ip_address:
-        configs.node_ip_address = args.node_ip_address
-    else:
-        configs.node_ip_address = get_first_non_loopback_ip()
+    return AgentConfig()

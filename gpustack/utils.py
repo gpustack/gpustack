@@ -4,6 +4,8 @@ import threading
 import time
 from typing import Callable
 
+stop_event = threading.Event()
+
 
 def is_command_available(command_name):
     """
@@ -47,7 +49,7 @@ def get_first_non_loopback_ip():
     return "No non-loopback IP address found."
 
 
-def run_periodically(self, func: Callable[[], None], interval: float) -> None:
+def run_periodically(func: Callable[[], None], interval: float) -> None:
     """
     Repeatedly run a function with a given interval.
 
@@ -56,7 +58,7 @@ def run_periodically(self, func: Callable[[], None], interval: float) -> None:
         interval: The interval time in seconds.
     """
 
-    while not self.stop_event.is_set():
+    while not stop_event.is_set():
         func()
         time.sleep(interval)
 

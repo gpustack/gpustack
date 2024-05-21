@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from . import probes, ui, users, models, nodes, openai
+from gpustack.routes import probes, ui, users, models, nodes, openai
 
 
 resource_router = APIRouter()

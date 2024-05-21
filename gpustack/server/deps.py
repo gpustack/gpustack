@@ -2,8 +2,8 @@ from typing import Annotated
 from fastapi import Depends
 from sqlmodel import Session
 
-from ..core.db import get_engine
-from ..schemas.common import ListParams
+from gpustack.server.db import get_engine
+from gpustack.schemas.common import ListParams
 
 
 def get_session():

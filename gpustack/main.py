@@ -2,8 +2,8 @@ import argparse
 import signal
 import sys
 
-from .cmd.server import setup_server_cmd
-from .cmd.agent import setup_agent_cmd
+from gpustack.cmd.server import setup_server_cmd
+from gpustack.cmd.agent import setup_agent_cmd
 
 
 def handle_signal(sig, frame):

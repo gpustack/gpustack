@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
-from ..core.deps import ListParamsDep, SessionDep
-from ..schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
+from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
 
 router = APIRouter()
 
