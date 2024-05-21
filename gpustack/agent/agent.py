@@ -3,13 +3,14 @@ import time
 from gpustack.agent.config import AgentConfig
 from gpustack.utils import run_periodically_async
 from gpustack.logging import logger
+from gpustack.generated_client.client import Client
 
 
 class Agent:
     def __init__(self, cfg: AgentConfig):
         self._cfg = cfg
         self._registration_completed = False
-
+        self._client = Client(base_url=cfg.server)
         self._localhost = socket.gethostbyname("localhost")
 
     def start(self):
@@ -54,16 +55,16 @@ class Agent:
         if self._registration_completed:
             return
 
-        node = self.initial_node()
-        self.register_node(node)
+        node = self._initialize_node()
+        self._register_node(node)
         self._registration_completed = True
 
-    def register_node(self, node):
+    def _register_node(self, node):
         # 1. create a node using the client
         # 2. if the node is already registered, update the node
         pass
 
-    def initial_node(self):
+    def _initialize_node(self):
         # initialize a node with the current system information
         pass
 

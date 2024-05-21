@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 from sqlmodel import Field, SQLModel
 
@@ -6,10 +7,15 @@ from gpustack.schemas.common import PaginatedList
 from gpustack.mixins import BaseModelMixin
 
 
+class SourceEnum(str, Enum):
+    huggingface = "huggingface"
+    s3 = "s3"
+
+
 class ModelBase(SQLModel):
     name: str
     description: str | None = None
-    source: str = Literal["huggingface", "s3"]
+    source: SourceEnum
     huggingface_model_id: str | None = None
     s3_address: str | None = None
 

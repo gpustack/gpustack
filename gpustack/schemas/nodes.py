@@ -18,9 +18,7 @@ class NodeBase(SQLModel):
     hostname: str
     address: str
     labels: dict[str, str] = Field(sa_column=Column(JSON), default={})
-    resources: ResourceSummary = Field(
-        sa_column=Column(JSON), default=ResourceSummary()
-    )
+    resources: ResourceSummary = Field(sa_column=Column(JSON))
     state: str
 
 

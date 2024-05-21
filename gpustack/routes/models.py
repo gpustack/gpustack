@@ -42,7 +42,7 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
 
 
 @router.put("/{id}", response_model=ModelPublic)
-async def update_model(session: SessionDep, model_in: ModelUpdate):
+async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
     model = Model.model_validate(model_in)
     return model.save(session)
 

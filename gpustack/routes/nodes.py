@@ -35,7 +35,7 @@ async def create_node(session: SessionDep, node_in: NodeCreate):
 
 
 @router.put("/{id}", response_model=NodePublic)
-async def update_node(session: SessionDep, node_in: NodeUpdate):
+async def update_node(session: SessionDep, id: int, node_in: NodeUpdate):
     node = Node.model_validate(node_in)
     return node.save(session)
 

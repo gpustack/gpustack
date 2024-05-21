@@ -40,7 +40,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
 
 
 @router.put("/{id}", response_model=UserPublic)
-async def update_user(session: SessionDep, user_in: UserUpdate):
+async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     user = User.model_validate(user_in)
     return user.save(session)
 

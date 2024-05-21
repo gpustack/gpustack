@@ -16,6 +16,7 @@ passlib = {extras = ["bcrypt"], version = "^1.7.4"}
 torch = "^2.3.0"
 accelerate = "^0.30.0"
 bcrypt = "4.0.1"
+python-dateutil = "^2.9.0.post0"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -24,6 +25,7 @@ flake8 = "^7.0.0"
 flake8-bugbear = "^24.4.26"
 black = "^24.4.2"
 pytest = "^8.2.0"
+openapi-python-client = "^0.20.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -31,3 +33,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
+gen = "gpustack.codegen.generate_client:main"
