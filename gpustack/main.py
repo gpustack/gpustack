@@ -4,11 +4,9 @@ import sys
 
 from .cmd.server import setup_server_cmd
 from .cmd.agent import setup_agent_cmd
-from .core.services import at_exit as subprocess_at_exit
 
 
 def handle_signal(sig, frame):
-    subprocess_at_exit()
     sys.exit(0)
 
 
