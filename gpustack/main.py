@@ -2,8 +2,8 @@ import argparse
 import signal
 import sys
 
-from .cmd.init import setup_init_cmd
-from .cmd.join import setup_join_cmd
+from .cmd.server import setup_server_cmd
+from .cmd.agent import setup_agent_cmd
 from .core.services import at_exit as subprocess_at_exit
 
 
@@ -27,8 +27,8 @@ def main():
     )
     subparsers = parser.add_subparsers(help="sub-command help")
 
-    setup_init_cmd(subparsers)
-    setup_join_cmd(subparsers)
+    setup_server_cmd(subparsers)
+    setup_agent_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

@@ -1,3 +1,4 @@
+import argparse
 import uvicorn
 import uvicorn.config
 
@@ -9,11 +10,11 @@ from ..logging import uvicorn_log_config
 from ..utils import get_first_non_loopback_ip
 
 
-def setup_init_cmd(subparsers):
-    parser_init = subparsers.add_parser(
-        "init", help="Initialize GPUStack.", description="Initialize GPUStack."
+def setup_server_cmd(subparsers: argparse._SubParsersAction):
+    parser_server: argparse.ArgumentParser = subparsers.add_parser(
+        "server", help="Run management server.", description="Run management server."
     )
-    group = parser_init.add_argument_group("Basic settings")
+    group = parser_server.add_argument_group("Basic settings")
     group.add_argument(
         "--debug",
         action="store_true",
@@ -21,23 +22,20 @@ def setup_init_cmd(subparsers):
         default=True,
     )
     group.add_argument(
-        "--dev",
-        action="store_true",
-        help="Enable development mode, with watchfile and reload.",
-        default=False,
-    )
-    group.add_argument(
         "--model",
         type=str,
         help="ID of a huggingface model to serve on start. Example: Qwen/Qwen1.5-1.8B-Chat",
         default="Qwen/Qwen1.5-1.8B-Chat",
     )
-    group = parser_init.add_argument_group("Connection settings")
+
+    group = parser_server.add_argument_group("Node settings")
     group.add_argument(
         "--node-ip-address",
         type=str,
         help="IP address of the node. Auto-detected by default.",
     )
+
+    group = parser_server.add_argument_group("Data settings")
     group.add_argument(
         "--data-dir",
         type=str,
@@ -48,30 +46,17 @@ def setup_init_cmd(subparsers):
         type=str,
         help="URL of the database. Example: postgresql://user:password@hostname:port/db_name",
     )
-    parser_init.set_defaults(func=run)
+
+    parser_server.set_defaults(func=run_server)
 
 
-def run(args):
+def run_server(args):
     set_configs(args)
 
-    bootstrap_dependencies()
+    init_db()
 
     # Start FastAPI server
-    if configs.dev:
-        uvicorn.run(
-            "gpustack.core.app:app",
-            host="0.0.0.0",
-            port=80,
-            log_config=uvicorn_log_config,
-            reload=True,
-        )
-    else:
-        uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
-
-
-def bootstrap_dependencies():
-
-    init_db()
+    uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
 
 
 def set_configs(args):
@@ -80,9 +65,6 @@ def set_configs(args):
 
     if args.debug:
         configs.debug = args.debug
-
-    if args.dev:
-        configs.dev = args.dev
 
     if args.node_ip_address:
         configs.node_ip_address = args.node_ip_address

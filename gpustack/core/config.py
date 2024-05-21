@@ -9,7 +9,6 @@ class GPUStackConfig(BaseSettings):
 
     Attributes:
         debug: Enable debug mode.
-        dev: Enable development mode, with watchfile and reload.
         model: ID of a huggingface model to be served on bootstrap.
         data_dir: Directory to store data. Default is OS specific.
         database_url: URL of the database.
@@ -19,7 +18,6 @@ class GPUStackConfig(BaseSettings):
     """
 
     debug: bool = False
-    dev: bool = False
     node_ip_address: str | None = None
     address: str | None = None
     model: str | None = None

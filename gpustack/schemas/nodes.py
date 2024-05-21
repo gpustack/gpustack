@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, JSON, Column
 
 from gpustack.mixins import BaseModelMixin
 
@@ -17,8 +17,10 @@ class NodeBase(SQLModel):
     name: str
     hostname: str
     address: str
-    labels: dict[str, str] = {}
-    resources: ResourceSummary
+    labels: dict[str, str] = Field(sa_column=Column(JSON), default={})
+    resources: ResourceSummary = Field(
+        sa_column=Column(JSON), default=ResourceSummary()
+    )
     state: str
 
 

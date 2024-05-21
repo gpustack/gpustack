@@ -1,28 +1,30 @@
+import argparse
 from ..utils import get_first_non_loopback_ip
 from ..core.config import configs
 
 
-def setup_join_cmd(subparsers):
-    parser_join = subparsers.add_parser(
-        "join",
-        help="Join GPUStack as a worker node.",
-        description="Join GPUStack as a worker node.",
+def setup_agent_cmd(subparsers):
+    parser_agent: argparse.ArgumentParser = subparsers.add_parser(
+        "agent",
+        help="Run node agent.",
+        description="Run node agent.",
     )
-    group = parser_join.add_argument_group("Connection settings")
+    group = parser_agent.add_argument_group("Cluster settings")
     group.add_argument(
-        "--address",
+        "--server",
         type=str,
-        help="Address of the head node. Example: 192.168.0.1:6379",
+        help="Server to connect to.",
     )
+    group = parser_agent.add_argument_group("Node settings")
     group.add_argument(
-        "--node-ip-address",
+        "--node-ip",
         type=str,
         help="IP address of the node. Auto-detected by default.",
     )
-    parser_join.set_defaults(func=run)
+    parser_agent.set_defaults(func=run_agent)
 
 
-def run(args):
+def run_agent(args):
     set_configs(args)
 
 

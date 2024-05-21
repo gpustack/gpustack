@@ -17,7 +17,8 @@ class Agent:
 
     def sync_loop(self):
         """
-        Main loop for processing changes. It watches task changes from server and processes them.
+        Main loop for processing changes.
+        It watches task changes from server and processes them.
         """
 
         while True:
