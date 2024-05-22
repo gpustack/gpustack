@@ -1,5 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from gpustack.api.exceptions import (
+    InternalServerErrorException,
+    NotFoundException,
+)
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
 
@@ -28,7 +32,7 @@ async def get_users(session: SessionDep, params: ListParamsDep):
 async def get_user(session: SessionDep, id: int):
     user = User.one_by_id(session, id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFoundException(message="User not found")
     return user
 
 
@@ -36,19 +40,33 @@ async def get_user(session: SessionDep, id: int):
 async def create_user(session: SessionDep, user_in: UserCreate):
     user = User.model_validate(user_in)
 
-    return user.save(session)
+    try:
+        user.save(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to create user: {e}")
 
 
 @router.put("/{id}", response_model=UserPublic)
 async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
-    user = User.model_validate(user_in)
-    return user.save(session)
+    user = User.one_by_id(session, id)
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    try:
+        user.update(session, user_in)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update user: {e}")
+
+    return user
 
 
 @router.delete("/{id}")
 async def delete_user(session: SessionDep, id: int):
     user = User.one_by_id(session, id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFoundException(message="User not found")
 
-    return user.delete(session)
+    try:
+        user.delete(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to delete user: {e}")

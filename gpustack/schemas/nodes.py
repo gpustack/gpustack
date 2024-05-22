@@ -1,25 +1,26 @@
 from datetime import datetime
-from pydantic import BaseModel
+from typing import Dict
 from sqlmodel import Field, SQLModel, JSON, Column
 
 from gpustack.mixins import BaseModelMixin
-
-from .common import PaginatedList
+from gpustack.schemas.common import PaginatedList, BaseModel
 
 
 class ResourceSummary(BaseModel):
-    capacity: dict[str, float] = {}
-    allocatable: dict[str, float] = {}
+    capacity: Dict[str, float] = {}
+    allocatable: Dict[str, float] = {}
 
 
-class NodeBase(SQLModel):
-    id: str
-    name: str
+from sqlalchemy.dialects.sqlite import JSON
+
+
+class NodeBase(BaseModel, SQLModel):
+    name: str = Field(index=True, unique=True)
     hostname: str
     address: str
-    labels: dict[str, str] = Field(sa_column=Column(JSON), default={})
-    resources: ResourceSummary = Field(sa_column=Column(JSON))
-    state: str
+    labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
+    # resources: ResourceSummary | None = Field(sa_column=Column(JSON))
+    state: str | None = None
 
 
 class Node(NodeBase, BaseModelMixin, table=True):

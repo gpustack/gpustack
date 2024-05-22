@@ -13,7 +13,7 @@ class SourceEnum(str, Enum):
 
 
 class ModelBase(SQLModel):
-    name: str
+    name: str = Field(index=True, unique=True)
     description: str | None = None
     source: SourceEnum
     huggingface_model_id: str | None = None

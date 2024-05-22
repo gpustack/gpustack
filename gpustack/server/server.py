@@ -1,5 +1,8 @@
+import atexit
+from multiprocessing import Process
 import os
 import secrets
+from typing import List
 from fastapi import FastAPI
 from sqlmodel import Session
 import uvicorn
@@ -11,19 +14,33 @@ from gpustack.schemas.users import User, UserCreate
 from gpustack.security import get_password_hash
 from gpustack.server.config import ServerConfig
 from gpustack.server.db import init_db, get_engine
+from gpustack.api import exceptions
 
 
 class Server:
 
-    def __init__(self, cfg: ServerConfig):
-        self._cfg: ServerConfig = cfg
+    def __init__(self, config: ServerConfig, sub_processes: List[Process] = []):
+        self._config: ServerConfig = config
+        self._sub_processes = sub_processes
+
+        atexit.register(self.at_exit)
+
+    @property
+    def all_processes(self):
+        return self._sub_processes
+
+    @property
+    def config(self):
+        return self._config
 
     def start(self):
         logger.info("Starting GPUStack server.")
 
-        self._setup_data_dir(self._cfg.data_dir)
+        self._start_sub_processes()
 
-        init_db(self._cfg.database_url)
+        self._setup_data_dir(self._config.data_dir)
+
+        init_db(self._config.database_url)
 
         engine = get_engine()
         with Session(engine) as session:
@@ -32,7 +49,13 @@ class Server:
         # Start FastAPI server
         app = FastAPI(title="GPUStack", response_model_exclude_unset=True)
         app.include_router(api_router)
+        exceptions.register_handlers(app)
+
         uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
+
+    def _start_sub_processes(self):
+        for process in self._sub_processes:
+            process.start()
 
     @staticmethod
     def _setup_data_dir(data_dir: str):
@@ -45,8 +68,8 @@ class Server:
             init_data_func(session)
 
     def _init_model(self, session: Session):
-        if self._cfg.model:
-            huggingface_model_id = self._cfg.model
+        if self._config.model:
+            huggingface_model_id = self._config.model
         else:
             return
 
@@ -66,7 +89,7 @@ class Server:
     def _init_user(self, session: Session):
         user = User.first_by_field(session=session, field="name", value="admin")
         if not user:
-            bootstrap_password = self._cfg.bootstrap_password
+            bootstrap_password = self._config.bootstrap_password
             if not bootstrap_password:
                 bootstrap_password = secrets.token_urlsafe(16)
                 logger.info("!!!Bootstrap password!!!: %s", bootstrap_password)
@@ -82,3 +105,9 @@ class Server:
                 update={"hashed_password": get_password_hash(user_create.password)},
             )
             user.save(session)
+
+    def at_exit(self):
+        logger.info("Stopping GPUStack server.")
+        for process in self._sub_processes:
+            process.terminate()
+        logger.info("Stopped all processes.")

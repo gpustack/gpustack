@@ -1,5 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from gpustack.api.exceptions import (
+    AlreadyExistsException,
+    InternalServerErrorException,
+    NotFoundException,
+)
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.nodes import NodeCreate, NodePublic, NodeUpdate, NodesPublic, Node
 
@@ -23,7 +28,8 @@ async def get_nodes(session: SessionDep, params: ListParamsDep):
 async def get_node(session: SessionDep, id: int):
     node = Node.one_by_id(session, id)
     if not node:
-        raise HTTPException(status_code=404, detail="Node not found")
+        raise NotFoundException(message="Node not found")
+
     return node
 
 
@@ -31,19 +37,39 @@ async def get_node(session: SessionDep, id: int):
 async def create_node(session: SessionDep, node_in: NodeCreate):
     node = Node.model_validate(node_in)
 
-    return node.save(session)
+    existing = Node.one_by_field(session, "name", node.name)
+    if existing:
+        raise AlreadyExistsException(message=f"Node f{node.name} already exists")
+
+    try:
+        node.save(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to create node: {e}")
+
+    return node
 
 
 @router.put("/{id}", response_model=NodePublic)
 async def update_node(session: SessionDep, id: int, node_in: NodeUpdate):
-    node = Node.model_validate(node_in)
-    return node.save(session)
+    node = Node.one_by_id(session, id)
+    if not node:
+        raise NotFoundException(message="Node not found")
+
+    try:
+        node.update(session, node_in)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update node: {e}")
+
+    return node
 
 
 @router.delete("/{id}")
 async def delete_node(session: SessionDep, id: int):
     node = Node.one_by_id(session, id)
     if not node:
-        raise HTTPException(status_code=404, detail="Node not found")
+        raise NotFoundException(message="Node not found")
 
-    return node.delete(session)
+    try:
+        node.delete(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to delete node: {e}")

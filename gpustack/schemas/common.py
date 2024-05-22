@@ -1,7 +1,12 @@
 from typing import Generic, TypeVar
 
 from fastapi import Query
-from pydantic import BaseModel
+from pydantic import BaseModel as PyBaseModel
+
+
+class BaseModel(PyBaseModel):
+    def to_dict(self):
+        return self.model_dump()
 
 
 T = TypeVar("T", bound=BaseModel)

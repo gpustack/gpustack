@@ -67,11 +67,8 @@ class ActiveRecordMixin:
         statement = select(cls)
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
-        try:
-            return session.exec(statement).one()
-        except NoResultFound:
-            logging.error(f"{cls}: one_by_fields failed, NoResultFound")
-            return None
+
+        return session.exec(statement).first()
 
     @classmethod
     def all_by_field(cls, session: Session, field: str, value: Any):
@@ -189,18 +186,16 @@ class ActiveRecordMixin:
 
         session.refresh(self)
 
-    def save(self, session: Session) -> bool:
-        """Save the object to the database. Return True if success, False if failed."""
+    def save(self, session: Session):
+        """Save the object to the database. Raise exception if failed."""
 
         session.add(self)
         try:
             session.commit()
             session.refresh(self)
-            return True
         except (IntegrityError, OperationalError, FlushError) as e:
-            logging.error(e)
             session.rollback()
-            return False
+            raise e
 
     def update(self, session: Session, source: dict | SQLModel):
         """Update the object with the source and save to the database."""

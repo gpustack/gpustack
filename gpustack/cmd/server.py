@@ -1,12 +1,10 @@
 import argparse
-import uvicorn
-import uvicorn.config
+import multiprocessing
 
-
+from gpustack.agent.agent import Agent
+from gpustack.agent.config import AgentConfig
 from gpustack.server.server import Server
 from gpustack.server.config import ServerConfig
-from gpustack.server.db import init_db
-from gpustack.logging import uvicorn_log_config
 from gpustack.utils import get_first_non_loopback_ip
 
 
@@ -20,6 +18,12 @@ def setup_server_cmd(subparsers: argparse._SubParsersAction):
         action="store_true",
         help="Enable debug mode.",
         default=True,
+    )
+    group.add_argument(
+        "--disable-agent",
+        action="store_true",
+        help="Disable embedded agent.",
+        default=False,
     )
     group.add_argument(
         "--model",
@@ -51,20 +55,34 @@ def setup_server_cmd(subparsers: argparse._SubParsersAction):
 
 
 def run_server(args):
-    cfg = to_config(args)
+    server_cfg = to_server_config(args)
+    sub_processes = []
 
-    server = Server(cfg)
+    if not server_cfg.disable_agent:
+        agent_cfg = AgentConfig(
+            server="http://127.0.0.1",
+            node_ip=server_cfg.node_ip,
+            debug=server_cfg.debug,
+        )
+        agent = Agent(agent_cfg)
+        agent_process = multiprocessing.Process(target=agent.start)
+        sub_processes = [agent_process]
+
+    server = Server(config=server_cfg, sub_processes=sub_processes)
 
     server.start()
 
 
-def to_config(args) -> ServerConfig:
+def to_server_config(args) -> ServerConfig:
     cfg = ServerConfig()
     if args.model:
         cfg.model = args.model
 
     if args.debug:
         cfg.debug = args.debug
+
+    if args.disable_agent:
+        cfg.disable_agent = args.disable_agent
 
     if args.node_ip:
         cfg.node_ip = args.node_ip

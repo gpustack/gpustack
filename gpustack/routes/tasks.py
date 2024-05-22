@@ -1,8 +1,11 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-
+from gpustack.api.exceptions import (
+    InternalServerErrorException,
+    NotFoundException,
+)
 from gpustack.server.deps import ListParamsDep, SessionDep
-from gpustack.schemas.tasks import Task, TaskCreate, TaskUpdate, TaskPublic, TasksPublic
+from gpustack.schemas.tasks import Task, TaskCreate, TaskPublic, TasksPublic
 
 router = APIRouter()
 
@@ -24,7 +27,7 @@ async def get_tasks(session: SessionDep, params: ListParamsDep):
 async def get_task(session: SessionDep, id: int):
     task = Task.one_by_id(session, id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise NotFoundException(message="Task not found")
     return task
 
 
@@ -32,19 +35,21 @@ async def get_task(session: SessionDep, id: int):
 async def create_task(session: SessionDep, task_in: TaskCreate):
     task = Task.model_validate(task_in)
 
-    return task.save(session)
+    try:
+        task.save(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to create task: {e}")
 
-
-@router.put("/{id}", response_model=TaskPublic)
-async def update_task(session: SessionDep, task_in: TaskUpdate):
-    task = Task.model_validate(task_in)
-    return task.save(session)
+    return task
 
 
 @router.delete("/{id}")
 async def delete_task(session: SessionDep, id: int):
     task = Task.one_by_id(session, id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise NotFoundException(message="Task not found")
 
-    return task.delete(session)
+    try:
+        task.delete(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to delete task: {e}")

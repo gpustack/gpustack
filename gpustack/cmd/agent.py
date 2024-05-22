@@ -1,6 +1,7 @@
 import argparse
 from gpustack.agent.agent import Agent
 from gpustack.agent.config import AgentConfig
+from gpustack.utils import get_first_non_loopback_ip
 
 
 def setup_agent_cmd(subparsers):
@@ -8,6 +9,13 @@ def setup_agent_cmd(subparsers):
         "agent",
         help="Run node agent.",
         description="Run node agent.",
+    )
+    group = parser_agent.add_argument_group("Basic settings")
+    group.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode.",
+        default=True,
     )
     group = parser_agent.add_argument_group("Cluster settings")
     group.add_argument(
@@ -25,17 +33,27 @@ def setup_agent_cmd(subparsers):
 
 
 def run_agent(args):
-    cfg = to_config(args)
+    cfg = to_agent_config(args)
 
     agent = Agent(cfg)
 
     agent.start()
 
 
-def to_config(args) -> AgentConfig:
+def to_agent_config(args) -> AgentConfig:
+    cfg = AgentConfig()
+
+    if args.debug:
+        cfg.debug = args.debug
+
+    if args.node_ip:
+        cfg.node_ip = args.node_ip
+    else:
+        cfg.node_ip = get_first_non_loopback_ip()
+
     if args.server:
-        pass
+        cfg.server = args.server
     else:
         raise ValueError("Server address is required.")
 
-    return AgentConfig()
+    return cfg

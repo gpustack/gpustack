@@ -1,6 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-
+from gpustack.api.exceptions import (
+    AlreadyExistsException,
+    InternalServerErrorException,
+    NotFoundException,
+)
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
@@ -30,7 +34,8 @@ async def get_models(session: SessionDep, params: ListParamsDep):
 async def get_model(session: SessionDep, id: int):
     model = Model.one_by_id(session, id)
     if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
+        raise NotFoundException(message="Model not found")
+
     return model
 
 
@@ -38,19 +43,39 @@ async def get_model(session: SessionDep, id: int):
 async def create_model(session: SessionDep, model_in: ModelCreate):
     model = Model.model_validate(model_in)
 
-    return model.save(session)
+    existing = Model.one_by_field(session, "name", model.name)
+    if existing:
+        raise AlreadyExistsException(message=f"Model f{model.name} already exists")
+
+    try:
+        model.save(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to create model: {e}")
+
+    return model
 
 
 @router.put("/{id}", response_model=ModelPublic)
 async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
-    model = Model.model_validate(model_in)
-    return model.save(session)
+    model = Model.one_by_id(session, id)
+    if not model:
+        raise NotFoundException(message="Model not found")
+
+    try:
+        model.update(session, model_in)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update model: {e}")
+
+    return model
 
 
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
     model = Model.one_by_id(session, id)
     if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
+        raise NotFoundException(message="Model not found")
 
-    return model.delete(session)
+    try:
+        model.delete(session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to delete model: {e}")

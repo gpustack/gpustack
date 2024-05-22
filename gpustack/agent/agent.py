@@ -1,9 +1,14 @@
+import os
+import platform
 import socket
 import time
 from gpustack.agent.config import AgentConfig
+from gpustack.generated_client.api.nodes import create_node_v1_nodes_post
 from gpustack.utils import run_periodically_async
 from gpustack.logging import logger
 from gpustack.generated_client.client import Client
+from gpustack.generated_client.types import Response
+from gpustack.schemas.nodes import Node, NodePublic, ResourceSummary
 
 
 class Agent:
@@ -11,7 +16,7 @@ class Agent:
         self._cfg = cfg
         self._registration_completed = False
         self._client = Client(base_url=cfg.server)
-        self._localhost = socket.gethostbyname("localhost")
+        self._hostname = socket.gethostname()
 
     def start(self):
         """
@@ -60,13 +65,37 @@ class Agent:
         self._registration_completed = True
 
     def _register_node(self, node):
-        # 1. create a node using the client
+        logger.info("Registering node: %s", node)
+        try:
+            resp: Response[NodePublic] = create_node_v1_nodes_post.sync_detailed(
+                client=self._client, body=node
+            )
+        except Exception as e:
+            logger.error("Failed to register node: %s", e)
+            raise e
+
+        # check if result is ValidationError
+        logger.info("Node registered: %s", resp)
         # 2. if the node is already registered, update the node
         pass
 
     def _initialize_node(self):
-        # initialize a node with the current system information
-        pass
+        node = Node(
+            name=self._hostname,
+            hostname=self._hostname,
+            address=self._cfg.node_ip,
+            resources=ResourceSummary(allocatable={}, capacity={}),
+        )
+
+        os_info = os.uname()
+        arch_info = platform.machine()
+
+        node.labels = {
+            "os": os_info.sysname,
+            "arch": arch_info,
+        }
+
+        return node
 
     def _register_shutdown_hooks(self):
         pass

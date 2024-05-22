@@ -1,5 +1,5 @@
 import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -9,7 +9,6 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.node_public_labels import NodePublicLabels
-    from ..models.resource_summary import ResourceSummary
 
 
 T = TypeVar("T", bound="NodePublic")
@@ -19,40 +18,34 @@ T = TypeVar("T", bound="NodePublic")
 class NodePublic:
     """
     Attributes:
-        id (int):
         name (str):
         hostname (str):
         address (str):
-        resources (ResourceSummary):
-        state (str):
+        id (int):
         created_at (datetime.datetime):
         updated_at (datetime.datetime):
         labels (Union[Unset, NodePublicLabels]):
+        state (Union[None, Unset, str]):
     """
 
-    id: int
     name: str
     hostname: str
     address: str
-    resources: "ResourceSummary"
-    state: str
+    id: int
     created_at: datetime.datetime
     updated_at: datetime.datetime
     labels: Union[Unset, "NodePublicLabels"] = UNSET
+    state: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        id = self.id
-
         name = self.name
 
         hostname = self.hostname
 
         address = self.address
 
-        resources = self.resources.to_dict()
-
-        state = self.state
+        id = self.id
 
         created_at = self.created_at.isoformat()
 
@@ -62,42 +55,43 @@ class NodePublic:
         if not isinstance(self.labels, Unset):
             labels = self.labels.to_dict()
 
+        state: Union[None, Unset, str]
+        if isinstance(self.state, Unset):
+            state = UNSET
+        else:
+            state = self.state
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "id": id,
                 "name": name,
                 "hostname": hostname,
                 "address": address,
-                "resources": resources,
-                "state": state,
+                "id": id,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
         )
         if labels is not UNSET:
             field_dict["labels"] = labels
+        if state is not UNSET:
+            field_dict["state"] = state
 
         return field_dict
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.node_public_labels import NodePublicLabels
-        from ..models.resource_summary import ResourceSummary
 
         d = src_dict.copy()
-        id = d.pop("id")
-
         name = d.pop("name")
 
         hostname = d.pop("hostname")
 
         address = d.pop("address")
 
-        resources = ResourceSummary.from_dict(d.pop("resources"))
-
-        state = d.pop("state")
+        id = d.pop("id")
 
         created_at = isoparse(d.pop("created_at"))
 
@@ -110,16 +104,24 @@ class NodePublic:
         else:
             labels = NodePublicLabels.from_dict(_labels)
 
+        def _parse_state(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        state = _parse_state(d.pop("state", UNSET))
+
         node_public = cls(
-            id=id,
             name=name,
             hostname=hostname,
             address=address,
-            resources=resources,
-            state=state,
+            id=id,
             created_at=created_at,
             updated_at=updated_at,
             labels=labels,
+            state=state,
         )
 
         node_public.additional_properties = d
