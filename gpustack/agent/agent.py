@@ -3,7 +3,10 @@ import platform
 import socket
 import time
 from gpustack.agent.config import AgentConfig
-from gpustack.generated_client.api.nodes import create_node_v1_nodes_post
+from gpustack.api.exceptions import is_error_response, is_already_exists
+from gpustack.generated_client.api.nodes import (
+    create_node_v1_nodes_post,
+)
 from gpustack.utils import run_periodically_async
 from gpustack.logging import logger
 from gpustack.generated_client.client import Client
@@ -64,20 +67,23 @@ class Agent:
         self._register_node(node)
         self._registration_completed = True
 
-    def _register_node(self, node):
-        logger.info("Registering node: %s", node)
-        try:
-            resp: Response[NodePublic] = create_node_v1_nodes_post.sync_detailed(
-                client=self._client, body=node
-            )
-        except Exception as e:
-            logger.error("Failed to register node: %s", e)
-            raise e
+    def _register_node(self, node: Node):
+        logger.info(
+            f"Registering node: {node.name}",
+        )
 
-        # check if result is ValidationError
-        logger.info("Node registered: %s", resp)
-        # 2. if the node is already registered, update the node
-        pass
+        result = create_node_v1_nodes_post.sync(client=self._client, body=node)
+
+        if not is_error_response(result):
+            logger.info(
+                f"Node {node.name} registered.",
+            )
+            return
+
+        if is_already_exists(result):
+            logger.info(f"Node {node.name} already exists, skip registration.")
+        else:
+            logger.error(f"Failed to register node: {result.message}")
 
     def _initialize_node(self):
         node = Node(

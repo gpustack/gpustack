@@ -95,3 +95,63 @@ def register_handlers(app: FastAPI):
                 message=message,
             ).model_dump(),
         )
+
+
+def is_error_response(e):
+    return isinstance(e, ErrorResponse)
+
+
+def is_already_exists(e):
+    if isinstance(e, ErrorResponse) and e.reason == "AlreadyExists":
+        return True
+
+    return False
+
+
+def is_not_found(e):
+    if isinstance(e, ErrorResponse) and e.reason == "NotFound":
+        return True
+
+    return False
+
+
+def is_unauthorized(e):
+    if isinstance(e, ErrorResponse) and e.reason == "Unauthorized":
+        return True
+
+    return False
+
+
+def is_forbidden(e):
+    if isinstance(e, ErrorResponse) and e.reason == "Forbidden":
+        return True
+
+    return False
+
+
+def is_invalid(e):
+    if isinstance(e, ErrorResponse) and e.reason == "Invalid":
+        return True
+
+    return False
+
+
+def is_bad_request(e):
+    if isinstance(e, ErrorResponse) and e.reason == "BadRequest":
+        return True
+
+    return False
+
+
+def is_internal_server_error(e):
+    if isinstance(e, ErrorResponse) and e.reason == "InternalServerError":
+        return True
+
+    return False
+
+
+def is_service_unavailable(e):
+    if isinstance(e, ErrorResponse) and e.reason == "ServiceUnavailable":
+        return True
+
+    return False
