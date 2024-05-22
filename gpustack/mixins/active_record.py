@@ -1,11 +1,10 @@
-import logging
 import math
 from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlmodel import SQLModel, col, select, Session
-from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import FlushError
 
 from ..schemas.common import PaginatedList, Pagination

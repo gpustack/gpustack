@@ -19,7 +19,9 @@ from gpustack.api import exceptions
 
 class Server:
 
-    def __init__(self, config: ServerConfig, sub_processes: List[Process] = []):
+    def __init__(self, config: ServerConfig, sub_processes: List[Process] = None):
+        if sub_processes is None:
+            sub_processes = []
         self._config: ServerConfig = config
         self._sub_processes = sub_processes
 

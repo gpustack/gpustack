@@ -11,9 +11,6 @@ class ResourceSummary(BaseModel):
     allocatable: Dict[str, float] = {}
 
 
-from sqlalchemy.dialects.sqlite import JSON
-
-
 class NodeBase(BaseModel, SQLModel):
     name: str = Field(index=True, unique=True)
     hostname: str

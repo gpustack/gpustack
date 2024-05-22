@@ -1,6 +1,5 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal
 from sqlmodel import Field, SQLModel
 
 from gpustack.schemas.common import PaginatedList

@@ -34,3 +34,4 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
 gen = "gpustack.codegen.generate_client:main"
+

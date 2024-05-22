@@ -10,8 +10,7 @@ from gpustack.generated_client.api.nodes import (
 from gpustack.utils import run_periodically_async
 from gpustack.logging import logger
 from gpustack.generated_client.client import Client
-from gpustack.generated_client.types import Response
-from gpustack.schemas.nodes import Node, NodePublic, ResourceSummary
+from gpustack.schemas.nodes import Node, ResourceSummary
 
 
 class Agent:
@@ -54,8 +53,7 @@ class Agent:
         self._update_node_status()
 
     def _update_node_status(self):
-        # 1. get node from server
-        # 2. update node status if there is any change or enough time passed since last update
+        # TODO update node status if there is any change or enough time passed since last update
 
         pass
 
