@@ -1,6 +1,6 @@
 """Contains all the data models used in inputs/outputs"""
 
-from .http_validation_error import HTTPValidationError
+from .error_response import ErrorResponse
 from .model_create import ModelCreate
 from .model_public import ModelPublic
 from .model_update import ModelUpdate
@@ -18,10 +18,9 @@ from .source_enum import SourceEnum
 from .user_create import UserCreate
 from .user_public import UserPublic
 from .user_update import UserUpdate
-from .validation_error import ValidationError
 
 __all__ = (
-    "HTTPValidationError",
+    "ErrorResponse",
     "ModelCreate",
     "ModelPublic",
     "ModelUpdate",
@@ -39,5 +38,4 @@ __all__ = (
     "UserCreate",
     "UserPublic",
     "UserUpdate",
-    "ValidationError",
 )
