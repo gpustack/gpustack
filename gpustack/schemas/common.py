@@ -23,6 +23,7 @@ class ListParams(BaseModel):
     query: str | None = None
     page: int = Query(default=1, ge=1)
     perPage: int = Query(default=100, ge=1, le=100)
+    watch: bool = Query(default=False)
 
 
 class PaginatedList(BaseModel, Generic[T]):

@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -6,6 +7,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.tasks import Task, TaskCreate, TaskPublic, TasksPublic
+from gpustack.server.bus import Event, event_bus
 
 router = APIRouter()
 
@@ -15,11 +17,22 @@ async def get_tasks(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
+
+    if params.watch:
+        return StreamingResponse(Task.subscribe(), media_type="text/event-stream")
+
     return Task.paginated_by_query(
         session=session,
         fields=fields,
         page=params.page,
         per_page=params.perPage,
+    )
+
+
+@router.get("/dev")
+async def debug_tasks():
+    await event_bus.publish(
+        "task", event=Event(event_type="Debug", data="Debugging tasks")
     )
 
 
@@ -33,10 +46,8 @@ async def get_task(session: SessionDep, id: int):
 
 @router.post("", response_model=TaskPublic)
 async def create_task(session: SessionDep, task_in: TaskCreate):
-    task = Task.model_validate(task_in)
-
     try:
-        task.save(session)
+        task = await Task.create(session, task_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create task: {e}")
 

@@ -1,12 +1,13 @@
 from fastapi import APIRouter
 
-from gpustack.routes import probes, ui, users, models, nodes, openai
+from gpustack.routes import probes, tasks, ui, users, models, nodes, openai
 from gpustack.api.exceptions import error_responses
 
 resource_router = APIRouter()
 resource_router.include_router(users.router, prefix="/users", tags=["users"])
 resource_router.include_router(models.router, prefix="/models", tags=["models"])
 resource_router.include_router(nodes.router, prefix="/nodes", tags=["nodes"])
+resource_router.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
 
 
 api_router = APIRouter(responses=error_responses)

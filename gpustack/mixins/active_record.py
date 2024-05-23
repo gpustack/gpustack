@@ -1,13 +1,16 @@
+import json
 import math
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlmodel import SQLModel, col, select, Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import FlushError
 
-from ..schemas.common import PaginatedList, Pagination
+from gpustack.schemas.common import PaginatedList, Pagination
+from gpustack.server.bus import Event, EventType, event_bus
 
 
 class ActiveRecordMixin:
@@ -142,7 +145,7 @@ class ActiveRecordMixin:
         return obj
 
     @classmethod
-    def create(
+    async def create(
         cls, session: Session, source: dict | SQLModel, update: dict | None = None
     ) -> SQLModel | None:
         """Create and save a new record for the model."""
@@ -150,12 +153,13 @@ class ActiveRecordMixin:
         obj = cls.convert_without_saving(source, update)
         if obj is None:
             return None
-        if obj.save(session):
-            return obj
-        return None
+
+        obj.save(session)
+        await cls._publish_event(EventType.CREATE, obj)
+        return obj
 
     @classmethod
-    def create_or_update(
+    async def create_or_update(
         cls, session: Session, source: dict | SQLModel, update: dict | None = None
     ) -> SQLModel | None:
         """Create or update a record for the model."""
@@ -196,7 +200,7 @@ class ActiveRecordMixin:
             session.rollback()
             raise e
 
-    def update(self, session: Session, source: dict | SQLModel):
+    async def update(self, session: Session, source: dict | SQLModel):
         """Update the object with the source and save to the database."""
 
         if isinstance(source, SQLModel):
@@ -205,12 +209,14 @@ class ActiveRecordMixin:
         for key, value in source.items():
             setattr(self, key, value)
         self.save(session)
+        await self._publish_event(EventType.UPDATE, self)
 
-    def delete(self, session: Session):
+    async def delete(self, session: Session):
         """Delete the object from the database."""
 
         session.delete(self)
         session.commit()
+        await self._publish_event(EventType.DELETE, self)
 
     @classmethod
     def all(cls, session: Session):
@@ -219,8 +225,26 @@ class ActiveRecordMixin:
         return session.exec(select(cls)).all()
 
     @classmethod
-    def delete_all(cls, session: Session):
+    async def delete_all(cls, session: Session):
         """Delete all objects of the model."""
 
         for obj in cls.all(session):
             obj.delete(session)
+            await cls._publish_event(EventType.DELETE, obj)
+
+    @classmethod
+    async def _publish_event(cls, event_type: str, data: Any):
+        await event_bus.publish(
+            cls.__name__.lower(), Event(event_type=event_type, data=data)
+        )
+
+    @classmethod
+    async def subscribe(cls):
+        subscriber = event_bus.subscribe(cls.__name__.lower())
+
+        try:
+            while True:
+                event = await subscriber.receive()
+                yield f"{json.dumps((jsonable_encoder(event)))}\n\n"
+        finally:
+            event_bus.unsubscribe(cls.__name__.lower(), subscriber)
