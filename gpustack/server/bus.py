@@ -52,8 +52,6 @@ class EventBus:
                 del self.subscribers[topic]
 
     async def publish(self, topic: str, event: Event):
-        logger.debug(f"Publishing event to topic: {topic}, event: {event}")
-
         if topic in self.subscribers:
             for subscriber in self.subscribers[topic]:
                 await subscriber.enqueue(event)

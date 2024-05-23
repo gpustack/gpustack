@@ -1,8 +1,10 @@
 import argparse
+import asyncio
 import multiprocessing
 
 from gpustack.agent.agent import Agent
 from gpustack.agent.config import AgentConfig
+from gpustack.server.scheduler import Scheduler
 from gpustack.server.server import Server
 from gpustack.server.config import ServerConfig
 from gpustack.utils import get_first_non_loopback_ip
@@ -70,7 +72,7 @@ def run_server(args):
 
     server = Server(config=server_cfg, sub_processes=sub_processes)
 
-    server.start()
+    asyncio.run(server.start())
 
 
 def to_server_config(args) -> ServerConfig:

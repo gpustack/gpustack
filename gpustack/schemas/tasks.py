@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from sqlalchemy import Column
 from sqlmodel import Field, SQLModel, JSON
 
@@ -10,13 +10,13 @@ from gpustack.mixins import BaseModelMixin
 class TaskBase(SQLModel):
     name: str
     method_path: str
-    args: List = Field(sa_column=Column(JSON), default={})
-    node_id: str
-    pid: int | None = None
+    args: Optional[List] = Field(sa_column=Column(JSON), default_factory=list)
+    node_id: Optional[int] = None
+    pid: Optional[int] = None
 
 
 class Task(TaskBase, BaseModelMixin, table=True):
-    id: int | None = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class TaskCreate(TaskBase):

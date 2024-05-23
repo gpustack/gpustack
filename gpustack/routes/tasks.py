@@ -19,7 +19,7 @@ async def get_tasks(session: SessionDep, params: ListParamsDep):
         fields = {"name": params.query}
 
     if params.watch:
-        return StreamingResponse(Task.subscribe(), media_type="text/event-stream")
+        return StreamingResponse(Task.streaming(), media_type="text/event-stream")
 
     return Task.paginated_by_query(
         session=session,

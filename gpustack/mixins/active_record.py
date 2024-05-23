@@ -1,6 +1,6 @@
 import json
 import math
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
@@ -135,13 +135,10 @@ class ActiveRecordMixin:
         Return None if failed.
         """
 
-        try:
-            if isinstance(source, SQLModel):
-                obj = cls.from_orm(source, update=update)
-            elif isinstance(source, dict):
-                obj = cls.parse_obj(source, update=update)
-        except ValidationError:
-            return None
+        if isinstance(source, SQLModel):
+            obj = cls.from_orm(source, update=update)
+        elif isinstance(source, dict):
+            obj = cls.parse_obj(source, update=update)
         return obj
 
     @classmethod
@@ -239,12 +236,17 @@ class ActiveRecordMixin:
         )
 
     @classmethod
-    async def subscribe(cls):
+    async def subscribe(cls) -> AsyncGenerator[Event, None]:
         subscriber = event_bus.subscribe(cls.__name__.lower())
 
         try:
             while True:
                 event = await subscriber.receive()
-                yield f"{json.dumps((jsonable_encoder(event)))}\n\n"
+                yield event
         finally:
             event_bus.unsubscribe(cls.__name__.lower(), subscriber)
+
+    @classmethod
+    async def streaming(cls) -> AsyncGenerator[str, None]:
+        async for event in cls.subscribe():
+            yield json.dumps(jsonable_encoder(event)) + "\n\n"

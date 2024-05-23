@@ -1,6 +1,5 @@
 from sqlmodel import SQLModel, create_engine
 
-
 _engine = None
 
 

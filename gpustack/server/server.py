@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 from multiprocessing import Process
 import os
@@ -15,6 +16,7 @@ from gpustack.security import get_password_hash
 from gpustack.server.config import ServerConfig
 from gpustack.server.db import init_db, get_engine
 from gpustack.api import exceptions
+from gpustack.server.scheduler import Scheduler
 
 
 class Server:
@@ -35,11 +37,28 @@ class Server:
     def config(self):
         return self._config
 
-    def start(self):
+    async def start(self):
         logger.info("Starting GPUStack server.")
 
         self._start_sub_processes()
 
+        self._prepare_data()
+
+        self._start_scheduler()
+
+        # Start FastAPI server
+        app = FastAPI(title="GPUStack", response_model_exclude_unset=True)
+        app.include_router(api_router)
+        exceptions.register_handlers(app)
+
+        config = uvicorn.Config(
+            app, host="0.0.0.0", port=80, log_config=uvicorn_log_config
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+        # uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
+
+    def _prepare_data(self):
         self._setup_data_dir(self._config.data_dir)
 
         init_db(self._config.database_url)
@@ -48,12 +67,13 @@ class Server:
         with Session(engine) as session:
             self._init_data(session)
 
-        # Start FastAPI server
-        app = FastAPI(title="GPUStack", response_model_exclude_unset=True)
-        app.include_router(api_router)
-        exceptions.register_handlers(app)
+        logger.debug("Data initialization completed.")
 
-        uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
+    def _start_scheduler(self):
+        scheduler = Scheduler()
+        asyncio.create_task(scheduler.start())
+
+        logger.debug("Scheduler started.")
 
     def _start_sub_processes(self):
         for process in self._sub_processes:
