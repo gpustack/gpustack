@@ -21,7 +21,7 @@ class Scheduler:
             await self._do_schedule(task)
 
         async for event in Task.subscribe():
-            if event.event_type == EventType.DELETE:
+            if event.type == EventType.DELETED:
                 continue
             await self._do_schedule(event.data)
 

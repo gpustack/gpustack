@@ -7,15 +7,15 @@ from gpustack.logging import logger
 
 
 class EventType(Enum):
-    CREATE = 1
-    UPDATE = 2
-    DELETE = 3
+    CREATED = 1
+    UPDATED = 2
+    DELETED = 3
     UNKNOWN = 4
 
 
 @dataclass
 class Event:
-    event_type: EventType
+    type: EventType
     data: Any
 
 

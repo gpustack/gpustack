@@ -29,13 +29,6 @@ async def get_tasks(session: SessionDep, params: ListParamsDep):
     )
 
 
-@router.get("/dev")
-async def debug_tasks():
-    await event_bus.publish(
-        "task", event=Event(event_type="Debug", data="Debugging tasks")
-    )
-
-
 @router.get("/{id}", response_model=TaskPublic)
 async def get_task(session: SessionDep, id: int):
     task = Task.one_by_id(session, id)

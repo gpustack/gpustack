@@ -97,60 +97,74 @@ def register_handlers(app: FastAPI):
 
 
 def is_error_response(e):
-    return isinstance(e, ErrorResponse)
+    if hasattr(e, "code"):
+        code_value = getattr(e, "code")
+        if isinstance(code_value, int) and code_value >= 400:
+            return True
+    return False
+
+    # TODO unify api and gen_client schemas so that we can check by isinstance(e, ErrorResponse)
 
 
 def is_already_exists(e):
-    if isinstance(e, ErrorResponse) and e.reason == "AlreadyExists":
+    reason = getattr(e, "reason")
+    if reason == "AlreadyExists":
         return True
 
     return False
 
 
 def is_not_found(e):
-    if isinstance(e, ErrorResponse) and e.reason == "NotFound":
+    reason = getattr(e, "reason")
+    if reason == "NotFound":
         return True
 
     return False
 
 
 def is_unauthorized(e):
-    if isinstance(e, ErrorResponse) and e.reason == "Unauthorized":
+    reason = getattr(e, "reason")
+    if reason == "Unauthorized":
         return True
 
     return False
 
 
 def is_forbidden(e):
-    if isinstance(e, ErrorResponse) and e.reason == "Forbidden":
+    reason = getattr(e, "reason")
+    if reason == "Forbidden":
         return True
 
     return False
 
 
 def is_invalid(e):
-    if isinstance(e, ErrorResponse) and e.reason == "Invalid":
+    reason = getattr(e, "reason")
+    if reason == "Invalid":
         return True
 
     return False
 
 
 def is_bad_request(e):
-    if isinstance(e, ErrorResponse) and e.reason == "BadRequest":
+    reason = getattr(e, "reason")
+    if reason == "BadRequest":
         return True
 
     return False
 
 
 def is_internal_server_error(e):
-    if isinstance(e, ErrorResponse) and e.reason == "InternalServerError":
+    reason = getattr(e, "reason")
+    if reason == "InternalServerError":
         return True
 
     return False
 
 
 def is_service_unavailable(e):
-    if isinstance(e, ErrorResponse) and e.reason == "ServiceUnavailable":
+    reason = getattr(e, "reason")
+    if reason == "ServiceUnavailable":
         return True
 
     return False

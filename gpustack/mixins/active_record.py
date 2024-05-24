@@ -3,7 +3,6 @@ import math
 from typing import Any, AsyncGenerator
 
 from fastapi.encoders import jsonable_encoder
-from pydantic import ValidationError
 from sqlalchemy import func
 from sqlmodel import SQLModel, col, select, Session
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -11,6 +10,7 @@ from sqlalchemy.orm.exc import FlushError
 
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.logging import logger
 
 
 class ActiveRecordMixin:
@@ -152,7 +152,7 @@ class ActiveRecordMixin:
             return None
 
         obj.save(session)
-        await cls._publish_event(EventType.CREATE, obj)
+        await cls._publish_event(EventType.CREATED, obj)
         return obj
 
     @classmethod
@@ -206,14 +206,14 @@ class ActiveRecordMixin:
         for key, value in source.items():
             setattr(self, key, value)
         self.save(session)
-        await self._publish_event(EventType.UPDATE, self)
+        await self._publish_event(EventType.UPDATED, self)
 
     async def delete(self, session: Session):
         """Delete the object from the database."""
 
         session.delete(self)
         session.commit()
-        await self._publish_event(EventType.DELETE, self)
+        await self._publish_event(EventType.DELETED, self)
 
     @classmethod
     def all(cls, session: Session):
@@ -227,13 +227,11 @@ class ActiveRecordMixin:
 
         for obj in cls.all(session):
             obj.delete(session)
-            await cls._publish_event(EventType.DELETE, obj)
+            await cls._publish_event(EventType.DELETED, obj)
 
     @classmethod
     async def _publish_event(cls, event_type: str, data: Any):
-        await event_bus.publish(
-            cls.__name__.lower(), Event(event_type=event_type, data=data)
-        )
+        await event_bus.publish(cls.__name__.lower(), Event(type=event_type, data=data))
 
     @classmethod
     async def subscribe(cls) -> AsyncGenerator[Event, None]:
@@ -249,4 +247,7 @@ class ActiveRecordMixin:
     @classmethod
     async def streaming(cls) -> AsyncGenerator[str, None]:
         async for event in cls.subscribe():
-            yield json.dumps(jsonable_encoder(event)) + "\n\n"
+            logger.debug(
+                json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
+            )
+            yield json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
