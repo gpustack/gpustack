@@ -15,6 +15,7 @@ def _get_kwargs(
     query: Union[None, Unset, str] = UNSET,
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
+    watch: Union[Unset, bool] = False,
 ) -> Dict[str, Any]:
     params: Dict[str, Any] = {}
 
@@ -28,6 +29,8 @@ def _get_kwargs(
     params["page"] = page
 
     params["perPage"] = per_page
+
+    params["watch"] = watch
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -102,6 +105,7 @@ def sync_detailed(
     query: Union[None, Unset, str] = UNSET,
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
+    watch: Union[Unset, bool] = False,
 ) -> Response[Union[ErrorResponse, PaginatedListNodePublic]]:
     """Get Nodes
 
@@ -109,6 +113,7 @@ def sync_detailed(
         query (Union[None, Unset, str]):
         page (Union[Unset, int]):  Default: 1.
         per_page (Union[Unset, int]):  Default: 100.
+        watch (Union[Unset, bool]):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -122,6 +127,7 @@ def sync_detailed(
         query=query,
         page=page,
         per_page=per_page,
+        watch=watch,
     )
 
     response = client.get_httpx_client().request(
@@ -137,6 +143,7 @@ def sync(
     query: Union[None, Unset, str] = UNSET,
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
+    watch: Union[Unset, bool] = False,
 ) -> Optional[Union[ErrorResponse, PaginatedListNodePublic]]:
     """Get Nodes
 
@@ -144,6 +151,7 @@ def sync(
         query (Union[None, Unset, str]):
         page (Union[Unset, int]):  Default: 1.
         per_page (Union[Unset, int]):  Default: 100.
+        watch (Union[Unset, bool]):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -158,6 +166,7 @@ def sync(
         query=query,
         page=page,
         per_page=per_page,
+        watch=watch,
     ).parsed
 
 
@@ -167,6 +176,7 @@ async def asyncio_detailed(
     query: Union[None, Unset, str] = UNSET,
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
+    watch: Union[Unset, bool] = False,
 ) -> Response[Union[ErrorResponse, PaginatedListNodePublic]]:
     """Get Nodes
 
@@ -174,6 +184,7 @@ async def asyncio_detailed(
         query (Union[None, Unset, str]):
         page (Union[Unset, int]):  Default: 1.
         per_page (Union[Unset, int]):  Default: 100.
+        watch (Union[Unset, bool]):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -187,6 +198,7 @@ async def asyncio_detailed(
         query=query,
         page=page,
         per_page=per_page,
+        watch=watch,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -200,6 +212,7 @@ async def asyncio(
     query: Union[None, Unset, str] = UNSET,
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
+    watch: Union[Unset, bool] = False,
 ) -> Optional[Union[ErrorResponse, PaginatedListNodePublic]]:
     """Get Nodes
 
@@ -207,6 +220,7 @@ async def asyncio(
         query (Union[None, Unset, str]):
         page (Union[Unset, int]):  Default: 1.
         per_page (Union[Unset, int]):  Default: 100.
+        watch (Union[Unset, bool]):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -222,5 +236,6 @@ async def asyncio(
             query=query,
             page=page,
             per_page=per_page,
+            watch=watch,
         )
     ).parsed

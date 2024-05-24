@@ -6,7 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.paginated_list_user_public import PaginatedListUserPublic
+from ...models.paginated_list_task_public import PaginatedListTaskPublic
 from ...types import UNSET, Response, Unset
 
 
@@ -36,7 +36,7 @@ def _get_kwargs(
 
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": "/v1/users",
+        "url": "/v1/tasks",
         "params": params,
     }
 
@@ -45,9 +45,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, PaginatedListUserPublic]]:
+) -> Optional[Union[ErrorResponse, PaginatedListTaskPublic]]:
     if response.status_code == HTTPStatus.OK:
-        response_200 = PaginatedListUserPublic.from_dict(response.json())
+        response_200 = PaginatedListTaskPublic.from_dict(response.json())
 
         return response_200
     if response.status_code == HTTPStatus.NOT_FOUND:
@@ -90,7 +90,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, PaginatedListUserPublic]]:
+) -> Response[Union[ErrorResponse, PaginatedListTaskPublic]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -106,8 +106,8 @@ def sync_detailed(
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
     watch: Union[Unset, bool] = False,
-) -> Response[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Response[Union[ErrorResponse, PaginatedListTaskPublic]]:
+    """Get Tasks
 
     Args:
         query (Union[None, Unset, str]):
@@ -120,7 +120,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, PaginatedListUserPublic]]
+        Response[Union[ErrorResponse, PaginatedListTaskPublic]]
     """
 
     kwargs = _get_kwargs(
@@ -144,8 +144,8 @@ def sync(
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
     watch: Union[Unset, bool] = False,
-) -> Optional[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Optional[Union[ErrorResponse, PaginatedListTaskPublic]]:
+    """Get Tasks
 
     Args:
         query (Union[None, Unset, str]):
@@ -158,7 +158,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, PaginatedListUserPublic]
+        Union[ErrorResponse, PaginatedListTaskPublic]
     """
 
     return sync_detailed(
@@ -177,8 +177,8 @@ async def asyncio_detailed(
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
     watch: Union[Unset, bool] = False,
-) -> Response[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Response[Union[ErrorResponse, PaginatedListTaskPublic]]:
+    """Get Tasks
 
     Args:
         query (Union[None, Unset, str]):
@@ -191,7 +191,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, PaginatedListUserPublic]]
+        Response[Union[ErrorResponse, PaginatedListTaskPublic]]
     """
 
     kwargs = _get_kwargs(
@@ -213,8 +213,8 @@ async def asyncio(
     page: Union[Unset, int] = 1,
     per_page: Union[Unset, int] = 100,
     watch: Union[Unset, bool] = False,
-) -> Optional[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Optional[Union[ErrorResponse, PaginatedListTaskPublic]]:
+    """Get Tasks
 
     Args:
         query (Union[None, Unset, str]):
@@ -227,7 +227,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, PaginatedListUserPublic]
+        Union[ErrorResponse, PaginatedListTaskPublic]
     """
 
     return (

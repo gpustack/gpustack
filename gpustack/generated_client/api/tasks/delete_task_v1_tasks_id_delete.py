@@ -6,38 +6,15 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.paginated_list_user_public import PaginatedListUserPublic
-from ...types import UNSET, Response, Unset
+from ...types import Response
 
 
 def _get_kwargs(
-    *,
-    query: Union[None, Unset, str] = UNSET,
-    page: Union[Unset, int] = 1,
-    per_page: Union[Unset, int] = 100,
-    watch: Union[Unset, bool] = False,
+    id: int,
 ) -> Dict[str, Any]:
-    params: Dict[str, Any] = {}
-
-    json_query: Union[None, Unset, str]
-    if isinstance(query, Unset):
-        json_query = UNSET
-    else:
-        json_query = query
-    params["query"] = json_query
-
-    params["page"] = page
-
-    params["perPage"] = per_page
-
-    params["watch"] = watch
-
-    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
-
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/users",
-        "params": params,
+        "method": "delete",
+        "url": f"/v1/tasks/{id}",
     }
 
     return _kwargs
@@ -45,10 +22,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, PaginatedListUserPublic]]:
+) -> Optional[Union[Any, ErrorResponse]]:
     if response.status_code == HTTPStatus.OK:
-        response_200 = PaginatedListUserPublic.from_dict(response.json())
-
+        response_200 = response.json()
         return response_200
     if response.status_code == HTTPStatus.NOT_FOUND:
         response_404 = ErrorResponse.from_dict(response.json())
@@ -90,7 +66,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, PaginatedListUserPublic]]:
+) -> Response[Union[Any, ErrorResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,34 +76,25 @@ def _build_response(
 
 
 def sync_detailed(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-    query: Union[None, Unset, str] = UNSET,
-    page: Union[Unset, int] = 1,
-    per_page: Union[Unset, int] = 100,
-    watch: Union[Unset, bool] = False,
-) -> Response[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Response[Union[Any, ErrorResponse]]:
+    """Delete Task
 
     Args:
-        query (Union[None, Unset, str]):
-        page (Union[Unset, int]):  Default: 1.
-        per_page (Union[Unset, int]):  Default: 100.
-        watch (Union[Unset, bool]):  Default: False.
+        id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, PaginatedListUserPublic]]
+        Response[Union[Any, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
-        query=query,
-        page=page,
-        per_page=per_page,
-        watch=watch,
+        id=id,
     )
 
     response = client.get_httpx_client().request(
@@ -138,67 +105,49 @@ def sync_detailed(
 
 
 def sync(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-    query: Union[None, Unset, str] = UNSET,
-    page: Union[Unset, int] = 1,
-    per_page: Union[Unset, int] = 100,
-    watch: Union[Unset, bool] = False,
-) -> Optional[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Optional[Union[Any, ErrorResponse]]:
+    """Delete Task
 
     Args:
-        query (Union[None, Unset, str]):
-        page (Union[Unset, int]):  Default: 1.
-        per_page (Union[Unset, int]):  Default: 100.
-        watch (Union[Unset, bool]):  Default: False.
+        id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, PaginatedListUserPublic]
+        Union[Any, ErrorResponse]
     """
 
     return sync_detailed(
+        id=id,
         client=client,
-        query=query,
-        page=page,
-        per_page=per_page,
-        watch=watch,
     ).parsed
 
 
 async def asyncio_detailed(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-    query: Union[None, Unset, str] = UNSET,
-    page: Union[Unset, int] = 1,
-    per_page: Union[Unset, int] = 100,
-    watch: Union[Unset, bool] = False,
-) -> Response[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Response[Union[Any, ErrorResponse]]:
+    """Delete Task
 
     Args:
-        query (Union[None, Unset, str]):
-        page (Union[Unset, int]):  Default: 1.
-        per_page (Union[Unset, int]):  Default: 100.
-        watch (Union[Unset, bool]):  Default: False.
+        id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, PaginatedListUserPublic]]
+        Response[Union[Any, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
-        query=query,
-        page=page,
-        per_page=per_page,
-        watch=watch,
+        id=id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -207,35 +156,26 @@ async def asyncio_detailed(
 
 
 async def asyncio(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-    query: Union[None, Unset, str] = UNSET,
-    page: Union[Unset, int] = 1,
-    per_page: Union[Unset, int] = 100,
-    watch: Union[Unset, bool] = False,
-) -> Optional[Union[ErrorResponse, PaginatedListUserPublic]]:
-    """Get Users
+) -> Optional[Union[Any, ErrorResponse]]:
+    """Delete Task
 
     Args:
-        query (Union[None, Unset, str]):
-        page (Union[Unset, int]):  Default: 1.
-        per_page (Union[Unset, int]):  Default: 100.
-        watch (Union[Unset, bool]):  Default: False.
+        id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, PaginatedListUserPublic]
+        Union[Any, ErrorResponse]
     """
 
     return (
         await asyncio_detailed(
+            id=id,
             client=client,
-            query=query,
-            page=page,
-            per_page=per_page,
-            watch=watch,
         )
     ).parsed

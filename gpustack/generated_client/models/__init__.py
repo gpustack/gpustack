@@ -12,9 +12,12 @@ from .node_update import NodeUpdate
 from .node_update_labels import NodeUpdateLabels
 from .paginated_list_model_public import PaginatedListModelPublic
 from .paginated_list_node_public import PaginatedListNodePublic
+from .paginated_list_task_public import PaginatedListTaskPublic
 from .paginated_list_user_public import PaginatedListUserPublic
 from .pagination import Pagination
 from .source_enum import SourceEnum
+from .task_create import TaskCreate
+from .task_public import TaskPublic
 from .user_create import UserCreate
 from .user_public import UserPublic
 from .user_update import UserUpdate
@@ -32,9 +35,12 @@ __all__ = (
     "NodeUpdateLabels",
     "PaginatedListModelPublic",
     "PaginatedListNodePublic",
+    "PaginatedListTaskPublic",
     "PaginatedListUserPublic",
     "Pagination",
     "SourceEnum",
+    "TaskCreate",
+    "TaskPublic",
     "UserCreate",
     "UserPublic",
     "UserUpdate",
