@@ -4,7 +4,6 @@ import multiprocessing
 
 from gpustack.agent.agent import Agent
 from gpustack.agent.config import AgentConfig
-from gpustack.server.scheduler import Scheduler
 from gpustack.server.server import Server
 from gpustack.server.config import ServerConfig
 from gpustack.utils import get_first_non_loopback_ip

@@ -10,7 +10,6 @@ from sqlalchemy.orm.exc import FlushError
 
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
-from gpustack.logging import logger
 
 
 class ActiveRecordMixin:
@@ -247,7 +246,4 @@ class ActiveRecordMixin:
     @classmethod
     async def streaming(cls) -> AsyncGenerator[str, None]:
         async for event in cls.subscribe():
-            logger.debug(
-                json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
-            )
             yield json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"

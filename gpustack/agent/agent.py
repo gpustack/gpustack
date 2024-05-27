@@ -1,6 +1,5 @@
-import multiprocessing
-import socket
 import time
+import multiprocessing
 
 from gpustack.agent.config import AgentConfig
 from gpustack.agent.node_manager import NodeManager
@@ -12,7 +11,8 @@ from gpustack.generated_client.client import Client
 
 class Agent:
     def __init__(self, cfg: AgentConfig):
-        self._node_manager = NodeManager(server_url=cfg.server, node_ip=cfg.node_ip)
+        client = Client(base_url=cfg.server)
+        self._node_manager = NodeManager(node_ip=cfg.node_ip, client=client)
         self._task_manager = TaskManager(cfg.server)
 
     def start(self):

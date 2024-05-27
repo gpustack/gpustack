@@ -7,7 +7,6 @@ from gpustack.api.exceptions import (
 )
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.tasks import Task, TaskCreate, TaskPublic, TaskUpdate, TasksPublic
-from gpustack.server.bus import Event, event_bus
 
 router = APIRouter()
 
@@ -54,7 +53,7 @@ async def update_task(session: SessionDep, id: int, task_in: TaskUpdate):
         raise NotFoundException(message="Task not found")
 
     try:
-        task.update(session, task_in)
+        await task.update(session, task_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update task: {e}")
 
@@ -68,6 +67,6 @@ async def delete_task(session: SessionDep, id: int):
         raise NotFoundException(message="Task not found")
 
     try:
-        task.delete(session)
+        await task.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete task: {e}")

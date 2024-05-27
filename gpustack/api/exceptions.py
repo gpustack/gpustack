@@ -98,7 +98,7 @@ def register_handlers(app: FastAPI):
 
 def is_error_response(e):
     if hasattr(e, "code"):
-        code_value = getattr(e, "code")
+        code_value = e.code
         if isinstance(code_value, int) and code_value >= 400:
             return True
     return False
@@ -107,64 +107,56 @@ def is_error_response(e):
 
 
 def is_already_exists(e):
-    reason = getattr(e, "reason")
-    if reason == "AlreadyExists":
+    if e.reason == "AlreadyExists":
         return True
 
     return False
 
 
 def is_not_found(e):
-    reason = getattr(e, "reason")
-    if reason == "NotFound":
+    if e.reason == "NotFound":
         return True
 
     return False
 
 
 def is_unauthorized(e):
-    reason = getattr(e, "reason")
-    if reason == "Unauthorized":
+    if e.reason == "Unauthorized":
         return True
 
     return False
 
 
 def is_forbidden(e):
-    reason = getattr(e, "reason")
-    if reason == "Forbidden":
+    if e.reason == "Forbidden":
         return True
 
     return False
 
 
 def is_invalid(e):
-    reason = getattr(e, "reason")
-    if reason == "Invalid":
+    if e.reason == "Invalid":
         return True
 
     return False
 
 
 def is_bad_request(e):
-    reason = getattr(e, "reason")
-    if reason == "BadRequest":
+    if e.reason == "BadRequest":
         return True
 
     return False
 
 
 def is_internal_server_error(e):
-    reason = getattr(e, "reason")
-    if reason == "InternalServerError":
+    if e.reason == "InternalServerError":
         return True
 
     return False
 
 
 def is_service_unavailable(e):
-    reason = getattr(e, "reason")
-    if reason == "ServiceUnavailable":
+    if e.reason == "ServiceUnavailable":
         return True
 
     return False

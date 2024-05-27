@@ -46,8 +46,6 @@ class EventBus:
         self.subscribers: Dict[str, List[Subscriber]] = {}
 
     def subscribe(self, topic: str) -> Subscriber:
-        logger.debug(f"Subscribing to topic: {topic}")
-
         subscriber = Subscriber()
         if topic not in self.subscribers:
             self.subscribers[topic] = []

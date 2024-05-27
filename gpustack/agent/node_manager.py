@@ -9,11 +9,11 @@ from gpustack.schemas.nodes import Node, ResourceSummary
 
 
 class NodeManager:
-    def __init__(self, server_url: str, node_ip: str):
+    def __init__(self, node_ip: str, client: Client):
         self._registration_completed = False
         self._hostname = socket.gethostname()
         self._node_ip = node_ip
-        self._client = Client(base_url=server_url)
+        self._client = client
 
     def sync_node_status(self):
         """
