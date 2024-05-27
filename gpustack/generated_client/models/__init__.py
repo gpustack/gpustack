@@ -15,6 +15,9 @@ from .paginated_list_node_public import PaginatedListNodePublic
 from .paginated_list_task_public import PaginatedListTaskPublic
 from .paginated_list_user_public import PaginatedListUserPublic
 from .pagination import Pagination
+from .resource_summary import ResourceSummary
+from .resource_summary_allocatable import ResourceSummaryAllocatable
+from .resource_summary_capacity import ResourceSummaryCapacity
 from .source_enum import SourceEnum
 from .task_create import TaskCreate
 from .task_public import TaskPublic
@@ -39,6 +42,9 @@ __all__ = (
     "PaginatedListTaskPublic",
     "PaginatedListUserPublic",
     "Pagination",
+    "ResourceSummary",
+    "ResourceSummaryAllocatable",
+    "ResourceSummaryCapacity",
     "SourceEnum",
     "TaskCreate",
     "TaskPublic",

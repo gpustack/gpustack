@@ -9,6 +9,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.node_public_labels import NodePublicLabels
+    from ..models.resource_summary import ResourceSummary
 
 
 T = TypeVar("T", bound="NodePublic")
@@ -21,6 +22,7 @@ class NodePublic:
         name (str):
         hostname (str):
         address (str):
+        resources (Union['ResourceSummary', None]):
         id (int):
         created_at (datetime.datetime):
         updated_at (datetime.datetime):
@@ -31,6 +33,7 @@ class NodePublic:
     name: str
     hostname: str
     address: str
+    resources: Union["ResourceSummary", None]
     id: int
     created_at: datetime.datetime
     updated_at: datetime.datetime
@@ -39,11 +42,19 @@ class NodePublic:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.resource_summary import ResourceSummary
+
         name = self.name
 
         hostname = self.hostname
 
         address = self.address
+
+        resources: Union[Dict[str, Any], None]
+        if isinstance(self.resources, ResourceSummary):
+            resources = self.resources.to_dict()
+        else:
+            resources = self.resources
 
         id = self.id
 
@@ -68,6 +79,7 @@ class NodePublic:
                 "name": name,
                 "hostname": hostname,
                 "address": address,
+                "resources": resources,
                 "id": id,
                 "created_at": created_at,
                 "updated_at": updated_at,
@@ -83,6 +95,7 @@ class NodePublic:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.node_public_labels import NodePublicLabels
+        from ..models.resource_summary import ResourceSummary
 
         d = src_dict.copy()
         name = d.pop("name")
@@ -90,6 +103,21 @@ class NodePublic:
         hostname = d.pop("hostname")
 
         address = d.pop("address")
+
+        def _parse_resources(data: object) -> Union["ResourceSummary", None]:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                resources_type_0 = ResourceSummary.from_dict(data)
+
+                return resources_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["ResourceSummary", None], data)
+
+        resources = _parse_resources(d.pop("resources"))
 
         id = d.pop("id")
 
@@ -117,6 +145,7 @@ class NodePublic:
             name=name,
             hostname=hostname,
             address=address,
+            resources=resources,
             id=id,
             created_at=created_at,
             updated_at=updated_at,
