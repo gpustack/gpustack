@@ -35,3 +35,9 @@ build-backend = "poetry.core.masonry.api"
 gpustack = "gpustack.main:main"
 gen = "gpustack.codegen.generate_client:main"
 
+[tool.black]
+exclude = '''
+/(
+    generated_client
+)/
+'''
