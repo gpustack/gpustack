@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Dict
+from pydantic import field_validator
 from sqlmodel import Field, SQLModel, JSON, Column
 
 from gpustack.mixins import BaseModelMixin
@@ -16,8 +17,15 @@ class NodeBase(BaseModel, SQLModel):
     hostname: str
     address: str
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
-    # resources: ResourceSummary | None = Field(sa_column=Column(JSON))
+    resources: ResourceSummary | None = Field(sa_column=Column(JSON))
     state: str | None = None
+
+    # Workaround for https://github.com/tiangolo/sqlmodel/issues/63
+    # It generates a warning.
+    # TODO Find a better way.
+    @field_validator("resources")
+    def validate_resources(cls, val: ResourceSummary):
+        return val.model_dump()
 
 
 class Node(NodeBase, BaseModelMixin, table=True):
