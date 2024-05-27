@@ -1,9 +1,13 @@
+import logging
 from sqlmodel import Session
+
 from gpustack.schemas.nodes import Node
 from gpustack.schemas.tasks import Task
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
-from gpustack.logging import logger
+
+
+logger = logging.getLogger(__name__)
 
 
 class Scheduler:

@@ -1,12 +1,15 @@
 import time
 import multiprocessing
+import logging
 
 from gpustack.agent.config import AgentConfig
 from gpustack.agent.node_manager import NodeManager
 from gpustack.agent.task_manager import TaskManager
 from gpustack.utils import run_periodically_async
-from gpustack.logging import logger
 from gpustack.generated_client.client import Client
+
+
+logger = logging.getLogger(__name__)
 
 
 class Agent:

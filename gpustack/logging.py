@@ -1,17 +1,22 @@
 import logging
-import uvicorn
-import uvicorn.config
-
-logging_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-logging_level = logging.DEBUG
-
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter(logging_format))
-
-logger = logging.getLogger("gpustack")
-logger.setLevel(logging_level)
-logger.addHandler(handler)
 
 
-uvicorn_log_config = uvicorn.config.LOGGING_CONFIG
-uvicorn_log_config["formatters"]["default"]["fmt"] = logging_format
+def setup_logging():
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler()],
+    )
+
+    # Disable third-party loggers
+    third_party_logger_names = [
+        "httpcore.connection",
+        "httpx",
+        "httpcore.http11",
+        "asyncio",
+        "urllib3.connectionpool",
+    ]
+
+    for logger_name in third_party_logger_names:
+        logger = logging.getLogger(logger_name)
+        logger.disabled = True

@@ -7,8 +7,8 @@ from typing import List
 from fastapi import FastAPI
 from sqlmodel import Session
 import uvicorn
+import logging
 
-from gpustack.logging import uvicorn_log_config, logger
 from gpustack.routes.routes import api_router
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User, UserCreate
@@ -17,6 +17,8 @@ from gpustack.server.config import ServerConfig
 from gpustack.server.db import init_db, get_engine
 from gpustack.api import exceptions
 from gpustack.server.scheduler import Scheduler
+
+logger = logging.getLogger(__name__)
 
 
 class Server:
@@ -52,11 +54,15 @@ class Server:
         exceptions.register_handlers(app)
 
         config = uvicorn.Config(
-            app, host="0.0.0.0", port=80, log_config=uvicorn_log_config
+            app,
+            host="0.0.0.0",
+            port=80,
+            access_log=False,
+            log_level="error",
         )
+        logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
         await server.serve()
-        # uvicorn.run(app, host="0.0.0.0", port=80, log_config=uvicorn_log_config)
 
     def _prepare_data(self):
         self._setup_data_dir(self._config.data_dir)

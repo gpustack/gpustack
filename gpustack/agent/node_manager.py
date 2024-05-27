@@ -1,11 +1,15 @@
 import os
 import platform
 import socket
+import logging
+
 from gpustack.api.exceptions import is_already_exists, is_error_response
 from gpustack.generated_client.api.nodes import create_node_v1_nodes_post
 from gpustack.generated_client.client import Client
-from gpustack.logging import logger
 from gpustack.schemas.nodes import Node, ResourceSummary
+
+
+logger = logging.getLogger(__name__)
 
 
 class NodeManager:

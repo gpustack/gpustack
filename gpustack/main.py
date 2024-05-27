@@ -2,6 +2,7 @@ import argparse
 import signal
 import sys
 
+from gpustack import logging
 from gpustack.cmd.server import setup_server_cmd
 from gpustack.cmd.agent import setup_agent_cmd
 
@@ -12,6 +13,8 @@ def handle_signal(sig, frame):
 
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
+
+logging.setup_logging()
 
 
 def main():

@@ -3,8 +3,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 from enum import Enum
 
-from gpustack.logging import logger
-
 
 class EventType(Enum):
     CREATED = 1
@@ -53,7 +51,6 @@ class EventBus:
         return subscriber
 
     def unsubscribe(self, topic: str, subscriber: Subscriber):
-        logger.debug(f"Unsubscribing from topic: {topic}")
 
         if topic in self.subscribers:
             self.subscribers[topic].remove(subscriber)

@@ -1,6 +1,7 @@
 import importlib
 import json
 import requests
+import logging
 
 from multiprocessing.pool import Pool
 from gpustack.api.exceptions import is_error_response
@@ -11,7 +12,9 @@ from gpustack.generated_client.api.tasks import (
 from gpustack.generated_client.client import Client
 from gpustack.schemas.tasks import Task
 from gpustack.server.bus import Event, EventType
-from gpustack.logging import logger
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskManager:

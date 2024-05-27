@@ -2,13 +2,16 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi import HTTPException, Request
 import httpx
+import logging
 
 from gpustack.server.deps import SessionDep
-from gpustack.logging import logger
 from gpustack.utils import normalize_route_path
 from gpustack.schemas.models import Model
 
 router = APIRouter()
+
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/v1/chat/completions")
