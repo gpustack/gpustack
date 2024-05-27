@@ -13,6 +13,7 @@ class TaskBase(SQLModel):
     args: Optional[List] = Field(sa_column=Column(JSON), default_factory=list)
     node_id: Optional[int] = None
     pid: Optional[int] = None
+    state: str | None = None
 
 
 class Task(TaskBase, BaseModelMixin, table=True):

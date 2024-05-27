@@ -6,7 +6,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.server.deps import ListParamsDep, SessionDep
-from gpustack.schemas.tasks import Task, TaskCreate, TaskPublic, TasksPublic
+from gpustack.schemas.tasks import Task, TaskCreate, TaskPublic, TaskUpdate, TasksPublic
 from gpustack.server.bus import Event, event_bus
 
 router = APIRouter()
@@ -43,6 +43,20 @@ async def create_task(session: SessionDep, task_in: TaskCreate):
         task = await Task.create(session, task_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create task: {e}")
+
+    return task
+
+
+@router.put("/{id}", response_model=TaskPublic)
+async def update_task(session: SessionDep, id: int, task_in: TaskUpdate):
+    task = Task.one_by_id(session, id)
+    if not task:
+        raise NotFoundException(message="Task not found")
+
+    try:
+        task.update(session, task_in)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update task: {e}")
 
     return task
 
