@@ -22,6 +22,7 @@ class TaskPublic:
         args (Union[List[Any], None, Unset]):
         node_id (Union[None, Unset, int]):
         pid (Union[None, Unset, int]):
+        state (Union[None, Unset, str]):
     """
 
     name: str
@@ -32,6 +33,7 @@ class TaskPublic:
     args: Union[List[Any], None, Unset] = UNSET
     node_id: Union[None, Unset, int] = UNSET
     pid: Union[None, Unset, int] = UNSET
+    state: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -66,6 +68,12 @@ class TaskPublic:
         else:
             pid = self.pid
 
+        state: Union[None, Unset, str]
+        if isinstance(self.state, Unset):
+            state = UNSET
+        else:
+            state = self.state
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -83,6 +91,8 @@ class TaskPublic:
             field_dict["node_id"] = node_id
         if pid is not UNSET:
             field_dict["pid"] = pid
+        if state is not UNSET:
+            field_dict["state"] = state
 
         return field_dict
 
@@ -134,6 +144,15 @@ class TaskPublic:
 
         pid = _parse_pid(d.pop("pid", UNSET))
 
+        def _parse_state(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        state = _parse_state(d.pop("state", UNSET))
+
         task_public = cls(
             name=name,
             method_path=method_path,
@@ -143,6 +162,7 @@ class TaskPublic:
             args=args,
             node_id=node_id,
             pid=pid,
+            state=state,
         )
 
         task_public.additional_properties = d

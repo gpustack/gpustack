@@ -6,23 +6,38 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
+from ...models.task_public import TaskPublic
+from ...models.task_update import TaskUpdate
 from ...types import Response
 
 
-def _get_kwargs() -> Dict[str, Any]:
+def _get_kwargs(
+    id: int,
+    *,
+    body: TaskUpdate,
+) -> Dict[str, Any]:
+    headers: Dict[str, Any] = {}
+
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/tasks/dev",
+        "method": "put",
+        "url": f"/v1/tasks/{id}",
     }
 
+    _body = body.to_dict()
+
+    _kwargs["json"] = _body
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Any, ErrorResponse]]:
+) -> Optional[Union[ErrorResponse, TaskPublic]]:
     if response.status_code == HTTPStatus.OK:
-        response_200 = response.json()
+        response_200 = TaskPublic.from_dict(response.json())
+
         return response_200
     if response.status_code == HTTPStatus.NOT_FOUND:
         response_404 = ErrorResponse.from_dict(response.json())
@@ -64,7 +79,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Any, ErrorResponse]]:
+) -> Response[Union[ErrorResponse, TaskPublic]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -74,20 +89,29 @@ def _build_response(
 
 
 def sync_detailed(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[Any, ErrorResponse]]:
-    """Debug Tasks
+    body: TaskUpdate,
+) -> Response[Union[ErrorResponse, TaskPublic]]:
+    """Update Task
+
+    Args:
+        id (int):
+        body (TaskUpdate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Any, ErrorResponse]]
+        Response[Union[ErrorResponse, TaskPublic]]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        id=id,
+        body=body,
+    )
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -97,39 +121,56 @@ def sync_detailed(
 
 
 def sync(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[Any, ErrorResponse]]:
-    """Debug Tasks
+    body: TaskUpdate,
+) -> Optional[Union[ErrorResponse, TaskPublic]]:
+    """Update Task
+
+    Args:
+        id (int):
+        body (TaskUpdate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Any, ErrorResponse]
+        Union[ErrorResponse, TaskPublic]
     """
 
     return sync_detailed(
+        id=id,
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[Any, ErrorResponse]]:
-    """Debug Tasks
+    body: TaskUpdate,
+) -> Response[Union[ErrorResponse, TaskPublic]]:
+    """Update Task
+
+    Args:
+        id (int):
+        body (TaskUpdate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Any, ErrorResponse]]
+        Response[Union[ErrorResponse, TaskPublic]]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        id=id,
+        body=body,
+    )
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
@@ -137,21 +178,29 @@ async def asyncio_detailed(
 
 
 async def asyncio(
+    id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[Any, ErrorResponse]]:
-    """Debug Tasks
+    body: TaskUpdate,
+) -> Optional[Union[ErrorResponse, TaskPublic]]:
+    """Update Task
+
+    Args:
+        id (int):
+        body (TaskUpdate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Any, ErrorResponse]
+        Union[ErrorResponse, TaskPublic]
     """
 
     return (
         await asyncio_detailed(
+            id=id,
             client=client,
+            body=body,
         )
     ).parsed

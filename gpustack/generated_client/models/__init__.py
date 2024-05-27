@@ -18,6 +18,7 @@ from .pagination import Pagination
 from .source_enum import SourceEnum
 from .task_create import TaskCreate
 from .task_public import TaskPublic
+from .task_update import TaskUpdate
 from .user_create import UserCreate
 from .user_public import UserPublic
 from .user_update import UserUpdate
@@ -41,6 +42,7 @@ __all__ = (
     "SourceEnum",
     "TaskCreate",
     "TaskPublic",
+    "TaskUpdate",
     "UserCreate",
     "UserPublic",
     "UserUpdate",

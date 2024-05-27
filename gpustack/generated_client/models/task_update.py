@@ -5,11 +5,11 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="TaskCreate")
+T = TypeVar("T", bound="TaskUpdate")
 
 
 @_attrs_define
-class TaskCreate:
+class TaskUpdate:
     """
     Attributes:
         name (str):
@@ -130,7 +130,7 @@ class TaskCreate:
 
         state = _parse_state(d.pop("state", UNSET))
 
-        task_create = cls(
+        task_update = cls(
             name=name,
             method_path=method_path,
             args=args,
@@ -139,8 +139,8 @@ class TaskCreate:
             state=state,
         )
 
-        task_create.additional_properties = d
-        return task_create
+        task_update.additional_properties = d
+        return task_update
 
     @property
     def additional_keys(self) -> List[str]:
