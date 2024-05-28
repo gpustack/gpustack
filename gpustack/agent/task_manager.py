@@ -1,9 +1,11 @@
 import importlib
 import json
+import os
 import requests
 import logging
-
+from contextlib import redirect_stdout, redirect_stderr
 from multiprocessing.pool import Pool
+
 from gpustack.api.exceptions import is_error_response
 from gpustack.generated_client.api.tasks import (
     get_task_v1_tasks_id_get,
@@ -18,11 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 class TaskManager:
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, log_dir: str):
         self._server_url = server_url
         self._watch_url = f"{server_url}/v1/tasks?watch=true"
+        self._log_dir = f"{log_dir}/tasks"
         self._executing_tasks = set()
         self._client = Client(base_url=server_url)
+
+        os.makedirs(self._log_dir, exist_ok=True)
 
     def watch_tasks(self, pool: Pool):
         # TODO better client
@@ -59,6 +64,8 @@ class TaskManager:
             raise Exception(f"Failed to update task state to {state}: {result.message}")
 
     def _execute_task(self, task: Task):
+        log_file_path = f"{self._log_dir}/{task.id}.log"
+
         try:
             logger.debug(f"Executing task {task.id}")
             self._update_task_state(task.id, "Started")
@@ -66,7 +73,11 @@ class TaskManager:
             module_name, func_name = task.method_path.rsplit(".", 1)
             module = importlib.import_module(module_name)
             func = getattr(module, func_name)
-            func(*task.args)
+
+            # redirect stdout and stderr to the log file
+            with open(log_file_path, "a", buffering=1) as log_file:
+                with redirect_stdout(log_file), redirect_stderr(log_file):
+                    func(*task.args)
 
             self._update_task_state(task.id, "Completed")
         except Exception as e:

@@ -4,18 +4,17 @@ from multiprocessing import Process
 import os
 import secrets
 from typing import List
-from fastapi import FastAPI
 from sqlmodel import Session
 import uvicorn
 import logging
 
-from gpustack.routes.routes import api_router
+from gpustack.logging import setup_logging
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User, UserCreate
 from gpustack.security import get_password_hash
+from gpustack.server.app import app
 from gpustack.server.config import ServerConfig
 from gpustack.server.db import init_db, get_engine
-from gpustack.api import exceptions
 from gpustack.server.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
@@ -49,10 +48,6 @@ class Server:
         self._start_scheduler()
 
         # Start FastAPI server
-        app = FastAPI(title="GPUStack", response_model_exclude_unset=True)
-        app.include_router(api_router)
-        exceptions.register_handlers(app)
-
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
@@ -60,6 +55,9 @@ class Server:
             access_log=False,
             log_level="error",
         )
+
+        setup_logging()
+
         logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
         await server.serve()
