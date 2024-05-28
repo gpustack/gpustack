@@ -49,7 +49,7 @@ def start_server() -> subprocess.Popen | None:
     if port_in_use:
         return None
 
-    server_process = subprocess.Popen(["gpustack", "server"])
+    server_process = subprocess.Popen(["gpustack", "server", "--disable-agent"])
 
     time.sleep(3)
 
