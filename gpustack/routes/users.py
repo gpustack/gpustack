@@ -38,12 +38,12 @@ async def get_user(session: SessionDep, id: int):
 
 @router.post("", response_model=UserPublic)
 async def create_user(session: SessionDep, user_in: UserCreate):
-    user = User.model_validate(user_in)
-
     try:
-        user.save(session)
+        user = await User.create(session, user_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create user: {e}")
+
+    return user
 
 
 @router.put("/{id}", response_model=UserPublic)

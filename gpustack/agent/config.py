@@ -7,4 +7,4 @@ class AgentConfig:
     debug: bool = False
     node_ip: str | None = None
     server: str | None = None
-    log_dir: str = os.path.expanduser(f"~/.local/share/gpustack/log")
+    log_dir: str = os.path.expanduser("~/.local/share/gpustack/log")

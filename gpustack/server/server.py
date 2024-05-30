@@ -14,6 +14,7 @@ from gpustack.schemas.users import User, UserCreate
 from gpustack.security import get_password_hash
 from gpustack.server.app import app
 from gpustack.server.config import ServerConfig
+from gpustack.server.controller import ModelController
 from gpustack.server.db import init_db, get_engine
 from gpustack.server.scheduler import Scheduler
 
@@ -41,11 +42,10 @@ class Server:
     async def start(self):
         logger.info("Starting GPUStack server.")
 
-        self._start_sub_processes()
-
         self._prepare_data()
-
+        self._start_sub_processes()
         self._start_scheduler()
+        self._start_controllers()
 
         # Start FastAPI server
         config = uvicorn.Config(
@@ -78,6 +78,12 @@ class Server:
         asyncio.create_task(scheduler.start())
 
         logger.debug("Scheduler started.")
+
+    def _start_controllers(self):
+        controller = ModelController()
+        asyncio.create_task(controller.start())
+
+        logger.debug("Controller started.")
 
     def _start_sub_processes(self):
         for process in self._sub_processes:

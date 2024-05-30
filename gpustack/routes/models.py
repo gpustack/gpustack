@@ -41,14 +41,12 @@ async def get_model(session: SessionDep, id: int):
 
 @router.post("", response_model=ModelPublic)
 async def create_model(session: SessionDep, model_in: ModelCreate):
-    model = Model.model_validate(model_in)
-
-    existing = Model.one_by_field(session, "name", model.name)
+    existing = Model.one_by_field(session, "name", model_in.name)
     if existing:
-        raise AlreadyExistsException(message=f"Model f{model.name} already exists")
+        raise AlreadyExistsException(message=f"Model f{model_in.name} already exists")
 
     try:
-        model.save(session)
+        model = await Model.create(session, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 

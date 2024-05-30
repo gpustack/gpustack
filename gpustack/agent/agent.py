@@ -1,6 +1,5 @@
 import asyncio
 import os
-import multiprocessing
 import logging
 
 from fastapi import FastAPI, HTTPException
@@ -24,7 +23,9 @@ class Agent:
     def __init__(self, cfg: AgentConfig):
         client = Client(base_url=cfg.server)
         self._node_manager = NodeManager(node_ip=cfg.node_ip, client=client)
-        self._serve_manager = ServeManager(server_url=cfg.server, log_dir=cfg.log_dir)
+        self._serve_manager = ServeManager(
+            server_url=cfg.server, log_dir=cfg.log_dir, client=client
+        )
 
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
@@ -50,7 +51,7 @@ class Agent:
         await self._serve_apis()
 
     async def _serve_model_instances(self):
-        logger.info("Start watching model instances.")
+        logger.info("Start serving model instances.")
 
         while True:
             await self._do_serve_model_instances()
@@ -58,10 +59,8 @@ class Agent:
 
     async def _do_serve_model_instances(self):
         loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, self._serve_manager.watch_model_instances)
-        except Exception as e:
-            logger.error(f"Error serving model instances: {e}")
+        await loop.run_in_executor(None, self._serve_manager.watch_model_instances)
+        await loop.run_in_executor(None, self._serve_manager.monitor_processes)
 
     async def _serve_apis(self):
         """

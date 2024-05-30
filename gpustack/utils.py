@@ -1,3 +1,4 @@
+import random
 import shutil
 import socket
 import threading
@@ -73,3 +74,14 @@ def run_periodically_async(func: Callable[[], None], interval: float) -> None:
         args=(func, interval),
         daemon=True,
     ).start()
+
+
+def get_free_port(start=40000, end=41024) -> int:
+    while True:
+        port = random.randint(start, end)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("", port))
+                return port
+            except OSError:
+                continue

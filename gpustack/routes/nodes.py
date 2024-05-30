@@ -35,14 +35,12 @@ async def get_node(session: SessionDep, id: int):
 
 @router.post("", response_model=NodePublic)
 async def create_node(session: SessionDep, node_in: NodeCreate):
-    node = Node.model_validate(node_in)
-
-    existing = Node.one_by_field(session, "name", node.name)
+    existing = Node.one_by_field(session, "name", node_in.name)
     if existing:
-        raise AlreadyExistsException(message=f"Node f{node.name} already exists")
+        raise AlreadyExistsException(message=f"Node f{node_in.name} already exists")
 
     try:
-        node.save(session)
+        node = await Node.create(session, node_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create node: {e}")
 

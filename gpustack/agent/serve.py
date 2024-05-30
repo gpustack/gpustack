@@ -3,12 +3,10 @@ import time
 from typing import Final
 import uuid
 import json
-import time
 from datetime import datetime
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.requests import Request
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from starlette.responses import StreamingResponse
 
@@ -25,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 class InferenceServer:
+    def __init__(self):
+        print("InferenceServer initialized")
+
     async def __call__(self, request: Request):
+        print("handled a request in InferenceServer")
         return JSONResponse({"hello": "world"})
 
 

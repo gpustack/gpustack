@@ -59,6 +59,7 @@ class Scheduler:
             session, mi.id
         )  # load from the new session
         model_instance.node_id = node.id
+        model_instance.node_ip = node.address
         await model_instance.update(session, model_instance)
 
         logger.debug(f"Scheduled model instance {model_instance.id} to node {node.id}")

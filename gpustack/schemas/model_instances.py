@@ -9,6 +9,7 @@ from gpustack.mixins import BaseModelMixin
 class ModelInstanceBase(SQLModel):
     model_id: int
     node_id: Optional[int] = None
+    node_ip: Optional[str] = None
     pid: Optional[int] = None
     port: Optional[int] = None
     state: Optional[str] = None

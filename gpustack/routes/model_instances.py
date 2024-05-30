@@ -63,7 +63,10 @@ async def get_serving_logs(
     if not node:
         raise NotFoundException(message="Model instance's node not found")
 
-    model_instance_log_url = f"http://{node.address}:10050/serveLogs/{model_instance.id}?{log_options.url_encode()}"
+    model_instance_log_url = (
+        f"http://{node.address}:10050/serveLogs"
+        "/{model_instance.id}?{log_options.url_encode()}"
+    )
 
     client: httpx.AsyncClient = request.app.state.http_client
 
