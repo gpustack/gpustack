@@ -7,54 +7,41 @@ from dateutil.parser import isoparse
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="TaskPublic")
+T = TypeVar("T", bound="ModelInstancePublic")
 
 
 @_attrs_define
-class TaskPublic:
+class ModelInstancePublic:
     """
     Attributes:
-        name (str):
-        method_path (str):
+        model_id (int):
         id (int):
         created_at (datetime.datetime):
         updated_at (datetime.datetime):
-        args (Union[List[Any], None, Unset]):
         node_id (Union[None, Unset, int]):
         pid (Union[None, Unset, int]):
+        port (Union[None, Unset, int]):
         state (Union[None, Unset, str]):
     """
 
-    name: str
-    method_path: str
+    model_id: int
     id: int
     created_at: datetime.datetime
     updated_at: datetime.datetime
-    args: Union[List[Any], None, Unset] = UNSET
     node_id: Union[None, Unset, int] = UNSET
     pid: Union[None, Unset, int] = UNSET
+    port: Union[None, Unset, int] = UNSET
     state: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        name = self.name
-
-        method_path = self.method_path
+        model_id = self.model_id
 
         id = self.id
 
         created_at = self.created_at.isoformat()
 
         updated_at = self.updated_at.isoformat()
-
-        args: Union[List[Any], None, Unset]
-        if isinstance(self.args, Unset):
-            args = UNSET
-        elif isinstance(self.args, list):
-            args = self.args
-
-        else:
-            args = self.args
 
         node_id: Union[None, Unset, int]
         if isinstance(self.node_id, Unset):
@@ -68,6 +55,12 @@ class TaskPublic:
         else:
             pid = self.pid
 
+        port: Union[None, Unset, int]
+        if isinstance(self.port, Unset):
+            port = UNSET
+        else:
+            port = self.port
+
         state: Union[None, Unset, str]
         if isinstance(self.state, Unset):
             state = UNSET
@@ -78,19 +71,18 @@ class TaskPublic:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "name": name,
-                "method_path": method_path,
+                "model_id": model_id,
                 "id": id,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
         )
-        if args is not UNSET:
-            field_dict["args"] = args
         if node_id is not UNSET:
             field_dict["node_id"] = node_id
         if pid is not UNSET:
             field_dict["pid"] = pid
+        if port is not UNSET:
+            field_dict["port"] = port
         if state is not UNSET:
             field_dict["state"] = state
 
@@ -99,32 +91,13 @@ class TaskPublic:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
-        name = d.pop("name")
-
-        method_path = d.pop("method_path")
+        model_id = d.pop("model_id")
 
         id = d.pop("id")
 
         created_at = isoparse(d.pop("created_at"))
 
         updated_at = isoparse(d.pop("updated_at"))
-
-        def _parse_args(data: object) -> Union[List[Any], None, Unset]:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, list):
-                    raise TypeError()
-                args_type_0 = cast(List[Any], data)
-
-                return args_type_0
-            except:  # noqa: E722
-                pass
-            return cast(Union[List[Any], None, Unset], data)
-
-        args = _parse_args(d.pop("args", UNSET))
 
         def _parse_node_id(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -144,6 +117,15 @@ class TaskPublic:
 
         pid = _parse_pid(d.pop("pid", UNSET))
 
+        def _parse_port(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        port = _parse_port(d.pop("port", UNSET))
+
         def _parse_state(data: object) -> Union[None, Unset, str]:
             if data is None:
                 return data
@@ -153,20 +135,19 @@ class TaskPublic:
 
         state = _parse_state(d.pop("state", UNSET))
 
-        task_public = cls(
-            name=name,
-            method_path=method_path,
+        model_instance_public = cls(
+            model_id=model_id,
             id=id,
             created_at=created_at,
             updated_at=updated_at,
-            args=args,
             node_id=node_id,
             pid=pid,
+            port=port,
             state=state,
         )
 
-        task_public.additional_properties = d
-        return task_public
+        model_instance_public.additional_properties = d
+        return model_instance_public
 
     @property
     def additional_keys(self) -> List[str]:

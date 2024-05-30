@@ -25,7 +25,7 @@ def _get_kwargs(
 
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": f"/v1/tasks/{id}/logs",
+        "url": f"/v1/model_instances/{id}/logs",
         "params": params,
     }
 
@@ -94,7 +94,7 @@ def sync_detailed(
     tail: Union[Unset, int] = -1,
     follow: Union[Unset, bool] = False,
 ) -> Response[Union[Any, ErrorResponse]]:
-    """Get Task Logs
+    """Get Serving Logs
 
     Args:
         id (int):
@@ -129,7 +129,7 @@ def sync(
     tail: Union[Unset, int] = -1,
     follow: Union[Unset, bool] = False,
 ) -> Optional[Union[Any, ErrorResponse]]:
-    """Get Task Logs
+    """Get Serving Logs
 
     Args:
         id (int):
@@ -159,7 +159,7 @@ async def asyncio_detailed(
     tail: Union[Unset, int] = -1,
     follow: Union[Unset, bool] = False,
 ) -> Response[Union[Any, ErrorResponse]]:
-    """Get Task Logs
+    """Get Serving Logs
 
     Args:
         id (int):
@@ -192,7 +192,7 @@ async def asyncio(
     tail: Union[Unset, int] = -1,
     follow: Union[Unset, bool] = False,
 ) -> Optional[Union[Any, ErrorResponse]]:
-    """Get Task Logs
+    """Get Serving Logs
 
     Args:
         id (int):

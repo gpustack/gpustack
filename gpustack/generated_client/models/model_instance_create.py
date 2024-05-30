@@ -5,42 +5,29 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="TaskUpdate")
+T = TypeVar("T", bound="ModelInstanceCreate")
 
 
 @_attrs_define
-class TaskUpdate:
+class ModelInstanceCreate:
     """
     Attributes:
-        name (str):
-        method_path (str):
-        args (Union[List[Any], None, Unset]):
+        model_id (int):
         node_id (Union[None, Unset, int]):
         pid (Union[None, Unset, int]):
+        port (Union[None, Unset, int]):
         state (Union[None, Unset, str]):
     """
 
-    name: str
-    method_path: str
-    args: Union[List[Any], None, Unset] = UNSET
+    model_id: int
     node_id: Union[None, Unset, int] = UNSET
     pid: Union[None, Unset, int] = UNSET
+    port: Union[None, Unset, int] = UNSET
     state: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        name = self.name
-
-        method_path = self.method_path
-
-        args: Union[List[Any], None, Unset]
-        if isinstance(self.args, Unset):
-            args = UNSET
-        elif isinstance(self.args, list):
-            args = self.args
-
-        else:
-            args = self.args
+        model_id = self.model_id
 
         node_id: Union[None, Unset, int]
         if isinstance(self.node_id, Unset):
@@ -54,6 +41,12 @@ class TaskUpdate:
         else:
             pid = self.pid
 
+        port: Union[None, Unset, int]
+        if isinstance(self.port, Unset):
+            port = UNSET
+        else:
+            port = self.port
+
         state: Union[None, Unset, str]
         if isinstance(self.state, Unset):
             state = UNSET
@@ -64,16 +57,15 @@ class TaskUpdate:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "name": name,
-                "method_path": method_path,
+                "model_id": model_id,
             }
         )
-        if args is not UNSET:
-            field_dict["args"] = args
         if node_id is not UNSET:
             field_dict["node_id"] = node_id
         if pid is not UNSET:
             field_dict["pid"] = pid
+        if port is not UNSET:
+            field_dict["port"] = port
         if state is not UNSET:
             field_dict["state"] = state
 
@@ -82,26 +74,7 @@ class TaskUpdate:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
-        name = d.pop("name")
-
-        method_path = d.pop("method_path")
-
-        def _parse_args(data: object) -> Union[List[Any], None, Unset]:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, list):
-                    raise TypeError()
-                args_type_0 = cast(List[Any], data)
-
-                return args_type_0
-            except:  # noqa: E722
-                pass
-            return cast(Union[List[Any], None, Unset], data)
-
-        args = _parse_args(d.pop("args", UNSET))
+        model_id = d.pop("model_id")
 
         def _parse_node_id(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -121,6 +94,15 @@ class TaskUpdate:
 
         pid = _parse_pid(d.pop("pid", UNSET))
 
+        def _parse_port(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        port = _parse_port(d.pop("port", UNSET))
+
         def _parse_state(data: object) -> Union[None, Unset, str]:
             if data is None:
                 return data
@@ -130,17 +112,16 @@ class TaskUpdate:
 
         state = _parse_state(d.pop("state", UNSET))
 
-        task_update = cls(
-            name=name,
-            method_path=method_path,
-            args=args,
+        model_instance_create = cls(
+            model_id=model_id,
             node_id=node_id,
             pid=pid,
+            port=port,
             state=state,
         )
 
-        task_update.additional_properties = d
-        return task_update
+        model_instance_create.additional_properties = d
+        return model_instance_create
 
     @property
     def additional_keys(self) -> List[str]:

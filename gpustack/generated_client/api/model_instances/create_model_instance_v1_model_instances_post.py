@@ -6,20 +6,20 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.task_create import TaskCreate
-from ...models.task_public import TaskPublic
+from ...models.model_instance_create import ModelInstanceCreate
+from ...models.model_instance_public import ModelInstancePublic
 from ...types import Response
 
 
 def _get_kwargs(
     *,
-    body: TaskCreate,
+    body: ModelInstanceCreate,
 ) -> Dict[str, Any]:
     headers: Dict[str, Any] = {}
 
     _kwargs: Dict[str, Any] = {
         "method": "post",
-        "url": "/v1/tasks",
+        "url": "/v1/model_instances",
     }
 
     _body = body.to_dict()
@@ -33,9 +33,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, TaskPublic]]:
+) -> Optional[Union[ErrorResponse, ModelInstancePublic]]:
     if response.status_code == HTTPStatus.OK:
-        response_200 = TaskPublic.from_dict(response.json())
+        response_200 = ModelInstancePublic.from_dict(response.json())
 
         return response_200
     if response.status_code == HTTPStatus.NOT_FOUND:
@@ -78,7 +78,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, TaskPublic]]:
+) -> Response[Union[ErrorResponse, ModelInstancePublic]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -90,19 +90,19 @@ def _build_response(
 def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: TaskCreate,
-) -> Response[Union[ErrorResponse, TaskPublic]]:
-    """Create Task
+    body: ModelInstanceCreate,
+) -> Response[Union[ErrorResponse, ModelInstancePublic]]:
+    """Create Model Instance
 
     Args:
-        body (TaskCreate):
+        body (ModelInstanceCreate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, TaskPublic]]
+        Response[Union[ErrorResponse, ModelInstancePublic]]
     """
 
     kwargs = _get_kwargs(
@@ -119,19 +119,19 @@ def sync_detailed(
 def sync(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: TaskCreate,
-) -> Optional[Union[ErrorResponse, TaskPublic]]:
-    """Create Task
+    body: ModelInstanceCreate,
+) -> Optional[Union[ErrorResponse, ModelInstancePublic]]:
+    """Create Model Instance
 
     Args:
-        body (TaskCreate):
+        body (ModelInstanceCreate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, TaskPublic]
+        Union[ErrorResponse, ModelInstancePublic]
     """
 
     return sync_detailed(
@@ -143,19 +143,19 @@ def sync(
 async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: TaskCreate,
-) -> Response[Union[ErrorResponse, TaskPublic]]:
-    """Create Task
+    body: ModelInstanceCreate,
+) -> Response[Union[ErrorResponse, ModelInstancePublic]]:
+    """Create Model Instance
 
     Args:
-        body (TaskCreate):
+        body (ModelInstanceCreate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, TaskPublic]]
+        Response[Union[ErrorResponse, ModelInstancePublic]]
     """
 
     kwargs = _get_kwargs(
@@ -170,19 +170,19 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
-    body: TaskCreate,
-) -> Optional[Union[ErrorResponse, TaskPublic]]:
-    """Create Task
+    body: ModelInstanceCreate,
+) -> Optional[Union[ErrorResponse, ModelInstancePublic]]:
+    """Create Model Instance
 
     Args:
-        body (TaskCreate):
+        body (ModelInstanceCreate):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, TaskPublic]
+        Union[ErrorResponse, ModelInstancePublic]
     """
 
     return (

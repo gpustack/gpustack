@@ -4,22 +4,22 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
+    from ..models.model_instance_public import ModelInstancePublic
     from ..models.pagination import Pagination
-    from ..models.task_public import TaskPublic
 
 
-T = TypeVar("T", bound="PaginatedListTaskPublic")
+T = TypeVar("T", bound="PaginatedListModelInstancePublic")
 
 
 @_attrs_define
-class PaginatedListTaskPublic:
+class PaginatedListModelInstancePublic:
     """
     Attributes:
-        items (List['TaskPublic']):
+        items (List['ModelInstancePublic']):
         pagination (Pagination):
     """
 
-    items: List["TaskPublic"]
+    items: List["ModelInstancePublic"]
     pagination: "Pagination"
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -44,26 +44,26 @@ class PaginatedListTaskPublic:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.model_instance_public import ModelInstancePublic
         from ..models.pagination import Pagination
-        from ..models.task_public import TaskPublic
 
         d = src_dict.copy()
         items = []
         _items = d.pop("items")
         for items_item_data in _items:
-            items_item = TaskPublic.from_dict(items_item_data)
+            items_item = ModelInstancePublic.from_dict(items_item_data)
 
             items.append(items_item)
 
         pagination = Pagination.from_dict(d.pop("pagination"))
 
-        paginated_list_task_public = cls(
+        paginated_list_model_instance_public = cls(
             items=items,
             pagination=pagination,
         )
 
-        paginated_list_task_public.additional_properties = d
-        return paginated_list_task_public
+        paginated_list_model_instance_public.additional_properties = d
+        return paginated_list_model_instance_public
 
     @property
     def additional_keys(self) -> List[str]:

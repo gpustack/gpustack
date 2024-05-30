@@ -14,7 +14,7 @@ def _get_kwargs(
 ) -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
         "method": "delete",
-        "url": f"/v1/tasks/{id}",
+        "url": f"/v1/model_instances/{id}",
     }
 
     return _kwargs
@@ -80,7 +80,7 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Response[Union[Any, ErrorResponse]]:
-    """Delete Task
+    """Delete Model Instance
 
     Args:
         id (int):
@@ -109,7 +109,7 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Optional[Union[Any, ErrorResponse]]:
-    """Delete Task
+    """Delete Model Instance
 
     Args:
         id (int):
@@ -133,7 +133,7 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Response[Union[Any, ErrorResponse]]:
-    """Delete Task
+    """Delete Model Instance
 
     Args:
         id (int):
@@ -160,7 +160,7 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Optional[Union[Any, ErrorResponse]]:
-    """Delete Task
+    """Delete Model Instance
 
     Args:
         id (int):

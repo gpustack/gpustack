@@ -6,7 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.task_public import TaskPublic
+from ...models.model_instance_public import ModelInstancePublic
 from ...types import Response
 
 
@@ -15,7 +15,7 @@ def _get_kwargs(
 ) -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": f"/v1/tasks/{id}",
+        "url": f"/v1/model_instances/{id}",
     }
 
     return _kwargs
@@ -23,9 +23,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, TaskPublic]]:
+) -> Optional[Union[ErrorResponse, ModelInstancePublic]]:
     if response.status_code == HTTPStatus.OK:
-        response_200 = TaskPublic.from_dict(response.json())
+        response_200 = ModelInstancePublic.from_dict(response.json())
 
         return response_200
     if response.status_code == HTTPStatus.NOT_FOUND:
@@ -68,7 +68,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, TaskPublic]]:
+) -> Response[Union[ErrorResponse, ModelInstancePublic]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -81,8 +81,8 @@ def sync_detailed(
     id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, TaskPublic]]:
-    """Get Task
+) -> Response[Union[ErrorResponse, ModelInstancePublic]]:
+    """Get Model Instance
 
     Args:
         id (int):
@@ -92,7 +92,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, TaskPublic]]
+        Response[Union[ErrorResponse, ModelInstancePublic]]
     """
 
     kwargs = _get_kwargs(
@@ -110,8 +110,8 @@ def sync(
     id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, TaskPublic]]:
-    """Get Task
+) -> Optional[Union[ErrorResponse, ModelInstancePublic]]:
+    """Get Model Instance
 
     Args:
         id (int):
@@ -121,7 +121,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, TaskPublic]
+        Union[ErrorResponse, ModelInstancePublic]
     """
 
     return sync_detailed(
@@ -134,8 +134,8 @@ async def asyncio_detailed(
     id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, TaskPublic]]:
-    """Get Task
+) -> Response[Union[ErrorResponse, ModelInstancePublic]]:
+    """Get Model Instance
 
     Args:
         id (int):
@@ -145,7 +145,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, TaskPublic]]
+        Response[Union[ErrorResponse, ModelInstancePublic]]
     """
 
     kwargs = _get_kwargs(
@@ -161,8 +161,8 @@ async def asyncio(
     id: int,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, TaskPublic]]:
-    """Get Task
+) -> Optional[Union[ErrorResponse, ModelInstancePublic]]:
+    """Get Model Instance
 
     Args:
         id (int):
@@ -172,7 +172,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, TaskPublic]
+        Union[ErrorResponse, ModelInstancePublic]
     """
 
     return (
