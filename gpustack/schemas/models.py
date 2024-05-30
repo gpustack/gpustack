@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Optional
 from sqlmodel import Field, SQLModel
 
 from gpustack.schemas.common import PaginatedList
@@ -13,14 +14,14 @@ class SourceEnum(str, Enum):
 
 class ModelBase(SQLModel):
     name: str = Field(index=True, unique=True)
-    description: str | None = None
+    description: Optional[str] = None
     source: SourceEnum
-    huggingface_model_id: str | None = None
-    s3_address: str | None = None
+    huggingface_model_id: Optional[str] = None
+    s3_address: Optional[str] = None
 
 
 class Model(ModelBase, BaseModelMixin, table=True):
-    id: int | None = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class ModelCreate(ModelBase):

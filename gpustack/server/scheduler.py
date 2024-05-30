@@ -2,7 +2,7 @@ import logging
 from sqlmodel import Session
 
 from gpustack.schemas.nodes import Node
-from gpustack.schemas.tasks import Task
+from gpustack.schemas.model_instances import ModelInstance
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
 
@@ -19,33 +19,33 @@ class Scheduler:
 
         engine = get_engine()
         with Session(engine) as session:
-            tasks = Task.all(session)
+            model_instances = ModelInstance.all(session)
 
-        for task in tasks:
-            await self._do_schedule(task)
+        for mi in model_instances:
+            await self._do_schedule(mi)
 
-        async for event in Task.subscribe():
+        async for event in ModelInstance.subscribe():
             if event.type == EventType.DELETED:
                 continue
             await self._do_schedule(event.data)
 
-    async def _do_schedule(self, task: Task) -> bool:
+    async def _do_schedule(self, mi: ModelInstance) -> bool:
         try:
-            if self._should_schedule(task):
-                await self.schedule_naively(task)
+            if self._should_schedule(mi):
+                await self.schedule_naively(mi)
         except Exception as e:
-            logger.error(f"Failed to schedule task {task.id}: {e}")
+            logger.error(f"Failed to schedule model instance {mi.id}: {e}")
 
-    def _should_schedule(self, task: Task) -> bool:
+    def _should_schedule(self, mi: ModelInstance) -> bool:
         """
-        Check if the task should be scheduled.
+        Check if the model instance should be scheduled.
         """
 
-        return task.node_id is None
+        return mi.node_id is None
 
-    async def schedule_naively(self, task: Task):
+    async def schedule_naively(self, mi: ModelInstance):
         """
-        Schedule a task by picking any node.
+        Schedule a model instance by picking any node.
         """
 
         engine = get_engine()
@@ -55,8 +55,10 @@ class Scheduler:
         if not node:
             return
 
-        task = Task.one_by_id(session, task.id)  # load from the new session
-        task.node_id = node.id
-        await task.update(session, task)
+        model_instance = ModelInstance.one_by_id(
+            session, mi.id
+        )  # load from the new session
+        model_instance.node_id = node.id
+        await model_instance.update(session, model_instance)
 
-        logger.debug(f"Scheduled task {task.id} to node {node.id}")
+        logger.debug(f"Scheduled model instance {model_instance.id} to node {node.id}")

@@ -24,21 +24,6 @@ from gpustack.schemas.completion import (
 logger = logging.getLogger(__name__)
 
 
-def test():
-    for i in range(5):
-        print(f"test: {i}")
-        time.sleep(2)
-    print("test: task completed.")
-
-
-def infinite():
-    i = 0
-    while True:
-        print(f"test: {i}")
-        time.sleep(2)
-        i += 1
-
-
 class InferenceServer:
     async def __call__(self, request: Request):
         return JSONResponse({"hello": "world"})
@@ -65,7 +50,7 @@ def time_decorator(func):
     return wrapper
 
 
-class TorchInferenceService:
+class TorchInferenceServer:
 
     @time_decorator
     def __init__(self, model: Model):
