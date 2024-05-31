@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from sqlmodel import Session
 
@@ -6,28 +7,39 @@ from gpustack.schemas.model_instances import ModelInstance
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
 
-
 logger = logging.getLogger(__name__)
 
 
 class Scheduler:
+
+    def __init__(self):
+        self._engine = get_engine()
+        self._check_interval = 30
 
     async def start(self):
         """
         Start the scheduler.
         """
 
-        engine = get_engine()
-        with Session(engine) as session:
-            model_instances = ModelInstance.all(session)
+        asyncio.create_task(self.check_pending_instances())
 
-        for mi in model_instances:
-            await self._do_schedule(mi)
+        with Session(self._engine) as session:
+            async for event in ModelInstance.subscribe(session):
+                if event.type == EventType.DELETED:
+                    continue
+                await self._do_schedule(event.data)
 
-        async for event in ModelInstance.subscribe():
-            if event.type == EventType.DELETED:
-                continue
-            await self._do_schedule(event.data)
+    async def check_pending_instances(self):
+        """
+        Periodcally check pending instances and schedule them.
+        """
+
+        while True:
+            await asyncio.sleep(self._check_interval)
+            with Session(self._engine) as session:
+                instances = ModelInstance.all_by_field(session, "state", "PENDING")
+                for instance in instances:
+                    await self._do_schedule(instance)
 
     async def _do_schedule(self, mi: ModelInstance) -> bool:
         try:

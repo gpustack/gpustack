@@ -2,7 +2,7 @@ import logging
 from sqlmodel import Session
 from gpustack.schemas.model_instances import ModelInstance, ModelInstanceCreate
 from gpustack.schemas.models import Model
-from gpustack.server.bus import EventType
+from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
 
 
@@ -19,25 +19,31 @@ class ModelController:
         Start the controller.
         """
 
-        async for event in Model.subscribe():
-            if event.type == EventType.DELETED:
-                continue
-            await self._reconcile(event.data)
+        with Session(self._engine) as session:
+            async for event in Model.subscribe(session):
+                await self._reconcile(event)
 
-    async def _reconcile(self, model: Model):
+    async def _reconcile(self, event: Event):
         """
         Reconcile the model.
         """
+
+        model: Model = event.data
+        event_type: EventType = event.type
         try:
             with Session(self._engine) as session:
                 instances = ModelInstance.all_by_field(session, "model_id", model.id)
 
-            # TODO replicas
-            if len(instances) == 0:
-                instance = ModelInstanceCreate(
-                    model_id=model.id,
-                    state="PENDING",
-                )
-                await ModelInstance.create(session, instance)
+                if event_type == EventType.DELETED:
+                    for instance in instances:
+                        await instance.delete(session)
+                elif len(instances) == 0:  # TODO replicas
+                    instance = ModelInstanceCreate(
+                        model_id=model.id,
+                        state="PENDING",
+                    )
+                    await ModelInstance.create(session, instance)
+
+                    logger.debug(f"Created model instance for model {model.id}")
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.id}: {e}")

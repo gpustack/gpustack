@@ -233,7 +233,11 @@ class ActiveRecordMixin:
         await event_bus.publish(cls.__name__.lower(), Event(type=event_type, data=data))
 
     @classmethod
-    async def subscribe(cls) -> AsyncGenerator[Event, None]:
+    async def subscribe(cls, session: Session) -> AsyncGenerator[Event, None]:
+        items = cls.all(session)
+        for item in items:
+            yield Event(type=EventType.CREATED, data=item)
+
         subscriber = event_bus.subscribe(cls.__name__.lower())
 
         try:
@@ -244,6 +248,6 @@ class ActiveRecordMixin:
             event_bus.unsubscribe(cls.__name__.lower(), subscriber)
 
     @classmethod
-    async def streaming(cls) -> AsyncGenerator[str, None]:
-        async for event in cls.subscribe():
+    async def streaming(cls, session: Session) -> AsyncGenerator[str, None]:
+        async for event in cls.subscribe(session):
             yield json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"

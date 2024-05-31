@@ -28,7 +28,7 @@ async def get_model_instances(session: SessionDep, params: ListParamsDep):
 
     if params.watch:
         return StreamingResponse(
-            ModelInstance.streaming(), media_type="text/event-stream"
+            ModelInstance.streaming(session=session), media_type="text/event-stream"
         )
 
     return ModelInstance.paginated_by_query(

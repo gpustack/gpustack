@@ -102,6 +102,7 @@ class ServeManager:
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance, args=(port, log_file_path)
             )
+            process.daemon = False
             process.start()
             self._serving_model_instances[mi.id] = process
 
@@ -123,7 +124,7 @@ class ServeManager:
                         Route("/", InferenceServer().__call__),
                     ],
                 )
-                uvicorn.run(app, port=port)
+                uvicorn.run(app, host="0.0.0.0", port=port)
 
     def _update_model_instance(self, id: str, **kwargs):
         result = get_model_instance_v1_model_instances_id_get.sync(
