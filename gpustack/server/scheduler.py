@@ -3,7 +3,7 @@ import logging
 from sqlmodel import Session
 
 from gpustack.schemas.nodes import Node
-from gpustack.schemas.model_instances import ModelInstance
+from gpustack.schemas.models import ModelInstance
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
 
@@ -37,7 +37,7 @@ class Scheduler:
         while True:
             await asyncio.sleep(self._check_interval)
             with Session(self._engine) as session:
-                instances = ModelInstance.all_by_field(session, "state", "PENDING")
+                instances = ModelInstance.all_by_field(session, "state", "Pending")
                 for instance in instances:
                     await self._do_schedule(instance)
 

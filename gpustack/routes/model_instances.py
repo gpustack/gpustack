@@ -9,7 +9,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.nodes import Node
 from gpustack.server.deps import ListParamsDep, SessionDep
-from gpustack.schemas.model_instances import (
+from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceCreate,
     ModelInstancePublic,

@@ -1,7 +1,6 @@
 import logging
 from sqlmodel import Session
-from gpustack.schemas.model_instances import ModelInstance, ModelInstanceCreate
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import Model, ModelInstance, ModelInstanceCreate
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
 
@@ -40,7 +39,10 @@ class ModelController:
                 elif len(instances) == 0:  # TODO replicas
                     instance = ModelInstanceCreate(
                         model_id=model.id,
-                        state="PENDING",
+                        source=model.source,
+                        huggingface_model_id=model.huggingface_model_id,
+                        s3_address=model.s3_address,
+                        state="Pending",
                     )
                     await ModelInstance.create(session, instance)
 

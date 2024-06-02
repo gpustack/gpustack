@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from starlette.responses import StreamingResponse
 
-from gpustack.schemas.models import Model
+from gpustack.schemas.models import ModelInstance
 from gpustack.schemas.completion import (
     ChatCompletionChunk,
     ChatCompletionResponse,
@@ -55,13 +55,13 @@ def time_decorator(func):
 class TorchInferenceServer:
 
     @time_decorator
-    def __init__(self, model: Model):
+    def __init__(self, model: ModelInstance):
         if model.source != "huggingface":
             raise ValueError("Only huggingface models are supported for now.")
 
-        logger.info(f"Loading model: {model.name}")
+        logger.info(f"Loading model: {model.huggingface_model_id}")
 
-        self.model_name = model.name
+        self.model_name = model.huggingface_model_id
         self.model_id = model.huggingface_model_id
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -156,4 +156,4 @@ class TorchInferenceServer:
                 )
             ],
         )
-        return response
+        return JSONResponse(response.model_dump())

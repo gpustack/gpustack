@@ -8,8 +8,7 @@ from gpustack.cmd.agent import setup_agent_cmd
 
 
 def handle_signal(sig, frame):
-    pass
-    # sys.exit(0)
+    sys.exit(0)
 
 
 signal.signal(signal.SIGINT, handle_signal)

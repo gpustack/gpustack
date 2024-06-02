@@ -9,8 +9,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
-from gpustack.schemas.models import Model
-from gpustack.schemas.model_instances import ModelInstance
+from gpustack.schemas.models import Model, ModelInstance
 from gpustack.server.deps import SessionDep
 
 router = APIRouter()

@@ -15,7 +15,7 @@ from starlette.routing import Route
 
 
 from gpustack import utils
-from gpustack.agent.serve import InferenceServer
+from gpustack.agent.serve import TorchInferenceServer
 from gpustack.api.exceptions import is_error_response
 from gpustack.generated_client.api.model_instances import (
     get_model_instance_v1_model_instances_id_get,
@@ -23,7 +23,7 @@ from gpustack.generated_client.api.model_instances import (
 )
 from gpustack.generated_client.api.nodes import get_nodes_v1_nodes_get
 from gpustack.generated_client.client import Client
-from gpustack.schemas.model_instances import ModelInstance
+from gpustack.schemas.models import ModelInstance
 from gpustack.server.bus import Event, EventType
 
 
@@ -85,6 +85,9 @@ class ServeManager:
             # Ignore model instances that are not assigned to this node.
             return
 
+        if mi.state == "Failed":
+            return
+
         if (
             event.type in {EventType.CREATED, EventType.UPDATED}
         ) and not self._serving_model_instances.get(mi.id):
@@ -95,14 +98,15 @@ class ServeManager:
     def _start_serve_process(self, mi: ModelInstance):
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
 
-        port = utils.get_free_port()
-
         try:
+            port = utils.get_free_port()
+            mi.port = port
+
             logger.info(f"Starting serving model instance {mi.id} on port {port}")
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,
-                args=(mi.id, port, log_file_path),
+                args=(mi, log_file_path),
             )
             process.daemon = False
             process.start()
@@ -117,18 +121,18 @@ class ServeManager:
             logger.error(f"Failed to serve model instance: {e}")
 
     @staticmethod
-    def serve_model_instance(id: int, port: int, log_file_path: str):
-        setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{id}")
+    def serve_model_instance(mi: ModelInstance, log_file_path: str):
+        setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
 
         with open(log_file_path, "a", buffering=1) as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
                 app = Starlette(
                     debug=True,
                     routes=[
-                        Route("/", InferenceServer().__call__),
+                        Route("/", TorchInferenceServer(mi).__call__, methods=["POST"]),
                     ],
                 )
-                uvicorn.run(app, host="0.0.0.0", port=port)
+                uvicorn.run(app, host="0.0.0.0", port=mi.port)
 
     def _update_model_instance(self, id: str, **kwargs):
         result = get_model_instance_v1_model_instances_id_get.sync(
