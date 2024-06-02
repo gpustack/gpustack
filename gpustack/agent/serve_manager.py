@@ -1,5 +1,6 @@
 import json
 import multiprocessing
+import setproctitle
 import os
 import signal
 import socket
@@ -100,7 +101,8 @@ class ServeManager:
             logger.info(f"Starting serving model instance {mi.id} on port {port}")
 
             process = multiprocessing.Process(
-                target=ServeManager.serve_model_instance, args=(port, log_file_path)
+                target=ServeManager.serve_model_instance,
+                args=(mi.id, port, log_file_path),
             )
             process.daemon = False
             process.start()
@@ -115,7 +117,9 @@ class ServeManager:
             logger.error(f"Failed to serve model instance: {e}")
 
     @staticmethod
-    def serve_model_instance(port: int, log_file_path: str):
+    def serve_model_instance(id: int, port: int, log_file_path: str):
+        setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{id}")
+
         with open(log_file_path, "a", buffering=1) as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
                 app = Starlette(

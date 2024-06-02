@@ -4,6 +4,7 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+import setproctitle
 import uvicorn
 
 from gpustack.agent.config import AgentConfig
@@ -31,7 +32,10 @@ class Agent:
         self._address = "0.0.0.0"
         self._port = 10050
 
-    def start(self):
+    def start(self, is_multiprocessing=False):
+        if is_multiprocessing:
+            setproctitle.setproctitle("gpustack_agent")
+
         asyncio.run(self.start_async())
 
     async def start_async(self):

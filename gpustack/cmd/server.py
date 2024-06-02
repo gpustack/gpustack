@@ -66,7 +66,7 @@ def run_server(args):
             debug=server_cfg.debug,
         )
         agent = Agent(agent_cfg)
-        agent_process = multiprocessing.Process(target=agent.start)
+        agent_process = multiprocessing.Process(target=agent.start, args=(True,))
         sub_processes = [agent_process]
 
     server = Server(config=server_cfg, sub_processes=sub_processes)
