@@ -1,10 +1,10 @@
 from datetime import datetime
 from typing import Dict
-from pydantic import field_validator
+from pydantic import field_validator, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
 
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList, BaseModel
+from gpustack.schemas.common import PaginatedList
 
 
 class ResourceSummary(BaseModel):
@@ -12,7 +12,7 @@ class ResourceSummary(BaseModel):
     allocatable: Dict[str, float] = {}
 
 
-class NodeBase(BaseModel, SQLModel):
+class NodeBase(SQLModel):
     name: str = Field(index=True, unique=True)
     hostname: str
     address: str

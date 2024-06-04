@@ -1,4 +1,3 @@
-import json
 import multiprocessing
 import setproctitle
 import os
@@ -6,7 +5,6 @@ import signal
 import socket
 import time
 from typing import Dict
-import requests
 import logging
 import uvicorn
 from contextlib import redirect_stdout, redirect_stderr
@@ -16,14 +14,8 @@ from starlette.routing import Route
 
 from gpustack import utils
 from gpustack.agent.serve import TorchInferenceServer
-from gpustack.api.exceptions import is_error_response
-from gpustack.generated_client.api.model_instances import (
-    get_model_instance_v1_model_instances_id_get,
-    update_model_instance_v1_model_instances_id_put,
-)
-from gpustack.generated_client.api.nodes import get_nodes_v1_nodes_get
-from gpustack.generated_client.client import Client
-from gpustack.schemas.models import ModelInstance
+from gpustack.client import ClientSet
+from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate
 from gpustack.server.bus import Event, EventType
 
 
@@ -31,30 +23,26 @@ logger = logging.getLogger(__name__)
 
 
 class ServeManager:
-    def __init__(self, server_url: str, log_dir: str, client: Client):
+    def __init__(self, server_url: str, log_dir: str, clientset: ClientSet):
         self._hostname = socket.gethostname()
         self._server_url = server_url
-        self._watch_url = f"{server_url}/v1/model_instances?watch=true"
         self._serve_log_dir = f"{log_dir}/serve"
         self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
-        self._client = client
+        self._clientset = clientset
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
     def _get_current_node_id(self):
         for _ in range(3):
             try:
-                nodes = get_nodes_v1_nodes_get.sync(client=self._client)
+                nodes = self._clientset.nodes.list()
             except Exception as e:
                 logger.debug(f"Failed to get nodes: {e}")
 
-            if is_error_response(nodes):
-                continue
-            else:
-                for node in nodes.items:
-                    if node.hostname == self._hostname:
-                        self._node_id = node.id
-                        break
+            for node in nodes.items:
+                if node.hostname == self._hostname:
+                    self._node_id = node.id
+                    break
             time.sleep(1)
 
         if not hasattr(self, "_node_id"):
@@ -64,19 +52,14 @@ class ServeManager:
         if not hasattr(self, "_node_id"):
             self._get_current_node_id()
 
-        # TODO better client
-
-        logger.debug("Start watching model instances.")
-        with requests.get(self._watch_url, stream=True) as response:
-            for line in response.iter_lines():
-                if line:
-                    try:
-                        event = Event.from_json(json.loads(line.decode("utf-8")))
-                        self._handle_model_instance_event(event)
-                    except json.JSONDecodeError as e:
-                        print(f"Error decoding JSON: {e}")
-                    except Exception as e:
-                        print(f"Error processing instance change: {e}")
+        try:
+            self._clientset.model_instances.watch(
+                callback=self._handle_model_instance_event
+            )
+        except Exception as e:
+            logger.error(f"Failed to watch model instances: {e}")
+        finally:
+            logger.info("Stopped watching model instances.")
 
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance(**event.data)
@@ -135,20 +118,13 @@ class ServeManager:
                 uvicorn.run(app, host="0.0.0.0", port=mi.port)
 
     def _update_model_instance(self, id: str, **kwargs):
-        result = get_model_instance_v1_model_instances_id_get.sync(
-            client=self._client, id=id
-        )
-        if is_error_response(result):
-            raise Exception(f"Failed to get model instance: {result.message}")
+        mi_public = self._clientset.model_instances.get(id=id)
 
+        mi = ModelInstanceUpdate(**mi_public.model_dump())
         for key, value in kwargs.items():
-            setattr(result, key, value)
+            setattr(mi, key, value)
 
-        result = update_model_instance_v1_model_instances_id_put.sync(
-            client=self._client, id=id, body=result
-        )
-        if is_error_response(result):
-            raise Exception(f"Failed to update model instance: {result.message}")
+        self._clientset.model_instances.update(id=id, model_update=mi)
 
     def _stop_model_instance(self, id: str):
         if id not in self._serving_model_instances:

@@ -3,9 +3,10 @@ import platform
 import socket
 import logging
 
-from gpustack.api.exceptions import is_already_exists, is_error_response
-from gpustack.generated_client.api.nodes import create_node_v1_nodes_post
-from gpustack.generated_client.client import Client
+from gpustack.api.exceptions import (
+    AlreadyExistsException,
+)
+from gpustack.client import ClientSet
 from gpustack.schemas.nodes import Node, ResourceSummary
 
 
@@ -13,11 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 class NodeManager:
-    def __init__(self, node_ip: str, client: Client):
+    def __init__(self, node_ip: str, clientset: ClientSet):
         self._registration_completed = False
         self._hostname = socket.gethostname()
         self._node_ip = node_ip
-        self._client = client
+        self._clientset = clientset
 
     def sync_node_status(self):
         """
@@ -47,18 +48,16 @@ class NodeManager:
             f"Registering node: {node.name}",
         )
 
-        result = create_node_v1_nodes_post.sync(client=self._client, body=node)
-
-        if not is_error_response(result):
-            logger.info(
-                f"Node {node.name} registered.",
-            )
+        try:
+            self._clientset.nodes.create(node)
+        except AlreadyExistsException:
+            logger.info(f"Node {node.name} already exists, skip registration.")
+            return
+        except Exception as e:
+            logger.error(f"Failed to register node: {e}")
             return
 
-        if is_already_exists(result):
-            logger.info(f"Node {node.name} already exists, skip registration.")
-        else:
-            logger.error(f"Failed to register node: {result.message}")
+        logger.info(f"Node {node.name} registered.")
 
     def _initialize_node(self):
         node = Node(

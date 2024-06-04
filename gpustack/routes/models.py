@@ -82,7 +82,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
         raise NotFoundException(message="Model not found")
 
     try:
-        model.update(session, model_in)
+        await model.update(session, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update model: {e}")
 
@@ -96,6 +96,6 @@ async def delete_model(session: SessionDep, id: int):
         raise NotFoundException(message="Model not found")
 
     try:
-        model.delete(session)
+        await model.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")

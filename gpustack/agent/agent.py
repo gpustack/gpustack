@@ -11,9 +11,9 @@ from gpustack.agent.config import AgentConfig
 from gpustack.agent.logs import LogOptionsDep
 from gpustack.agent.node_manager import NodeManager
 from gpustack.agent.serve_manager import ServeManager
+from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils import run_periodically_async
-from gpustack.generated_client.client import Client
 from gpustack.agent.logs import log_generator
 
 
@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 class Agent:
     def __init__(self, cfg: AgentConfig):
-        client = Client(base_url=cfg.server)
-        self._node_manager = NodeManager(node_ip=cfg.node_ip, client=client)
+        clientset = ClientSet(base_url=cfg.server)
+        self._node_manager = NodeManager(node_ip=cfg.node_ip, clientset=clientset)
         self._serve_manager = ServeManager(
-            server_url=cfg.server, log_dir=cfg.log_dir, client=client
+            server_url=cfg.server, log_dir=cfg.log_dir, clientset=clientset
         )
 
         self._log_dir = cfg.log_dir

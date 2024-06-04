@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+import httpx
 from pydantic import BaseModel
 
 
@@ -52,6 +53,42 @@ ServiceUnavailableException = http_exception_factory(
 )
 
 
+def raise_if_response_error(response: httpx.Response):
+    if response.status_code < status.HTTP_400_BAD_REQUEST:
+        return
+
+    error = ErrorResponse.model_validate(response.json())
+
+    if response.status_code == status.HTTP_404_NOT_FOUND:
+        raise NotFoundException(error.message)
+
+    if (
+        response.status_code == status.HTTP_409_CONFLICT
+        and error.reason == "AlreadyExists"
+    ):
+        raise AlreadyExistsException(error.message)
+
+    if response.status_code == status.HTTP_401_UNAUTHORIZED:
+        raise UnauthorizedException(error.message)
+
+    if response.status_code == status.HTTP_403_FORBIDDEN:
+        raise ForbiddenException(error.message)
+
+    if response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+        raise InvalidException(error.message)
+
+    if response.status_code == status.HTTP_400_BAD_REQUEST:
+        raise BadRequestException(error.message)
+
+    if response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+        raise InternalServerErrorException(error.message)
+
+    if response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        raise ServiceUnavailableException(error.message)
+
+    raise HTTPException(error.code, error.reason, error.message)
+
+
 class ErrorResponse(BaseModel):
     code: int
     reason: str
@@ -94,69 +131,3 @@ def register_handlers(app: FastAPI):
                 message=message,
             ).model_dump(),
         )
-
-
-def is_error_response(e):
-    if hasattr(e, "code"):
-        code_value = e.code
-        if isinstance(code_value, int) and code_value >= 400:
-            return True
-    return False
-
-    # TODO unify api and gen_client schemas so that we can check by isinstance(e, ErrorResponse)
-
-
-def is_already_exists(e):
-    if e.reason == "AlreadyExists":
-        return True
-
-    return False
-
-
-def is_not_found(e):
-    if e.reason == "NotFound":
-        return True
-
-    return False
-
-
-def is_unauthorized(e):
-    if e.reason == "Unauthorized":
-        return True
-
-    return False
-
-
-def is_forbidden(e):
-    if e.reason == "Forbidden":
-        return True
-
-    return False
-
-
-def is_invalid(e):
-    if e.reason == "Invalid":
-        return True
-
-    return False
-
-
-def is_bad_request(e):
-    if e.reason == "BadRequest":
-        return True
-
-    return False
-
-
-def is_internal_server_error(e):
-    if e.reason == "InternalServerError":
-        return True
-
-    return False
-
-
-def is_service_unavailable(e):
-    if e.reason == "ServiceUnavailable":
-        return True
-
-    return False

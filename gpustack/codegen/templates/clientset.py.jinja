@@ -1,0 +1,13 @@
+from .generated_http_client import HTTPClient
+
+{% for class_name in class_names %}
+from .generated_{{ class_name | to_snake_case }}_client import {{ class_name }}Client
+{% endfor %}
+
+class ClientSet:
+
+    def __init__(self, base_url: str):
+        http_client = HTTPClient(base_url=base_url)
+{% for class_name in class_names %}
+        self.{{ class_name | to_underscore_plural }} = {{ class_name }}Client(http_client)
+{% endfor %}

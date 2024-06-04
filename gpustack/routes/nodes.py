@@ -54,7 +54,7 @@ async def update_node(session: SessionDep, id: int, node_in: NodeUpdate):
         raise NotFoundException(message="Node not found")
 
     try:
-        node.update(session, node_in)
+        await node.update(session, node_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update node: {e}")
 
@@ -68,6 +68,6 @@ async def delete_node(session: SessionDep, id: int):
         raise NotFoundException(message="Node not found")
 
     try:
-        node.delete(session)
+        await node.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete node: {e}")

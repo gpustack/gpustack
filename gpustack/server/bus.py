@@ -16,10 +16,9 @@ class Event:
     type: EventType
     data: Any
 
-    @staticmethod
-    def from_json(data: Dict) -> "Event":
-        data["type"] = EventType(data["type"])
-        return Event(**data)
+    def __post_init__(self):
+        if isinstance(self.type, int):
+            self.type = EventType(self.type)
 
 
 def event_decoder(obj):
