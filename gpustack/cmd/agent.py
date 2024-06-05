@@ -17,6 +17,12 @@ def setup_agent_cmd(subparsers):
         help="Enable debug mode.",
         default=True,
     )
+    group.add_argument(
+        "--metrics-port",
+        type=int,
+        help="Port to expose metrics on, -1 to disable. Default is 10051.",
+        default=10051,
+    )
     group = parser_agent.add_argument_group("Cluster settings")
     group.add_argument(
         "--server",
@@ -53,6 +59,10 @@ def to_agent_config(args) -> AgentConfig:
 
     if args.server:
         cfg.server = args.server
+
+    if args.metrics_port != -1:
+        cfg.metric_enabled = True
+        cfg.metrics_port = args.metrics_port
     else:
         raise ValueError("Server address is required.")
 

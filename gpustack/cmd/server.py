@@ -32,6 +32,12 @@ def setup_server_cmd(subparsers: argparse._SubParsersAction):
         help="Serve default models on bootstrap.",
         default=True,
     )
+    group.add_argument(
+        "--metrics-port",
+        type=int,
+        help="Port to expose metrics on, works when agent is enabled value isn't -1.",
+        default=10051,
+    )
 
     group = parser_server.add_argument_group("Node settings")
     group.add_argument(
@@ -64,6 +70,8 @@ def run_server(args):
             server="http://127.0.0.1",
             node_ip=server_cfg.node_ip,
             debug=server_cfg.debug,
+            metric_enabled=server_cfg.metric_enabled,
+            metrics_port=server_cfg.metrics_port,
         )
         agent = Agent(agent_cfg)
         agent_process = multiprocessing.Process(target=agent.start, args=(True,))
@@ -84,6 +92,9 @@ def to_server_config(args) -> ServerConfig:
 
     if args.disable_agent:
         cfg.disable_agent = args.disable_agent
+    else:
+        cfg.metric_enabled = args.metrics_port != -1
+        cfg.metrics_port = args.metrics_port
 
     if args.node_ip:
         cfg.node_ip = args.node_ip
