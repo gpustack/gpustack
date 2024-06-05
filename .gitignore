@@ -16,6 +16,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!hack/lib/
 lib64/
 parts/
 sdist/
@@ -145,3 +146,5 @@ __pycache__/
 # profile data
 .prof
 
+# vscode
+.vscode
