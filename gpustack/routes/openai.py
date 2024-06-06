@@ -41,26 +41,33 @@ async def chat_completion(session: SessionDep, request: Request):
     url = f"http://{instance.node_ip}:{instance.port}"
 
     logger.debug(f"proxying to {url}")
-    async with httpx.AsyncClient() as client:
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() != "content-length" and key.lower() != "host"
-        }
 
-        timeout = 120
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() != "content-length" and key.lower() != "host"
+    }
 
-        try:
-            if stream:
-                resp = await client.stream(
-                    method=request.method,
-                    url=url,
-                    headers=headers,
-                    json=body,
-                    timeout=timeout,
-                )
-                return StreamingResponse(resp.aiter_raw(), headers=dict(resp.headers))
-            else:
+    timeout = 120
+
+    try:
+        if stream:
+
+            async def stream():
+                async with httpx.AsyncClient() as client:
+                    async with client.stream(
+                        method=request.method,
+                        url=url,
+                        headers=headers,
+                        json=body,
+                        timeout=timeout,
+                    ) as resp:
+                        async for chunk in resp.aiter_text():
+                            yield chunk
+
+            return StreamingResponse(stream())
+        else:
+            async with httpx.AsyncClient() as client:
                 resp = await client.request(
                     method=request.method,
                     url=url,
@@ -69,7 +76,5 @@ async def chat_completion(session: SessionDep, request: Request):
                     timeout=timeout,
                 )
                 return Response(content=resp.content, headers=dict(resp.headers))
-        except Exception as e:
-            raise ServiceUnavailableException(
-                message=f"An unexpected error occurred: {e}"
-            )
+    except Exception as e:
+        raise ServiceUnavailableException(message=f"An unexpected error occurred: {e}")

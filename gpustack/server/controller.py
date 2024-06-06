@@ -39,8 +39,10 @@ class ModelController:
                 elif len(instances) == 0:  # TODO replicas
                     instance = ModelInstanceCreate(
                         model_id=model.id,
+                        model_name=model.name,
                         source=model.source,
-                        huggingface_model_id=model.huggingface_model_id,
+                        huggingface_repo_id=model.huggingface_repo_id,
+                        huggingface_filename=model.huggingface_filename,
                         s3_address=model.s3_address,
                         state="Pending",
                     )

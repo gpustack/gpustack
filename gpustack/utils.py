@@ -3,6 +3,7 @@ import shutil
 import socket
 import threading
 import time
+import netifaces
 from typing import Callable
 
 stop_event = threading.Event()
@@ -37,17 +38,17 @@ def get_first_non_loopback_ip():
     Get the first non-loopback IP address of the machine.
     """
 
-    ip_addresses = socket.getaddrinfo(socket.gethostname(), None)
+    for interface in netifaces.interfaces():
+        addresses = netifaces.ifaddresses(interface)
+        if netifaces.AF_INET in addresses:
+            for link in addresses[netifaces.AF_INET]:
+                ip_address = link["addr"]
+                if not ip_address.startswith("127.") and not ip_address.startswith(
+                    "169.254."
+                ):
+                    return ip_address
 
-    for ip in ip_addresses:
-        if ip[0] == socket.AF_INET:  # Check if the address family is IPv4
-            ip_address = ip[4][0]
-            if not ip_address.startswith("127.") and not ip_address.startswith(
-                "169.254."
-            ):  # Exclude loopback IP addresses and 169.254 addresses
-                return ip_address
-
-    return "No non-loopback IP address found."
+    raise Exception("No non-loopback IP address found.")
 
 
 def run_periodically(func: Callable[[], None], interval: float) -> None:

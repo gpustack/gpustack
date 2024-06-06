@@ -27,10 +27,10 @@ def setup_server_cmd(subparsers: argparse._SubParsersAction):
         default=False,
     )
     group.add_argument(
-        "--model",
-        type=str,
-        help="ID of a huggingface model to serve on start. Example: Qwen/Qwen1.5-1.8B-Chat",
-        default="Qwen/Qwen1.5-1.8B-Chat",
+        "--serve-default-models",
+        action="store_true",
+        help="Serve default models on bootstrap.",
+        default=True,
     )
 
     group = parser_server.add_argument_group("Node settings")
@@ -76,8 +76,8 @@ def run_server(args):
 
 def to_server_config(args) -> ServerConfig:
     cfg = ServerConfig()
-    if args.model:
-        cfg.model = args.model
+    if args.serve_default_models:
+        cfg.serve_default_models = args.serve_default_models
 
     if args.debug:
         cfg.debug = args.debug

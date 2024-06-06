@@ -18,7 +18,8 @@ class SourceEnum(str, Enum):
 
 class ModelSource(BaseModel):
     source: SourceEnum
-    huggingface_model_id: Optional[str] = None
+    huggingface_repo_id: Optional[str] = None
+    huggingface_filename: Optional[str] = None
     s3_address: Optional[str] = None
 
 
@@ -63,6 +64,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     state: Optional[str] = None
 
     model_id: int = Field(default=None, foreign_key="model.id")
+    model_name: str
 
     class Config:
         # The "model_id" field conflicts with the protected namespace "model_" in Pydantic.

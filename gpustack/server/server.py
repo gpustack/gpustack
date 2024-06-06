@@ -100,23 +100,33 @@ class Server:
             init_data_func(session)
 
     def _init_model(self, session: Session):
-        if self._config.model:
-            huggingface_model_id = self._config.model
-        else:
+        if not self._config.serve_default_models:
             return
 
-        model_name = huggingface_model_id.split("/")[-1]
+        data = [
+            {
+                "name": "Qwen1.5-0.5B-Chat",
+                "source": "huggingface",
+                "huggingface_repo_id": "Qwen/Qwen1.5-0.5B-Chat-GGUF",
+                "huggingface_filename": "*q5_k_m.gguf",
+            },
+            {
+                "name": "Llama-3-8B-Instruct",
+                "source": "huggingface",
+                "huggingface_repo_id": "QuantFactory/Meta-Llama-3-8B-Instruct-GGUF-v2",
+                "huggingface_filename": "*Q5_K_M.gguf",
+            },
+        ]
 
-        model = Model.first_by_field(session=session, field="name", value=model_name)
-        if not model:
-            model = Model(
-                name=model_name,
-                source="huggingface",
-                huggingface_model_id=huggingface_model_id,
-            )
+        default_models: List[Model] = [Model(**item_data) for item_data in data]
+
+        for model in default_models:
+            existing = Model.first_by_field(session, "name", model.name)
+            if existing:
+                continue
             model.save(session)
 
-            logger.info("Created model: %s", model_name)
+        logger.debug("Created default models.")
 
     def _init_user(self, session: Session):
         user = User.first_by_field(session=session, field="name", value="admin")

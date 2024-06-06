@@ -10,7 +10,7 @@ class ServerConfig(BaseSettings):
     Attributes:
         debug: Enable debug mode.
         disable_agent: Disable embedded agent.
-        model: ID of a huggingface model to be served on bootstrap.
+        serve_default_models: Serve default models on bootstrap.
         data_dir: Directory to store data. Default is OS specific.
         database_url: URL of the database.
         bootstrap_password: Password for the bootstrap admin user.
@@ -21,7 +21,7 @@ class ServerConfig(BaseSettings):
     disable_agent: bool = False
     node_ip: str | None = None
     address: str | None = None
-    model: str | None = None
+    serve_default_models: bool | None = None
     data_dir: str = Field(default_factory=lambda: ServerConfig.get_data_dir())
     database_url: str | None = None
     bootstrap_password: str | None = None
