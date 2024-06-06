@@ -14,6 +14,7 @@ from gpustack.agent.serve_manager import ServeManager
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils import run_periodically_async
+from gpustack.agent.exporter import MetricExporter
 from gpustack.agent.logs import log_generator
 
 
@@ -31,6 +32,8 @@ class Agent:
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
         self._port = 10050
+        self._exporter_enabled = cfg.metric_enabled
+        self._exporter = MetricExporter(node_ip=cfg.node_ip, port=cfg.metrics_port)
 
     def start(self, is_multiprocessing=False):
         if is_multiprocessing:
@@ -44,6 +47,10 @@ class Agent:
         """
 
         logger.info("Starting GPUStack agent.")
+
+        # Start the metric exporter.
+        if self._exporter_enabled:
+            asyncio.create_task(self._exporter.start())
 
         # Report the node status to the server periodically.
         run_periodically_async(self._node_manager.sync_node_status, 5 * 60)

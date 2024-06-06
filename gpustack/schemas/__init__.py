@@ -16,7 +16,16 @@ from gpustack.schemas.nodes import (
     NodeUpdate,
     NodePublic,
     NodesPublic,
-    ResourceSummary,
+    NodeStatus,
+    UptimeInfo,
+    KernelInfo,
+    OperatingSystemInfo,
+    FileSystemInfo,
+    MountPoint,
+    GPUInfo,
+    GPUDevice,
+    CPUInfo,
+    MemoryInfo
 )
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
 from gpustack.schemas.common import PaginatedList
@@ -42,6 +51,15 @@ __all__ = [
     "UserUpdate",
     "UserPublic",
     "UsersPublic",
-    "ResourceSummary",
+    "NodeStatus",
+    "UptimeInfo",
+    "KernelInfo",
+    "OperatingSystemInfo",
+    "FileSystemInfo",
     "PaginatedList",
+    "MountPoint",
+    "GPUInfo",
+    "GPUDevice",
+    "CPUInfo",
+    "MemoryInfo"
 ]

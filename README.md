@@ -11,7 +11,7 @@ Install `python@3.11` and `poetry`.
 ### Set Up Environment
 
 ```
-poetry install
+make deps
 ```
 
 ### Run
@@ -23,7 +23,7 @@ poetry run gpustack
 ### Build
 
 ```
-poetry build
+make build
 ```
 
 And check artifacts in `dist`.
@@ -31,7 +31,7 @@ And check artifacts in `dist`.
 ### Test
 
 ```
-poetry run pytest
+make test
 ```
 
 ### Update Dependencies
@@ -47,3 +47,4 @@ poetry add --dev <something>
 ```
 
 For dev/testing dependencies.
+

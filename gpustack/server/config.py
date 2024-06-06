@@ -26,6 +26,8 @@ class ServerConfig(BaseSettings):
     database_url: str | None = None
     bootstrap_password: str | None = None
     secret_key: str = secrets.token_urlsafe(32)
+    metric_enabled: bool = True
+    metrics_port: int = 10051
 
     @staticmethod
     def get_data_dir():

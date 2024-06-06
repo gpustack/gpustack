@@ -6,9 +6,10 @@ import logging
 from gpustack.api.exceptions import (
     AlreadyExistsException,
 )
-from gpustack.client import ClientSet
-from gpustack.schemas.nodes import Node, ResourceSummary
 
+from gpustack.client import ClientSet
+from gpustack.schemas.nodes import Node
+from gpustack.agent.collector import NodeStatusCollector
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +28,38 @@ class NodeManager:
         """
 
         logger.info("Syncing node status.")
-        self._register_with_server()
+        # Register the node with the server.
+        self.register_with_server()
         self._update_node_status()
 
     def _update_node_status(self):
-        # TODO update node status if there is any change or enough time passed since last update
+        collector = NodeStatusCollector(node_ip=self._node_ip)
+        node = collector.collect()
 
-        pass
+        try:
+            result = self._clientset.nodes.list(params={"name": self._hostname})
+        except Exception as e:
+            logger.error(f"Failed to get node {self._hostname}: {e}")
+            return
 
-    def _register_with_server(self):
+        if result is None or len(result.items) == 0:
+            logger.error(f"Node {self._hostname} not found")
+            return
+
+        current = result.items[0]
+        node.id = current.id
+
+        if current.status == node.status.model_dump():
+            logger.info(f"Node {self._hostname} status is up to date.")
+            return
+
+        try:
+            result = self._clientset.nodes.update(
+                id=current.id, model_update=node)
+        except Exception as e:
+            logger.error(f"Failed to update node {self._hostname} status: {e}")
+
+    def register_with_server(self):
         if self._registration_completed:
             return
 
@@ -60,12 +84,8 @@ class NodeManager:
         logger.info(f"Node {node.name} registered.")
 
     def _initialize_node(self):
-        node = Node(
-            name=self._hostname,
-            hostname=self._hostname,
-            address=self._node_ip,
-            resources=ResourceSummary(allocatable={}, capacity={}),
-        )
+        collector = NodeStatusCollector(node_ip=self._node_ip)
+        node = collector.collect()
 
         os_info = os.uname()
         arch_info = platform.machine()
