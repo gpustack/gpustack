@@ -89,8 +89,7 @@ class NodeBase(SQLModel):
     hostname: str
     address: str
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
-    status: NodeStatus | None = Field(
-        sa_column=Column(JSON))
+    status: NodeStatus | None = Field(sa_column=Column(JSON))
 
     # Workaround for https://github.com/tiangolo/sqlmodel/issues/63
     # It generates a warning.

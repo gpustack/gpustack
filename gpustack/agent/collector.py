@@ -1,6 +1,12 @@
 from gpustack.schemas.nodes import (
-    CPUInfo, MemoryInfo, OperatingSystemInfo, KernelInfo, UptimeInfo, SwapInfo,
-    GPUDevice, MountPoint
+    CPUInfo,
+    MemoryInfo,
+    OperatingSystemInfo,
+    KernelInfo,
+    UptimeInfo,
+    SwapInfo,
+    GPUDevice,
+    MountPoint,
 )
 import socket
 import json
@@ -15,6 +21,7 @@ class NodeStatusCollector:
     def __init__(self, node_ip: str):
         self._hostname = socket.gethostname()
         self._node_ip = node_ip
+
     """A class for collecting node status information."""
 
     def collect(self) -> Node:
@@ -33,40 +40,43 @@ class NodeStatusCollector:
                 case "OS":
                     status.os = OperatingSystemInfo(
                         name=self._get_value(r, "name"),
-                        version=self._get_value(r, "version")
+                        version=self._get_value(r, "version"),
                     )
                 case "Kernel":
                     k = KernelInfo(
                         name=self._get_value(r, "name"),
                         release=self._get_value(r, "release"),
                         version=self._get_value(r, "version"),
-                        architecure=self._get_value(r, "architecure")
+                        architecure=self._get_value(r, "architecure"),
                     )
                     status.kernel = k
                 case "Uptime":
                     status.uptime = UptimeInfo(
                         uptime=self._get_value(r, "uptime"),
-                        boot_time=self._get_value(r, "bootTime")
+                        boot_time=self._get_value(r, "bootTime"),
                     )
                 case "CPU":
                     status.cpu = CPUInfo(
                         total=self._get_value(r, "cores", "online"),
-                        utilization_rate=self._get_value(r, "cores", "utilizationRate")
+                        utilization_rate=self._get_value(r, "cores", "utilizationRate"),
                     )
                 case "GPU":
                     device = []
                     list = sorted(r, key=lambda x: x["name"])
                     for index, value in enumerate(list):
-                        device.append(GPUDevice(
-                            uuid=self._get_value(value, "uuid"),
-                            name=self._get_value(value, "name"),
-                            vendor=self._get_value(value, "vendor"),
-                            index=index,
-                            core_total=self._get_value(value, "coreCount"),
-                            core_utilization_rate=self._get_value(
-                                value, "coreUtilizationRate"),
-                            temperature=self._get_value(value, "temperature")
-                        ))
+                        device.append(
+                            GPUDevice(
+                                uuid=self._get_value(value, "uuid"),
+                                name=self._get_value(value, "name"),
+                                vendor=self._get_value(value, "vendor"),
+                                index=index,
+                                core_total=self._get_value(value, "coreCount"),
+                                core_utilization_rate=self._get_value(
+                                    value, "coreUtilizationRate"
+                                ),
+                                temperature=self._get_value(value, "temperature"),
+                            )
+                        )
                     status.gpu = device
                 case "Memory":
                     status.memory = MemoryInfo(
@@ -89,9 +99,9 @@ class NodeStatusCollector:
                                 total=self._get_value(disk, "bytes", "total"),
                                 used=self._get_value(disk, "bytes", "used"),
                                 free=self._get_value(disk, "bytes", "free"),
-                                available=self._get_value(
-                                    disk, "bytes", "available"),
-                            ))
+                                available=self._get_value(disk, "bytes", "available"),
+                            )
+                        )
                     status.filesystem = mountpoints
 
         status.state = "active"
@@ -100,14 +110,13 @@ class NodeStatusCollector:
             name=self._hostname,
             hostname=self._hostname,
             address=self._node_ip,
-            status=status
+            status=status,
         )
 
     def _run_fastfetch_and_parse_result(self):
         command = self._fastfetch_command()
         try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, check=True)
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
             output = result.stdout
             parsed_json = json.loads(output)
             return parsed_json
@@ -119,7 +128,8 @@ class NodeStatusCollector:
             raise
         except Exception as e:
             e.add_note(
-                "error occurred when trying execute and parse the output of " + command)
+                "error occurred when trying execute and parse the output of " + command
+            )
             raise e
 
     def _fastfetch_command(self):
@@ -138,20 +148,23 @@ class NodeStatusCollector:
                     command = "fastfetch-linux-aarch64"
 
         if command == "":
-            raise ValueError("Unsupported platform: %s %s" %
-                             (platform.system(), platform.machine()))
+            raise ValueError(
+                "Unsupported platform: %s %s" % (platform.system(), platform.machine())
+            )
 
         with pkg_resources.path(command_path, command) as executable_path:
             os.chmod(executable_path, 0o755)
 
         # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true --format json
-        executable_command = [str(executable_path),
-                              "--gpu-driver-specific",
-                              "true",
-                              "--gpu-temp",
-                              "true",
-                              "--format",
-                              "json"]
+        executable_command = [
+            str(executable_path),
+            "--gpu-driver-specific",
+            "true",
+            "--gpu-temp",
+            "true",
+            "--format",
+            "json",
+        ]
         return executable_command
 
     def _get_value(self, input: dict, *keys):

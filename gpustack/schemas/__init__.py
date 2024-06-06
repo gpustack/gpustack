@@ -25,7 +25,7 @@ from gpustack.schemas.nodes import (
     GPUInfo,
     GPUDevice,
     CPUInfo,
-    MemoryInfo
+    MemoryInfo,
 )
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
 from gpustack.schemas.common import PaginatedList
@@ -61,5 +61,5 @@ __all__ = [
     "GPUInfo",
     "GPUDevice",
     "CPUInfo",
-    "MemoryInfo"
+    "MemoryInfo",
 ]

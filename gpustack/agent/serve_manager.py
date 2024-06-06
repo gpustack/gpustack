@@ -89,7 +89,7 @@ class ServeManager:
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,
-                args=(mi, log_file_path),
+                args=(self._server_url, mi, log_file_path),
             )
             process.daemon = False
             process.start()
@@ -104,15 +104,20 @@ class ServeManager:
             logger.error(f"Failed to serve model instance: {e}")
 
     @staticmethod
-    def serve_model_instance(mi: ModelInstance, log_file_path: str):
+    def serve_model_instance(server_url: str, mi: ModelInstance, log_file_path: str):
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
 
+        clientset = ClientSet(base_url=server_url)
         with open(log_file_path, "a", buffering=1) as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
                 app = Starlette(
                     debug=True,
                     routes=[
-                        Route("/", LlamaInferenceServer(mi).__call__, methods=["POST"]),
+                        Route(
+                            "/",
+                            LlamaInferenceServer(clientset, mi).__call__,
+                            methods=["POST"],
+                        ),
                     ],
                 )
                 uvicorn.run(app, host="0.0.0.0", port=mi.port)

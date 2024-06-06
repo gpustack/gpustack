@@ -54,8 +54,7 @@ class NodeManager:
             return
 
         try:
-            result = self._clientset.nodes.update(
-                id=current.id, model_update=node)
+            result = self._clientset.nodes.update(id=current.id, model_update=node)
         except Exception as e:
             logger.error(f"Failed to update node {self._hostname} status: {e}")
 

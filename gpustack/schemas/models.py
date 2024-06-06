@@ -62,6 +62,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     pid: Optional[int] = None
     port: Optional[int] = None
     state: Optional[str] = None
+    download_progress: Optional[float] = None
 
     model_id: int = Field(default=None, foreign_key="model.id")
     model_name: str
