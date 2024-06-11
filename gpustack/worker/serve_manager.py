@@ -13,7 +13,7 @@ from starlette.routing import Route
 
 
 from gpustack import utils
-from gpustack.agent.inference_server import LlamaInferenceServer
+from gpustack.worker.inference_server import LlamaInferenceServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate
 from gpustack.server.bus import Event, EventType

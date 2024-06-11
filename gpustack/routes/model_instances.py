@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 import httpx
 
-from gpustack.agent.logs import LogOptionsDep
+from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
@@ -58,7 +58,7 @@ async def get_serving_logs(
     if not model_instance.node_id:
         raise NotFoundException(message="Model instance not assigned to a node")
 
-    # proxy to node agent's model_instance logs endpoint
+    # proxy to node worker's model_instance logs endpoint
     node = Node.one_by_id(session, model_instance.node_id)
     if not node:
         raise NotFoundException(message="Model instance's node not found")

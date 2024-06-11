@@ -13,7 +13,7 @@ from gpustack.schemas.models import Model
 from gpustack.schemas.users import User, UserCreate
 from gpustack.security import get_password_hash
 from gpustack.server.app import app
-from gpustack.server.config import ServerConfig
+from gpustack.config import Config
 from gpustack.server.controller import ModelController
 from gpustack.server.db import init_db, get_engine
 from gpustack.server.scheduler import Scheduler
@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 class Server:
 
-    def __init__(self, config: ServerConfig, sub_processes: List[Process] = None):
+    def __init__(self, config: Config, sub_processes: List[Process] = None):
         if sub_processes is None:
             sub_processes = []
-        self._config: ServerConfig = config
+        self._config: Config = config
         self._sub_processes = sub_processes
 
         atexit.register(self.at_exit)

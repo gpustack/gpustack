@@ -1,7 +1,7 @@
 from prometheus_client.registry import Collector
 from prometheus_client import make_asgi_app, REGISTRY
 from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
-from gpustack.agent.collector import NodeStatusCollector
+from gpustack.worker.collector import NodeStatusCollector
 import uvicorn
 import logging
 from fastapi import FastAPI
@@ -219,7 +219,7 @@ class MetricExporter(Collector):
         # Start FastAPI server
         metrics_app = make_asgi_app()
 
-        app = FastAPI(title="GPUStack Agent", response_model_exclude_unset=True)
+        app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
         app.mount("/metrics", metrics_app)
 
         config = uvicorn.Config(

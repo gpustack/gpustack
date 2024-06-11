@@ -7,46 +7,46 @@ from fastapi.responses import StreamingResponse
 import setproctitle
 import uvicorn
 
-from gpustack.agent.config import AgentConfig
-from gpustack.agent.logs import LogOptionsDep
-from gpustack.agent.node_manager import NodeManager
-from gpustack.agent.serve_manager import ServeManager
+from gpustack.config import Config
+from gpustack.worker.logs import LogOptionsDep
+from gpustack.worker.node_manager import NodeManager
+from gpustack.worker.serve_manager import ServeManager
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils import run_periodically_async
-from gpustack.agent.exporter import MetricExporter
-from gpustack.agent.logs import log_generator
+from gpustack.worker.exporter import MetricExporter
+from gpustack.worker.logs import log_generator
 
 
 logger = logging.getLogger(__name__)
 
 
-class Agent:
-    def __init__(self, cfg: AgentConfig):
-        clientset = ClientSet(base_url=cfg.server)
+class Worker:
+    def __init__(self, cfg: Config):
+        clientset = ClientSet(base_url=cfg.server_url)
         self._node_manager = NodeManager(node_ip=cfg.node_ip, clientset=clientset)
         self._serve_manager = ServeManager(
-            server_url=cfg.server, log_dir=cfg.log_dir, clientset=clientset
+            server_url=cfg.server_url, log_dir=cfg.log_dir, clientset=clientset
         )
 
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
         self._port = 10050
-        self._exporter_enabled = cfg.metric_enabled
+        self._exporter_enabled = cfg.enable_metrics
         self._exporter = MetricExporter(node_ip=cfg.node_ip, port=cfg.metrics_port)
 
     def start(self, is_multiprocessing=False):
         if is_multiprocessing:
-            setproctitle.setproctitle("gpustack_agent")
+            setproctitle.setproctitle("gpustack_worker")
 
         asyncio.run(self.start_async())
 
     async def start_async(self):
         """
-        Start the agent.
+        Start the worker.
         """
 
-        logger.info("Starting GPUStack agent.")
+        logger.info("Starting GPUStack worker.")
 
         # Start the metric exporter.
         if self._exporter_enabled:
@@ -58,7 +58,7 @@ class Agent:
         # watch model instances and handle them.
         asyncio.create_task(self._serve_model_instances())
 
-        # Start the agent server to expose APIs.
+        # Start the worker server to expose APIs.
         await self._serve_apis()
 
     async def _serve_model_instances(self):
@@ -75,10 +75,10 @@ class Agent:
 
     async def _serve_apis(self):
         """
-        Start the agent server to expose APIs.
+        Start the worker server to expose APIs.
         """
 
-        app = FastAPI(title="GPUStackAgent", response_model_exclude_unset=True)
+        app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
 
         @app.get("/serveLogs/{id}")
         async def get_serve_logs(id: int, log_options: LogOptionsDep):
@@ -90,10 +90,6 @@ class Agent:
                 log_generator(path, log_options), media_type="text/plain"
             )
 
-        @app.get("/")
-        async def debug():
-            return {"message": "Hello from agent"}
-
         config = uvicorn.Config(
             app,
             host=self._address,
@@ -103,6 +99,6 @@ class Agent:
         )
 
         setup_logging()
-        logger.info(f"Serving agent APIs on {config.host}:{config.port}.")
+        logger.info(f"Serving worker APIs on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
         await server.serve()

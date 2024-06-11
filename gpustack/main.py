@@ -3,8 +3,7 @@ import signal
 import sys
 
 from gpustack import logging
-from gpustack.cmd.server import setup_server_cmd
-from gpustack.cmd.agent import setup_agent_cmd
+from gpustack.cmd import setup_start_cmd
 
 
 def handle_signal(sig, frame):
@@ -28,8 +27,7 @@ def main():
     )
     subparsers = parser.add_subparsers(help="sub-command help")
 
-    setup_server_cmd(subparsers)
-    setup_agent_cmd(subparsers)
+    setup_start_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

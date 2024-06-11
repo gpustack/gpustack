@@ -9,7 +9,7 @@ from gpustack.api.exceptions import (
 
 from gpustack.client import ClientSet
 from gpustack.schemas.nodes import Node
-from gpustack.agent.collector import NodeStatusCollector
+from gpustack.worker.collector import NodeStatusCollector
 
 logger = logging.getLogger(__name__)
 
