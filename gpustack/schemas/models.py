@@ -31,7 +31,9 @@ class ModelBase(SQLModel, ModelSource):
 class Model(ModelBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    instances: list["ModelInstance"] = Relationship(back_populates="model")
+    instances: list["ModelInstance"] = Relationship(
+        sa_relationship_kwargs={"cascade": "delete"}, back_populates="model"
+    )
 
 
 class ModelCreate(ModelBase):
