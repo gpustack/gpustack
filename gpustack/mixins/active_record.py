@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlmodel import SQLModel, col, select, Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import FlushError
-from sqlalchemy import event
+from sqlalchemy import event as sa_event
 
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
@@ -263,16 +263,17 @@ class ActiveRecordMixin:
     @classmethod
     def __declare_last__(cls):
         """
-        Automatically add hooks to the model class to publish events after creation, update, and deletion.
+        Automatically add hooks to the model class to publish events
+        after creation, update, and deletion.
 
         Reference:
             https://docs.sqlalchemy.org/en/20/orm/declarative_config.html#declare-last
             https://docs.sqlalchemy.org/en/20/orm/events.html#mapper-events
         """
 
-        event.listen(cls, "after_insert", cls.after_create_hook)
-        event.listen(cls, "after_update", cls.after_update_hook)
-        event.listen(cls, "after_delete", cls.after_delete_hook)
+        sa_event.listen(cls, "after_insert", cls.after_create_hook)
+        sa_event.listen(cls, "after_update", cls.after_update_hook)
+        sa_event.listen(cls, "after_delete", cls.after_delete_hook)
 
     @staticmethod
     def after_create_hook(mapper, connection, target):
