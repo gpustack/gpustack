@@ -6,6 +6,8 @@ import uvicorn
 import logging
 from fastapi import FastAPI
 
+from gpustack.logging import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -227,6 +229,8 @@ class MetricExporter(Collector):
             access_log=False,
             log_level="error",
         )
+
+        setup_logging()
 
         logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
