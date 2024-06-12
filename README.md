@@ -11,7 +11,7 @@ Install `python@3.11` and `poetry`.
 ### Set Up Environment
 
 ```
-make deps
+make install
 ```
 
 ### Run
@@ -47,4 +47,3 @@ poetry add --dev <something>
 ```
 
 For dev/testing dependencies.
-

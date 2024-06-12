@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function ci() {
-  make deps "$@"
+  make install "$@"
   make lint "$@"
   make test "$@"
   make build "$@"

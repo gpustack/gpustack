@@ -15,7 +15,7 @@ help:
 	#
 	# Usage:
 	#
-	#   * [dev] `make deps`, install all dependencies.
+	#   * [dev] `make install`, install all dependencies.
 	#
 	#   * [dev] `make generate`, generate something.
 	#
@@ -25,7 +25,7 @@ help:
 	#
 	#   * [dev] `make build`, execute building.
 	#
-	#   * [ci]  `make ci`, execute `make deps`, `make lint`, `make test`, `make build`.
+	#   * [ci]  `make ci`, execute `make install`, `make lint`, `make test`, `make build`.
 	#
 	@echo
 
