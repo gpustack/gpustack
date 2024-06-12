@@ -11,10 +11,15 @@ function build() {
   poetry build
 }
 
+function prepare_deps() {
+  bash "${ROOT_DIR}/hack/deps.sh"
+}
+
 #
 # main
 #
 
 gpustack::log::info "+++ BUILD +++"
+prepare_deps
 build
 gpustack::log::info "--- BUILD ---"

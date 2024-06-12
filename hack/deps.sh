@@ -5,6 +5,8 @@ set -o nounset
 set -o pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+THIRD_PARTY_DIR="${ROOT_DIR}/gpustack/third_party"
+
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function download_deps() {
@@ -12,41 +14,77 @@ function download_deps() {
   poetry install
 }
 
-FASTFETCH_DIR="${ROOT_DIR}/gpustack/third_party/fastfetch"
-FASTFETCH_TMP_DIR="${FASTFETCH_DIR}/tmp"
-FASTFETCH_DEFAUT_VERSION="2.14.0"
-
-
 function download_fastfetch() {
     local default_os="linux"
     local default_arch="amd64"
+    local default_version="2.14.0"
 
     local os="${1:-$default_os}"
     local arch="${2:-$default_arch}"
-    local version="${3:-$FASTFETCH_DEFAUT_VERSION}"
+    local version="${3:-$default_version}"
 
+    local fastfetch_dir="${THIRD_PARTY_DIR}/fastfetch"
+    local fastfetch_tmp_dir="${fastfetch_dir}/tmp"
+
+
+    local target_file="${fastfetch_dir}/fastfetch-${os}-${arch}"
+    if [ -f "${target_file}" ]; then
+        gpustack::log::info "fastfetch-${os}-${arch} already exists, skipping download"
+        return
+    fi
 
     gpustack::log::info "downloading fastfetch-${os}-${arch} '${version}'  archive"
     
-    local tmp_file="${FASTFETCH_TMP_DIR}/fastfetch-${os}-${arch}.zip"
-    rm -rf "${FASTFETCH_TMP_DIR}"
-    mkdir -p "${FASTFETCH_TMP_DIR}"
+    local tmp_file="${fastfetch_tmp_dir}/fastfetch-${os}-${arch}.zip"
+    rm -rf "${fastfetch_tmp_dir}"
+    mkdir -p "${fastfetch_tmp_dir}"
 
     curl --retry 3 --retry-all-errors --retry-delay 3 \
       -o  "${tmp_file}" \
       -sSfL "https://github.com/aiwantaozi/fastfetch/releases/download/${version}/fastfetch-${os}-${arch}.zip"
     
-    unzip -qu "${tmp_file}" -d "${FASTFETCH_TMP_DIR}"
+    unzip -qu "${tmp_file}" -d "${fastfetch_tmp_dir}"
     
-    cp "${FASTFETCH_TMP_DIR}/fastfetch-${os}-${arch}/usr/bin/fastfetch" "${FASTFETCH_DIR}/fastfetch-${os}-${arch}"
-    rm -rf "${tmp_file}"
+    cp "${fastfetch_tmp_dir}/fastfetch-${os}-${arch}/usr/bin/fastfetch" "${target_file}"
+    rm -rf "${fastfetch_tmp_dir}"
+}
+
+
+function download_llama_cpp_server() {
+    local version="b3135"
+    local llama_cpp_dir="${THIRD_PARTY_DIR}/llama_cpp"
+    local llama_cpp_tmp_dir="${llama_cpp_dir}/tmp"
+
+    platforms=("macos-arm64" "macos-x64" "ubuntu-x64")
+
+    for platform in "${platforms[@]}"; do
+      local target_file="${llama_cpp_dir}/server-${platform}"
+      if [ -f "${target_file}" ]; then
+          gpustack::log::info "llama.cpp server-${platform} already exists, skipping download"
+          continue
+      fi
+
+      local tmp_file="${llama_cpp_tmp_dir}/llama-${version}-bin-${platform}.zip"
+      rm -rf "${llama_cpp_tmp_dir}"
+      mkdir -p "${llama_cpp_tmp_dir}"
+
+      gpustack::log::info "downloading llama-${version}-bin-${platform} ${version} archive"
+
+      curl --retry 3 --retry-all-errors --retry-delay 3 \
+        -o  "${tmp_file}" \
+        -sSfL "https://github.com/ggerganov/llama.cpp/releases/download/${version}/llama-${version}-bin-${platform}.zip"
+
+      unzip -qu "${tmp_file}" -d "${llama_cpp_tmp_dir}"
+
+      cp "${llama_cpp_tmp_dir}/build/bin/server" "${llama_cpp_dir}/server-${platform}"
+      rm -rf "${llama_cpp_tmp_dir}"
+    done
 }
 
 function download_fastfetches() {
     download_fastfetch linux amd64
     download_fastfetch linux aarch64
     download_fastfetch macos universal
-    rm -rf "${FASTFETCH_TMP_DIR}"
 }
 
 #
@@ -56,4 +94,5 @@ function download_fastfetches() {
 gpustack::log::info "+++ DEPENDENCIES +++"
 download_deps
 download_fastfetches
+download_llama_cpp_server
 gpustack::log::info "--- DEPENDENCIES ---"

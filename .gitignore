@@ -148,3 +148,6 @@ __pycache__/
 
 # vscode
 .vscode
+
+# GPUStack related
+*/third_party/
