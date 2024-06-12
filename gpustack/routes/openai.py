@@ -38,8 +38,7 @@ async def chat_completion(session: SessionDep, request: Request):
     if not instance:
         raise ServiceUnavailableException(message="No running instances available")
 
-    url = f"http://{instance.node_ip}:{instance.port}"
-
+    url = f"http://{instance.node_ip}:{instance.port}/v1/chat/completions"
     logger.debug(f"proxying to {url}")
 
     headers = {

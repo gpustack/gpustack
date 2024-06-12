@@ -1,17 +1,14 @@
 import asyncio
 import logging
+import os
+import platform
+import subprocess
+import sys
 import time
-from typing import Generator
-
-import llama_cpp
-from fastapi import status
-from openai.types.chat import ChatCompletionChunk
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.responses import StreamingResponse
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate
+from gpustack.worker.downloaders import HfDownloader
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +41,7 @@ def time_decorator(func):
         return sync_wrapper
 
 
-class LlamaInferenceServer:
+class InferenceServer:
     @time_decorator
     def __init__(self, clientset: ClientSet, mi: ModelInstance):
         if mi.source != "huggingface":
@@ -57,48 +54,60 @@ class LlamaInferenceServer:
         self._clientset = clientset
         self._model_instance = mi
         self._model_name = mi.huggingface_repo_id
-        self._model = llama_cpp.Llama.from_pretrained(
-            repo_id=mi.huggingface_repo_id,
-            filename=mi.huggingface_filename,
-            verbose=False,
-            n_gpu_layers=-1,
-        )
-
         try:
+            model_path = HfDownloader.download(
+                repo_id=mi.huggingface_repo_id,
+                filename=mi.huggingface_filename,
+            )
+            self._model_path = model_path
             patch_dict = {"download_progress": 100}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             logger.error(f"Failed to update model instance: {e}")
 
-    @time_decorator
-    async def __call__(self, request: Request):
-        body = await request.json()
-        stream = body.get("stream", False)
+    def start(self):
+        command_path = os.path.join(
+            "gpustack", "third_party", "llama_cpp", self._get_command()
+        )
 
-        logger.debug(f"Received completion request: {body}")
+        arguments = [
+            "--host",
+            "0.0.0.0",
+            "--n-gpu-layers",
+            "-1",
+            "--parallel",
+            "5",
+            "--port",
+            str(self._model_instance.port),
+            "--model",
+            self._model_path,
+        ]
 
         try:
-            completion_result = self._model.create_chat_completion_openai_v1(**body)
-
-            if stream:
-                return StreamingResponse(
-                    self.stream_chunks(completion_result),
-                    media_type="text/plain",
-                )
-
-            logger.debug(f"generated_text: {completion_result}")
-
-            return JSONResponse(completion_result.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to generate completion: {e}")
-            return JSONResponse(
-                {"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            subprocess.run(
+                [command_path] + arguments, stdout=sys.stdout, stderr=sys.stderr
             )
+        except Exception as e:
+            logger.error(f"Failed to run the llama.cpp server: {e}")
 
-    @staticmethod
-    def stream_chunks(completion_result: Generator[ChatCompletionChunk, None, None]):
-        for chunk in completion_result:
-            yield chunk.model_dump_json() + "\n"
+    def _get_command(self):
+        command = ""
+
+        match platform.system():
+            case "Darwin":
+                if "amd64" in platform.machine() or "x86_64" in platform.machine():
+                    command = "server-macos-x64"
+                elif "arm" in platform.machine() or "aarch64" in platform.machine():
+                    command = "server-macos-arm64"
+            case "Linux":
+                if "amd64" in platform.machine() or "x86_64" in platform.machine():
+                    command = "server-ubuntu-x64"
+
+        if command == "":
+            raise ValueError(
+                "Unsupported platform: %s %s" % (platform.system(), platform.machine())
+            )
+        return command
 
     def hijack_tqdm_progress(server_self):
         """

@@ -6,14 +6,11 @@ import socket
 import time
 from typing import Dict
 import logging
-import uvicorn
 from contextlib import redirect_stdout, redirect_stderr
-from starlette.applications import Starlette
-from starlette.routing import Route
 
 
 from gpustack import utils
-from gpustack.worker.inference_server import LlamaInferenceServer
+from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate
 from gpustack.server.bus import Event, EventType
@@ -110,17 +107,7 @@ class ServeManager:
         clientset = ClientSet(base_url=server_url)
         with open(log_file_path, "a", buffering=1) as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                app = Starlette(
-                    debug=True,
-                    routes=[
-                        Route(
-                            "/",
-                            LlamaInferenceServer(clientset, mi).__call__,
-                            methods=["POST"],
-                        ),
-                    ],
-                )
-                uvicorn.run(app, host="0.0.0.0", port=mi.port)
+                InferenceServer(clientset, mi).start()
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
