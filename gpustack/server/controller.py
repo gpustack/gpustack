@@ -48,8 +48,9 @@ class ModelController:
                         s3_address=model.s3_address,
                         state="Pending",
                     )
-                    await ModelInstance.create(session, instance)
-                    logger.debug(f"Created model instance for model {model.id}")
+                    for _ in range(model.replicas - len(instances)):
+                        await ModelInstance.create(session, instance)
+                        logger.debug(f"Created model instance for model {model.id}")
 
                 elif len(instances) > model.replicas:
                     for instance in instances[model.replicas :]:
