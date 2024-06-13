@@ -44,9 +44,6 @@ def time_decorator(func):
 class InferenceServer:
     @time_decorator
     def __init__(self, clientset: ClientSet, mi: ModelInstance):
-        if mi.source != "huggingface":
-            raise ValueError("Only huggingface models are supported for now.")
-
         logger.info(f"Loading model: {mi.huggingface_repo_id}")
 
         self.hijack_tqdm_progress()
@@ -55,15 +52,23 @@ class InferenceServer:
         self._model_instance = mi
         self._model_name = mi.huggingface_repo_id
         try:
+            patch_dict = {"download_progress": 0, "state": "Downloading"}
+            self._update_model_instance(mi.id, **patch_dict)
+
             model_path = HfDownloader.download(
                 repo_id=mi.huggingface_repo_id,
                 filename=mi.huggingface_filename,
             )
             self._model_path = model_path
-            patch_dict = {"download_progress": 100}
+
+            patch_dict = {"download_progress": 100, "state": "Running"}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
-            logger.error(f"Failed to update model instance: {e}")
+            try:
+                patch_dict = {"state_message": str(e), "state": "Failed"}
+                self._update_model_instance(mi.id, **patch_dict)
+            except Exception as e:
+                logger.error(f"Failed to update model instance: {e}")
 
     def start(self):
         command_path = os.path.join(

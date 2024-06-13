@@ -92,7 +92,7 @@ class ServeManager:
             process.start()
             self._serving_model_instances[mi.id] = process
 
-            patch_dict = {"state": "Running", "port": port, "pid": process.pid}
+            patch_dict = {"state": "Initializing", "port": port, "pid": process.pid}
             self._update_model_instance(mi.id, **patch_dict)
 
         except Exception as e:

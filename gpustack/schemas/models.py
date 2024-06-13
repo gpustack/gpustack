@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlmodel import Field, Relationship, SQLModel
 
 from gpustack.schemas.common import PaginatedList
@@ -21,6 +21,16 @@ class ModelSource(BaseModel):
     huggingface_repo_id: Optional[str] = None
     huggingface_filename: Optional[str] = None
     s3_address: Optional[str] = None
+
+    @model_validator(mode="after")
+    def check_huggingface_fields(self):
+        if self.source == SourceEnum.huggingface:
+            if not self.huggingface_repo_id or not self.huggingface_filename:
+                raise ValueError(
+                    "huggingface_repo_id and huggingface_filename must be provided "
+                    "when source is 'huggingface'"
+                )
+        return self
 
 
 class ModelBase(SQLModel, ModelSource):
@@ -63,8 +73,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
     node_ip: Optional[str] = None
     pid: Optional[int] = None
     port: Optional[int] = None
-    state: Optional[str] = None
     download_progress: Optional[float] = None
+    state: Optional[str] = None
+    state_message: Optional[str] = None
 
     model_id: int = Field(default=None, foreign_key="model.id")
     model_name: str
