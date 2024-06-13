@@ -7,8 +7,8 @@ import sys
 import time
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate
-from gpustack.worker.downloaders import HfDownloader
+from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate, SourceEnum
+from gpustack.worker.downloaders import HfDownloader, OllamaLibraryDownloader
 
 
 logger = logging.getLogger(__name__)
@@ -41,25 +41,28 @@ def time_decorator(func):
         return sync_wrapper
 
 
+def download_model(mi: ModelInstance) -> str:
+    if mi.source == SourceEnum.huggingface:
+        return HfDownloader.download(
+            repo_id=mi.huggingface_repo_id,
+            filename=mi.huggingface_filename,
+        )
+    elif mi.source == SourceEnum.ollama_library:
+        return OllamaLibraryDownloader.download(model_name=mi.ollama_library_model_name)
+
+
 class InferenceServer:
     @time_decorator
     def __init__(self, clientset: ClientSet, mi: ModelInstance):
-        logger.info(f"Loading model: {mi.huggingface_repo_id}")
-
         self.hijack_tqdm_progress()
 
         self._clientset = clientset
         self._model_instance = mi
-        self._model_name = mi.huggingface_repo_id
         try:
             patch_dict = {"download_progress": 0, "state": "Downloading"}
             self._update_model_instance(mi.id, **patch_dict)
 
-            model_path = HfDownloader.download(
-                repo_id=mi.huggingface_repo_id,
-                filename=mi.huggingface_filename,
-            )
-            self._model_path = model_path
+            self._model_path = download_model(mi)
 
             patch_dict = {"download_progress": 100, "state": "Running"}
             self._update_model_instance(mi.id, **patch_dict)
@@ -69,6 +72,8 @@ class InferenceServer:
                 self._update_model_instance(mi.id, **patch_dict)
             except Exception as e:
                 logger.error(f"Failed to update model instance: {e}")
+
+            raise e
 
     def start(self):
         command_path = os.path.join(

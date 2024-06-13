@@ -1,18 +1,16 @@
 import json
 import os
+import re
+import requests
 from typing import List, Literal, Optional, Union
 import fnmatch
 from pathlib import Path
-
+from tqdm import tqdm
 from huggingface_hub import hf_hub_download, HfFileSystem
 from huggingface_hub.utils import validate_repo_id
 
 
 class HfDownloader:
-    def __init__(self, model_name, model_dir):
-        self.model_name = model_name
-        self.model_dir = model_dir
-
     @classmethod
     def download(
         cls,
@@ -95,3 +93,70 @@ class HfDownloader:
 
     def __call__(self):
         return self.download()
+
+
+class OllamaLibraryDownloader:
+    _registry_url = "https://registry.ollama.ai"
+    _cache_dir = os.path.expanduser("~/.cache/gpustack/models")
+
+    @staticmethod
+    def download_blob(url: str, filename: str):
+        temp_filename = filename + ".part"
+        headers = {}
+        if os.path.exists(temp_filename):
+            existing_file_size = os.path.getsize(temp_filename)
+            headers = {"Range": f"bytes={existing_file_size}-"}
+        else:
+            existing_file_size = 0
+
+        response = requests.get(url, headers=headers, stream=True)
+        total_size = int(response.headers.get("content-length", 0)) + existing_file_size
+
+        mode = "ab" if existing_file_size > 0 else "wb"
+        chunk_size = 1 * 1024 * 1024  # 1MB
+        with open(temp_filename, mode) as file, tqdm(
+            total=total_size, initial=existing_file_size
+        ) as bar:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    file.write(chunk)
+                    bar.update(len(chunk))
+
+        os.rename(temp_filename, filename)
+        print(f"Downloaded {filename}")
+
+    @classmethod
+    def download(cls, model_name: str) -> str:
+        sanitized_filename = re.sub(r"[^a-zA-Z0-9]", "_", model_name)
+        if not os.path.exists(cls._cache_dir):
+            os.makedirs(cls._cache_dir)
+
+        # Check if the model is already downloaded
+        model_path = os.path.join(cls._cache_dir, sanitized_filename)
+        if os.path.exists(model_path):
+            return model_path
+
+        if ":" in model_name:
+            model, tag = model_name.split(":")
+        else:
+            model, tag = model_name, "latest"
+
+        manifest_url = f"{cls._registry_url}/v2/library/{model}/manifests/{tag}"
+        response = requests.get(manifest_url)
+
+        if response.status_code != 200:
+            raise Exception(
+                f"Failed to download model {model_name}, status code: {response.status_code}"
+            )
+
+        manifest = response.json()
+        blobs = manifest.get("layers", [])
+
+        for blob in blobs:
+            if blob["mediaType"] == "application/vnd.ollama.image.model":
+                blob_url = (
+                    f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}"
+                )
+                cls.download_blob(blob_url, model_path)
+
+        return model_path
