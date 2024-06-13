@@ -36,7 +36,8 @@ class ModelController:
                 if event_type == EventType.DELETED:
                     for instance in instances:
                         await instance.delete(session)
-                elif len(instances) == 0:  # TODO replicas
+
+                elif len(instances) < model.replicas:
                     instance = ModelInstanceCreate(
                         model_id=model.id,
                         model_name=model.name,
@@ -47,7 +48,12 @@ class ModelController:
                         state="Pending",
                     )
                     await ModelInstance.create(session, instance)
-
                     logger.debug(f"Created model instance for model {model.id}")
+
+                elif len(instances) > model.replicas:
+                    for instance in instances[model.replicas :]:
+                        await instance.delete(session)
+                        logger.debug(f"Deleted model instance {instance.id}")
+
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.id}: {e}")

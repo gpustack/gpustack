@@ -37,6 +37,8 @@ class ModelBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     description: Optional[str] = None
 
+    replicas: int = Field(default=1, ge=0)
+
 
 class Model(ModelBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
