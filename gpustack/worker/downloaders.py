@@ -113,7 +113,7 @@ class OllamaLibraryDownloader:
         total_size = int(response.headers.get("content-length", 0)) + existing_file_size
 
         mode = "ab" if existing_file_size > 0 else "wb"
-        chunk_size = 1 * 1024 * 1024  # 1MB
+        chunk_size = 10 * 1024 * 1024  # 10MB
         with open(temp_filename, mode) as file, tqdm(
             total=total_size, initial=existing_file_size
         ) as bar:

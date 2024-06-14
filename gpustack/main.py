@@ -4,6 +4,7 @@ import sys
 
 from gpustack import logging
 from gpustack.cmd import setup_start_cmd
+from gpustack.cmd.chat import setup_chat_cmd
 
 
 def handle_signal(sig, frame):
@@ -12,8 +13,6 @@ def handle_signal(sig, frame):
 
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
-
-logging.setup_logging()
 
 
 def main():
@@ -25,11 +24,14 @@ def main():
             prog, max_help_position=55, indent_increment=2, width=200
         ),
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode.")
     subparsers = parser.add_subparsers(help="sub-command help")
 
     setup_start_cmd(subparsers)
+    setup_chat_cmd(subparsers)
 
     args = parser.parse_args()
+    logging.setup_logging(debug=args.debug)
     if hasattr(args, "func"):
         args.func(args)
     else:
