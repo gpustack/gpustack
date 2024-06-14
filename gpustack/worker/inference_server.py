@@ -5,6 +5,7 @@ import platform
 import subprocess
 import sys
 import time
+import importlib.resources as pkg_resources
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate, SourceEnum
@@ -76,8 +77,8 @@ class InferenceServer:
             raise e
 
     def start(self):
-        command_path = os.path.join(
-            "gpustack", "third_party", "llama_cpp", self._get_command()
+        command_path = pkg_resources.files("gpustack.third_party.llama_cpp").joinpath(
+            self._get_command()
         )
 
         arguments = [
