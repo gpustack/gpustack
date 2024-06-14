@@ -1,4 +1,5 @@
 import multiprocessing
+import psutil
 import setproctitle
 import os
 import signal
@@ -17,6 +18,18 @@ from gpustack.server.bus import Event, EventType
 
 
 logger = logging.getLogger(__name__)
+
+
+def signal_handler(signum, frame):
+    pid = os.getpid()
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    children = parent.children(recursive=True)
+    for process in children:
+        process.send_signal(signum)
+    os._exit(0)
 
 
 class ServeManager:
@@ -103,6 +116,7 @@ class ServeManager:
     @staticmethod
     def serve_model_instance(server_url: str, mi: ModelInstance, log_file_path: str):
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
+        signal.signal(signal.SIGTERM, signal_handler)
 
         clientset = ClientSet(base_url=server_url)
         with open(log_file_path, "a", buffering=1) as log_file:
