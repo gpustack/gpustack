@@ -24,11 +24,15 @@ class NodeClient:
     def watch(
         self,
         callback: Callable[[Event], None],
+        stop_condition: Optional[Callable[[Event], bool]] = None,
         params: Optional[Dict[str, Any]] = None,
     ):
         if params is None:
             params = {}
         params["watch"] = "true"
+
+        if stop_condition is None:
+            stop_condition = lambda event: False
 
         with self._client.get_httpx_client().stream(
             "GET", self._url, params=params, timeout=None
@@ -39,6 +43,8 @@ class NodeClient:
                     event_data = json.loads(line)
                     event = Event(**event_data)
                     callback(event)
+                    if stop_condition(event):
+                        break
 
     def get(self, id: int) -> NodePublic:
         response = self._client.get_httpx_client().get(f"{self._url}/{id}")
