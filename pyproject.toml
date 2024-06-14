@@ -4,6 +4,7 @@ version = "0.0.1"
 description = "GPU Stack"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
+include = ["*/third_party/**/*"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
