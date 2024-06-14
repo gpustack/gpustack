@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 from pydantic import field_validator, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
 
@@ -30,13 +30,13 @@ class GPUDevice(BaseModel):
     name: str = Field(default="")
     vendor: str = Field(default="")
     index: int = Field(default=-1)
-    core_total: int = Field(default=-1)
-    core_allocated: int = Field(default=-1)
-    core_utilization_rate: float = Field(default=-1)
-    memory_total: float = Field(default=-1)  # in bytes
-    memory_allocated: float = Field(default=-1)
-    memory_used: float = Field(default=-1)
-    temperature: float = Field(default=-1)  # in celsius
+    core_total: Optional[int] = Field(default=-1)
+    core_allocated: Optional[int] = Field(default=-1)
+    core_utilization_rate: Optional[float] = Field(default=-1)
+    memory_total: Optional[float] = Field(default=-1)  # in bytes
+    memory_allocated: Optional[float] = Field(default=-1)
+    memory_used: Optional[float] = Field(default=-1)
+    temperature: Optional[float] = Field(default=-1)  # in celsius
 
 
 GPUInfo = List[GPUDevice]
