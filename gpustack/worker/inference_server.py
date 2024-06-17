@@ -65,7 +65,7 @@ class InferenceServer:
 
             self._model_path = download_model(mi)
 
-            patch_dict = {"download_progress": 100, "state": "Running"}
+            patch_dict = {"state": "Running"}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             try:
