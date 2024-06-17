@@ -151,3 +151,4 @@ __pycache__/
 
 # GPUStack related
 */third_party/
+*/ui/

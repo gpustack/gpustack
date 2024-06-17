@@ -15,5 +15,4 @@ resource_router.include_router(
 api_router = APIRouter(responses=error_responses)
 api_router.include_router(probes.router, tags=["probes"])
 api_router.include_router(openai.router, tags=["openai"])
-api_router.include_router(ui.router)
 api_router.include_router(resource_router, prefix="/v1")

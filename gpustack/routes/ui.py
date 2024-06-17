@@ -1,21 +1,19 @@
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+import os
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-router = APIRouter()
 
+def register(app: FastAPI):
+    ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
+    if not os.path.isdir(ui_dir):
+        raise RuntimeError(f"Directory '{ui_dir}' does not exist")
 
-@router.get("/", include_in_schema=False)
-async def index() -> HTMLResponse:
-    # TODO serve the UI.
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <title>GPUStack</title>
-    </head>
-    <body>
-    <h1>Welcome to GPUStack!</h1>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content, status_code=200)
+    for name in ["css", "js", "static"]:
+        app.mount(
+            f"/{name}", StaticFiles(directory=os.path.join(ui_dir, name)), name=name
+        )
+
+    @app.get("/", include_in_schema=False)
+    async def index():
+        return FileResponse(os.path.join(ui_dir, "index.html"))

@@ -3,6 +3,7 @@ from fastapi import FastAPI
 import httpx
 
 from gpustack.api import exceptions
+from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 
 
@@ -15,4 +16,5 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="GPUStack", lifespan=lifespan, response_model_exclude_unset=True)
 app.include_router(api_router)
+ui.register(app)
 exceptions.register_handlers(app)
