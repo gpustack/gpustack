@@ -24,13 +24,13 @@ async def chat_completion(session: SessionDep, request: Request):
     if not model_name:
         raise InvalidException(message="Missing 'model' field")
 
-    model = Model.one_by_field(session=session, field="name", value=model_name)
+    model = await Model.one_by_field(session=session, field="name", value=model_name)
     if not model:
         raise NotFoundException(message="Model not found")
 
     stream = body.get("stream", False)
 
-    model_instances = ModelInstance.all_by_field(
+    model_instances = await ModelInstance.all_by_field(
         session=session, field="model_id", value=model.id
     )
 

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.nodes import Node
 from gpustack.schemas.models import ModelInstance
@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-
     def __init__(self):
         self._engine = get_engine()
         self._check_interval = 30
@@ -23,11 +22,10 @@ class Scheduler:
 
         asyncio.create_task(self.check_pending_instances())
 
-        with Session(self._engine) as session:
-            async for event in ModelInstance.subscribe(session):
-                if event.type == EventType.DELETED:
-                    continue
-                await self._do_schedule(event.data)
+        async for event in ModelInstance.subscribe(self._engine):
+            if event.type == EventType.DELETED:
+                continue
+            await self._do_schedule(event.data)
 
     async def check_pending_instances(self):
         """
@@ -36,8 +34,10 @@ class Scheduler:
 
         while True:
             await asyncio.sleep(self._check_interval)
-            with Session(self._engine) as session:
-                instances = ModelInstance.all_by_field(session, "state", "Pending")
+            async with AsyncSession(self._engine) as session:
+                instances = await ModelInstance.all_by_field(
+                    session, "state", "Pending"
+                )
                 for instance in instances:
                     await self._do_schedule(instance)
 
@@ -60,14 +60,13 @@ class Scheduler:
         Schedule a model instance by picking any node.
         """
 
-        engine = get_engine()
-        with Session(engine) as session:
-            node = Node.first(session)
+        async with AsyncSession(self._engine) as session:
+            node = await Node.first(session)
 
         if not node:
             return
 
-        model_instance = ModelInstance.one_by_id(
+        model_instance = await ModelInstance.one_by_id(
             session, mi.id
         )  # load from the new session
         model_instance.node_id = node.id

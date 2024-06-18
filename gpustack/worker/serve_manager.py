@@ -95,7 +95,7 @@ class ServeManager:
             port = utils.get_free_port()
             mi.port = port
 
-            logger.info(f"Starting serving model instance {mi.id} on port {port}")
+            logger.info(f"Start serving model instance {mi.id} on port {port}")
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,

@@ -25,7 +25,7 @@ async def get_models(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
-    return Model.paginated_by_query(
+    return await Model.paginated_by_query(
         session=session,
         fields=fields,
         page=params.page,
@@ -35,7 +35,7 @@ async def get_models(session: SessionDep, params: ListParamsDep):
 
 @router.get("/{id}", response_model=ModelPublic)
 async def get_model(session: SessionDep, id: int):
-    model = Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -44,7 +44,7 @@ async def get_model(session: SessionDep, id: int):
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
 async def get_model_instances(session: SessionDep, id: int, params: ListParamsDep):
-    model = Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -63,7 +63,7 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
 
 @router.post("", response_model=ModelPublic)
 async def create_model(session: SessionDep, model_in: ModelCreate):
-    existing = Model.one_by_field(session, "name", model_in.name)
+    existing = await Model.one_by_field(session, "name", model_in.name)
     if existing:
         raise AlreadyExistsException(message=f"Model f{model_in.name} already exists")
 
@@ -77,7 +77,7 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
 
 @router.put("/{id}", response_model=ModelPublic)
 async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
-    model = Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -91,7 +91,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
-    model = Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 

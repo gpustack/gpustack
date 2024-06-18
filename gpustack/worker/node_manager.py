@@ -27,7 +27,6 @@ class NodeManager:
         It registers the node with the server if necessary.
         """
 
-        logger.info("Syncing node status.")
         # Register the node with the server.
         self.register_with_server()
         self._update_node_status()

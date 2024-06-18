@@ -128,7 +128,7 @@ def set_server_options(args, cfg: Config):
     if args.database_url:
         cfg.database_url = args.database_url
     else:
-        cfg.database_url = f"sqlite:///{cfg.data_dir}/database.db"
+        cfg.database_url = f"sqlite+aiosqlite:///{cfg.data_dir}/database.db"
 
     if args.disable_worker:
         cfg.disable_worker = args.disable_worker

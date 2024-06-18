@@ -15,6 +15,7 @@ def setup_logging(debug: bool = False):
         "httpx",
         "httpcore.http11",
         "asyncio",
+        "aiosqlite",
         "urllib3.connectionpool",
     ]
 

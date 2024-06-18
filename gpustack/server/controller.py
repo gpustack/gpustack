@@ -1,5 +1,5 @@
 import logging
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceCreate
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
@@ -18,9 +18,8 @@ class ModelController:
         Start the controller.
         """
 
-        with Session(self._engine) as session:
-            async for event in Model.subscribe(session):
-                await self._reconcile(event)
+        async for event in Model.subscribe(self._engine):
+            await self._reconcile(event)
 
     async def _reconcile(self, event: Event):
         """
@@ -30,8 +29,10 @@ class ModelController:
         model: Model = event.data
         event_type: EventType = event.type
         try:
-            with Session(self._engine) as session:
-                instances = ModelInstance.all_by_field(session, "model_id", model.id)
+            async with AsyncSession(self._engine) as session:
+                instances = await ModelInstance.all_by_field(
+                    session, "model_id", model.id
+                )
 
                 if event_type == EventType.DELETED:
                     for instance in instances:

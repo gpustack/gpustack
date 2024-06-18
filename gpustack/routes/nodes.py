@@ -16,7 +16,7 @@ async def get_nodes(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
-    return Node.paginated_by_query(
+    return await Node.paginated_by_query(
         session=session,
         fields=fields,
         page=params.page,
@@ -26,7 +26,7 @@ async def get_nodes(session: SessionDep, params: ListParamsDep):
 
 @router.get("/{id}", response_model=NodePublic)
 async def get_node(session: SessionDep, id: int):
-    node = Node.one_by_id(session, id)
+    node = await Node.one_by_id(session, id)
     if not node:
         raise NotFoundException(message="Node not found")
 
@@ -35,7 +35,7 @@ async def get_node(session: SessionDep, id: int):
 
 @router.post("", response_model=NodePublic)
 async def create_node(session: SessionDep, node_in: NodeCreate):
-    existing = Node.one_by_field(session, "name", node_in.name)
+    existing = await Node.one_by_field(session, "name", node_in.name)
     if existing:
         raise AlreadyExistsException(message=f"Node f{node_in.name} already exists")
 
@@ -49,7 +49,7 @@ async def create_node(session: SessionDep, node_in: NodeCreate):
 
 @router.put("/{id}", response_model=NodePublic)
 async def update_node(session: SessionDep, id: int, node_in: NodeUpdate):
-    node = Node.one_by_id(session, id)
+    node = await Node.one_by_id(session, id)
     if not node:
         raise NotFoundException(message="Node not found")
 
@@ -63,7 +63,7 @@ async def update_node(session: SessionDep, id: int, node_in: NodeUpdate):
 
 @router.delete("/{id}")
 async def delete_node(session: SessionDep, id: int):
-    node = Node.one_by_id(session, id)
+    node = await Node.one_by_id(session, id)
     if not node:
         raise NotFoundException(message="Node not found")
 

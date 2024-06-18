@@ -7,7 +7,6 @@ from sqlmodel import Field, Relationship, SQLModel
 from gpustack.schemas.common import PaginatedList
 from gpustack.mixins import BaseModelMixin
 
-
 # Models
 
 
@@ -51,7 +50,8 @@ class Model(ModelBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     instances: list["ModelInstance"] = Relationship(
-        sa_relationship_kwargs={"cascade": "delete"}, back_populates="model"
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        back_populates="model",
     )
 
 
@@ -97,9 +97,11 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    # model_id: int
 
-    model: Model | None = Relationship(back_populates="instances")
+    model: Model | None = Relationship(
+        back_populates="instances",
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
 
 
 class ModelInstanceCreate(ModelInstanceBase):

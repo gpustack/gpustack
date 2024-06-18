@@ -20,7 +20,7 @@ async def get_users(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
-    return User.paginated_by_query(
+    return await User.paginated_by_query(
         session=session,
         fields=fields,
         page=params.page,
@@ -30,7 +30,7 @@ async def get_users(session: SessionDep, params: ListParamsDep):
 
 @router.get("/{id}", response_model=UserPublic)
 async def get_user(session: SessionDep, id: int):
-    user = User.one_by_id(session, id)
+    user = await User.one_by_id(session, id)
     if not user:
         raise NotFoundException(message="User not found")
     return user
@@ -48,12 +48,12 @@ async def create_user(session: SessionDep, user_in: UserCreate):
 
 @router.put("/{id}", response_model=UserPublic)
 async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
-    user = User.one_by_id(session, id)
+    user = await User.one_by_id(session, id)
     if not user:
         raise NotFoundException(message="User not found")
 
     try:
-        user.update(session, user_in)
+        await user.update(session, user_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
@@ -62,11 +62,11 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
 
 @router.delete("/{id}")
 async def delete_user(session: SessionDep, id: int):
-    user = User.one_by_id(session, id)
+    user = await User.one_by_id(session, id)
     if not user:
         raise NotFoundException(message="User not found")
 
     try:
-        user.delete(session)
+        await user.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete user: {e}")

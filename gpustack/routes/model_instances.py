@@ -31,7 +31,7 @@ async def get_model_instances(session: SessionDep, params: ListParamsDep):
             ModelInstance.streaming(session=session), media_type="text/event-stream"
         )
 
-    return ModelInstance.paginated_by_query(
+    return await ModelInstance.paginated_by_query(
         session=session,
         fields=fields,
         page=params.page,
@@ -41,7 +41,7 @@ async def get_model_instances(session: SessionDep, params: ListParamsDep):
 
 @router.get("/{id}", response_model=ModelInstancePublic)
 async def get_model_instance(session: SessionDep, id: int):
-    model_instance = ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
     return model_instance
@@ -51,7 +51,7 @@ async def get_model_instance(session: SessionDep, id: int):
 async def get_serving_logs(
     request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
 ):
-    model_instance = ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 
@@ -59,7 +59,7 @@ async def get_serving_logs(
         raise NotFoundException(message="Model instance not assigned to a node")
 
     # proxy to node worker's model_instance logs endpoint
-    node = Node.one_by_id(session, model_instance.node_id)
+    node = await Node.one_by_id(session, model_instance.node_id)
     if not node:
         raise NotFoundException(message="Model instance's node not found")
 
@@ -114,7 +114,7 @@ async def create_model_instance(
 async def update_model_instance(
     session: SessionDep, id: int, model_instance_in: ModelInstanceUpdate
 ):
-    model_instance = ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 
@@ -130,7 +130,7 @@ async def update_model_instance(
 
 @router.delete("/{id}")
 async def delete_model_instance(session: SessionDep, id: int):
-    model_instance = ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 

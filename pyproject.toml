@@ -24,6 +24,9 @@ psutil = "^5.9.8"
 requests = "^2.32.3"
 huggingface-hub = "^0.23.3"
 attrs = "^23.2.0"
+fastapi-users = {extras = ["sqlalchemy"], version = "^13.0.0"}
+aiosqlite = "^0.20.0"
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
@@ -37,6 +40,11 @@ pre-commit = "^3.7.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py37']
+skip-string-normalization = true
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
