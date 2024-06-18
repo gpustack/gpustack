@@ -33,6 +33,7 @@ pytest = "^8.2.0"
 openapi-python-client = "^0.20.0"
 
 deptry = "^0.16.1"
+pre-commit = "^3.7.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
@@ -40,10 +41,3 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
 gen = "gpustack.codegen.generate:main"
-
-[tool.black]
-exclude = '''
-/(
-    generated_client
-)/
-'''

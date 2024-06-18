@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import platform
 import subprocess
 import sys
@@ -8,7 +7,11 @@ import time
 import importlib.resources as pkg_resources
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate, SourceEnum
+from gpustack.schemas.models import (
+    ModelInstance,
+    ModelInstanceUpdate,
+    SourceEnum,
+)
 from gpustack.worker.downloaders import HfDownloader, OllamaLibraryDownloader
 
 
@@ -96,7 +99,9 @@ class InferenceServer:
 
         try:
             subprocess.run(
-                [command_path] + arguments, stdout=sys.stdout, stderr=sys.stderr
+                [command_path] + arguments,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
             )
         except Exception as e:
             logger.error(f"Failed to run the llama.cpp server: {e}")

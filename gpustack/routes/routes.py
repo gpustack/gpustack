@@ -1,6 +1,13 @@
 from fastapi import APIRouter
 
-from gpustack.routes import model_instances, probes, ui, users, models, nodes, openai
+from gpustack.routes import (
+    model_instances,
+    probes,
+    users,
+    models,
+    nodes,
+    openai,
+)
 from gpustack.api.exceptions import error_responses
 
 resource_router = APIRouter()
