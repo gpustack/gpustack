@@ -1,6 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from gpustack.routes import (
+    auth,
     model_instances,
     probes,
     users,
@@ -9,6 +10,7 @@ from gpustack.routes import (
     openai,
 )
 from gpustack.api.exceptions import error_responses
+from gpustack.server.auth import get_current_user
 
 resource_router = APIRouter()
 resource_router.include_router(users.router, prefix="/users", tags=["users"])
@@ -18,8 +20,11 @@ resource_router.include_router(
     model_instances.router, prefix="/model_instances", tags=["model instances"]
 )
 
+authed_api_router = APIRouter(dependencies=[Depends(get_current_user)])
+authed_api_router.include_router(resource_router, prefix="/v1")
+authed_api_router.include_router(openai.router, tags=["openai"])
 
 api_router = APIRouter(responses=error_responses)
 api_router.include_router(probes.router, tags=["probes"])
-api_router.include_router(openai.router, tags=["openai"])
-api_router.include_router(resource_router, prefix="/v1")
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(authed_api_router)

@@ -9,7 +9,7 @@ import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import Model
-from gpustack.schemas.users import User, UserCreate
+from gpustack.schemas.users import User
 from gpustack.security import get_password_hash
 from gpustack.server.app import app
 from gpustack.config import Config
@@ -129,24 +129,22 @@ class Server:
         logger.debug("Created default models.")
 
     async def _init_user(self, session: AsyncSession):
-        user = await User.first_by_field(session=session, field="name", value="admin")
+        user = await User.first_by_field(
+            session=session, field="username", value="admin"
+        )
         if not user:
             bootstrap_password = self._config.bootstrap_password
             if not bootstrap_password:
                 bootstrap_password = secrets.token_urlsafe(16)
                 logger.info("!!!Bootstrap password!!!: %s", bootstrap_password)
 
-            user_create = UserCreate(
-                name="admin",
-                full_name="System Admin",
-                password=bootstrap_password,
+            user = User(
+                username="admin",
+                full_name="Default System Admin",
+                hashed_password=get_password_hash(bootstrap_password),
                 is_admin=True,
             )
-            user = User.model_validate(
-                user_create,
-                update={"hashed_password": get_password_hash(user_create.password)},
-            )
-            await user.save(session)
+            await User.create(session, user)
 
     def at_exit(self):
         logger.info("Stopping GPUStack server.")

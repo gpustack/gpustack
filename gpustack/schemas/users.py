@@ -6,7 +6,7 @@ from ..mixins import BaseModelMixin
 
 
 class UserBase(SQLModel):
-    name: str
+    username: str
     is_admin: bool = False
     full_name: str | None = None
 
@@ -26,7 +26,6 @@ class UpdatePassword(SQLModel):
 
 class User(UserBase, BaseModelMixin, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    name: str
     hashed_password: str
 
 

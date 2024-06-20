@@ -17,6 +17,7 @@ def setup_logging(debug: bool = False):
         "asyncio",
         "aiosqlite",
         "urllib3.connectionpool",
+        "multipart.multipart",
     ]
 
     for logger_name in third_party_logger_names:

@@ -43,7 +43,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--serve-default-models",
         action="store_true",
         help="Serve default models on bootstrap.",
-        default=True,
+        default=False,
+    )
+    group.add_argument(
+        "--bootstrap-password",
+        type=str,
+        help="Initial password for the default admin user. Random by default.",
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -135,6 +140,9 @@ def set_server_options(args, cfg: Config):
 
     if args.serve_default_models:
         cfg.serve_default_models = args.serve_default_models
+
+    if args.bootstrap_password:
+        cfg.bootstrap_password = args.bootstrap_password
 
 
 def set_worker_options(args, cfg: Config):
