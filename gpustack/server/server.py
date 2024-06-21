@@ -136,7 +136,14 @@ class Server:
             bootstrap_password = self._config.bootstrap_password
             if not bootstrap_password:
                 bootstrap_password = secrets.token_urlsafe(16)
-                logger.info("!!!Bootstrap password!!!: %s", bootstrap_password)
+                bootstrap_password_file = os.path.join(
+                    self._config.data_dir, "initial_admin_password"
+                )
+                with open(bootstrap_password_file, "w") as file:
+                    file.write(bootstrap_password)
+                logger.info(
+                    f"Generated initial admin password. You can get it from {bootstrap_password_file}."
+                )
 
             user = User(
                 username="admin",
