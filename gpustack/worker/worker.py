@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 class Worker:
     def __init__(self, cfg: Config):
-        clientset = ClientSet(base_url=cfg.server_url)
+        clientset = ClientSet(
+            base_url=cfg.server_url,
+            username=f"system/worker/{cfg.node_ip}",
+            password=cfg.token,
+        )
         self._node_manager = NodeManager(node_ip=cfg.node_ip, clientset=clientset)
         self._serve_manager = ServeManager(
             server_url=cfg.server_url, log_dir=cfg.log_dir, clientset=clientset

@@ -39,12 +39,25 @@ async def get_current_user(
     oauth2_bearer_token: Annotated[Optional[str], Depends(oauth2_bearer_auth)] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
 ) -> User:
-    if basic_credentials:
+    if basic_credentials and is_system_user(basic_credentials.username):
+        return await authenticate_system_user(basic_credentials)
+    elif basic_credentials:
         return await authenticate_basic_user(session, basic_credentials)
 
     access_token = get_access_token(bearer_token, oauth2_bearer_token, cookie_token)
 
     return await get_user_from_token(session, access_token)
+
+
+def is_system_user(username: str) -> bool:
+    return username.startswith("system/")
+
+
+async def authenticate_system_user(
+    basic_credentials: HTTPBasicCredentials,
+) -> User:
+    # TODO: Implement system user authentication
+    return User(username=basic_credentials.username)
 
 
 async def authenticate_basic_user(

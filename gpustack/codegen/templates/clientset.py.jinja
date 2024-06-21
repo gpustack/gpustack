@@ -1,13 +1,30 @@
+import base64
 from .generated_http_client import HTTPClient
-
+from typing import Optional
 {% for class_name in class_names %}
 from .generated_{{ class_name | to_snake_case }}_client import {{ class_name }}Client
-{% endfor %}
+{%- endfor %}
+
 
 class ClientSet:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+    ):
+        headers = {}
 
-    def __init__(self, base_url: str):
-        http_client = HTTPClient(base_url=base_url)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        elif username and password:
+            base64_credentials = base64.b64encode(
+                f"{username}:{password}".encode()
+            ).decode()
+            headers["Authorization"] = f"Basic {base64_credentials}"
+
+        http_client = HTTPClient(base_url=base_url).with_headers(headers)
 {% for class_name in class_names %}
         self.{{ class_name | to_underscore_plural }} = {{ class_name }}Client(http_client)
-{% endfor %}
+{%- endfor %}{{ "\n" }}
