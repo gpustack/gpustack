@@ -35,7 +35,7 @@ class Config(BaseSettings):
     disable_worker: bool = False
     serve_default_models: bool | None = None
     bootstrap_password: str | None = None
-    secret_key: str = secrets.token_urlsafe(32)
+    secret_key: str = secrets.token_hex(16)
 
     # Worker options
     server_url: str | None = None
@@ -87,7 +87,7 @@ class Config(BaseSettings):
             with open(token_path, "r") as file:
                 token = file.read().strip()
         else:
-            token = secrets.token_urlsafe(16)
+            token = secrets.token_hex(16)
             os.makedirs(self.data_dir, exist_ok=True)
             with open(token_path, "w") as file:
                 file.write(token)

@@ -4,7 +4,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.security import get_password_hash
+from gpustack.security import get_secret_hash
 from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
 
@@ -36,7 +36,7 @@ async def update_user_me(
     try:
         update_data = user_in.model_dump()
         if "password" in update_data:
-            hashed_password = get_password_hash(update_data["password"])
+            hashed_password = get_secret_hash(update_data["password"])
             update_data["hashed_password"] = hashed_password
             del update_data["password"]
         await user.update(session, update_data)
@@ -59,7 +59,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
     try:
         user_data = user_in.model_dump()
         if "password" in user_data:
-            hashed_password = get_password_hash(user_in.password)
+            hashed_password = get_secret_hash(user_in.password)
             user_data["hashed_password"] = hashed_password
             del user_data["password"]
         user = User(**user_data)
@@ -79,7 +79,7 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     try:
         update_data = user_in.model_dump()
         if "password" in update_data:
-            hashed_password = get_password_hash(update_data["password"])
+            hashed_password = get_secret_hash(update_data["password"])
             update_data["hashed_password"] = hashed_password
             del update_data["password"]
         await user.update(session, update_data)

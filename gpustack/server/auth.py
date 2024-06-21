@@ -1,5 +1,7 @@
+from datetime import datetime
 from fastapi import Depends, Request
 from gpustack.config.config import Config
+from gpustack.schemas.api_keys import ApiKey
 from gpustack.server.db import get_session
 from typing import Annotated, Optional
 from fastapi.security import (
@@ -8,14 +10,14 @@ from fastapi.security import (
     HTTPBasic,
     HTTPBasicCredentials,
     HTTPBearer,
-    OAuth2PasswordBearer,
 )
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import UnauthorizedException
 from gpustack.schemas.users import User
 from gpustack.security import (
+    API_KEY_PREFIX,
     decode_access_token,
-    verify_password,
+    verify_hashed_secret,
 )
 
 SESSION_COOKIE_NAME = "gpustack_session"
@@ -23,7 +25,6 @@ SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
-oauth2_bearer_auth = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 cookie_auth = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
 
 credentials_exception = UnauthorizedException(
@@ -40,7 +41,6 @@ async def get_current_user(
     bearer_token: Annotated[
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
-    oauth2_bearer_token: Annotated[Optional[str], Depends(oauth2_bearer_auth)] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
 ) -> User:
     if basic_credentials and is_system_user(basic_credentials.username):
@@ -48,10 +48,12 @@ async def get_current_user(
         return await authenticate_system_user(server_config, basic_credentials)
     elif basic_credentials:
         return await authenticate_basic_user(session, basic_credentials)
+    elif cookie_token:
+        return await get_user_from_jwt_token(session, cookie_token)
+    elif bearer_token:
+        return await get_user_from_bearer_token(session, bearer_token)
 
-    access_token = get_access_token(bearer_token, oauth2_bearer_token, cookie_token)
-
-    return await get_user_from_token(session, access_token)
+    raise credentials_exception
 
 
 def is_system_user(username: str) -> bool:
@@ -96,7 +98,7 @@ def get_access_token(
         raise credentials_exception
 
 
-async def get_user_from_token(session: AsyncSession, access_token: str) -> User:
+async def get_user_from_jwt_token(session: AsyncSession, access_token: str) -> User:
     try:
         payload = decode_access_token(access_token)
         username = payload.get("sub")
@@ -112,6 +114,29 @@ async def get_user_from_token(session: AsyncSession, access_token: str) -> User:
     return user
 
 
+async def get_user_from_bearer_token(
+    session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
+) -> User:
+    try:
+        parts = bearer_token.credentials.split("_")
+        if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
+            access_key = parts[1]
+            secret_key = parts[2]
+            api_key = await ApiKey.one_by_field(session, "access_key", access_key)
+            if (
+                api_key is not None
+                and verify_hashed_secret(api_key.hashed_secret_key, secret_key)
+                and (api_key.expires_at is None or api_key.expires_at > datetime.now())
+            ):
+                user = await User.one_by_id(session, api_key.user_id)
+                if user is not None:
+                    return user
+    except Exception:
+        raise credentials_exception
+
+    raise credentials_exception
+
+
 async def authenticate_user(
     session: AsyncSession, username: str, password: str
 ) -> User:
@@ -119,7 +144,7 @@ async def authenticate_user(
     if not user:
         raise UnauthorizedException(message="Incorrect username or password")
 
-    if not verify_password(user.hashed_password, password):
+    if not verify_hashed_secret(user.hashed_password, password):
         raise UnauthorizedException(message="Incorrect username or password")
 
     return user

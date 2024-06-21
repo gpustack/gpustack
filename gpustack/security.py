@@ -5,20 +5,21 @@ from argon2 import PasswordHasher
 
 ph = PasswordHasher()
 
+API_KEY_PREFIX = "gpustack"
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
-def verify_password(hashed_password, plain_password) -> bool:
+def verify_hashed_secret(hashed: str | bytes, plain: str | bytes) -> bool:
     try:
-        return ph.verify(hashed_password, plain_password)
+        return ph.verify(hashed, plain)
     except Exception:
         return False
 
 
-def get_password_hash(password):
-    return ph.hash(password)
+def get_secret_hash(plain: str | bytes):
+    return ph.hash(plain)
 
 
 def create_access_token(username: str, expires_delta: Union[timedelta, None] = None):

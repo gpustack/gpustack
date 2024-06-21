@@ -28,9 +28,14 @@ from gpustack.schemas.nodes import (
     MemoryInfo,
 )
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
+from gpustack.schemas.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic, ApiKeysPublic
 from gpustack.schemas.common import PaginatedList
 
 __all__ = [
+    "ApiKey",
+    "ApiKeyCreate",
+    "ApiKeyPublic",
+    "ApiKeysPublic",
     "Node",
     "NodeCreate",
     "NodeUpdate",

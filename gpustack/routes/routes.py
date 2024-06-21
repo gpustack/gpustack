@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from gpustack.routes import (
+    api_keys,
     auth,
     model_instances,
     probes,
@@ -19,6 +20,7 @@ resource_router.include_router(nodes.router, prefix="/nodes", tags=["nodes"])
 resource_router.include_router(
     model_instances.router, prefix="/model_instances", tags=["model instances"]
 )
+resource_router.include_router(api_keys.router, prefix="/api_keys", tags=["api keys"])
 
 authed_api_router = APIRouter(dependencies=[Depends(get_current_user)])
 authed_api_router.include_router(resource_router, prefix="/v1")
