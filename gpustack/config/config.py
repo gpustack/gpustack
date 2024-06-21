@@ -1,7 +1,7 @@
 import os
 import secrets
-from pydantic import Field
 from pydantic_settings import BaseSettings
+from gpustack.utils import get_first_non_loopback_ip
 
 
 class Config(BaseSettings):
@@ -10,6 +10,7 @@ class Config(BaseSettings):
     Attributes:
         debug: Enable debug mode.
         data_dir: Directory to store data. Default is OS specific.
+        token: Shared secret used to add a worker.
 
         database_url: URL of the database.
         disable_worker: Disable embedded worker.
@@ -26,7 +27,8 @@ class Config(BaseSettings):
 
     # Common options
     debug: bool = False
-    data_dir: str = Field(default_factory=lambda: Config.get_data_dir())
+    data_dir: str | None = None
+    token: str | None = None
 
     # Server options
     database_url: str | None = None
@@ -40,7 +42,29 @@ class Config(BaseSettings):
     node_ip: str | None = None
     enable_metrics: bool = True
     metrics_port: int = 10051
-    log_dir: str = os.path.expanduser("~/.local/share/gpustack/log")
+    log_dir: str | None = None
+
+    def __init__(self, **values):
+        super().__init__(**values)
+
+        # common options
+        if self.data_dir is None:
+            self.data_dir = self.get_data_dir()
+
+        if self.log_dir is None:
+            self.log_dir = os.path.join(self.data_dir, "log")
+
+        if not self._is_server() and not self.token:
+            raise ValueError("Token is required when running as a worker")
+        self.prepare_token()
+
+        # server options
+        if self.database_url is None:
+            self.database_url = f"sqlite+aiosqlite:///{self.data_dir}/database.db"
+
+        # worker options
+        if self.node_ip is None:
+            self.node_ip = get_first_non_loopback_ip()
 
     @staticmethod
     def get_data_dir():
@@ -56,3 +80,25 @@ class Config(BaseSettings):
 
     class Config:
         env_prefix = "GPU_STACK_"
+
+    def prepare_token(self):
+        token_path = os.path.join(self.data_dir, "token")
+        if os.path.exists(token_path):
+            with open(token_path, "r") as file:
+                token = file.read().strip()
+        else:
+            token = secrets.token_urlsafe(16)
+            os.makedirs(self.data_dir, exist_ok=True)
+            with open(token_path, "w") as file:
+                file.write(token)
+
+        if self.token is None:
+            self.token = token
+        elif self.token != token:
+            with open(token_path, "w") as file:
+                file.write(self.token)
+
+        return token
+
+    def _is_server(self):
+        return self.server_url is None

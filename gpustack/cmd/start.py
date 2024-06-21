@@ -5,7 +5,6 @@ import multiprocessing
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
 from gpustack.server.server import Server
-from gpustack.utils import get_first_non_loopback_ip
 
 
 def setup_start_cmd(subparsers: argparse._SubParsersAction):
@@ -16,6 +15,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     )
     group = parser_server.add_argument_group("Common settings")
     group.add_argument(
+        "-d",
         "--debug",
         action="store_true",
         help="Enable debug mode.",
@@ -25,6 +25,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--data-dir",
         type=str,
         help="Directory to store data. Default is OS specific.",
+    )
+    group.add_argument(
+        "-t",
+        "--token",
+        type=str,
+        help="Shared secret used to add a worker.",
     )
 
     group = parser_server.add_argument_group("Server settings")
@@ -53,6 +59,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
+        "-s",
         "--server-url",
         type=str,
         help="Server to connect to.",
@@ -112,53 +119,19 @@ def run_worker(cfg: Config):
 
 
 def parse_args(args) -> Config:
-    cfg = Config()
-
-    set_common_options(args, cfg)
-    set_server_options(args, cfg)
-    set_worker_options(args, cfg)
+    cfg = Config(
+        debug=args.debug,
+        data_dir=args.data_dir,
+        token=args.token,
+        database_url=args.database_url,
+        disable_worker=args.disable_worker,
+        serve_default_models=args.serve_default_models,
+        bootstrap_password=args.bootstrap_password,
+        server_url=args.server_url,
+        node_ip=args.node_ip,
+        enable_metrics=args.enable_metrics,
+        metrics_port=args.metrics_port,
+        log_dir=args.log_dir,
+    )
 
     return cfg
-
-
-def set_common_options(args, cfg: Config):
-    if args.debug:
-        cfg.debug = args.debug
-
-    if args.data_dir:
-        cfg.data_dir = args.data_dir
-
-
-def set_server_options(args, cfg: Config):
-    if args.database_url:
-        cfg.database_url = args.database_url
-    else:
-        cfg.database_url = f"sqlite+aiosqlite:///{cfg.data_dir}/database.db"
-
-    if args.disable_worker:
-        cfg.disable_worker = args.disable_worker
-
-    if args.serve_default_models:
-        cfg.serve_default_models = args.serve_default_models
-
-    if args.bootstrap_password:
-        cfg.bootstrap_password = args.bootstrap_password
-
-
-def set_worker_options(args, cfg: Config):
-    if args.server_url:
-        cfg.server_url = args.server_url
-
-    if args.node_ip:
-        cfg.node_ip = args.node_ip
-    else:
-        cfg.node_ip = get_first_non_loopback_ip()
-
-    if args.enable_metrics:
-        cfg.enable_metrics = args.enable_metrics
-
-    if args.metrics_port:
-        cfg.metrics_port = args.metrics_port
-
-    if args.log_dir:
-        cfg.log_dir = args.log_dir
