@@ -1,6 +1,9 @@
 import argparse
 import asyncio
 import multiprocessing
+from typing import Any, Dict
+
+import yaml
 
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
@@ -14,6 +17,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         description="Run GPUStack server or worker.",
     )
     group = parser_server.add_argument_group("Common settings")
+    group.add_argument("--config-file", type=str, help="Path to the YAML config file")
     group.add_argument(
         "-d",
         "--debug",
@@ -118,20 +122,60 @@ def run_worker(cfg: Config):
     worker.start()
 
 
-def parse_args(args) -> Config:
-    cfg = Config(
-        debug=args.debug,
-        data_dir=args.data_dir,
-        token=args.token,
-        database_url=args.database_url,
-        disable_worker=args.disable_worker,
-        serve_default_models=args.serve_default_models,
-        bootstrap_password=args.bootstrap_password,
-        server_url=args.server_url,
-        node_ip=args.node_ip,
-        enable_metrics=args.enable_metrics,
-        metrics_port=args.metrics_port,
-        log_dir=args.log_dir,
-    )
+def load_config_from_yaml(yaml_file: str) -> Dict[str, Any]:
+    with open(yaml_file, "r") as file:
+        return yaml.safe_load(file)
 
-    return cfg
+
+def parse_args(args) -> Config:
+    config_data = {}
+    if args.config_file:
+        config_data.update(load_config_from_yaml(args.config_file))
+    else:
+        set_common_options(args, config_data)
+        set_server_options(args, config_data)
+        set_worker_options(args, config_data)
+
+    return Config(**config_data)
+
+
+def set_common_options(args, config_data: dict):
+    if args.debug:
+        config_data["debug"] = args.debug
+
+    if args.data_dir:
+        config_data["data_dir"] = args.data_dir
+
+    if args.token:
+        config_data["token"] = args.token
+
+
+def set_server_options(args, config_data: dict):
+    if args.database_url:
+        config_data["database_url"] = args.database_url
+
+    if args.disable_worker:
+        config_data["disable_worker"] = args.disable_worker
+
+    if args.serve_default_models:
+        config_data["serve_default_models"] = args.serve_default_models
+
+    if args.bootstrap_password:
+        config_data["bootstrap_password"] = args.bootstrap_password
+
+
+def set_worker_options(args, config_data: dict):
+    if args.server_url:
+        config_data["server_url"] = args.server_url
+
+    if args.node_ip:
+        config_data["node_ip"] = args.node_ip
+
+    if args.enable_metrics:
+        config_data["enable_metrics"] = args.enable_metrics
+
+    if args.metrics_port:
+        config_data["metrics_port"] = args.metrics_port
+
+    if args.log_dir:
+        config_data["log_dir"] = args.log_dir
