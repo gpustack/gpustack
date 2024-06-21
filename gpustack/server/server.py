@@ -48,6 +48,7 @@ class Server:
         self._start_controllers()
 
         # Start FastAPI server
+        app.state.server_config = self._config
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
@@ -142,7 +143,8 @@ class Server:
                 with open(bootstrap_password_file, "w") as file:
                     file.write(bootstrap_password)
                 logger.info(
-                    f"Generated initial admin password. You can get it from {bootstrap_password_file}."
+                    "Generated initial admin password. "
+                    f"You can get it from {bootstrap_password_file}."
                 )
 
             user = User(

@@ -1,4 +1,5 @@
-from fastapi import Depends
+from fastapi import Depends, Request
+from gpustack.config.config import Config
 from gpustack.server.db import get_session
 from typing import Annotated, Optional
 from fastapi.security import (
@@ -18,6 +19,8 @@ from gpustack.security import (
 )
 
 SESSION_COOKIE_NAME = "gpustack_session"
+SYSTEM_USER_PREFIX = "system/"
+SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
 oauth2_bearer_auth = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
@@ -29,6 +32,7 @@ credentials_exception = UnauthorizedException(
 
 
 async def get_current_user(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     basic_credentials: Annotated[
         Optional[HTTPBasicCredentials], Depends(basic_auth)
@@ -40,7 +44,8 @@ async def get_current_user(
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
 ) -> User:
     if basic_credentials and is_system_user(basic_credentials.username):
-        return await authenticate_system_user(basic_credentials)
+        server_config: Config = request.app.state.server_config
+        return await authenticate_system_user(server_config, basic_credentials)
     elif basic_credentials:
         return await authenticate_basic_user(session, basic_credentials)
 
@@ -50,14 +55,17 @@ async def get_current_user(
 
 
 def is_system_user(username: str) -> bool:
-    return username.startswith("system/")
+    return username.startswith(SYSTEM_USER_PREFIX)
 
 
 async def authenticate_system_user(
-    basic_credentials: HTTPBasicCredentials,
+    config: Config,
+    credentials: HTTPBasicCredentials,
 ) -> User:
-    # TODO: Implement system user authentication
-    return User(username=basic_credentials.username)
+    if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
+        if credentials.password == config.token:
+            return User(username=credentials.username)
+    raise credentials_exception
 
 
 async def authenticate_basic_user(
