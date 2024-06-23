@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from gpustack.api.exceptions import (
+    AlreadyExistsException,
     InternalServerErrorException,
     NotFoundException,
 )
@@ -56,14 +57,19 @@ async def get_user(session: SessionDep, id: int):
 
 @router.post("", response_model=UserPublic)
 async def create_user(session: SessionDep, user_in: UserCreate):
+    existing = await User.one_by_field(session, "username", user_in.username)
+    if existing:
+        raise AlreadyExistsException(message=f"User f{user_in.username} already exists")
+
     try:
-        user_data = user_in.model_dump()
-        if "password" in user_data:
-            hashed_password = get_secret_hash(user_in.password)
-            user_data["hashed_password"] = hashed_password
-            del user_data["password"]
-        user = User(**user_data)
-        await User.create(session, user)
+        to_create = User(
+            username=user_in.username,
+            full_name=user_in.full_name,
+            is_admin=user_in.is_admin,
+        )
+        if user_in.password:
+            to_create.hashed_password = get_secret_hash(user_in.password)
+        user = await User.create(session, to_create)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create user: {e}")
 
