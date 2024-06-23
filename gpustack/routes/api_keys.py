@@ -73,6 +73,6 @@ async def delete_api_key(session: SessionDep, user: CurrentUserDep, id: int):
         raise NotFoundException(message="Api key not found")
 
     try:
-        await ApiKey.delete(session)
+        await api_key.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete api key: {e}")
