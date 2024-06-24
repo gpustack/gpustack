@@ -99,7 +99,7 @@ class ServeManager:
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,
-                args=(self._server_url, mi, log_file_path),
+                args=(mi, self._server_url, self._clientset.headers, log_file_path),
             )
             process.daemon = False
             process.start()
@@ -114,11 +114,16 @@ class ServeManager:
             logger.error(f"Failed to serve model instance: {e}")
 
     @staticmethod
-    def serve_model_instance(server_url: str, mi: ModelInstance, log_file_path: str):
+    def serve_model_instance(
+        mi: ModelInstance, server_url: str, client_headers: dict, log_file_path: str
+    ):
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
         signal.signal(signal.SIGTERM, signal_handler)
 
-        clientset = ClientSet(base_url=server_url)
+        clientset = ClientSet(
+            base_url=server_url,
+            headers=client_headers,
+        )
         with open(log_file_path, "a", buffering=1) as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
                 InferenceServer(clientset, mi).start()

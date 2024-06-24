@@ -15,8 +15,10 @@ class ClientSet:
         api_key: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        headers: Optional[dict] = None,
     ):
-        headers = {}
+        if headers is None:
+            headers = {}
 
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -25,6 +27,9 @@ class ClientSet:
                 f"{username}:{password}".encode()
             ).decode()
             headers["Authorization"] = f"Basic {base64_credentials}"
+
+        self.base_url = base_url
+        self.headers = headers
 
         http_client = HTTPClient(base_url=base_url).with_headers(headers)
 
