@@ -4,17 +4,17 @@ import shutil
 from typing import List
 from jinja2 import Environment, FileSystemLoader
 
-from .filters import to_snake_case, to_plural, to_underscore_plural
+from .filters import to_dash_plural, to_snake_case, to_plural, to_underscore_plural
 
 
 def main():
-
     cfg = Config(class_names=["Node", "Model", "ModelInstance", "User"])
 
     env = Environment(loader=FileSystemLoader(cfg.template_dir), auto_reload=True)
     env.filters["to_snake_case"] = to_snake_case
     env.filters["to_plural"] = to_plural
     env.filters["to_underscore_plural"] = to_underscore_plural
+    env.filters["to_dash_plural"] = to_dash_plural
 
     reset(cfg)
     gen_http_clients(env, cfg)

@@ -13,7 +13,7 @@ class {{ class_name }}Client:
 
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v1/{{ class_name | to_underscore_plural }}"
+        self._url = f"{client._base_url}/v1/{{ class_name | to_dash_plural }}"
 
     def list(self, params: Dict[str, Any] = None) -> {{ class_name | to_plural }}Public:
         response = self._client.get_httpx_client().get(self._url, params=params)
@@ -68,4 +68,3 @@ class {{ class_name }}Client:
     def delete(self, id: int):
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
         raise_if_response_error(response)
-
