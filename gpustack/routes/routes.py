@@ -22,14 +22,14 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 base_router = APIRouter(dependencies=[Depends(get_current_user)])
 base_router.include_router(users.me_router, prefix="/users", tags=["users"])
-base_router.include_router(api_keys.router, prefix="/api_keys", tags=["api keys"])
+base_router.include_router(api_keys.router, prefix="/api-keys", tags=["api keys"])
 
 admin_router = APIRouter()
 admin_router.include_router(users.router, prefix="/users", tags=["users"])
 admin_router.include_router(models.router, prefix="/models", tags=["models"])
 admin_router.include_router(nodes.router, prefix="/nodes", tags=["nodes"])
 admin_router.include_router(
-    model_instances.router, prefix="/model_instances", tags=["model instances"]
+    model_instances.router, prefix="/model-instances", tags=["model instances"]
 )
 
 api_router.include_router(
