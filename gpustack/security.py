@@ -1,3 +1,5 @@
+import secrets
+import string
 from typing import Union
 from datetime import datetime, timedelta, timezone
 import jwt
@@ -35,3 +37,19 @@ def create_access_token(username: str, expires_delta: Union[timedelta, None] = N
 
 def decode_access_token(token: str):
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
+
+def generate_secure_password(length=12):
+    if length < 8:
+        raise ValueError("Password length should be at least 8 characters")
+
+    characters = string.ascii_letters + string.digits + string.punctuation
+    while True:
+        password = ''.join(secrets.choice(characters) for i in range(length))
+        if (
+            any(c.islower() for c in password)
+            and any(c.isupper() for c in password)
+            and any(c.isdigit() for c in password)
+            and any(c in string.punctuation for c in password)
+        ):
+            return password

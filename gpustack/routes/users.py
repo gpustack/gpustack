@@ -25,28 +25,6 @@ async def get_users(session: SessionDep, params: ListParamsDep):
     )
 
 
-@router.get("/me", response_model=UserPublic)
-async def get_user_me(user: CurrentUserDep):
-    return user
-
-
-@router.put("/me", response_model=UserPublic)
-async def update_user_me(
-    session: SessionDep, user: CurrentUserDep, user_in: UserUpdate
-):
-    try:
-        update_data = user_in.model_dump()
-        if "password" in update_data:
-            hashed_password = get_secret_hash(update_data["password"])
-            update_data["hashed_password"] = hashed_password
-            del update_data["password"]
-        await user.update(session, update_data)
-    except Exception as e:
-        raise InternalServerErrorException(message=f"Failed to update user: {e}")
-
-    return user
-
-
 @router.get("/{id}", response_model=UserPublic)
 async def get_user(session: SessionDep, id: int):
     user = await User.one_by_id(session, id)
@@ -105,3 +83,28 @@ async def delete_user(session: SessionDep, id: int):
         await user.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete user: {e}")
+
+
+me_router = APIRouter()
+
+
+@me_router.get("/me", response_model=UserPublic)
+async def get_user_me(user: CurrentUserDep):
+    return user
+
+
+@me_router.put("/me", response_model=UserPublic)
+async def update_user_me(
+    session: SessionDep, user: CurrentUserDep, user_in: UserUpdate
+):
+    try:
+        update_data = user_in.model_dump()
+        if "password" in update_data:
+            hashed_password = get_secret_hash(update_data["password"])
+            update_data["hashed_password"] = hashed_password
+            del update_data["password"]
+        await user.update(session, update_data)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update user: {e}")
+
+    return user

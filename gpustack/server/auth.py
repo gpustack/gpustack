@@ -12,7 +12,7 @@ from fastapi.security import (
     HTTPBearer,
 )
 from sqlmodel.ext.asyncio.session import AsyncSession
-from gpustack.api.exceptions import UnauthorizedException
+from gpustack.api.exceptions import ForbiddenException, UnauthorizedException
 from gpustack.schemas.users import User
 from gpustack.security import (
     API_KEY_PREFIX,
@@ -56,6 +56,14 @@ async def get_current_user(
     raise credentials_exception
 
 
+async def get_admin_user(
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> User:
+    if not current_user.is_admin:
+        raise ForbiddenException(message="No permission to access")
+    return current_user
+
+
 def is_system_user(username: str) -> bool:
     return username.startswith(SYSTEM_USER_PREFIX)
 
@@ -66,7 +74,7 @@ async def authenticate_system_user(
 ) -> User:
     if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
         if credentials.password == config.token:
-            return User(username=credentials.username)
+            return User(username=credentials.username, is_admin=True)
     raise credentials_exception
 
 

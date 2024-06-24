@@ -17,7 +17,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.post("/v1/chat/completions")
+@router.post("/chat/completions")
 async def chat_completion(session: SessionDep, request: Request):
     body = await request.json()
     model_name = body.get("model")

@@ -2,7 +2,6 @@ import asyncio
 import atexit
 from multiprocessing import Process
 import os
-import secrets
 from typing import List
 import uvicorn
 import logging
@@ -10,7 +9,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
-from gpustack.security import get_secret_hash
+from gpustack.security import generate_secure_password, get_secret_hash
 from gpustack.server.app import app
 from gpustack.config import Config
 from gpustack.server.controller import ModelController
@@ -136,7 +135,7 @@ class Server:
         if not user:
             bootstrap_password = self._config.bootstrap_password
             if not bootstrap_password:
-                bootstrap_password = secrets.token_hex(8)
+                bootstrap_password = generate_secure_password()
                 bootstrap_password_file = os.path.join(
                     self._config.data_dir, "initial_admin_password"
                 )
