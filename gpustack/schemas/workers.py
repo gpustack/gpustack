@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Dict, Optional
 from pydantic import field_validator, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
@@ -8,35 +9,41 @@ from gpustack.schemas.common import PaginatedList
 from typing import Any, List
 
 
-class MemoryInfo(BaseModel):
-    total: float = Field(default=-1)  # in bytes
-    used: float = Field(default=-1)
-    allocated: float = Field(default=-1)
+class UtilizationInfo(BaseModel):
+    total: int = Field(default=None)
+    used: Optional[int] = Field(default=None)
+    utilization_rate: Optional[float] = Field(default=None)
 
 
-class SwapInfo(BaseModel):
-    total: float = Field(default=-1)  # in bytes
-    used: float = Field(default=-1)
+class MemoryInfo(UtilizationInfo):
+    is_unified_memory: bool = Field(default=False)
+    allocated: Optional[int] = Field(default=None)
 
 
-class CPUInfo(BaseModel):
-    total: float = Field(default=-1)  # cores
-    allocated: float = Field(default=-1)  # cores
-    utilization_rate: float = Field(default=-1)
+class CPUInfo(UtilizationInfo):
+    pass
+
+
+class GPUCoreInfo(UtilizationInfo):
+    pass
+
+
+class GPUMemoryInfo(UtilizationInfo):
+    allocated: Optional[int] = Field(default=None)
+
+
+class SwapInfo(UtilizationInfo):
+    pass
 
 
 class GPUDevice(BaseModel):
     uuid: str = Field(default="")
     name: str = Field(default="")
     vendor: str = Field(default="")
-    index: int = Field(default=-1)
-    core_total: Optional[int] = Field(default=-1)
-    core_allocated: Optional[int] = Field(default=-1)
-    core_utilization_rate: Optional[float] = Field(default=-1)
-    memory_total: Optional[float] = Field(default=-1)  # in bytes
-    memory_allocated: Optional[float] = Field(default=-1)
-    memory_used: Optional[float] = Field(default=-1)
-    temperature: Optional[float] = Field(default=-1)  # in celsius
+    index: int = Field(default=None)
+    core: Optional[GPUCoreInfo] = Field(default=None)
+    memory: Optional[GPUMemoryInfo] = Field(default=None)
+    temperature: Optional[float] = Field(default=None)  # in celsius
 
 
 GPUInfo = List[GPUDevice]
@@ -46,10 +53,10 @@ class MountPoint(BaseModel):
     name: str = Field(default="")
     mount_point: str = Field(default="")
     mount_from: str = Field(default="")
-    total: float = Field(default=-1)  # in bytes
-    used: float = Field(default=-1)
-    free: float = Field(default=-1)
-    available: float = Field(default=-1)
+    total: int = Field(default=None)  # in bytes
+    used: int = Field(default=None)
+    free: int = Field(default=None)
+    available: int = Field(default=None)
 
 
 FileSystemInfo = List[MountPoint]
@@ -68,11 +75,17 @@ class KernelInfo(BaseModel):
 
 
 class UptimeInfo(BaseModel):
-    uptime: float = Field(default=-1)  # in seconds
+    uptime: float = Field(default=None)  # in seconds
     boot_time: str = Field(default="")
 
 
-class NodeStatus(BaseModel):
+class WorkerStateEnum(str, Enum):
+    unknown = "Unknown"
+    running = "Running"
+    inactive = "Inactive"
+
+
+class WorkerStatus(BaseModel):
     cpu: CPUInfo | None = Field(sa_column=Column(JSON), default=None)
     memory: MemoryInfo | None = Field(sa_column=Column(JSON), default=None)
     gpu: GPUInfo | None = Field(sa_column=Column(JSON), default=None)
@@ -81,45 +94,46 @@ class NodeStatus(BaseModel):
     os: OperatingSystemInfo | None = Field(sa_column=Column(JSON), default=None)
     kernel: KernelInfo | None = Field(sa_column=Column(JSON), default=None)
     uptime: UptimeInfo | None = Field(sa_column=Column(JSON), default=None)
-    state: str | None = Field(default="unknown")
 
 
-class NodeBase(SQLModel):
+class WorkerBase(SQLModel):
     name: str = Field(index=True, unique=True)
     hostname: str
-    address: str
+    ip: str
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
-    status: NodeStatus | None = Field(sa_column=Column(JSON))
+
+    state: WorkerStateEnum = WorkerStateEnum.unknown
+    status: WorkerStatus | None = Field(sa_column=Column(JSON))
 
     # Workaround for https://github.com/tiangolo/sqlmodel/issues/63
     # It generates a warning.
     # TODO Find a better way.
     @field_validator("status")
-    def validate_node_status(cls, val: NodeStatus):
+    def validate_worker_status(cls, val: any):
         if val is None:
             empty_dict: Dict[str, Any] = {}
             return empty_dict
         return val.model_dump()
 
 
-class Node(NodeBase, BaseModelMixin, table=True):
+class Worker(WorkerBase, BaseModelMixin, table=True):
     id: int | None = Field(default=None, primary_key=True)
 
 
-class NodeCreate(NodeBase):
+class WorkerCreate(WorkerBase):
     pass
 
 
-class NodeUpdate(NodeBase):
+class WorkerUpdate(WorkerBase):
     pass
 
 
-class NodePublic(
-    NodeBase,
+class WorkerPublic(
+    WorkerBase,
 ):
     id: int
     created_at: datetime
     updated_at: datetime
 
 
-NodesPublic = PaginatedList[NodePublic]
+WorkersPublic = PaginatedList[WorkerPublic]
