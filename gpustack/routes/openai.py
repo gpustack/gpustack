@@ -48,6 +48,9 @@ async def chat_completion(session: SessionDep, request: Request):
 
     stream = body.get("stream", False)
 
+    request.state.model = model
+    request.state.stream = stream
+
     model_instances = await ModelInstance.all_by_field(
         session=session, field="model_id", value=model.id
     )

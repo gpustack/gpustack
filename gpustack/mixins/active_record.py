@@ -207,11 +207,15 @@ class ActiveRecordMixin:
             await session.rollback()
             raise e
 
-    async def update(self, session: AsyncSession, source: dict | SQLModel):
+    async def update(
+        self, session: AsyncSession, source: dict | SQLModel | None = None
+    ):
         """Update the object with the source and save to the database."""
 
         if isinstance(source, SQLModel):
             source = source.model_dump(exclude_unset=True)
+        elif source is None:
+            source = {}
 
         for key, value in source.items():
             setattr(self, key, value)

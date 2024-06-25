@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from gpustack.routes import (
     api_keys,
     auth,
+    dashboard,
     model_instances,
     probes,
     users,
@@ -25,6 +26,7 @@ base_router.include_router(users.me_router, prefix="/users", tags=["users"])
 base_router.include_router(api_keys.router, prefix="/api-keys", tags=["api keys"])
 
 admin_router = APIRouter()
+admin_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 admin_router.include_router(users.router, prefix="/users", tags=["users"])
 admin_router.include_router(models.router, prefix="/models", tags=["models"])
 admin_router.include_router(workers.router, prefix="/workers", tags=["workers"])

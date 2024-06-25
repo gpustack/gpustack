@@ -15,6 +15,7 @@ from gpustack.config import Config
 from gpustack.server.controller import ModelController
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
+from gpustack.server.system_load import SystemLoadCollector
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class Server:
         self._start_sub_processes()
         self._start_scheduler()
         self._start_controllers()
+        self._start_system_load_collector()
 
         # Start FastAPI server
         app.state.server_config = self._config
@@ -84,6 +86,12 @@ class Server:
         asyncio.create_task(controller.start())
 
         logger.debug("Controller started.")
+
+    def _start_system_load_collector(self):
+        collector = SystemLoadCollector()
+        asyncio.create_task(collector.start())
+
+        logger.debug("System load collector started.")
 
     def _start_sub_processes(self):
         for process in self._sub_processes:

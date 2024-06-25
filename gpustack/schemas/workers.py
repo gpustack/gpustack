@@ -11,7 +11,7 @@ from typing import List
 
 class UtilizationInfo(BaseModel):
     total: int = Field(default=None)
-    used: Optional[int] = Field(default=None)
+    used: Optional[float] = Field(default=None)
     utilization_rate: Optional[float] = Field(default=None)
 
 

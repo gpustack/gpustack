@@ -43,15 +43,20 @@ async def get_current_user(
     ] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
 ) -> User:
+    user = None
     if basic_credentials and is_system_user(basic_credentials.username):
         server_config: Config = request.app.state.server_config
-        return await authenticate_system_user(server_config, basic_credentials)
+        user = await authenticate_system_user(server_config, basic_credentials)
     elif basic_credentials:
-        return await authenticate_basic_user(session, basic_credentials)
+        user = await authenticate_basic_user(session, basic_credentials)
     elif cookie_token:
-        return await get_user_from_jwt_token(session, cookie_token)
+        user = await get_user_from_jwt_token(session, cookie_token)
     elif bearer_token:
-        return await get_user_from_bearer_token(session, bearer_token)
+        user = await get_user_from_bearer_token(session, bearer_token)
+
+    if user:
+        request.state.user = user
+        return user
 
     raise credentials_exception
 

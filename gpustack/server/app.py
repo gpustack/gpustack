@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import httpx
 
-from gpustack.api import exceptions
+from gpustack.api import exceptions, middlewares
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 
@@ -15,6 +15,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GPUStack", lifespan=lifespan, response_model_exclude_unset=True)
+app.add_middleware(middlewares.ModelUsageMiddleware)
 app.include_router(api_router)
 ui.register(app)
 exceptions.register_handlers(app)
