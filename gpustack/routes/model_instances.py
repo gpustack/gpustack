@@ -7,7 +7,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.schemas.nodes import Node
+from gpustack.schemas.workers import Worker
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     ModelInstance,
@@ -55,16 +55,16 @@ async def get_serving_logs(
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 
-    if not model_instance.node_id:
-        raise NotFoundException(message="Model instance not assigned to a node")
+    if not model_instance.worker_id:
+        raise NotFoundException(message="Model instance not assigned to a worker")
 
-    # proxy to node worker's model_instance logs endpoint
-    node = await Node.one_by_id(session, model_instance.node_id)
-    if not node:
-        raise NotFoundException(message="Model instance's node not found")
+    # proxy to worker's model_instance logs endpoint
+    worker = await Worker.one_by_id(session, model_instance.worker_id)
+    if not worker:
+        raise NotFoundException(message="Model instance's worker not found")
 
     model_instance_log_url = (
-        f"http://{node.address}:10050/serveLogs"
+        f"http://{worker.ip}:10050/serveLogs"
         "/{model_instance.id}?{log_options.url_encode()}"
     )
 

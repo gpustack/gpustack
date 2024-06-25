@@ -69,9 +69,9 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Server to connect to.",
     )
     group.add_argument(
-        "--node-ip",
+        "--worker-ip",
         type=str,
-        help="IP address of the node. Auto-detected by default.",
+        help="IP address of the worker node. Auto-detected by default.",
     )
     group.add_argument(
         "--enable-metrics",
@@ -168,8 +168,8 @@ def set_worker_options(args, config_data: dict):
     if args.server_url:
         config_data["server_url"] = args.server_url
 
-    if args.node_ip:
-        config_data["node_ip"] = args.node_ip
+    if args.worker_ip:
+        config_data["worker_ip"] = args.worker_ip
 
     if args.enable_metrics:
         config_data["enable_metrics"] = args.enable_metrics

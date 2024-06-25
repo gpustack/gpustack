@@ -9,7 +9,7 @@ import uvicorn
 
 from gpustack.config import Config
 from gpustack.worker.logs import LogOptionsDep
-from gpustack.worker.node_manager import NodeManager
+from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -25,10 +25,11 @@ class Worker:
     def __init__(self, cfg: Config):
         clientset = ClientSet(
             base_url=cfg.server_url,
-            username=f"system/worker/{cfg.node_ip}",
+            username=f"system/worker/{cfg.worker_ip}",
             password=cfg.token,
         )
-        self._node_manager = NodeManager(node_ip=cfg.node_ip, clientset=clientset)
+        self._worker_manager = WorkerManager(
+            worker_ip=cfg.worker_ip, clientset=clientset)
         self._serve_manager = ServeManager(
             server_url=cfg.server_url, log_dir=cfg.log_dir, clientset=clientset
         )
@@ -37,7 +38,11 @@ class Worker:
         self._address = "0.0.0.0"
         self._port = 10050
         self._exporter_enabled = cfg.enable_metrics
-        self._exporter = MetricExporter(node_ip=cfg.node_ip, port=cfg.metrics_port)
+        self._exporter = MetricExporter(
+            worker_ip=cfg.worker_ip,
+            port=cfg.metrics_port,
+            clientset=clientset
+        )
 
     def start(self, is_multiprocessing=False):
         if is_multiprocessing:
@@ -56,8 +61,8 @@ class Worker:
         if self._exporter_enabled:
             asyncio.create_task(self._exporter.start())
 
-        # Report the node status to the server periodically.
-        run_periodically_async(self._node_manager.sync_node_status, 5 * 60)
+        # Report the worker node status to the server periodically.
+        run_periodically_async(self._worker_manager.sync_worker_status, 1 * 60)
 
         # watch model instances and handle them.
         asyncio.create_task(self._serve_model_instances())

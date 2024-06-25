@@ -7,8 +7,8 @@ from gpustack.routes import (
     probes,
     users,
     models,
-    nodes,
     openai,
+    workers,
 )
 from gpustack.api.exceptions import error_responses
 from gpustack.server.auth import get_admin_user, get_current_user
@@ -27,7 +27,7 @@ base_router.include_router(api_keys.router, prefix="/api-keys", tags=["api keys"
 admin_router = APIRouter()
 admin_router.include_router(users.router, prefix="/users", tags=["users"])
 admin_router.include_router(models.router, prefix="/models", tags=["models"])
-admin_router.include_router(nodes.router, prefix="/nodes", tags=["nodes"])
+admin_router.include_router(workers.router, prefix="/workers", tags=["workers"])
 admin_router.include_router(
     model_instances.router, prefix="/model-instances", tags=["model instances"]
 )

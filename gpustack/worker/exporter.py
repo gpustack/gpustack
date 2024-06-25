@@ -1,7 +1,8 @@
 from prometheus_client.registry import Collector
 from prometheus_client import make_asgi_app, REGISTRY
 from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
-from gpustack.worker.collector import NodeStatusCollector
+from gpustack.client.generated_clientset import ClientSet
+from gpustack.worker.collector import WorkerStatusCollector
 import uvicorn
 import logging
 from fastapi import FastAPI
@@ -14,9 +15,9 @@ logger = logging.getLogger(__name__)
 class MetricExporter(Collector):
     _provider = "gpustack"
 
-    def __init__(self, node_ip: str, port: int):
-        self._node_ip = node_ip
-        self._collector = NodeStatusCollector(node_ip)
+    def __init__(self, worker_ip: str, port: int, clientset: ClientSet):
+        self._worker_ip = worker_ip
+        self._collector = WorkerStatusCollector(worker_ip, clientset=clientset)
         self._port = port
 
     def collect(self):  # noqa: C901
@@ -25,171 +26,175 @@ class MetricExporter(Collector):
         gpu_labels = ["instance", "provider", "index"]
 
         # metrics
-        os_info = InfoMetricFamily("node_os", "Operating system information")
-        kernel_info = InfoMetricFamily("node_kernel", "Kernel information")
+        os_info = InfoMetricFamily("worker_node_os", "Operating system information")
+        kernel_info = InfoMetricFamily("worker_node_kernel", "Kernel information")
         uptime = GaugeMetricFamily(
-            "node_uptime_seconds", "Uptime in seconds of the node", labels=labels
+            "worker_node_uptime_seconds", "Uptime in seconds of the worker node", labels=labels
         )
         cpu_cores = GaugeMetricFamily(
-            "node_cpu_cores", "Total CPUs cores of the node", labels=labels
+            "worker_node_cpu_cores", "Total CPUs cores of the worker node", labels=labels
         )
         cpu_utilization_rate = GaugeMetricFamily(
-            "node_cpu_utilization_rate",
-            "Rate of CPU utilization on the node",
+            "worker_node_cpu_utilization_rate",
+            "Rate of CPU utilization on the worker node",
             labels=labels,
         )
         memory_total = GaugeMetricFamily(
-            "node_memory_total_bytes",
-            "Total memory in bytes of the node",
+            "worker_memory_total_bytes",
+            "Total memory in bytes of the worker node",
             labels=labels,
         )
         memory_used = GaugeMetricFamily(
-            "node_memory_used_bytes", "Memory used in bytes of the node", labels=labels
+            "worker_node_memory_used_bytes",
+            "Memory used in bytes of the worker node",
+            labels=labels
         )
         memory_utilization_rate = GaugeMetricFamily(
-            "node_memory_utilization_rate",
-            "Rate of memory utilization on the node",
+            "worker_node_memory_utilization_rate",
+            "Rate of memory utilization on the worker node",
             labels=labels,
         )
-        gpu_info = InfoMetricFamily("node_gpu", "GPU information")
+        gpu_info = InfoMetricFamily("worker_node_gpu", "GPU information")
         gpu_cores = GaugeMetricFamily(
-            "node_gpu_cores", "Total GPUs cores of the node", labels=gpu_labels
+            "worker_node_gpu_cores", "Total GPUs cores of the worker node", labels=gpu_labels
         )
         gpu_utilization_rate = GaugeMetricFamily(
-            "node_gpu_utilization_rate",
-            "Rate of GPU utilization on the node",
+            "worker_node_gpu_utilization_rate",
+            "Rate of GPU utilization on the worker node",
             labels=gpu_labels,
         )
         gpu_temperature = GaugeMetricFamily(
-            "node_gpu_temperature_celsius",
-            "GPU temperature in celsius of the node",
+            "worker_node_gpu_temperature_celsius",
+            "GPU temperature in celsius of the worker node",
             labels=gpu_labels,
         )
         gram_total = GaugeMetricFamily(
-            "node_gram_total_bytes",
-            "Total GPU RAM in bytes of the node",
+            "worker_node_gram_total_bytes",
+            "Total GPU RAM in bytes of the worker node",
             labels=gpu_labels,
         )
         gram_used = GaugeMetricFamily(
-            "node_gram_used_bytes",
-            "GPU RAM used in bytes of the node",
+            "worker_node_gram_used_bytes",
+            "GPU RAM used in bytes of the worker node",
             labels=gpu_labels,
         )
         gram_utilization_rate = GaugeMetricFamily(
-            "node_gram_utilization_rate",
-            "Rate of GPU RAM utilization on the node",
+            "worker_node_gram_utilization_rate",
+            "Rate of GPU RAM utilization on the worker node",
             labels=gpu_labels,
         )
         filesystem_total = GaugeMetricFamily(
-            "node_filesystem_total_bytes",
-            "Total filesystem in bytes of the node",
+            "worker_node_filesystem_total_bytes",
+            "Total filesystem in bytes of the worker node",
             labels=filesystem_labels,
         )
         filesystem_used = GaugeMetricFamily(
-            "node_filesystem_used_bytes",
-            "Total filesystem used in bytes of the node",
+            "worker_node_filesystem_used_bytes",
+            "Total filesystem used in bytes of the worker node",
             labels=filesystem_labels,
         )
         filesystem_utilization_rate = GaugeMetricFamily(
-            "node_filesystem_utilization_rate",
-            "Rate of filesystem utilization on the node",
+            "worker_node_filesystem_utilization_rate",
+            "Rate of filesystem utilization on the worker node",
             labels=filesystem_labels,
         )
 
-        node = self._collector.collect().status
-        if node is None:
-            logger.error("Failed to get node status.")
+        status = self._collector.collect().status
+        if status is None:
+            logger.error("Failed to get worker node status.")
             return
 
         # system
-        if node.os is not None:
+        if status.os is not None:
             os_info.add_metric(
                 ["instance", "provider", "name", "version"],
                 {
-                    "instance": self._node_ip,
+                    "instance": self._worker_ip,
                     "provider": self._provider,
-                    "name": node.os.name,
-                    "version": node.os.version,
+                    "name": status.os.name,
+                    "version": status.os.version,
                 },
             )
 
         # kernel
-        if node.kernel is not None:
+        if status.kernel is not None:
             kernel_info.add_metric(
                 ["instance", "provider", "name", "version"],
                 {
-                    "instance": self._node_ip,
+                    "instance": self._worker_ip,
                     "provider": self._provider,
-                    "name": node.kernel.name,
-                    "release": node.kernel.release,
-                    "version": node.os.version,
-                    "architecture": node.kernel.architecture,
+                    "name": status.kernel.name,
+                    "release": status.kernel.release,
+                    "version": status.os.version,
+                    "architecture": status.kernel.architecture,
                 },
             )
 
         # uptime
-        if node.uptime is not None:
-            uptime.add_metric([self._node_ip, self._provider], node.uptime.uptime)
+        if status.uptime is not None:
+            uptime.add_metric([self._worker_ip, self._provider], status.uptime.uptime)
 
         # cpu
-        if node.cpu is not None:
-            cpu_cores.add_metric([self._node_ip, self._provider], node.cpu.total)
+        if status.cpu is not None:
+            cpu_cores.add_metric([self._worker_ip, self._provider], status.cpu.total)
             cpu_utilization_rate.add_metric(
-                [self._node_ip, self._provider], node.cpu.utilization_rate
+                [self._worker_ip, self._provider], status.cpu.utilization_rate
             )
 
         # memory
-        if node.memory is not None:
-            memory_total.add_metric([self._node_ip, self._provider], node.memory.total)
-            memory_used.add_metric([self._node_ip, self._provider], node.memory.used)
+        if status.memory is not None:
+            memory_total.add_metric(
+                [self._worker_ip, self._provider], status.memory.total)
+            memory_used.add_metric(
+                [self._worker_ip, self._provider], status.memory.used)
             memory_utilization_rate.add_metric(
-                [self._node_ip, self._provider],
-                _rate(node.memory.used, node.memory.total),
+                [self._worker_ip, self._provider],
+                _rate(status.memory.used, status.memory.total),
             )
 
         # gpu
-        if node.gpu is not None:
-            for i, d in enumerate(node.gpu):
+        if status.gpu is not None:
+            for i, d in enumerate(status.gpu):
                 gpu_info.add_metric(
                     ["instance", "provider", "index", "name"],
                     {
-                        "instance": self._node_ip,
+                        "instance": self._worker_ip,
                         "provider": self._provider,
                         "index": str(i),
                         "name": d.name,
                     },
                 )
                 gpu_cores.add_metric(
-                    [self._node_ip, self._provider, str(i)], d.core_total
+                    [self._worker_ip, self._provider, str(i)], d.core_total
                 )
                 gpu_utilization_rate.add_metric(
-                    [self._node_ip, self._provider, str(i)], d.core_utilization_rate
+                    [self._worker_ip, self._provider, str(i)], d.core_utilization_rate
                 )
                 gpu_temperature.add_metric(
-                    [self._node_ip, self._provider, str(i)], d.temperature
+                    [self._worker_ip, self._provider, str(i)], d.temperature
                 )
                 gram_total.add_metric(
-                    [self._node_ip, self._provider, str(i)], d.memory_total
+                    [self._worker_ip, self._provider, str(i)], d.memory_total
                 )
                 gram_used.add_metric(
-                    [self._node_ip, self._provider, str(i)], d.memory_used
+                    [self._worker_ip, self._provider, str(i)], d.memory_used
                 )
                 gram_utilization_rate.add_metric(
-                    [self._node_ip, self._provider, str(i)],
+                    [self._worker_ip, self._provider, str(i)],
                     _rate(d.memory_used, d.memory_total),
                 )
 
         # filesystem
-        if node.filesystem is not None:
-            for _, d in enumerate(node.filesystem):
+        if status.filesystem is not None:
+            for _, d in enumerate(status.filesystem):
                 filesystem_total.add_metric(
-                    [self._node_ip, self._provider, d.mount_point], d.total
+                    [self._worker_ip, self._provider, d.mount_point], d.total
                 )
                 filesystem_used.add_metric(
-                    [self._node_ip, self._provider, d.mount_point], d.used
+                    [self._worker_ip, self._provider, d.mount_point], d.used
                 )
                 filesystem_utilization_rate.add_metric(
-                    [self._node_ip, self._provider, d.mount_point],
+                    [self._worker_ip, self._provider, d.mount_point],
                     _rate(d.used, d.total),
                 )
 

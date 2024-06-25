@@ -1,4 +1,7 @@
-from gpustack.schemas.nodes import (
+import logging
+from gpustack.client.generated_clientset import ClientSet
+from gpustack.scheduler.policy import Allocated
+from gpustack.schemas.workers import (
     CPUInfo,
     MemoryInfo,
     OperatingSystemInfo,
@@ -7,26 +10,31 @@ from gpustack.schemas.nodes import (
     SwapInfo,
     GPUDevice,
     MountPoint,
+    WorkerStateEnum,
 )
 import socket
 import json
 import os
 import platform
 import subprocess
-from gpustack.schemas.nodes import NodeStatus, Node
+from gpustack.schemas.workers import WorkerStatus, Worker
 import importlib.resources as pkg_resources
 
+logger = logging.getLogger(__name__)
 
-class NodeStatusCollector:
-    def __init__(self, node_ip: str):
+
+class WorkerStatusCollector:
+    def __init__(self, worker_ip: str, clientset: ClientSet):
         self._hostname = socket.gethostname()
-        self._node_ip = node_ip
+        self._worker_ip = worker_ip
+        self._clientset = clientset
 
-    """A class for collecting node status information."""
+    """A class for collecting worker status information."""
 
-    def collect(self) -> Node:
-        """Collect node status information."""
-        status = NodeStatus()
+    def collect(self) -> Worker:
+        """Collect worker status information."""
+        status = WorkerStatus()
+        is_unified_memory = False
 
         results = self._run_fastfetch_and_parse_result()
         for result in results:
@@ -64,10 +72,14 @@ class NodeStatusCollector:
                     device = []
                     list = sorted(r, key=lambda x: x["name"])
                     for index, value in enumerate(list):
+                        name = self._get_value(value, "name")
+                        if str.startswith(name, "Apple M"):
+                            is_unified_memory = True
+
                         device.append(
                             GPUDevice(
+                                name=name,
                                 uuid=self._get_value(value, "uuid"),
-                                name=self._get_value(value, "name"),
                                 vendor=self._get_value(value, "vendor"),
                                 index=index,
                                 core_total=self._get_value(value, "coreCount"),
@@ -106,10 +118,11 @@ class NodeStatusCollector:
 
         status.state = "active"
 
-        return Node(
+        return Worker(
             name=self._hostname,
             hostname=self._hostname,
-            address=self._node_ip,
+            ip=self._worker_ip,
+            state=WorkerStateEnum.running,
             status=status,
         )
 

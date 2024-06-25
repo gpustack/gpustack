@@ -19,7 +19,7 @@ class Config(BaseSettings):
         secret_key: Secret key for the application.
 
         server_url: URL of the server.
-        node_ip: IP address of the node. Auto-detected by default.
+        worker_ip: IP address of the worker node. Auto-detected by default.
         enable_metrics: Enable metrics.
         metrics_port: Port to expose metrics on.
         log_dir: Directory to store logs.
@@ -39,7 +39,7 @@ class Config(BaseSettings):
 
     # Worker options
     server_url: str | None = None
-    node_ip: str | None = None
+    worker_ip: str | None = None
     enable_metrics: bool = True
     metrics_port: int = 10051
     log_dir: str | None = None
@@ -63,8 +63,8 @@ class Config(BaseSettings):
             self.database_url = f"sqlite+aiosqlite:///{self.data_dir}/database.db"
 
         # worker options
-        if self.node_ip is None:
-            self.node_ip = get_first_non_loopback_ip()
+        if self.worker_ip is None:
+            self.worker_ip = get_first_non_loopback_ip()
 
     @staticmethod
     def get_data_dir():
