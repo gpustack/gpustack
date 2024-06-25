@@ -2,7 +2,7 @@ import base64
 from .generated_http_client import HTTPClient
 from typing import Optional
 
-from .generated_node_client import NodeClient
+from .generated_worker_client import WorkerClient
 from .generated_model_client import ModelClient
 from .generated_model_instance_client import ModelInstanceClient
 from .generated_user_client import UserClient
@@ -33,7 +33,7 @@ class ClientSet:
 
         http_client = HTTPClient(base_url=base_url).with_headers(headers)
 
-        self.nodes = NodeClient(http_client)
+        self.workers = WorkerClient(http_client)
         self.models = ModelClient(http_client)
         self.model_instances = ModelInstanceClient(http_client)
         self.users = UserClient(http_client)

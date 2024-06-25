@@ -9,17 +9,17 @@ from gpustack.schemas import *
 from .generated_http_client import HTTPClient
 
 
-class NodeClient:
+class WorkerClient:
 
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v1/nodes"
+        self._url = f"{client._base_url}/v1/workers"
 
-    def list(self, params: Dict[str, Any] = None) -> NodesPublic:
+    def list(self, params: Dict[str, Any] = None) -> WorkersPublic:
         response = self._client.get_httpx_client().get(self._url, params=params)
         raise_if_response_error(response)
 
-        return NodesPublic.model_validate(response.json())
+        return WorkersPublic.model_validate(response.json())
 
     def watch(
         self,
@@ -46,24 +46,24 @@ class NodeClient:
                     if stop_condition(event):
                         break
 
-    def get(self, id: int) -> NodePublic:
+    def get(self, id: int) -> WorkerPublic:
         response = self._client.get_httpx_client().get(f"{self._url}/{id}")
         raise_if_response_error(response)
-        return NodePublic.model_validate(response.json())
+        return WorkerPublic.model_validate(response.json())
 
-    def create(self, model_create: NodeCreate):
+    def create(self, model_create: WorkerCreate):
         response = self._client.get_httpx_client().post(
             self._url, json=model_create.model_dump()
         )
         raise_if_response_error(response)
-        return NodePublic.model_validate(response.json())
+        return WorkerPublic.model_validate(response.json())
 
-    def update(self, id: int, model_update: NodeUpdate):
+    def update(self, id: int, model_update: WorkerUpdate):
         response = self._client.get_httpx_client().put(
             f"{self._url}/{id}", json=model_update.model_dump()
         )
         raise_if_response_error(response)
-        return NodePublic.model_validate(response.json())
+        return WorkerPublic.model_validate(response.json())
 
     def delete(self, id: int):
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
