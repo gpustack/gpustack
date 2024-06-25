@@ -17,6 +17,7 @@ class Config(BaseSettings):
         serve_default_models: Serve default models on bootstrap.
         bootstrap_password: Password for the bootstrap admin user.
         secret_key: Secret key for the application.
+        system_reserved: Reserved system resources.
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
@@ -36,6 +37,7 @@ class Config(BaseSettings):
     serve_default_models: bool | None = None
     bootstrap_password: str | None = None
     secret_key: str = secrets.token_hex(16)
+    system_reserved: dict | None = None
 
     # Worker options
     server_url: str | None = None

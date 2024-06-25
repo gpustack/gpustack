@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import multiprocessing
 from typing import Any, Dict
 
@@ -59,6 +60,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--bootstrap-password",
         type=str,
         help="Initial password for the default admin user. Random by default.",
+    )
+    group.add_argument(
+        "--system-reserved",
+        type=json.loads,
+        help="The system reserves resources for the worker during scheduling, measured in GiB. \
+        By default, 1 GiB of memory and 1 GiB of GPU memory are reserved. \
+        Example: {'memory': 1, 'gpuMemory': 1}.",
+        default={"memory": 1, "gpuMemory": 1},
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -162,6 +171,9 @@ def set_server_options(args, config_data: dict):
 
     if args.bootstrap_password:
         config_data["bootstrap_password"] = args.bootstrap_password
+
+    if args.system_reserved:
+        config_data["system_reserved"] = args.system_reserved
 
 
 def set_worker_options(args, config_data: dict):

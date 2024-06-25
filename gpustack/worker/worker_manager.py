@@ -37,7 +37,7 @@ class WorkerManager:
         worker = collector.collect()
 
         try:
-            result = self._clientset.workers.list(params={"name": self._hostname})
+            result = self._clientset.workers.list(params={"query": self._hostname})
         except Exception as e:
             logger.error(f"Failed to get workers {self._hostname}: {e}")
             return

@@ -11,6 +11,8 @@ from huggingface_hub.utils import validate_repo_id
 
 
 class HfDownloader:
+    _registry_url = "https://huggingface.co"
+
     @classmethod
     def download(
         cls,
@@ -91,6 +93,13 @@ class HfDownloader:
 
         return model_path
 
+    @classmethod
+    def model_url(cls, repo_id: str, filename: str) -> str:
+        if filename is None:
+            return f"{cls._registry_url}/{repo_id}"
+        else:
+            return f"{cls._registry_url}/{repo_id}/resolve/main/{filename}"
+
     def __call__(self):
         return self.download()
 
@@ -136,6 +145,14 @@ class OllamaLibraryDownloader:
         if os.path.exists(model_path):
             return model_path
 
+        blob_url = cls.model_url(model_name=model_name)
+        if blob_url is not None:
+            cls.download_blob(blob_url, model_path)
+
+        return model_path
+
+    @classmethod
+    def model_url(cls, model_name: str) -> str:
         if ":" in model_name:
             model, tag = model_name.split(":")
         else:
@@ -154,9 +171,8 @@ class OllamaLibraryDownloader:
 
         for blob in blobs:
             if blob["mediaType"] == "application/vnd.ollama.image.model":
-                blob_url = (
+                return (
                     f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}"
                 )
-                cls.download_blob(blob_url, model_path)
 
-        return model_path
+        return None

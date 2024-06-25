@@ -14,7 +14,7 @@ from gpustack.server.app import app
 from gpustack.config import Config
 from gpustack.server.controller import ModelController
 from gpustack.server.db import get_engine, init_db
-from gpustack.server.scheduler import Scheduler
+from gpustack.scheduler.scheduler import Scheduler
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ class Server:
         logger.debug("Data initialization completed.")
 
     def _start_scheduler(self):
-        scheduler = Scheduler()
+        scheduler = Scheduler(system_reserved=self._config.system_reserved)
         asyncio.create_task(scheduler.start())
 
         logger.debug("Scheduler started.")
@@ -108,13 +108,13 @@ class Server:
                 "name": "Qwen1.5-0.5B-Chat",
                 "source": "huggingface",
                 "huggingface_repo_id": "Qwen/Qwen1.5-0.5B-Chat-GGUF",
-                "huggingface_filename": "*q5_k_m.gguf",
+                "huggingface_filename": "qwen1_5-0_5b-chat-q5_k_m.gguf",
             },
             {
                 "name": "Llama-3-8B-Instruct",
                 "source": "huggingface",
                 "huggingface_repo_id": "QuantFactory/Meta-Llama-3-8B-Instruct-GGUF-v2",
-                "huggingface_filename": "*Q5_K_M.gguf",
+                "huggingface_filename": "Meta-Llama-3-8B-Instruct-v2.Q5_K_M.gguf",
             },
         ]
 
