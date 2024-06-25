@@ -3,6 +3,8 @@ import logging
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
+from openai.types import Model as OAIModel
+from openai.pagination import SyncPage
 
 from gpustack.api.exceptions import (
     InvalidException,
@@ -15,6 +17,22 @@ from gpustack.server.deps import SessionDep
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+
+@router.get("/models")
+async def list_models(session: SessionDep):
+    result = SyncPage[OAIModel](data=[], object="list")
+    models = await Model.all(session)
+    for model in models:
+        result.data.append(
+            OAIModel(
+                id=model.name,
+                object="model",
+                created=model.created_at.timestamp(),
+                owned_by="gpustack",
+            )
+        )
+    return result
 
 
 @router.post("/chat/completions")

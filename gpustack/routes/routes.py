@@ -41,6 +41,6 @@ api_router.include_router(
 api_router.include_router(
     openai.router,
     dependencies=[Depends(get_current_user)],
-    prefix="/v1",
+    prefix="/v1-openai",
     tags=["openai"],
 )
