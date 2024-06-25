@@ -11,7 +11,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
-from gpustack.schemas.models import Model, ModelInstance
+from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.server.deps import SessionDep
 
 router = APIRouter()
@@ -52,11 +52,12 @@ async def chat_completion(session: SessionDep, request: Request):
         session=session, field="model_id", value=model.id
     )
 
-    instance = next((inst for inst in model_instances if inst.state == "Running"), None)
+    instance = next((inst for inst in model_instances if inst.state
+                    == ModelInstanceStateEnum.running), None)
     if not instance:
         raise ServiceUnavailableException(message="No running instances available")
 
-    url = f"http://{instance.node_ip}:{instance.port}/v1/chat/completions"
+    url = f"http://{instance.worker_ip}:{instance.port}/v1/chat/completions"
     logger.debug(f"proxying to {url}")
 
     headers = {

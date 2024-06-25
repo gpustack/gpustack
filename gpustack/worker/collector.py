@@ -1,5 +1,10 @@
-from gpustack.schemas.nodes import (
+import logging
+from gpustack.client.generated_clientset import ClientSet
+from gpustack.scheduler.policy import Allocated
+from gpustack.schemas.workers import (
     CPUInfo,
+    GPUCoreInfo,
+    GPUMemoryInfo,
     MemoryInfo,
     OperatingSystemInfo,
     KernelInfo,
@@ -7,26 +12,31 @@ from gpustack.schemas.nodes import (
     SwapInfo,
     GPUDevice,
     MountPoint,
+    WorkerStateEnum,
 )
 import socket
 import json
 import os
 import platform
 import subprocess
-from gpustack.schemas.nodes import NodeStatus, Node
+from gpustack.schemas.workers import WorkerStatus, Worker
 import importlib.resources as pkg_resources
 
+logger = logging.getLogger(__name__)
 
-class NodeStatusCollector:
-    def __init__(self, node_ip: str):
+
+class WorkerStatusCollector:
+    def __init__(self, worker_ip: str, clientset: ClientSet):
         self._hostname = socket.gethostname()
-        self._node_ip = node_ip
+        self._worker_ip = worker_ip
+        self._clientset = clientset
 
-    """A class for collecting node status information."""
+    """A class for collecting worker status information."""
 
-    def collect(self) -> Node:
-        """Collect node status information."""
-        status = NodeStatus()
+    def collect(self) -> Worker:
+        """Collect worker status information."""
+        status = WorkerStatus()
+        is_unified_memory = False
 
         results = self._run_fastfetch_and_parse_result()
         for result in results:
@@ -64,16 +74,31 @@ class NodeStatusCollector:
                     device = []
                     list = sorted(r, key=lambda x: x["name"])
                     for index, value in enumerate(list):
+                        name = self._get_value(value, "name")
+                        if str.startswith(name, "Apple M"):
+                            is_unified_memory = True
+
+                        memory_total = self._get_value(
+                            value, "memory", "dedicated", "total") or 0
+                        memory_used = self._get_value(
+                            value, "memory", "dedicated", "used") or 0
+                        memory = GPUMemoryInfo(total=memory_total, used=memory_used)
+
+                        core_count = self._get_value(value, "coreCount") or 0
+                        core_utilization_rate = self._get_value(
+                            value, "coreUtilizationRate"
+                        ) or 0
+                        core = GPUCoreInfo(
+                            total=core_count, utilization_rate=core_utilization_rate)
+
                         device.append(
                             GPUDevice(
+                                name=name,
                                 uuid=self._get_value(value, "uuid"),
-                                name=self._get_value(value, "name"),
                                 vendor=self._get_value(value, "vendor"),
                                 index=index,
-                                core_total=self._get_value(value, "coreCount"),
-                                core_utilization_rate=self._get_value(
-                                    value, "coreUtilizationRate"
-                                ),
+                                core=core,
+                                memory=memory,
                                 temperature=self._get_value(value, "temperature"),
                             )
                         )
@@ -104,14 +129,44 @@ class NodeStatusCollector:
                         )
                     status.filesystem = mountpoints
 
-        status.state = "active"
+        status.memory.is_unified_memory = is_unified_memory
 
-        return Node(
+        allocated = self._get_allocated_resource()
+        status.memory.allocated = allocated.memory
+        for ag, agv in allocated.gpu_memory.items():
+            status.gpu[ag].memory.allocated = agv
+
+        return Worker(
             name=self._hostname,
             hostname=self._hostname,
-            address=self._node_ip,
+            ip=self._worker_ip,
+            state=WorkerStateEnum.running,
             status=status,
         )
+
+    def _get_allocated_resource(self) -> Allocated:
+        allocated = Allocated(memory=0, gpu_memory={})
+        try:
+            model_instances = self._clientset.model_instances.list()
+            for model_instance in model_instances.items:
+                if model_instance.worker_ip != self._worker_ip:
+                    continue
+
+                if model_instance.computed_resource_claim is not None:
+                    memory = model_instance.computed_resource_claim.get("memory") or 0
+                    gpu_memory = model_instance.computed_resource_claim.get(
+                        "gpu_memory") or 0
+
+                    allocated.memory += memory
+
+                    if (model_instance.gpu_index is not None):
+                        allocated.gpu_memory[model_instance.gpu_index] = (
+                            (allocated.gpu_memory.get(model_instance.gpu_index) or 0)
+                            + gpu_memory
+                        )
+        except Exception as e:
+            logger.error(f"Failed to get allocated resources: {e}")
+        return allocated
 
     def _run_fastfetch_and_parse_result(self):
         command = self._fastfetch_command()

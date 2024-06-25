@@ -15,40 +15,38 @@ function download_deps() {
 }
 
 function download_fastfetch() {
-    local default_os="linux"
-    local default_arch="amd64"
-    local default_version="2.14.0"
-
-    local os="${1:-$default_os}"
-    local arch="${2:-$default_arch}"
-    local version="${3:-$default_version}"
+    local version="2.14.0"
 
     local fastfetch_dir="${THIRD_PARTY_DIR}/fastfetch"
     local fastfetch_tmp_dir="${fastfetch_dir}/tmp"
 
 
-    local target_file="${fastfetch_dir}/fastfetch-${os}-${arch}"
-    if [ -f "${target_file}" ]; then
-        gpustack::log::info "fastfetch-${os}-${arch} already exists, skipping download"
-        return
-    fi
+    platforms=("linux-amd64" "linux-aarch64" "macos-universal")
 
-    gpustack::log::info "downloading fastfetch-${os}-${arch} '${version}'  archive"
-    
-    local tmp_file="${fastfetch_tmp_dir}/fastfetch-${os}-${arch}.zip"
-    rm -rf "${fastfetch_tmp_dir}"
-    mkdir -p "${fastfetch_tmp_dir}"
+    for platform in "${platforms[@]}"; do
+      local target_file="${fastfetch_dir}/fastfetch-${platform}"
+      if [ -f "${target_file}" ]; then
+          gpustack::log::info "fastfetch-${platform} already exists, skipping download"
+          continue
+      fi
 
-    curl --retry 3 --retry-all-errors --retry-delay 3 \
-      -o  "${tmp_file}" \
-      -sSfL "https://github.com/aiwantaozi/fastfetch/releases/download/${version}/fastfetch-${os}-${arch}.zip"
+      gpustack::log::info "downloading fastfetch-${platform} '${version}'  archive"
     
-    unzip -qu "${tmp_file}" -d "${fastfetch_tmp_dir}"
+      local tmp_file="${fastfetch_tmp_dir}/fastfetch-${platform}.zip"
+      rm -rf "${fastfetch_tmp_dir}"
+      mkdir -p "${fastfetch_tmp_dir}"
+
+      curl --retry 3 --retry-all-errors --retry-delay 3 \
+        -o  "${tmp_file}" \
+        -sSfL "https://github.com/aiwantaozi/fastfetch/releases/download/${version}/fastfetch-${platform}.zip"
     
-    cp "${fastfetch_tmp_dir}/fastfetch-${os}-${arch}/usr/bin/fastfetch" "${target_file}"
+      unzip -qu "${tmp_file}" -d "${fastfetch_tmp_dir}"
+    
+      cp "${fastfetch_tmp_dir}/fastfetch-${platform}/usr/bin/fastfetch" "${target_file}"
+    done
+
     rm -rf "${fastfetch_tmp_dir}"
 }
-
 
 function download_llama_cpp_server() {
     local version="b3135"
@@ -81,13 +79,6 @@ function download_llama_cpp_server() {
     done
 }
 
-function download_fastfetches() {
-    download_fastfetch linux amd64
-    download_fastfetch linux aarch64
-    download_fastfetch macos universal
-}
-
-
 function download_ui() {
   local default_tag="latest"
   local ui_path="${ROOT_DIR}/gpustack/ui"
@@ -118,13 +109,38 @@ function download_ui() {
   rm -rf "${tmp_ui_path}"
 }
 
+function download_gguf-parser() {
+    local version="v0.0.15"
+
+    local gguf_parser_dir="${THIRD_PARTY_DIR}/gguf-parser"
+    mkdir -p "${gguf_parser_dir}"
+
+    platforms=("linux-amd64" "linux-arm64" "darwin-universal")
+
+    for platform in "${platforms[@]}"; do
+      local target_file="${gguf_parser_dir}/gguf-parser-${platform}"
+      if [ -f "${target_file}" ]; then
+          gpustack::log::info "gguf-parser-${platform} already exists, skipping download"
+          continue
+      fi
+
+      gpustack::log::info "downloading gguf-parser-${platform} '${version}'  archive"
+    
+      curl --retry 3 --retry-all-errors --retry-delay 3 \
+        -o  "${target_file}" \
+        -sSfL "https://github.com/thxCode/gguf-parser-go/releases/download/${version}/gguf-parser-${platform}"
+    
+    done
+}
+
 #
 # main
 #
 
 gpustack::log::info "+++ DEPENDENCIES +++"
 download_deps
-download_fastfetches
+download_gguf-parser
+download_fastfetch
 download_llama_cpp_server
 download_ui
 gpustack::log::info "--- DEPENDENCIES ---"

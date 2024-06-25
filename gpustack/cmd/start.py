@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import multiprocessing
 from typing import Any, Dict
 
@@ -60,6 +61,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="Initial password for the default admin user. Random by default.",
     )
+    group.add_argument(
+        "--system-reserved",
+        type=json.loads,
+        help="The system reserves resources for the worker during scheduling, measured in GiB. \
+        By default, 1 GiB of memory and 1 GiB of GPU memory are reserved. \
+        Example: {'memory': 1, 'gpuMemory': 1}.",
+        default={"memory": 1, "gpuMemory": 1},
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -69,9 +78,9 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Server to connect to.",
     )
     group.add_argument(
-        "--node-ip",
+        "--worker-ip",
         type=str,
-        help="IP address of the node. Auto-detected by default.",
+        help="IP address of the worker node. Auto-detected by default.",
     )
     group.add_argument(
         "--enable-metrics",
@@ -163,13 +172,16 @@ def set_server_options(args, config_data: dict):
     if args.bootstrap_password:
         config_data["bootstrap_password"] = args.bootstrap_password
 
+    if args.system_reserved:
+        config_data["system_reserved"] = args.system_reserved
+
 
 def set_worker_options(args, config_data: dict):
     if args.server_url:
         config_data["server_url"] = args.server_url
 
-    if args.node_ip:
-        config_data["node_ip"] = args.node_ip
+    if args.worker_ip:
+        config_data["worker_ip"] = args.worker_ip
 
     if args.enable_metrics:
         config_data["enable_metrics"] = args.enable_metrics

@@ -18,6 +18,8 @@ def setup_logging(debug: bool = False):
         "aiosqlite",
         "urllib3.connectionpool",
         "multipart.multipart",
+        "apscheduler.scheduler",
+        "apscheduler.executors.default"
     ]
 
     for logger_name in third_party_logger_names:

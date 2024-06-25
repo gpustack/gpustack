@@ -13,7 +13,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from gpustack import utils
 from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
-from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate
+from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate, ModelInstanceStateEnum
 from gpustack.server.bus import Event, EventType
 
 
@@ -42,25 +42,25 @@ class ServeManager:
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
-    def _get_current_node_id(self):
+    def _get_current_worker_id(self):
         for _ in range(3):
             try:
-                nodes = self._clientset.nodes.list()
+                workers = self._clientset.workers.list()
             except Exception as e:
-                logger.debug(f"Failed to get nodes: {e}")
+                logger.debug(f"Failed to get workers: {e}")
 
-            for node in nodes.items:
-                if node.hostname == self._hostname:
-                    self._node_id = node.id
+            for worker in workers.items:
+                if worker.hostname == self._hostname:
+                    self._worker_id = worker.id
                     break
             time.sleep(1)
 
-        if not hasattr(self, "_node_id"):
-            raise Exception("Failed to get current node id.")
+        if not hasattr(self, "_worker_id"):
+            raise Exception("Failed to get current worker id.")
 
     def watch_model_instances(self):
-        if not hasattr(self, "_node_id"):
-            self._get_current_node_id()
+        if not hasattr(self, "_worker_id"):
+            self._get_current_worker_id()
 
         try:
             self._clientset.model_instances.watch(
@@ -74,11 +74,11 @@ class ServeManager:
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance(**event.data)
 
-        if mi.node_id != self._node_id:
-            # Ignore model instances that are not assigned to this node.
+        if mi.worker_id != self._worker_id:
+            # Ignore model instances that are not assigned to this worker node.
             return
 
-        if mi.state == "Failed":
+        if mi.state == ModelInstanceStateEnum.error:
             return
 
         if (
@@ -92,10 +92,10 @@ class ServeManager:
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
 
         try:
-            port = utils.get_free_port()
-            mi.port = port
+            if mi.port is None:
+                mi.port = utils.get_free_port()
 
-            logger.info(f"Start serving model instance {mi.id} on port {port}")
+            logger.info(f"Start serving model instance {mi.id} on port {mi.port}")
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,
@@ -105,11 +105,13 @@ class ServeManager:
             process.start()
             self._serving_model_instances[mi.id] = process
 
-            patch_dict = {"state": "Initializing", "port": port, "pid": process.pid}
+            patch_dict = {"state": ModelInstanceStateEnum.initializing,
+                          "port": mi.port, "pid": process.pid}
             self._update_model_instance(mi.id, **patch_dict)
 
         except Exception as e:
-            patch_dict = {"state": "Failed"}
+            patch_dict = {"state": ModelInstanceStateEnum.error,
+                          "state_message": f"{e}"}
             self._update_model_instance(mi.id, **patch_dict)
             logger.error(f"Failed to serve model instance: {e}")
 

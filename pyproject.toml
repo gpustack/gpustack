@@ -28,6 +28,8 @@ sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
 pyjwt = "^2.8.0"
 argon2-cffi = "^23.1.0"
 python-multipart = "^0.0.9"
+dataclasses-json = "^0.6.7"
+apscheduler = "^3.10.4"
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"

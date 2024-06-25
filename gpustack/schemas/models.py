@@ -1,7 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
-from pydantic import BaseModel, model_validator
+from typing import Any, Dict, Optional
+from pydantic import field_validator, BaseModel, model_validator
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
 from gpustack.schemas.common import PaginatedList
@@ -76,18 +77,43 @@ ModelsPublic = PaginatedList[ModelPublic]
 
 # Model Instances
 
+class ModelInstanceStateEnum(str, Enum):
+    initializing = "Initializing"
+    pending = "Pending"
+    running = "Running"
+    scheduled = "Scheduled"
+    error = "Error"
+    downloading = "Downloading"
+
+
+class ComputedResourceClaim(BaseModel):
+    is_unified_memory: Optional[bool] = False
+    offload_layers: Optional[int] = None
+    memory: Optional[int] = Field(default=None)  # in bytes
+    gpu_memory: Optional[int] = Field(default=None)  # in bytes
+
 
 class ModelInstanceBase(SQLModel, ModelSource):
-    node_id: Optional[int] = None
-    node_ip: Optional[str] = None
+    worker_id: Optional[int] = None
+    worker_ip: Optional[str] = None
     pid: Optional[int] = None
     port: Optional[int] = None
     download_progress: Optional[float] = None
-    state: Optional[str] = None
+    state: ModelInstanceStateEnum = ModelInstanceStateEnum.pending
     state_message: Optional[str] = None
+    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
+        sa_column=Column(JSON), default=None)
+    gpu_index: Optional[int] = None
 
     model_id: int = Field(default=None, foreign_key="model.id")
     model_name: str
+
+    @field_validator("computed_resource_claim")
+    def validate_worker_status(cls, val: any):
+        if val is None:
+            empty_dict: Dict[str, Any] = {}
+            return empty_dict
+        return val.model_dump()
 
     class Config:
         # The "model_id" field conflicts with the protected namespace "model_" in Pydantic.

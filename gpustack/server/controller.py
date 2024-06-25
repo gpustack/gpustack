@@ -1,6 +1,10 @@
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
-from gpustack.schemas.models import Model, ModelInstance, ModelInstanceCreate
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    ModelInstanceCreate,
+    ModelInstanceStateEnum)
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
 
@@ -47,7 +51,7 @@ class ModelController:
                         huggingface_filename=model.huggingface_filename,
                         ollama_library_model_name=model.ollama_library_model_name,
                         s3_address=model.s3_address,
-                        state="Pending",
+                        state=ModelInstanceStateEnum.pending,
                     )
                     for _ in range(model.replicas - len(instances)):
                         await ModelInstance.create(session, instance)

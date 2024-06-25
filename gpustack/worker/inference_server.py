@@ -11,6 +11,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
     SourceEnum,
+    ModelInstanceStateEnum,
 )
 from gpustack.worker.downloaders import HfDownloader, OllamaLibraryDownloader
 
@@ -63,16 +64,18 @@ class InferenceServer:
         self._clientset = clientset
         self._model_instance = mi
         try:
-            patch_dict = {"download_progress": 0, "state": "Downloading"}
+            patch_dict = {"download_progress": 0,
+                          "state": ModelInstanceStateEnum.downloading}
             self._update_model_instance(mi.id, **patch_dict)
 
             self._model_path = download_model(mi)
 
-            patch_dict = {"state": "Running"}
+            patch_dict = {"state": ModelInstanceStateEnum.running}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             try:
-                patch_dict = {"state_message": str(e), "state": "Failed"}
+                patch_dict = {"state_message": str(
+                    e), "state": ModelInstanceStateEnum.error}
                 self._update_model_instance(mi.id, **patch_dict)
             except Exception as e:
                 logger.error(f"Failed to update model instance: {e}")
