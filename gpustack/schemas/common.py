@@ -1,7 +1,10 @@
-from typing import Generic, TypeVar
+import json
+from typing import Generic, Type, TypeVar
 
 from fastapi import Query
-from pydantic import BaseModel
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, TypeAdapter
+from sqlalchemy import JSON, TypeDecorator
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -23,3 +26,48 @@ class ListParams(BaseModel):
 class PaginatedList(BaseModel, Generic[T]):
     items: list[T]
     pagination: Pagination
+
+
+def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
+    class PydanticJSONType(TypeDecorator, Generic[T]):
+        impl = JSON()
+
+        def __init__(self, json_encoder=json):
+            self.json_encoder = json_encoder
+            super(PydanticJSONType, self).__init__()
+
+        def bind_processor(self, dialect):
+            impl_processor = self.impl.bind_processor(dialect)
+            dumps = self.json_encoder.dumps
+
+            def process(value: T):
+                if value is not None:
+                    value_to_dump = self._prepare_value_for_dump(value)
+                    value = jsonable_encoder(value_to_dump)
+                return (
+                    impl_processor(value)
+                    if impl_processor
+                    else dumps(jsonable_encoder(value_to_dump))
+                )
+
+            return process
+
+        def result_processor(self, dialect, coltype) -> T:
+            impl_processor = self.impl.result_processor(dialect, coltype)
+
+            def process(value):
+                if impl_processor:
+                    value = impl_processor(value)
+                if value is None:
+                    return None
+                return TypeAdapter(pydantic_type).validate_python(value)
+
+            return process
+
+        def compare_values(self, x, y):
+            return x == y
+
+        def _prepare_value_for_dump(self, value):
+            return pydantic_type.model_validate(value)
+
+    return PydanticJSONType

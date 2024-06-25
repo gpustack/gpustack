@@ -1,11 +1,11 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
-from pydantic import field_validator, BaseModel, model_validator
+from pydantic import field_validator, BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
-from gpustack.schemas.common import PaginatedList
+from gpustack.schemas.common import PaginatedList, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
 
 # Models
@@ -77,6 +77,7 @@ ModelsPublic = PaginatedList[ModelPublic]
 
 # Model Instances
 
+
 class ModelInstanceStateEnum(str, Enum):
     initializing = "Initializing"
     pending = "Pending"
@@ -102,23 +103,16 @@ class ModelInstanceBase(SQLModel, ModelSource):
     state: ModelInstanceStateEnum = ModelInstanceStateEnum.pending
     state_message: Optional[str] = None
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
-        sa_column=Column(JSON), default=None)
+        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
+    )
     gpu_index: Optional[int] = None
 
     model_id: int = Field(default=None, foreign_key="model.id")
     model_name: str
 
-    @field_validator("computed_resource_claim")
-    def validate_worker_status(cls, val: any):
-        if val is None:
-            empty_dict: Dict[str, Any] = {}
-            return empty_dict
-        return val.model_dump()
-
-    class Config:
-        # The "model_id" field conflicts with the protected namespace "model_" in Pydantic.
-        # Disable it given that it's not a real issue for this particular field.
-        protected_namespaces = ()
+    # The "model_id" field conflicts with the protected namespace "model_" in Pydantic.
+    # Disable it given that it's not a real issue for this particular field.
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):

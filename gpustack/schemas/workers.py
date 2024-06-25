@@ -1,12 +1,12 @@
 from datetime import datetime
 from enum import Enum
 from typing import Dict, Optional
-from pydantic import field_validator, BaseModel
+from pydantic import ConfigDict, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
 
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList
-from typing import Any, List
+from gpustack.schemas.common import PaginatedList, pydantic_column_type
+from typing import List
 
 
 class UtilizationInfo(BaseModel):
@@ -95,6 +95,8 @@ class WorkerStatus(BaseModel):
     kernel: KernelInfo | None = Field(sa_column=Column(JSON), default=None)
     uptime: UptimeInfo | None = Field(sa_column=Column(JSON), default=None)
 
+    model_config = ConfigDict(from_attributes=True)
+
 
 class WorkerBase(SQLModel):
     name: str = Field(index=True, unique=True)
@@ -103,17 +105,9 @@ class WorkerBase(SQLModel):
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
     state: WorkerStateEnum = WorkerStateEnum.unknown
-    status: WorkerStatus | None = Field(sa_column=Column(JSON))
-
-    # Workaround for https://github.com/tiangolo/sqlmodel/issues/63
-    # It generates a warning.
-    # TODO Find a better way.
-    @field_validator("status")
-    def validate_worker_status(cls, val: any):
-        if val is None:
-            empty_dict: Dict[str, Any] = {}
-            return empty_dict
-        return val.model_dump()
+    status: WorkerStatus | None = Field(
+        sa_column=Column(pydantic_column_type(WorkerStatus))
+    )
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):
