@@ -129,7 +129,8 @@ function download_gguf-parser() {
       curl --retry 3 --retry-all-errors --retry-delay 3 \
         -o  "${target_file}" \
         -sSfL "https://github.com/thxCode/gguf-parser-go/releases/download/${version}/gguf-parser-${platform}"
-    
+
+      chmod +x "${target_file}"
     done
 }
 
