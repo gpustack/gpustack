@@ -25,6 +25,10 @@ help:
 	#
 	#   * [dev] `make build`, execute building.
 	#
+	#   * [dev] `make build-docs`, build docs.
+	#
+	#   * [dev] `make serve-docs`, serve docs.
+	#
 	#   * [ci]  `make ci`, execute `make install`, `make lint`, `make test`, `make build`.
 	#
 	@echo

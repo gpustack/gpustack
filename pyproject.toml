@@ -40,6 +40,8 @@ openapi-python-client = "^0.20.0"
 
 deptry = "^0.16.1"
 pre-commit = "^3.7.1"
+mkdocs = "^1.6.0"
+mkdocs-material = "^9.5.27"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
