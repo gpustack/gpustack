@@ -4,7 +4,6 @@ from gpustack.scheduler.policy import Allocated
 from gpustack.schemas.workers import (
     CPUInfo,
     GPUCoreInfo,
-    GPUMemoryInfo,
     MemoryInfo,
     OperatingSystemInfo,
     KernelInfo,
@@ -66,9 +65,11 @@ class WorkerStatusCollector:
                         boot_time=self._get_value(r, "bootTime"),
                     )
                 case "CPU":
+                    total = self._get_value(r, "cores", "online")
+                    utilization_rate = self._get_value(r, "cores", "utilizationRate")
                     status.cpu = CPUInfo(
-                        total=self._get_value(r, "cores", "online"),
-                        utilization_rate=self._get_value(r, "cores", "utilizationRate"),
+                        total=total,
+                        utilization_rate=utilization_rate,
                     )
                 case "GPU":
                     device = []
@@ -84,7 +85,16 @@ class WorkerStatusCollector:
                         memory_used = (
                             self._get_value(value, "memory", "dedicated", "used") or 0
                         )
-                        memory = GPUMemoryInfo(total=memory_total, used=memory_used)
+                        memory_utilization_rate = (
+                            (memory_used / memory_total * 100)
+                            if memory_total > 0
+                            else 0
+                        )
+                        memory = MemoryInfo(
+                            total=memory_total,
+                            used=memory_used,
+                            utilization_rate=memory_utilization_rate,
+                        )
 
                         core_count = self._get_value(value, "coreCount") or 0
                         core_utilization_rate = (
@@ -107,14 +117,22 @@ class WorkerStatusCollector:
                         )
                     status.gpu = device
                 case "Memory":
+                    total = self._get_value(r, "total") or 0
+                    used = self._get_value(r, "used") or 0
+                    utilization_rate = used / total * 100 if total > 0 else 0
                     status.memory = MemoryInfo(
-                        total=self._get_value(r, "total"),
-                        used=self._get_value(r, "used"),
+                        total=total,
+                        used=used,
+                        utilization_rate=utilization_rate,
                     )
                 case "Swap":
+                    total = self._get_value(r, "total") or 0
+                    used = self._get_value(r, "used") or 0
+                    utilization_rate = used / total * 100 if total > 0 else 0
                     status.swap = SwapInfo(
-                        total=self._get_value(r, "total"),
-                        used=self._get_value(r, "used"),
+                        total=total,
+                        used=used,
+                        utilization_rate=utilization_rate,
                     )
                 case "Disk":
                     mountpoints = []
@@ -133,6 +151,9 @@ class WorkerStatusCollector:
                     status.filesystem = mountpoints
 
         status.memory.is_unified_memory = is_unified_memory
+        if is_unified_memory:
+            for index, _ in enumerate(status.gpu):
+                status.gpu[index].memory = status.memory
 
         allocated = self._get_allocated_resource()
         status.memory.allocated = allocated.memory

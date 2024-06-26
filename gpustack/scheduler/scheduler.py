@@ -12,7 +12,8 @@ from gpustack.scheduler.policy import (
     ResourceFitPolicy,
     SystemReservedResource,
 )
-from gpustack.schemas.workers import Worker, WorkerStatus
+from gpustack.scheduler.queue import AsyncUniqueQueue
+from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
@@ -33,7 +34,7 @@ class Scheduler:
         self._id = "model-instance-scheduler"
         self._check_interval = check_interval
         self._engine = get_engine()
-        self._queue = asyncio.Queue()
+        self._queue = AsyncUniqueQueue()
         self._system_reserved = SystemReservedResource(0, 0)
 
         if system_reserved is not None:
@@ -72,7 +73,6 @@ class Scheduler:
             if event.type == EventType.DELETED:
                 continue
 
-            logger.debug(f"Received event: {event.type}")
             await self._enqueue_pending_instances()
 
         logger.info("Scheduler started.")
@@ -125,13 +125,15 @@ class Scheduler:
         while True:
             try:
                 item = await self._queue.get()
+                try:
+                    await self._schedule_one(item)
+                    self._queue.task_done()
+                except Exception as e:
+                    logger.error(f"Failed to schedule model instance: {e}")
             except queue.Empty:
                 continue
             except Exception as e:
                 logger.error(f"Failed to get item from schedule queue: {e}")
-            else:
-                await self._schedule_one(item)
-                self._queue.task_done()
 
     async def _schedule_one(self, item: ModelInstanceResourceClaim):
         """
@@ -141,14 +143,16 @@ class Scheduler:
         """
         logger.debug(f"Scheduling model instance {item.model_instance.id}")
 
+        state_message = ""
         instance = item.model_instance
         estimate = item.resource_claim_estimate
         candiate: ModelInstanceScheduleCandidate = None
 
         filterPolicies = [ResourceFitPolicy(estimate, self._system_reserved)]
 
-        state_message = ""
-        workers = await self._get_workers()
+        async with AsyncSession(self._engine) as session:
+            workers = await Worker.all(session)
+
         if len(workers) != 0:
             try:
                 candidates = await self._get_model_instance_schedule_candidates(workers)
@@ -197,19 +201,3 @@ class Scheduler:
         for worker in workers:
             candiates.append(ModelInstanceScheduleCandidate(worker, None, None))
         return candiates
-
-    async def _get_workers(self):
-        """
-        Get all workers.
-        """
-        async with AsyncSession(self._engine) as session:
-            workers = await Worker.all(session)
-
-        # Workaround for the embeded type issue in the schema.
-        # https://github.com/tiangolo/sqlmodel/issues/63
-
-        for i, w in enumerate(workers):
-            if isinstance(w.status, dict):
-                status = WorkerStatus(**w.status)
-                workers[i].status = status
-        return workers
