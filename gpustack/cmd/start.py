@@ -40,6 +40,17 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
 
     group = parser_server.add_argument_group("Server settings")
     group.add_argument(
+        "--host",
+        type=str,
+        help="Host to bind the server to.",
+        default="0.0.0.0",
+    )
+    group.add_argument(
+        "--port",
+        type=int,
+        help="Port to bind the server to.",
+    )
+    group.add_argument(
         "--database-url",
         type=str,
         help="URL of the database. Example: postgresql://user:password@hostname:port/db_name",
@@ -68,6 +79,16 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         By default, 1 GiB of memory and 1 GiB of GPU memory are reserved. \
         Example: {'memory': 1, 'gpuMemory': 1}.",
         default={"memory": 1, "gpuMemory": 1},
+    )
+    group.add_argument(
+        "--ssl-keyfile",
+        type=str,
+        help="Path to the SSL key file.",
+    )
+    group.add_argument(
+        "--ssl-certfile",
+        type=str,
+        help="Path to the SSL certificate file.",
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -160,6 +181,10 @@ def set_common_options(args, config_data: dict):
 
 
 def set_server_options(args, config_data: dict):
+    if args.host:
+        config_data["host"] = args.host
+    if args.port:
+        config_data["port"] = args.port
     if args.database_url:
         config_data["database_url"] = args.database_url
 
@@ -174,6 +199,12 @@ def set_server_options(args, config_data: dict):
 
     if args.system_reserved:
         config_data["system_reserved"] = args.system_reserved
+
+    if args.ssl_keyfile:
+        config_data["ssl_keyfile"] = args.ssl_keyfile
+
+    if args.ssl_certfile:
+        config_data["ssl_certfile"] = args.ssl_certfile
 
 
 def set_worker_options(args, config_data: dict):

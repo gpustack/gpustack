@@ -48,14 +48,25 @@ class Server:
         self._start_controllers()
         self._start_system_load_collector()
 
+        port = 80
+        if self._config.port:
+            port = self._config.port
+        elif self._config.ssl_certfile and self._config.ssl_keyfile:
+            port = 443
+        host = "0.0.0.0"
+        if self._config.host:
+            host = self._config.host
+
         # Start FastAPI server
         app.state.server_config = self._config
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
-            port=80,
+            host=host,
+            port=port,
             access_log=False,
             log_level="error",
+            ssl_certfile=self._config.ssl_certfile,
+            ssl_keyfile=self._config.ssl_keyfile,
         )
 
         setup_logging()

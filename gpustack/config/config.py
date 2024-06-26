@@ -1,5 +1,6 @@
 import os
 import secrets
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import get_first_non_loopback_ip
 
@@ -12,6 +13,10 @@ class Config(BaseSettings):
         data_dir: Directory to store data. Default is OS specific.
         token: Shared secret used to add a worker.
 
+        host: Host to bind the server to.
+        port: Port to bind the server to.
+        ssl_keyfile: Path to the SSL key file.
+        ssl_certfile: Path to the SSL certificate file.
         database_url: URL of the database.
         disable_worker: Disable embedded worker.
         serve_default_models: Serve default models on bootstrap.
@@ -32,12 +37,16 @@ class Config(BaseSettings):
     token: str | None = None
 
     # Server options
+    host: str | None = None
+    port: int | None = None
     database_url: str | None = None
     disable_worker: bool = False
     serve_default_models: bool | None = None
     bootstrap_password: str | None = None
     secret_key: str = secrets.token_hex(16)
     system_reserved: dict | None = None
+    ssl_keyfile: str | None = None
+    ssl_certfile: str | None = None
 
     # Worker options
     server_url: str | None = None
@@ -67,6 +76,16 @@ class Config(BaseSettings):
         # worker options
         if self.worker_ip is None:
             self.worker_ip = get_first_non_loopback_ip()
+
+    @model_validator(mode="after")
+    def check_ssl_files(self):
+        if (self.ssl_keyfile and not self.ssl_certfile) or (
+            self.ssl_certfile and not self.ssl_keyfile
+        ):
+            raise ValueError(
+                'Both "ssl_keyfile" and "ssl_certfile" must be provided, or neither.'
+            )
+        return self
 
     @staticmethod
     def get_data_dir():
