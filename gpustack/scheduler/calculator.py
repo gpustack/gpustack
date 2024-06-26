@@ -1,4 +1,3 @@
-
 import subprocess
 from dataclasses import dataclass
 from typing import List
@@ -73,13 +72,13 @@ def _gguf_parser_command(model_url):
         "-skip-tokenizer",
         "-skip-architecture",
         "-skip-model",
-        "-json"
+        "-json",
     ]
     return execuable_command
 
 
 async def calculate_model_resource_claim(
-        model_instance: ModelInstance, model: Model
+    model_instance: ModelInstance, model: Model
 ) -> ModelInstanceResourceClaim:
     """
     Calculate the resource claim of the model instance.
@@ -101,7 +100,8 @@ async def calculate_model_resource_claim(
         raise
     except Exception as e:
         e.add_note(
-            "error occurred when trying execute and parse the output of " + command.__str__()
+            "error occurred when trying execute and parse the output of "
+            + command.__str__()
         )
         raise e
 
@@ -142,9 +142,11 @@ def get_model_url(model: Model) -> str:
     """
     if model.source == SourceEnum.huggingface:
         return HfDownloader.model_url(
-            repo_id=model.huggingface_repo_id,
-            filename=model.huggingface_filename)
+            repo_id=model.huggingface_repo_id, filename=model.huggingface_filename
+        )
     elif model.source == SourceEnum.ollama_library:
-        return OllamaLibraryDownloader.download(model_name=model.ollama_library_model_name)
+        return OllamaLibraryDownloader.model_url(
+            model_name=model.ollama_library_model_name
+        )
     elif model.source == SourceEnum.s3:
         return model.s3_address

@@ -78,18 +78,21 @@ class WorkerStatusCollector:
                         if str.startswith(name, "Apple M"):
                             is_unified_memory = True
 
-                        memory_total = self._get_value(
-                            value, "memory", "dedicated", "total") or 0
-                        memory_used = self._get_value(
-                            value, "memory", "dedicated", "used") or 0
+                        memory_total = (
+                            self._get_value(value, "memory", "dedicated", "total") or 0
+                        )
+                        memory_used = (
+                            self._get_value(value, "memory", "dedicated", "used") or 0
+                        )
                         memory = GPUMemoryInfo(total=memory_total, used=memory_used)
 
                         core_count = self._get_value(value, "coreCount") or 0
-                        core_utilization_rate = self._get_value(
-                            value, "coreUtilizationRate"
-                        ) or 0
+                        core_utilization_rate = (
+                            self._get_value(value, "coreUtilizationRate") or 0
+                        )
                         core = GPUCoreInfo(
-                            total=core_count, utilization_rate=core_utilization_rate)
+                            total=core_count, utilization_rate=core_utilization_rate
+                        )
 
                         device.append(
                             GPUDevice(
@@ -153,17 +156,15 @@ class WorkerStatusCollector:
                     continue
 
                 if model_instance.computed_resource_claim is not None:
-                    memory = model_instance.computed_resource_claim.get("memory") or 0
-                    gpu_memory = model_instance.computed_resource_claim.get(
-                        "gpu_memory") or 0
+                    memory = model_instance.computed_resource_claim.memory or 0
+                    gpu_memory = model_instance.computed_resource_claim.gpu_memory or 0
 
                     allocated.memory += memory
 
-                    if (model_instance.gpu_index is not None):
+                    if model_instance.gpu_index is not None:
                         allocated.gpu_memory[model_instance.gpu_index] = (
-                            (allocated.gpu_memory.get(model_instance.gpu_index) or 0)
-                            + gpu_memory
-                        )
+                            allocated.gpu_memory.get(model_instance.gpu_index) or 0
+                        ) + gpu_memory
         except Exception as e:
             logger.error(f"Failed to get allocated resources: {e}")
         return allocated

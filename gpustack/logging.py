@@ -19,7 +19,8 @@ def setup_logging(debug: bool = False):
         "urllib3.connectionpool",
         "multipart.multipart",
         "apscheduler.scheduler",
-        "apscheduler.executors.default"
+        "apscheduler.executors.default",
+        "tzlocal",
     ]
 
     for logger_name in third_party_logger_names:
