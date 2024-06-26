@@ -23,6 +23,9 @@ class Config(BaseSettings):
         bootstrap_password: Password for the bootstrap admin user.
         secret_key: Secret key for the application.
         system_reserved: Reserved system resources.
+        force_auth_localhost: Force authentication for requests originating from
+                              localhost (127.0.0.1). When set to True, all requests
+                              from localhost will require authentication.
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
@@ -47,6 +50,7 @@ class Config(BaseSettings):
     system_reserved: dict | None = None
     ssl_keyfile: str | None = None
     ssl_certfile: str | None = None
+    force_auth_localhost: bool = False
 
     # Worker options
     server_url: str | None = None

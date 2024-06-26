@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from colorama import Fore, Style
 from openai import OpenAI
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from tqdm import tqdm
 
@@ -22,7 +23,14 @@ class ChatConfig(BaseSettings):
     model: str
     prompt: Optional[str] = None
     base_url: str = os.getenv("GPUSTACK_SERVER_URL", "http://127.0.0.1")
-    api_key: str = os.getenv("GPUSTACK_API_KEY", "fake")
+    api_key: str = os.getenv("GPUSTACK_API_KEY")
+
+    @model_validator(mode="after")
+    def check_required(self):
+        if self.base_url != "http://127.0.0.1" and not self.api_key:
+            raise ValueError(
+                "API key is required. Please set GPUSTACK_API_KEY env var."
+            )
 
 
 def parse_arguments(args) -> ChatConfig:
@@ -43,8 +51,10 @@ class ChatManager:
     def __init__(self, cfg: ChatConfig) -> None:
         self._model = cfg.model
         self._prompt = cfg.prompt
-        self._clientset = ClientSet(base_url=cfg.base_url)
-        self._openai_client = OpenAI(base_url=f"{cfg.base_url}/v1", api_key=cfg.api_key)
+        self._clientset = ClientSet(base_url=cfg.base_url, api_key=cfg.api_key)
+        self._openai_client = OpenAI(
+            base_url=f"{cfg.base_url}/v1-openai", api_key=cfg.api_key
+        )
         self._history: List[ChatCompletionMessageParam] = []
 
     def start(self):

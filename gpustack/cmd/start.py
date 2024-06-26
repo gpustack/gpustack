@@ -90,6 +90,13 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="Path to the SSL certificate file.",
     )
+    group.add_argument(
+        "--force-auth-localhost",
+        action="store_true",
+        help="Force authentication for requests originating from localhost (127.0.0.1)."
+        "When set to True, all requests from localhost will require authentication.",
+        default=False,
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -169,56 +176,49 @@ def parse_args(args) -> Config:
     return Config(**config_data)
 
 
+def set_config_option(args, config_data: dict, option_name: str):
+    option_value = getattr(args, option_name, None)
+    if option_value is not None:
+        config_data[option_name] = option_value
+
+
 def set_common_options(args, config_data: dict):
-    if args.debug:
-        config_data["debug"] = args.debug
+    options = [
+        "debug",
+        "data_dir",
+        "token",
+    ]
 
-    if args.data_dir:
-        config_data["data_dir"] = args.data_dir
-
-    if args.token:
-        config_data["token"] = args.token
+    for option in options:
+        set_config_option(args, config_data, option)
 
 
 def set_server_options(args, config_data: dict):
-    if args.host:
-        config_data["host"] = args.host
-    if args.port:
-        config_data["port"] = args.port
-    if args.database_url:
-        config_data["database_url"] = args.database_url
+    options = [
+        "host",
+        "port",
+        "database_url",
+        "disable_worker",
+        "serve_default_models",
+        "bootstrap_password",
+        "system_reserved",
+        "ssl_keyfile",
+        "ssl_certfile",
+        "force_auth_localhost",
+    ]
 
-    if args.disable_worker:
-        config_data["disable_worker"] = args.disable_worker
-
-    if args.serve_default_models:
-        config_data["serve_default_models"] = args.serve_default_models
-
-    if args.bootstrap_password:
-        config_data["bootstrap_password"] = args.bootstrap_password
-
-    if args.system_reserved:
-        config_data["system_reserved"] = args.system_reserved
-
-    if args.ssl_keyfile:
-        config_data["ssl_keyfile"] = args.ssl_keyfile
-
-    if args.ssl_certfile:
-        config_data["ssl_certfile"] = args.ssl_certfile
+    for option in options:
+        set_config_option(args, config_data, option)
 
 
 def set_worker_options(args, config_data: dict):
-    if args.server_url:
-        config_data["server_url"] = args.server_url
+    options = [
+        "server_url",
+        "worker_ip",
+        "enable_metrics",
+        "metrics_port",
+        "log_dir",
+    ]
 
-    if args.worker_ip:
-        config_data["worker_ip"] = args.worker_ip
-
-    if args.enable_metrics:
-        config_data["enable_metrics"] = args.enable_metrics
-
-    if args.metrics_port:
-        config_data["metrics_port"] = args.metrics_port
-
-    if args.log_dir:
-        config_data["log_dir"] = args.log_dir
+    for option in options:
+        set_config_option(args, config_data, option)

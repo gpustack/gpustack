@@ -54,6 +54,15 @@ async def get_current_user(
     elif bearer_token:
         user = await get_user_from_bearer_token(session, bearer_token)
 
+    if (
+        user is None
+        and request.client.host == "127.0.0.1"
+        and 'users' not in request.url.path
+    ):
+        server_config: Config = request.app.state.server_config
+        if not server_config.force_auth_localhost:
+            user = User(username="system/anonymous", is_admin=True)
+
     if user:
         request.state.user = user
         return user
