@@ -117,8 +117,12 @@ class ResourceFitPolicy:
         Get the worker with the latest allocatable resources.
         """
 
+        async with AsyncSession(self._engine) as session:
+            model_instances = await ModelInstance.all_by_field(
+                session, "worker_id", worker.id
+            )
+
         allocated = Allocated(memory=0, gpu_memory={})
-        model_instances = await self._get_model_instances(worker.id)
         for model_instance in model_instances:
             allocated.memory += model_instance.computed_resource_claim.memory or 0
             gpu_index = model_instance.gpu_index
@@ -147,22 +151,3 @@ class ResourceFitPolicy:
                 )
 
         return allocatable
-
-    async def _get_model_instances(self, worker_id: int):
-        """
-        Get all model instances by worker id.
-        """
-        async with AsyncSession(self._engine) as session:
-            model_instances = await ModelInstance.all_by_field(
-                session, "worker_id", worker_id
-            )
-
-        # Workaround for the embeded type issue in the schema.
-        # https://github.com/tiangolo/sqlmodel/issues/63
-
-        for i, m in enumerate(model_instances):
-            if isinstance(m.computed_resource_claim, dict):
-                claim = ComputedResourceClaim(**m.computed_resource_claim)
-                model_instances[i].computed_resource_claim = claim
-
-        return model_instances

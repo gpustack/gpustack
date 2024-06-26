@@ -11,7 +11,7 @@ function lint() {
   local path="$1"
 
   gpustack::log::info "linting ${path}"
-  flake8 "${path}"
+  pre-commit run --all-files
 }
 
 #

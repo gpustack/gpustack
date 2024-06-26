@@ -91,11 +91,18 @@ class InferenceServer:
             self._get_command()
         )
 
+        layers = -1
+        claim = self._model_instance.computed_resource_claim
+        if claim is not None and claim.get("offload_layers") is not None:
+            layers = claim.get("offload_layers")
+
+        env = self._get_env(self._model_instance.gpu_index)
+
         arguments = [
             "--host",
             "0.0.0.0",
             "--n-gpu-layers",
-            "-1",
+            str(layers),
             "--parallel",
             "5",
             "--port",
@@ -109,9 +116,19 @@ class InferenceServer:
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
+                env=env,
             )
         except Exception as e:
             logger.error(f"Failed to run the llama.cpp server: {e}")
+
+    def _get_env(self, gpu_index: int | None = None):
+        index = gpu_index or 0
+        match platform.system():
+            case "Darwin":
+                return None
+            case "Linux":
+                # TODO: support more.
+                return {"CUDA_VISIBLE_DEVICES": str(index)}
 
     def _get_command(self):
         command = ""

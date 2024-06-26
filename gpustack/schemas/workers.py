@@ -11,12 +11,12 @@ from typing import List
 
 class UtilizationInfo(BaseModel):
     total: int = Field(default=None)
-    used: Optional[float] = Field(default=None)
-    utilization_rate: Optional[float] = Field(default=None)
+    utilization_rate: Optional[float] = Field(default=None)  # rang from 0 to 100
 
 
 class MemoryInfo(UtilizationInfo):
     is_unified_memory: bool = Field(default=False)
+    used: Optional[int] = Field(default=None)
     allocated: Optional[int] = Field(default=None)
 
 
@@ -28,11 +28,8 @@ class GPUCoreInfo(UtilizationInfo):
     pass
 
 
-class GPUMemoryInfo(UtilizationInfo):
-    allocated: Optional[int] = Field(default=None)
-
-
 class SwapInfo(UtilizationInfo):
+    used: Optional[int] = Field(default=None)
     pass
 
 
@@ -42,7 +39,7 @@ class GPUDevice(BaseModel):
     vendor: str = Field(default="")
     index: int = Field(default=None)
     core: Optional[GPUCoreInfo] = Field(default=None)
-    memory: Optional[GPUMemoryInfo] = Field(default=None)
+    memory: Optional[MemoryInfo] = Field(default=None)
     temperature: Optional[float] = Field(default=None)  # in celsius
 
 

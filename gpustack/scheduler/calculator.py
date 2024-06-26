@@ -44,6 +44,16 @@ class ModelInstanceResourceClaim:
     model_instance: ModelInstance
     resource_claim_estimate: estimate
 
+    # overwrite the hash to use in uniquequeue
+    def __hash__(self):
+        return self.model_instance.id
+
+    # compare the model instance id
+    def __eq__(self, other):
+        if isinstance(other, ModelInstanceResourceClaim):
+            return self.model_instance.id == other.model_instance.id
+        return False
+
 
 def _gguf_parser_command(model_url):
     command = ""

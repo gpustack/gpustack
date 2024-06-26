@@ -12,6 +12,7 @@ source "${ROOT_DIR}/hack/lib/init.sh"
 function download_deps() {
   pip install poetry==1.7.1
   poetry install
+  pre-commit install
 }
 
 function download_fastfetch() {
