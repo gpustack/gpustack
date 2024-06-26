@@ -80,7 +80,7 @@ class ChatManager:
     def create_and_watch_model(self):
         model_create = ModelCreate(
             name=self._model,
-            source=SourceEnum.ollama_library,
+            source=SourceEnum.OLLAMA_LIBRARY,
             ollama_library_model_name=self._model,
         )
         created_model = self._clientset.models.create(model_create=model_create)

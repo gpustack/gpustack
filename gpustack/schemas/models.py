@@ -12,9 +12,8 @@ from gpustack.mixins import BaseModelMixin
 
 
 class SourceEnum(str, Enum):
-    huggingface = "huggingface"
-    ollama_library = "ollama_library"
-    s3 = "s3"
+    HUGGING_FACE = "huggingface"
+    OLLAMA_LIBRARY = "ollama_library"
 
 
 class ModelSource(BaseModel):
@@ -22,17 +21,16 @@ class ModelSource(BaseModel):
     huggingface_repo_id: Optional[str] = None
     huggingface_filename: Optional[str] = None
     ollama_library_model_name: Optional[str] = None
-    s3_address: Optional[str] = None
 
     @model_validator(mode="after")
     def check_huggingface_fields(self):
-        if self.source == SourceEnum.huggingface:
+        if self.source == SourceEnum.HUGGING_FACE:
             if not self.huggingface_repo_id or not self.huggingface_filename:
                 raise ValueError(
                     "huggingface_repo_id and huggingface_filename must be provided "
                     "when source is 'huggingface'"
                 )
-        if self.source == SourceEnum.ollama_library:
+        if self.source == SourceEnum.OLLAMA_LIBRARY:
             if not self.ollama_library_model_name:
                 raise ValueError(
                     "ollama_library_model_name must be provided when source is 'ollama_library'"

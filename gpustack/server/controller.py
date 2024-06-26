@@ -51,7 +51,6 @@ class ModelController:
                         huggingface_repo_id=model.huggingface_repo_id,
                         huggingface_filename=model.huggingface_filename,
                         ollama_library_model_name=model.ollama_library_model_name,
-                        s3_address=model.s3_address,
                         state=ModelInstanceStateEnum.pending,
                     )
                     for _ in range(model.replicas - len(instances)):

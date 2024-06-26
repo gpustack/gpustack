@@ -140,13 +140,11 @@ def get_model_url(model: Model) -> str:
     Args:
         model: Model to get the url for.
     """
-    if model.source == SourceEnum.huggingface:
+    if model.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.model_url(
             repo_id=model.huggingface_repo_id, filename=model.huggingface_filename
         )
-    elif model.source == SourceEnum.ollama_library:
+    elif model.source == SourceEnum.OLLAMA_LIBRARY:
         return OllamaLibraryDownloader.model_url(
             model_name=model.ollama_library_model_name
         )
-    elif model.source == SourceEnum.s3:
-        return model.s3_address

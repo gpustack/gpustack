@@ -47,12 +47,12 @@ def time_decorator(func):
 
 
 def download_model(mi: ModelInstance) -> str:
-    if mi.source == SourceEnum.huggingface:
+    if mi.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.download(
             repo_id=mi.huggingface_repo_id,
             filename=mi.huggingface_filename,
         )
-    elif mi.source == SourceEnum.ollama_library:
+    elif mi.source == SourceEnum.OLLAMA_LIBRARY:
         return OllamaLibraryDownloader.download(model_name=mi.ollama_library_model_name)
 
 
