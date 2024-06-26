@@ -13,7 +13,11 @@ from contextlib import redirect_stdout, redirect_stderr
 from gpustack import utils
 from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
-from gpustack.schemas.models import ModelInstance, ModelInstanceUpdate, ModelInstanceStateEnum
+from gpustack.schemas.models import (
+    ModelInstance,
+    ModelInstanceUpdate,
+    ModelInstanceStateEnum,
+)
 from gpustack.server.bus import Event, EventType
 
 
@@ -105,13 +109,18 @@ class ServeManager:
             process.start()
             self._serving_model_instances[mi.id] = process
 
-            patch_dict = {"state": ModelInstanceStateEnum.initializing,
-                          "port": mi.port, "pid": process.pid}
+            patch_dict = {
+                "state": ModelInstanceStateEnum.initializing,
+                "port": mi.port,
+                "pid": process.pid,
+            }
             self._update_model_instance(mi.id, **patch_dict)
 
         except Exception as e:
-            patch_dict = {"state": ModelInstanceStateEnum.error,
-                          "state_message": f"{e}"}
+            patch_dict = {
+                "state": ModelInstanceStateEnum.error,
+                "state_message": f"{e}",
+            }
             self._update_model_instance(mi.id, **patch_dict)
             logger.error(f"Failed to serve model instance: {e}")
 

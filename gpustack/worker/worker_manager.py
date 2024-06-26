@@ -33,7 +33,8 @@ class WorkerManager:
 
     def _update_worker_status(self):
         collector = WorkerStatusCollector(
-            worker_ip=self._worker_ip, clientset=self._clientset)
+            worker_ip=self._worker_ip, clientset=self._clientset
+        )
         worker = collector.collect()
 
         try:
@@ -84,7 +85,8 @@ class WorkerManager:
 
     def _initialize_worker(self):
         collector = WorkerStatusCollector(
-            worker_ip=self._worker_ip, clientset=self._clientset)
+            worker_ip=self._worker_ip, clientset=self._clientset
+        )
         worker = collector.collect()
 
         os_info = os.uname()

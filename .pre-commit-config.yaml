@@ -10,6 +10,7 @@ repos:
     hooks:
       - id: flake8
   - repo: https://github.com/psf/black
-    rev: 23.12.1
+    rev: 24.4.2
     hooks:
       - id: black
+        args: [--config, pyproject.toml]

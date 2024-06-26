@@ -4,7 +4,8 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceCreate,
-    ModelInstanceStateEnum)
+    ModelInstanceStateEnum,
+)
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
 

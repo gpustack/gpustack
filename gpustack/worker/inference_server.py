@@ -64,8 +64,10 @@ class InferenceServer:
         self._clientset = clientset
         self._model_instance = mi
         try:
-            patch_dict = {"download_progress": 0,
-                          "state": ModelInstanceStateEnum.downloading}
+            patch_dict = {
+                "download_progress": 0,
+                "state": ModelInstanceStateEnum.downloading,
+            }
             self._update_model_instance(mi.id, **patch_dict)
 
             self._model_path = download_model(mi)
@@ -74,8 +76,10 @@ class InferenceServer:
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             try:
-                patch_dict = {"state_message": str(
-                    e), "state": ModelInstanceStateEnum.error}
+                patch_dict = {
+                    "state_message": str(e),
+                    "state": ModelInstanceStateEnum.error,
+                }
                 self._update_model_instance(mi.id, **patch_dict)
             except Exception as e:
                 logger.error(f"Failed to update model instance: {e}")

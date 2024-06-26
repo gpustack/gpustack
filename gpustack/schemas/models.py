@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
-from pydantic import field_validator, BaseModel, ConfigDict, model_validator
-from sqlalchemy import JSON, Column
+from typing import Optional
+from pydantic import BaseModel, ConfigDict, model_validator
+from sqlalchemy import Column
 from sqlmodel import Field, Relationship, SQLModel
 
 from gpustack.schemas.common import PaginatedList, pydantic_column_type

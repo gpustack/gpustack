@@ -12,15 +12,8 @@ from gpustack.scheduler.policy import (
     ResourceFitPolicy,
     SystemReservedResource,
 )
-from gpustack.schemas.workers import (
-    Worker,
-    WorkerStatus
-)
-from gpustack.schemas.models import (
-    Model,
-    ModelInstance,
-    ModelInstanceStateEnum
-)
+from gpustack.schemas.workers import Worker, WorkerStatus
+from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
 from gpustack.scheduler.calculator import (
@@ -44,12 +37,15 @@ class Scheduler:
         self._system_reserved = SystemReservedResource(0, 0)
 
         if system_reserved is not None:
-            memory = int(system_reserved.get("memory", 0)) * \
-                1024 * 1024 * 1024  # GB to Bytes
-            gpu_memory = int(system_reserved.get(
-                "gpuMemory", 0)) * 1024 * 1024 * 1024  # GB to Bytes
+            memory = (
+                int(system_reserved.get("memory", 0)) * 1024 * 1024 * 1024
+            )  # GB to Bytes
+            gpu_memory = (
+                int(system_reserved.get("gpuMemory", 0)) * 1024 * 1024 * 1024
+            )  # GB to Bytes
             self._system_reserved = SystemReservedResource(
-                memory=memory, gpu_memory=gpu_memory)
+                memory=memory, gpu_memory=gpu_memory
+            )
 
     async def start(self):
         """
@@ -63,9 +59,12 @@ class Scheduler:
         # scheduler job trigger by time interval.
         trigger = IntervalTrigger(seconds=self._check_interval)
         scheduler = AsyncIOScheduler()
-        scheduler.add_job(self._enqueue_pending_instances,
-                          trigger=trigger,
-                          id=self._id, max_instances=1)
+        scheduler.add_job(
+            self._enqueue_pending_instances,
+            trigger=trigger,
+            id=self._id,
+            max_instances=1,
+        )
         scheduler.start()
 
         # scheduler job trigger by event.
@@ -91,7 +90,6 @@ class Scheduler:
         tasks = []
         for instance in instances:
             if self._should_schedule(instance):
-
                 task = asyncio.create_task(
                     self._process_calculate_model_resource_claim(instance)
                 )
@@ -102,18 +100,14 @@ class Scheduler:
     async def _process_calculate_model_resource_claim(self, instance: ModelInstance):
         try:
             async with AsyncSession(self._engine) as session:
-                model = await Model.one_by_id(
-                    session, instance.model_id
-                )
+                model = await Model.one_by_id(session, instance.model_id)
 
-            task_output = await calculate_model_resource_claim(
-                instance, model)
+            task_output = await calculate_model_resource_claim(instance, model)
 
             await self._queue.put(task_output)
 
         except Exception as e:
-            logger.error(
-                f"Failed to calculate model resource claim: {e}")
+            logger.error(f"Failed to calculate model resource claim: {e}")
 
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """
@@ -122,7 +116,10 @@ class Scheduler:
             instance: ModelInstance to check.
         """
 
-        return instance.worker_id is None and instance.state == ModelInstanceStateEnum.pending
+        return (
+            instance.worker_id is None
+            and instance.state == ModelInstanceStateEnum.pending
+        )
 
     async def _schedule_cycle(self):
         while True:
@@ -131,8 +128,7 @@ class Scheduler:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(
-                    f"Failed to get item from schedule queue: {e}")
+                logger.error(f"Failed to get item from schedule queue: {e}")
             else:
                 await self._schedule_one(item)
                 self._queue.task_done()
@@ -149,9 +145,7 @@ class Scheduler:
         estimate = item.resource_claim_estimate
         candiate: ModelInstanceScheduleCandidate = None
 
-        filterPolicies = [
-            ResourceFitPolicy(estimate, self._system_reserved)
-        ]
+        filterPolicies = [ResourceFitPolicy(estimate, self._system_reserved)]
 
         state_message = ""
         workers = await self._get_workers()
@@ -165,9 +159,7 @@ class Scheduler:
                 logger.error(state_message)
 
         async with AsyncSession(self._engine) as session:
-            model_instance = await ModelInstance.one_by_id(
-                session, instance.id
-            )
+            model_instance = await ModelInstance.one_by_id(session, instance.id)
         if len(candidates) == 0:
             # update model instance.
             model_instance.state = ModelInstanceStateEnum.pending
@@ -176,8 +168,7 @@ class Scheduler:
                 model_instance.state_message = state_message
 
             await model_instance.update(session, model_instance)
-            logger.debug(
-                f"No fit worker for model instance {model_instance.id}")
+            logger.debug(f"No fit worker for model instance {model_instance.id}")
         else:
             # pick the first candidate now, should scoring all the candidates later.
             candiate = candidates[0]
@@ -193,10 +184,11 @@ class Scheduler:
             await model_instance.update(session, model_instance)
 
             logger.debug(
-                f"Scheduled model instance {model_instance.id} to node {candiate.worker.id}")
+                f"Scheduled model instance {model_instance.id} to node {candiate.worker.id}"
+            )
 
     async def _get_model_instance_schedule_candidates(
-            self, workers: List[Worker]
+        self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Convert the workers to the candidates.

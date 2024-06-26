@@ -50,7 +50,6 @@ class EventBus:
         return subscriber
 
     def unsubscribe(self, topic: str, subscriber: Subscriber):
-
         if topic in self.subscribers:
             self.subscribers[topic].remove(subscriber)
             if not self.subscribers[topic]:

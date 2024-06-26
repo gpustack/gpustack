@@ -29,10 +29,14 @@ class MetricExporter(Collector):
         os_info = InfoMetricFamily("worker_node_os", "Operating system information")
         kernel_info = InfoMetricFamily("worker_node_kernel", "Kernel information")
         uptime = GaugeMetricFamily(
-            "worker_node_uptime_seconds", "Uptime in seconds of the worker node", labels=labels
+            "worker_node_uptime_seconds",
+            "Uptime in seconds of the worker node",
+            labels=labels,
         )
         cpu_cores = GaugeMetricFamily(
-            "worker_node_cpu_cores", "Total CPUs cores of the worker node", labels=labels
+            "worker_node_cpu_cores",
+            "Total CPUs cores of the worker node",
+            labels=labels,
         )
         cpu_utilization_rate = GaugeMetricFamily(
             "worker_node_cpu_utilization_rate",
@@ -47,7 +51,7 @@ class MetricExporter(Collector):
         memory_used = GaugeMetricFamily(
             "worker_node_memory_used_bytes",
             "Memory used in bytes of the worker node",
-            labels=labels
+            labels=labels,
         )
         memory_utilization_rate = GaugeMetricFamily(
             "worker_node_memory_utilization_rate",
@@ -56,7 +60,9 @@ class MetricExporter(Collector):
         )
         gpu_info = InfoMetricFamily("worker_node_gpu", "GPU information")
         gpu_cores = GaugeMetricFamily(
-            "worker_node_gpu_cores", "Total GPUs cores of the worker node", labels=gpu_labels
+            "worker_node_gpu_cores",
+            "Total GPUs cores of the worker node",
+            labels=gpu_labels,
         )
         gpu_utilization_rate = GaugeMetricFamily(
             "worker_node_gpu_utilization_rate",
@@ -144,9 +150,11 @@ class MetricExporter(Collector):
         # memory
         if status.memory is not None:
             memory_total.add_metric(
-                [self._worker_ip, self._provider], status.memory.total)
+                [self._worker_ip, self._provider], status.memory.total
+            )
             memory_used.add_metric(
-                [self._worker_ip, self._provider], status.memory.used)
+                [self._worker_ip, self._provider], status.memory.used
+            )
             memory_utilization_rate.add_metric(
                 [self._worker_ip, self._provider],
                 _rate(status.memory.used, status.memory.total),

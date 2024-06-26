@@ -55,8 +55,14 @@ async def chat_completion(session: SessionDep, request: Request):
         session=session, field="model_id", value=model.id
     )
 
-    instance = next((inst for inst in model_instances if inst.state
-                    == ModelInstanceStateEnum.running), None)
+    instance = next(
+        (
+            inst
+            for inst in model_instances
+            if inst.state == ModelInstanceStateEnum.running
+        ),
+        None,
+    )
     if not instance:
         raise ServiceUnavailableException(message="No running instances available")
 

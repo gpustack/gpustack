@@ -29,7 +29,8 @@ class Worker:
             password=cfg.token,
         )
         self._worker_manager = WorkerManager(
-            worker_ip=cfg.worker_ip, clientset=clientset)
+            worker_ip=cfg.worker_ip, clientset=clientset
+        )
         self._serve_manager = ServeManager(
             server_url=cfg.server_url, log_dir=cfg.log_dir, clientset=clientset
         )
@@ -39,9 +40,7 @@ class Worker:
         self._port = 10050
         self._exporter_enabled = cfg.enable_metrics
         self._exporter = MetricExporter(
-            worker_ip=cfg.worker_ip,
-            port=cfg.metrics_port,
-            clientset=clientset
+            worker_ip=cfg.worker_ip, port=cfg.metrics_port, clientset=clientset
         )
 
     def start(self, is_multiprocessing=False):

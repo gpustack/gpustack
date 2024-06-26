@@ -123,9 +123,10 @@ class OllamaLibraryDownloader:
 
         mode = "ab" if existing_file_size > 0 else "wb"
         chunk_size = 10 * 1024 * 1024  # 10MB
-        with open(temp_filename, mode) as file, tqdm(
-            total=total_size, initial=existing_file_size
-        ) as bar:
+        with (
+            open(temp_filename, mode) as file,
+            tqdm(total=total_size, initial=existing_file_size) as bar,
+        ):
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk:
                     file.write(chunk)
@@ -171,8 +172,6 @@ class OllamaLibraryDownloader:
 
         for blob in blobs:
             if blob["mediaType"] == "application/vnd.ollama.image.model":
-                return (
-                    f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}"
-                )
+                return f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}"
 
         return None

@@ -10,7 +10,6 @@ from .generated_http_client import HTTPClient
 
 
 class UserClient:
-
     def __init__(self, client: HTTPClient):
         self._client = client
         self._url = f"{client._base_url}/v1/users"

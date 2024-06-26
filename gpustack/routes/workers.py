@@ -11,7 +11,8 @@ from gpustack.schemas.workers import (
     WorkerPublic,
     WorkerUpdate,
     WorkersPublic,
-    Worker)
+    Worker,
+)
 
 router = APIRouter()
 
