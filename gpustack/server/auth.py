@@ -61,7 +61,7 @@ async def get_current_user(
     ):
         server_config: Config = request.app.state.server_config
         if not server_config.force_auth_localhost:
-            user = User(username="system/anonymous", is_admin=True)
+            user = await User.first_by_field(session, "is_admin", True)
 
     if user:
         request.state.user = user
@@ -85,24 +85,24 @@ def is_system_user(username: str) -> bool:
 async def authenticate_system_user(
     config: Config,
     credentials: HTTPBasicCredentials,
-) -> User:
+) -> Optional[User]:
     if credentials.username.startswith(SYSTEM_WORKER_USER_PREFIX):
         if credentials.password == config.token:
             return User(username=credentials.username, is_admin=True)
-    raise credentials_exception
+    return None
 
 
 async def authenticate_basic_user(
     session: AsyncSession,
     basic_credentials: HTTPBasicCredentials,
-) -> User:
+) -> Optional[User]:
     try:
         user = await authenticate_user(
             session, basic_credentials.username, basic_credentials.password
         )
         return user
     except Exception:
-        raise credentials_exception
+        return None
 
 
 def get_access_token(
@@ -120,25 +120,27 @@ def get_access_token(
         raise credentials_exception
 
 
-async def get_user_from_jwt_token(session: AsyncSession, access_token: str) -> User:
+async def get_user_from_jwt_token(
+    session: AsyncSession, access_token: str
+) -> Optional[User]:
     try:
         payload = decode_access_token(access_token)
         username = payload.get("sub")
     except Exception:
-        raise credentials_exception
+        return None
 
     if username is None:
-        raise credentials_exception
+        return None
 
     user = await User.one_by_field(session, "username", username)
     if not user:
-        raise credentials_exception
+        return None
     return user
 
 
 async def get_user_from_bearer_token(
     session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
-) -> User:
+) -> Optional[User]:
     try:
         parts = bearer_token.credentials.split("_")
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
@@ -154,9 +156,9 @@ async def get_user_from_bearer_token(
                 if user is not None:
                     return user
     except Exception:
-        raise credentials_exception
+        return None
 
-    raise credentials_exception
+    return None
 
 
 async def authenticate_user(

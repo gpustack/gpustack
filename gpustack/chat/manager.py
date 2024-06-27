@@ -23,14 +23,16 @@ class ChatConfig(BaseSettings):
     model: str
     prompt: Optional[str] = None
     base_url: str = os.getenv("GPUSTACK_SERVER_URL", "http://127.0.0.1")
-    api_key: str = os.getenv("GPUSTACK_API_KEY")
+    api_key: Optional[str] = os.getenv("GPUSTACK_API_KEY")
 
     @model_validator(mode="after")
-    def check_required(self):
+    def check_api_key(self):
         if self.base_url != "http://127.0.0.1" and not self.api_key:
             raise ValueError(
                 "API key is required. Please set GPUSTACK_API_KEY env var."
             )
+        elif self.base_url == "http://127.0.0.1" and not self.api_key:
+            self.api_key = "local"
 
 
 def parse_arguments(args) -> ChatConfig:
