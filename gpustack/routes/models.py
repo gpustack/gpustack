@@ -1,5 +1,6 @@
 import math
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -7,7 +8,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.schemas.common import Pagination
-from gpustack.schemas.models import ModelInstancesPublic
+from gpustack.schemas.models import ModelInstance, ModelInstancesPublic
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
@@ -47,6 +48,13 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
     model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
+
+    if params.watch:
+        fields = {"model_id": id}
+        return StreamingResponse(
+            ModelInstance.streaming(session=session, fields=fields),
+            media_type="text/event-stream",
+        )
 
     instances = model.instances
     count = len(instances)

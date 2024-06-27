@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-from typing import Any, AsyncGenerator, Union, overload
+from typing import Any, AsyncGenerator, Optional, Union, overload
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
@@ -308,6 +308,16 @@ class ActiveRecordMixin:
             event_bus.unsubscribe(cls.__name__.lower(), subscriber)
 
     @classmethod
-    async def streaming(cls, session: AsyncSession) -> AsyncGenerator[str, None]:
+    async def streaming(
+        cls, session: AsyncSession, fields: Optional[dict] = None
+    ) -> AsyncGenerator[str, None]:
         async for event in cls.subscribe(session):
+            skip_event = False
+            for key, value in (fields or {}).items():
+                if getattr(event.data, key) != value:
+                    skip_event = True
+                    break
+            if skip_event:
+                continue
+
             yield json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
