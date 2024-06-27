@@ -46,14 +46,14 @@ def compute_gpu_load(workers: list[Worker]) -> UtilizationInfo:
     total_gpu = sum(
         gpu.core.total
         for worker in workers
-        for gpu in worker.status.gpu
+        for gpu in worker.status.gpu_devices
         if gpu.core.total >= 0
     )
     used_gpu = sum(
         # TODO use gpu.core.used when available
         gpu.core.total * gpu.core.utilization_rate / 100
         for worker in workers
-        for gpu in worker.status.gpu
+        for gpu in worker.status.gpu_devices
         if gpu.core.total >= 0
     )
 
@@ -69,13 +69,13 @@ def compute_gpu_memory_load(workers: list[Worker]) -> UtilizationInfo:
     total_gpu_memory = sum(
         gpu.memory.total
         for worker in workers
-        for gpu in worker.status.gpu
+        for gpu in worker.status.gpu_devices
         if gpu.memory.total > 0
     )
     used_gpu_memory = sum(
         gpu.memory.used
         for worker in workers
-        for gpu in worker.status.gpu
+        for gpu in worker.status.gpu_devices
         if gpu.memory.used
     )
 

@@ -3,10 +3,15 @@ from enum import Enum
 from typing import Dict, Optional
 from pydantic import ConfigDict, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
+from sqlalchemy import DDL, event
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, pydantic_column_type
 from typing import List
+from sqlalchemy.orm import declarative_base
+from gpustack.schemas.stmt import worker_after_create_stmt
+
+Base = declarative_base()
 
 
 class UtilizationInfo(BaseModel):
@@ -33,17 +38,17 @@ class SwapInfo(UtilizationInfo):
     pass
 
 
-class GPUDevice(BaseModel):
+class GPUDeviceInfo(BaseModel):
     uuid: str = Field(default="")
     name: str = Field(default="")
     vendor: str = Field(default="")
     index: int = Field(default=None)
-    core: Optional[GPUCoreInfo] = Field(default=None)
-    memory: Optional[MemoryInfo] = Field(default=None)
+    core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
+    memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
     temperature: Optional[float] = Field(default=None)  # in celsius
 
 
-GPUInfo = List[GPUDevice]
+GPUDevicesInfo = List[GPUDeviceInfo]
 
 
 class MountPoint(BaseModel):
@@ -85,7 +90,7 @@ class WorkerStateEnum(str, Enum):
 class WorkerStatus(BaseModel):
     cpu: CPUInfo | None = Field(sa_column=Column(JSON), default=None)
     memory: MemoryInfo | None = Field(sa_column=Column(JSON), default=None)
-    gpu: GPUInfo | None = Field(sa_column=Column(JSON), default=None)
+    gpu_devices: GPUDevicesInfo | None = Field(sa_column=Column(JSON), default=None)
     swap: SwapInfo | None = Field(sa_column=Column(JSON), default=None)
     filesystem: FileSystemInfo | None = Field(sa_column=Column(JSON), default=None)
     os: OperatingSystemInfo | None = Field(sa_column=Column(JSON), default=None)
@@ -128,3 +133,7 @@ class WorkerPublic(
 
 
 WorkersPublic = PaginatedList[WorkerPublic]
+
+
+# add event listener
+event.listen(Worker.metadata, "after_create", DDL(worker_after_create_stmt))

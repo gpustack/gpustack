@@ -5,6 +5,14 @@ from sqlalchemy.ext.asyncio import (
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.model_usage import ModelUsage
+from gpustack.schemas.models import Model, ModelInstance
+from gpustack.schemas.system_load import SystemLoad
+from gpustack.schemas.users import User
+from gpustack.schemas.workers import Worker
+
+
 _engine = None
 
 
@@ -29,4 +37,15 @@ async def init_db(db_url: str):
 
 async def create_db_and_tables(engine: AsyncEngine):
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(
+            SQLModel.metadata.create_all,
+            tables=[
+                ApiKey.__table__,
+                ModelUsage.__table__,
+                Model.__table__,
+                ModelInstance.__table__,
+                SystemLoad.__table__,
+                User.__table__,
+                Worker.__table__,
+            ],
+        )

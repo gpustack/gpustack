@@ -136,7 +136,7 @@ class ResourceFitPolicy:
             worker.status.memory.total - self._system_reserved.memory - allocated.memory
         )
 
-        for gpu_index, gpu in enumerate(worker.status.gpu):
+        for gpu_index, gpu in enumerate(worker.status.gpu_devices):
             if gpu.memory is None or gpu.memory.total is None:
                 continue
 
