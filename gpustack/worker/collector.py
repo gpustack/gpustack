@@ -9,7 +9,7 @@ from gpustack.schemas.workers import (
     KernelInfo,
     UptimeInfo,
     SwapInfo,
-    GPUDevice,
+    GPUDeviceInfo,
     MountPoint,
     WorkerStateEnum,
 )
@@ -105,7 +105,7 @@ class WorkerStatusCollector:
                         )
 
                         device.append(
-                            GPUDevice(
+                            GPUDeviceInfo(
                                 name=name,
                                 uuid=self._get_value(value, "uuid"),
                                 vendor=self._get_value(value, "vendor"),
@@ -115,7 +115,7 @@ class WorkerStatusCollector:
                                 temperature=self._get_value(value, "temperature"),
                             )
                         )
-                    status.gpu = device
+                    status.gpu_devices = device
                 case "Memory":
                     total = self._get_value(r, "total") or 0
                     used = self._get_value(r, "used") or 0
@@ -152,13 +152,13 @@ class WorkerStatusCollector:
 
         status.memory.is_unified_memory = is_unified_memory
         if is_unified_memory:
-            for index, _ in enumerate(status.gpu):
-                status.gpu[index].memory = status.memory
+            for index, _ in enumerate(status.gpu_devices):
+                status.gpu_devices[index].memory = status.memory
 
         allocated = self._get_allocated_resource()
         status.memory.allocated = allocated.memory
         for ag, agv in allocated.gpu_memory.items():
-            status.gpu[ag].memory.allocated = agv
+            status.gpu_devices[ag].memory.allocated = agv
 
         return Worker(
             name=self._hostname,
@@ -197,16 +197,11 @@ class WorkerStatusCollector:
             output = result.stdout
             parsed_json = json.loads(output)
             return parsed_json
-        except subprocess.CalledProcessError as e:
-            e.add_note(command + "execution failed")
-            raise
         except json.JSONDecodeError as e:
-            e.add_note("failed to parse the output of " + command)
+            e.add_note("failed to parse the output of " + command.__str__())
             raise
         except Exception as e:
-            e.add_note(
-                "error occurred when trying execute and parse the output of " + command
-            )
+            e.add_note("failed to execute and parse the output of " + command.__str__())
             raise e
 
     def _fastfetch_command(self):

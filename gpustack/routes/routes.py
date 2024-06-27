@@ -4,6 +4,7 @@ from gpustack.routes import (
     api_keys,
     auth,
     dashboard,
+    gpu_devices,
     model_instances,
     probes,
     users,
@@ -11,6 +12,7 @@ from gpustack.routes import (
     openai,
     workers,
 )
+
 from gpustack.api.exceptions import error_responses
 from gpustack.server.auth import get_admin_user, get_current_user
 
@@ -33,6 +35,10 @@ admin_router.include_router(workers.router, prefix="/workers", tags=["workers"])
 admin_router.include_router(
     model_instances.router, prefix="/model-instances", tags=["model instances"]
 )
+admin_router.include_router(
+    gpu_devices.router, prefix="/gpu-devices", tags=["gpu-devices"]
+)
+
 
 api_router.include_router(
     base_router, dependencies=[Depends(get_current_user)], prefix="/v1"

@@ -161,8 +161,8 @@ class MetricExporter(Collector):
             )
 
         # gpu
-        if status.gpu is not None:
-            for i, d in enumerate(status.gpu):
+        if status.gpu_devices is not None:
+            for i, d in enumerate(status.gpu_devices):
                 gpu_info.add_metric(
                     ["instance", "provider", "index", "name"],
                     {

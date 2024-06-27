@@ -162,8 +162,7 @@ class Scheduler:
                 state_message = f"Failed to filter workers with policies: {e}"
                 logger.error(state_message)
 
-        async with AsyncSession(self._engine) as session:
-            model_instance = await ModelInstance.one_by_id(session, instance.id)
+        model_instance = await ModelInstance.one_by_id(session, instance.id)
         if len(candidates) == 0:
             # update model instance.
             model_instance.state = ModelInstanceStateEnum.pending
