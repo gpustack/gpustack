@@ -966,6 +966,7 @@ certifi = "*"
 httpcore = "==1.*"
 idna = "*"
 sniffio = "*"
+socksio = {version = "==1.*", optional = true, markers = "extra == \"socks\""}
 
 [package.extras]
 brotli = ["brotli", "brotlicffi"]
@@ -2325,6 +2326,17 @@ files = [
 ]
 
 [[package]]
+name = "socksio"
+version = "1.0.0"
+description = "Sans-I/O implementation of SOCKS4, SOCKS4A, and SOCKS5."
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "socksio-1.0.0-py3-none-any.whl", hash = "sha256:95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3"},
+    {file = "socksio-1.0.0.tar.gz", hash = "sha256:f88beb3da5b5c38b9890469de67d0cb0f9d494b78b106ca1845f96c10b91c4ac"},
+]
+
+[[package]]
 name = "sqlalchemy"
 version = "2.0.30"
 description = "Database Abstraction Library"
@@ -2942,4 +2954,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "88bbf725ea1212e8d3990fb6b339a5ffc756a290c8d707d8a8e26a6f6a64192d"
+content-hash = "55c938d2b5e5d914ce937afc73a76b5eec7afd6d1fb2fa49b3d90e2905610290"
