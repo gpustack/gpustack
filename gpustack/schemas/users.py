@@ -11,6 +11,7 @@ class UserBase(SQLModel):
     username: str
     is_admin: bool = False
     full_name: str | None = None
+    require_password_change: bool = Field(default=False)
 
 
 class UserCreate(UserBase):

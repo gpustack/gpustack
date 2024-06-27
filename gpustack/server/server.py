@@ -170,6 +170,7 @@ class Server:
                 full_name="Default System Admin",
                 hashed_password=get_secret_hash(bootstrap_password),
                 is_admin=True,
+                require_password_change=True,
             )
             await User.create(session, user)
 

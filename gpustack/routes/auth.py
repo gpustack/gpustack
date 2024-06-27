@@ -60,4 +60,5 @@ async def update_password(
         raise UnauthorizedException(message="Incorrect current password")
 
     hashed_password = get_secret_hash(update_in.new_password)
-    await user.update(session, {"hashed_password": hashed_password})
+    patch = {"hashed_password": hashed_password, "require_password_change": False}
+    await user.update(session, patch)
