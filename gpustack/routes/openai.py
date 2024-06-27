@@ -28,7 +28,7 @@ async def list_models(session: SessionDep):
             OAIModel(
                 id=model.name,
                 object="model",
-                created=model.created_at.timestamp(),
+                created=int(model.created_at.timestamp()),
                 owned_by="gpustack",
             )
         )

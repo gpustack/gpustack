@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
@@ -70,12 +71,11 @@ class Config(BaseSettings):
             self.log_dir = os.path.join(self.data_dir, "log")
 
         if not self._is_server() and not self.token:
-            raise ValueError("Token is required when running as a worker")
+            raise Exception("Token is required when running as a worker")
         self.prepare_token()
 
         # server options
-        if self.database_url is None:
-            self.database_url = f"sqlite+aiosqlite:///{self.data_dir}/database.db"
+        self.ensure_database_url()
 
         # worker options
         if self.worker_ip is None:
@@ -86,10 +86,30 @@ class Config(BaseSettings):
         if (self.ssl_keyfile and not self.ssl_certfile) or (
             self.ssl_certfile and not self.ssl_keyfile
         ):
-            raise ValueError(
+            raise Exception(
                 'Both "ssl_keyfile" and "ssl_certfile" must be provided, or neither.'
             )
         return self
+
+    def ensure_database_url(self):
+        if self.database_url is None:
+            self.database_url = f"sqlite+aiosqlite:///{self.data_dir}/database.db"
+            return
+
+        if self.database_url.startswith("postgresql://"):
+            self.database_url = re.sub(
+                r'^postgresql://', 'postgresql+asyncpg://', self.database_url
+            )
+        elif self.database_url.startswith("sqlite://"):
+            self.database_url = re.sub(
+                r'^sqlite://', 'sqlite+aiosqlite://', self.database_url
+            )
+        elif not self.database_url.startswith(
+            "sqlite+aiosqlite://"
+        ) and not self.database_url.startswith("postgresql+asyncpg://"):
+            raise Exception(
+                "Unsupported database scheme. Supported databases are sqlite and postgresql."
+            )
 
     @staticmethod
     def get_data_dir():

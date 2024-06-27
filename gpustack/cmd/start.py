@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import multiprocessing
 from typing import Any, Dict
 
@@ -9,6 +10,9 @@ import yaml
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
 from gpustack.server.server import Server
+
+
+logger = logging.getLogger(__name__)
 
 
 def setup_start_cmd(subparsers: argparse._SubParsersAction):
@@ -132,11 +136,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
 
 
 def run(args):
-    cfg = parse_args(args)
-    if cfg.server_url:
-        run_worker(cfg)
-    else:
-        run_server(cfg)
+    try:
+        cfg = parse_args(args)
+        if cfg.server_url:
+            run_worker(cfg)
+        else:
+            run_server(cfg)
+    except Exception as e:
+        logger.fatal(e)
 
 
 def run_server(cfg: Config):

@@ -113,7 +113,7 @@ class ActiveRecordMixin:
 
         statement = select(cls)
         for key, value in fields.items():
-            statement = statement.where(col(getattr(cls, key)).contains(value))
+            statement = statement.where(col(getattr(cls, key)) == value)
 
         if page is not None and per_page is not None:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
@@ -122,7 +122,7 @@ class ActiveRecordMixin:
 
         statement = select(func.count(cls.id))
         for key, value in fields.items():
-            statement = statement.where(col(getattr(cls, key)).contains(value))
+            statement = statement.where(col(getattr(cls, key)) == value)
 
         result = await session.exec(statement)
         count = result.one()

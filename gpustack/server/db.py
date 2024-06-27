@@ -20,7 +20,9 @@ async def get_session():
 async def init_db(db_url: str):
     global _engine, _session_maker
     if _engine is None:
-        connect_args = {"check_same_thread": False}
+        connect_args = {}
+        if db_url.startswith("sqlite"):
+            connect_args = {"check_same_thread": False}
         _engine = create_async_engine(db_url, echo=False, connect_args=connect_args)
     await create_db_and_tables(_engine)
 

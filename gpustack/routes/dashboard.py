@@ -177,7 +177,7 @@ async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
         )
         .join(User, ModelUsage.user_id == User.id)
         .where(ModelUsage.date >= one_week_ago)
-        .group_by(ModelUsage.user_id)
+        .group_by(ModelUsage.user_id, User.username)
         .order_by(
             func.sum(
                 ModelUsage.prompt_token_count + ModelUsage.completion_token_count
