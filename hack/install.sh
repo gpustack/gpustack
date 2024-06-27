@@ -49,37 +49,6 @@ function download_fastfetch() {
     rm -rf "${fastfetch_tmp_dir}"
 }
 
-function download_llama_cpp_server() {
-    local version="b3135"
-    local llama_cpp_dir="${THIRD_PARTY_DIR}/llama_cpp"
-    local llama_cpp_tmp_dir="${llama_cpp_dir}/tmp"
-
-    platforms=("macos-arm64" "macos-x64" "ubuntu-x64")
-
-    for platform in "${platforms[@]}"; do
-      local target_file="${llama_cpp_dir}/server-${platform}"
-      if [ -f "${target_file}" ]; then
-          gpustack::log::info "llama.cpp server-${platform} already exists, skipping download"
-          continue
-      fi
-
-      local tmp_file="${llama_cpp_tmp_dir}/llama-${version}-bin-${platform}.zip"
-      rm -rf "${llama_cpp_tmp_dir}"
-      mkdir -p "${llama_cpp_tmp_dir}"
-
-      gpustack::log::info "downloading llama-${version}-bin-${platform} ${version} archive"
-
-      curl --retry 3 --retry-all-errors --retry-delay 3 \
-        -o  "${tmp_file}" \
-        -sSfL "https://github.com/ggerganov/llama.cpp/releases/download/${version}/llama-${version}-bin-${platform}.zip"
-
-      unzip -qu "${tmp_file}" -d "${llama_cpp_tmp_dir}"
-
-      cp "${llama_cpp_tmp_dir}/build/bin/server" "${llama_cpp_dir}/server-${platform}"
-      rm -rf "${llama_cpp_tmp_dir}"
-    done
-}
-
 function download_ui() {
   local default_tag="latest"
   local ui_path="${ROOT_DIR}/gpustack/ui"
@@ -110,7 +79,7 @@ function download_ui() {
   rm -rf "${tmp_ui_path}"
 }
 
-function download_gguf-parser() {
+function download_gguf_parser() {
     local version="v0.0.15"
 
     local gguf_parser_dir="${THIRD_PARTY_DIR}/gguf-parser"
@@ -135,14 +104,50 @@ function download_gguf-parser() {
     done
 }
 
+
+function download_llama_box() {
+    local version="v0.0.2"
+
+    local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
+    local llama_box_tmp_dir="${llama_box_dir}/tmp"
+    
+
+    platforms=("darwin-amd64-metal" "darwin-arm64-metal" "linux-amd64-cuda-12.5")
+
+    for platform in "${platforms[@]}"; do
+      local target_file="${llama_box_dir}/llama-box-${platform}"
+      if [ -f "${target_file}" ]; then
+          gpustack::log::info "llama-box-${platform} already exists, skipping download"
+          continue
+      fi
+
+      gpustack::log::info "downloading llama-box-${platform} '${version}'  archive"
+
+      local llama_box_platform_tmp_dir="${llama_box_tmp_dir}/${platform}"
+      rm -rf "${llama_box_platform_tmp_dir}"
+      mkdir -p "${llama_box_platform_tmp_dir}"
+
+      local tmp_file="${llama_box_tmp_dir}/llama-box-${version}-${platform}.zip"
+      curl --retry 3 --retry-all-errors --retry-delay 3 \
+        -o  "${tmp_file}" \
+        -sSfL "https://github.com/thxCode/llama-box/releases/download/${version}/llama-box-${platform}.zip"
+
+      unzip -qu "${tmp_file}" -d "${llama_box_platform_tmp_dir}"
+      cp "${llama_box_platform_tmp_dir}/llama-box" "${target_file}"
+      chmod +x "${target_file}"
+    done
+
+    rm -rf "${llama_box_tmp_dir}"
+}
+
 #
 # main
 #
 
 gpustack::log::info "+++ DEPENDENCIES +++"
+download_llama_box
 download_deps
-download_gguf-parser
+download_gguf_parser
 download_fastfetch
-download_llama_cpp_server
 download_ui
 gpustack::log::info "--- DEPENDENCIES ---"

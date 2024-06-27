@@ -187,7 +187,8 @@ class Scheduler:
             await model_instance.update(session, model_instance)
 
             logger.debug(
-                f"Scheduled model instance {model_instance.id} to node {candiate.worker.id}"
+                f"Scheduled model instance {model_instance.id} to node "
+                f"{candiate.worker.id} gpu {candiate.gpu_index}"
             )
 
     async def _get_model_instance_schedule_candidates(
