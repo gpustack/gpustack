@@ -65,15 +65,18 @@ async def get_serving_logs(
 
     model_instance_log_url = (
         f"http://{worker.ip}:10050/serveLogs"
-        "/{model_instance.id}?{log_options.url_encode()}"
+        f"/{model_instance.id}?{log_options.url_encode()}"
     )
 
+    timeout = httpx.Timeout(10.0, read=None)
     client: httpx.AsyncClient = request.app.state.http_client
 
     if log_options.follow:
 
         async def proxy_stream():
-            async with client.stream("GET", model_instance_log_url) as response:
+            async with client.stream(
+                "GET", model_instance_log_url, timeout=timeout
+            ) as response:
                 if response.status_code != 200:
                     raise HTTPException(
                         status_code=response.status_code,
