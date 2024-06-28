@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import secrets
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -19,6 +20,13 @@ async def get_api_keys(
     session: SessionDep, user: CurrentUserDep, params: ListParamsDep
 ):
     fields = {"user_id": user.id}
+
+    if params.watch:
+        return StreamingResponse(
+            ApiKey.streaming(session, fields),
+            media_type="text/event-stream",
+        )
+
     return await ApiKey.paginated_by_query(
         session=session,
         fields=fields,

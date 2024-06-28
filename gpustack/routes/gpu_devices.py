@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.gpu_devices import (
     GPUDevice,
@@ -18,6 +19,11 @@ async def get_gpus(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
+
+    if params.watch:
+        return StreamingResponse(
+            GPUDevice.streaming(session, fields), media_type="text/event-stream"
+        )
 
     return await GPUDevice.paginated_by_query(
         session=session,

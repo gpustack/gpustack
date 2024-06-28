@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -17,6 +18,12 @@ async def get_users(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
+
+    if params.watch:
+        return StreamingResponse(
+            User.streaming(session, fields), media_type="text/event-stream"
+        )
+
     return await User.paginated_by_query(
         session=session,
         fields=fields,

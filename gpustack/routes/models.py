@@ -26,6 +26,12 @@ async def get_models(session: SessionDep, params: ListParamsDep):
     fields = {}
     if params.query:
         fields = {"name": params.query}
+
+    if params.watch:
+        return StreamingResponse(
+            Model.streaming(session, fields), media_type="text/event-stream"
+        )
+
     return await Model.paginated_by_query(
         session=session,
         fields=fields,
