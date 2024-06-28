@@ -41,6 +41,7 @@ class Server:
     async def start(self):
         logger.info("Starting GPUStack server.")
 
+        self._run_migrations()
         await self._prepare_data()
 
         self._start_sub_processes()
@@ -74,6 +75,18 @@ class Server:
         logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
         await server.serve()
+
+    def _run_migrations(self):
+        logger.info("Running database migration.")
+
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        alembic_cfg = AlembicConfig()
+        alembic_cfg.set_main_option("script_location", "gpustack/migrations")
+        alembic_cfg.set_main_option("sqlalchemy.url", self._config.database_url)
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migration completed.")
 
     async def _prepare_data(self):
         self._setup_data_dir(self._config.data_dir)

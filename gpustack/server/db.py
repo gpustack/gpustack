@@ -1,3 +1,4 @@
+import re
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     create_async_engine,
@@ -29,8 +30,15 @@ async def init_db(db_url: str):
     global _engine, _session_maker
     if _engine is None:
         connect_args = {}
-        if db_url.startswith("sqlite"):
+        if db_url.startswith("sqlite://"):
             connect_args = {"check_same_thread": False}
+            # use async driver
+            db_url = re.sub(r'^sqlite://', 'sqlite+aiosqlite://', db_url)
+        elif db_url.startswith("postgresql://"):
+            db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+        else:
+            raise Exception(f"Unsupported database URL: {db_url}")
+
         _engine = create_async_engine(db_url, echo=False, connect_args=connect_args)
     await create_db_and_tables(_engine)
 

@@ -1,5 +1,4 @@
 import os
-import re
 import secrets
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
@@ -75,7 +74,7 @@ class Config(BaseSettings):
         self.prepare_token()
 
         # server options
-        self.ensure_database_url()
+        self.init_database_url()
 
         # worker options
         if self.worker_ip is None:
@@ -91,22 +90,14 @@ class Config(BaseSettings):
             )
         return self
 
-    def ensure_database_url(self):
+    def init_database_url(self):
         if self.database_url is None:
-            self.database_url = f"sqlite+aiosqlite:///{self.data_dir}/database.db"
+            self.database_url = f"sqlite:///{self.data_dir}/database.db"
             return
 
-        if self.database_url.startswith("postgresql://"):
-            self.database_url = re.sub(
-                r'^postgresql://', 'postgresql+asyncpg://', self.database_url
-            )
-        elif self.database_url.startswith("sqlite://"):
-            self.database_url = re.sub(
-                r'^sqlite://', 'sqlite+aiosqlite://', self.database_url
-            )
-        elif not self.database_url.startswith(
-            "sqlite+aiosqlite://"
-        ) and not self.database_url.startswith("postgresql+asyncpg://"):
+        if not self.database_url.startswith(
+            "sqlite://"
+        ) and not self.database_url.startswith("postgresql://"):
             raise Exception(
                 "Unsupported database scheme. Supported databases are sqlite and postgresql."
             )

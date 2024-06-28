@@ -12,3 +12,4 @@ exclude =
     .pytest_cache,
     .mypy_cache
     */generated*
+    */migrations

@@ -21,6 +21,7 @@ def setup_logging(debug: bool = False):
         "apscheduler.scheduler",
         "apscheduler.executors.default",
         "tzlocal",
+        "alembic.runtime.migration",
     ]
 
     for logger_name in third_party_logger_names:

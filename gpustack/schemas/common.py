@@ -4,7 +4,7 @@ from typing import Generic, Type, TypeVar
 from fastapi import Query
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, TypeAdapter
-from sqlalchemy import JSON, TypeDecorator
+from sqlalchemy import JSON as SQLAlchemyJSON, TypeDecorator
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -26,6 +26,10 @@ class ListParams(BaseModel):
 class PaginatedList(BaseModel, Generic[T]):
     items: list[T]
     pagination: Pagination
+
+
+class JSON(SQLAlchemyJSON):
+    pass
 
 
 def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
@@ -69,5 +73,11 @@ def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
 
         def _prepare_value_for_dump(self, value):
             return pydantic_type.model_validate(value)
+
+        def __repr__(self):
+            return "JSON()"
+
+        def __str__(self):
+            return "JSON()"
 
     return PydanticJSONType
