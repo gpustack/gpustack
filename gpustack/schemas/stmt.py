@@ -1,5 +1,5 @@
 worker_after_create_stmt = """
-CREATE VIEW IF NOT EXISTS gpu_device_view AS
+CREATE VIEW IF NOT EXISTS gpu_devices_view AS
 SELECT
     w.name || '-' || json_extract(value, '$.index') AS id,
     w.id as worker_id,
@@ -15,6 +15,6 @@ SELECT
     json_extract(value, '$.memory') AS memory,
     json_extract(value, '$.temperature') AS temperature
 FROM
-    worker w,
+    workers w,
     json_each(w.status, '$.gpu_devices')
 """

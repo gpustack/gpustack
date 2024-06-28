@@ -46,6 +46,7 @@ class ModelBase(SQLModel, ModelSource):
 
 
 class Model(ModelBase, BaseModelMixin, table=True):
+    __tablename__ = 'models'
     id: Optional[int] = Field(default=None, primary_key=True)
 
     instances: list["ModelInstance"] = Relationship(
@@ -105,7 +106,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     )
     gpu_index: Optional[int] = None
 
-    model_id: int = Field(default=None, foreign_key="model.id")
+    model_id: int = Field(default=None, foreign_key="models.id")
     model_name: str
 
     # The "model_id" field conflicts with the protected namespace "model_" in Pydantic.
@@ -114,6 +115,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
+    __tablename__ = 'model_instances'
     id: Optional[int] = Field(default=None, primary_key=True)
 
     model: Model | None = Relationship(

@@ -16,7 +16,7 @@ class GPUDeviceBase(GPUDeviceInfo, BaseModel):
 
 
 class GPUDevice(GPUDeviceBase, SQLModel, BaseModelMixin, table=True):
-    __tablename__ = "gpu_device_view"
+    __tablename__ = "gpu_devices_view"
     __mapper_args__ = {'primary_key': ["id"]}
 
 

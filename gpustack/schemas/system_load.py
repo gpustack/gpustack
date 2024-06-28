@@ -9,6 +9,7 @@ from gpustack.schemas.workers import UtilizationInfo
 
 
 class SystemLoad(SQLModel, ActiveRecordMixin, table=True):
+    __tablename__ = 'system_loads'
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
     cpu: Optional[UtilizationInfo] = Field(

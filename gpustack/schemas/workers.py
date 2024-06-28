@@ -113,6 +113,7 @@ class WorkerBase(SQLModel):
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):
+    __tablename__ = 'workers'
     id: int | None = Field(default=None, primary_key=True)
 
 

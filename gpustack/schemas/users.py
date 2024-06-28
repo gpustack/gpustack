@@ -52,6 +52,7 @@ class UpdatePassword(SQLModel):
 
 
 class User(UserBase, BaseModelMixin, table=True):
+    __tablename__ = 'users'
     id: int | None = Field(default=None, primary_key=True)
     hashed_password: str
 

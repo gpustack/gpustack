@@ -11,6 +11,7 @@ class ApiKeyBase(SQLModel):
 
 
 class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
+    __tablename__ = 'api_keys'
     id: int | None = Field(default=None, primary_key=True)
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
