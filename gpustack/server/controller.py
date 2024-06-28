@@ -1,4 +1,6 @@
 import logging
+import random
+import string
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.models import (
     Model,
@@ -44,7 +46,11 @@ class ModelController:
                         await instance.delete(session)
 
                 elif len(instances) < model.replicas:
+                    name_prefix = ''.join(
+                        random.choices(string.ascii_letters + string.digits, k=5)
+                    )
                     instance = ModelInstanceCreate(
+                        name=f"{model.name}-{name_prefix}",
                         model_id=model.id,
                         model_name=model.name,
                         source=model.source,
