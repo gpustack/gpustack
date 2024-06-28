@@ -87,7 +87,7 @@ class InferenceServer:
             raise e
 
     def start(self):
-        command_path = pkg_resources.files("gpustack.third_party.llama_cpp").joinpath(
+        command_path = pkg_resources.files("gpustack.third_party.llama-box").joinpath(
             self._get_command()
         )
 
@@ -101,7 +101,7 @@ class InferenceServer:
         arguments = [
             "--host",
             "0.0.0.0",
-            "--n-gpu-layers",
+            "--gpu-layers",
             str(layers),
             "--parallel",
             "5",
@@ -136,12 +136,14 @@ class InferenceServer:
         match platform.system():
             case "Darwin":
                 if "amd64" in platform.machine() or "x86_64" in platform.machine():
-                    command = "server-macos-x64"
+                    command = "llama-box-darwin-amd64-metal"
                 elif "arm" in platform.machine() or "aarch64" in platform.machine():
-                    command = "server-macos-arm64"
+                    command = "llama-box-darwin-arm64-metal"
             case "Linux":
-                if "amd64" in platform.machine() or "x86_64" in platform.machine():
-                    command = "server-ubuntu-x64"
+                if (
+                    "amd64" in platform.machine() or "x86_64" in platform.machine()
+                ) and cuda_driver_installed():
+                    command = "llama-box-linux-amd64-cuda-12.5"
 
         if command == "":
             raise ValueError(
@@ -189,3 +191,16 @@ class InferenceServer:
             setattr(mi, key, value)
 
         self._clientset.model_instances.update(id=id, model_update=mi)
+
+
+def cuda_driver_installed() -> bool:
+    try:
+        result = subprocess.run(
+            ['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        if result.returncode == 0:
+            return True
+        else:
+            return False
+    except FileNotFoundError:
+        return False
