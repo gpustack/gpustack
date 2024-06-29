@@ -74,14 +74,17 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         ):
             return response
 
-        stream: bool = request.state.stream
+        stream: bool = getattr(request.state, "stream", False)
         if stream:
             response = await self.handle_streaming_response(request, response)
         else:
             response_body = b"".join([chunk async for chunk in response.body_iterator])
-            completion_dict = json.loads(response_body)
-            chat_completion = ChatCompletion(**completion_dict)
-            await self.process_model_usage(request, chat_completion)
+            try:
+                completion_dict = json.loads(response_body)
+                chat_completion = ChatCompletion(**completion_dict)
+                await self.process_model_usage(request, chat_completion)
+            except Exception as e:
+                logger.error(f"Error processing model usage: {e}")
             response = Response(content=response_body, headers=dict(response.headers))
 
         return response
@@ -90,48 +93,48 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         self, request: Request, response: StreamingResponse
     ):
         async def streaming_generator():
-            async for chunk in response.body_iterator:
-                data = chunk.decode("utf-8")
-                yield chunk
-                if '"usage":' in data:
-                    completion_dict = json.loads(data.split('data: ')[-1])
-                    completion_chunk = ChatCompletionChunk(**completion_dict)
-                    await self.process_model_usage(request, completion_chunk)
-                    break
+            try:
+                async for chunk in response.body_iterator:
+                    data = chunk.decode("utf-8")
+                    yield chunk
+                    if '"completion_tokens":' in data:
+                        completion_dict = json.loads(data.split('data: ')[-1])
+                        completion_chunk = ChatCompletionChunk(**completion_dict)
+                        await self.process_model_usage(request, completion_chunk)
+                        break
 
-            async for chunk in response.body_iterator:
-                yield chunk
+                async for chunk in response.body_iterator:
+                    yield chunk
+            except Exception as e:
+                logger.error(f"Error processing streaming response: {e}")
 
         return StreamingResponse(streaming_generator(), headers=dict(response.headers))
 
     async def process_model_usage(
         self, request: Request, chat_completion: ChatCompletion | ChatCompletionChunk
     ):
-        try:
-            completion_tokens = chat_completion.usage.completion_tokens
-            prompt_tokens = chat_completion.usage.prompt_tokens
-            user: User = request.state.user
-            model: Model = request.state.model
-            fields = {
-                "user_id": user.id,
-                "model_id": model.id,
-                "date": date.today(),
-            }
-            model_usage = ModelUsage(
-                **fields,
-                completion_token_count=completion_tokens,
-                prompt_token_count=prompt_tokens,
-                request_count=1,
-                operation="chat_completion",
-            )
-            async with AsyncSession(get_engine()) as session:
-                current_model_usage = await ModelUsage.one_by_fields(session, fields)
-                if current_model_usage:
-                    current_model_usage.completion_token_count += completion_tokens
-                    current_model_usage.prompt_token_count += prompt_tokens
-                    current_model_usage.request_count += 1
-                    await current_model_usage.update(session)
-                else:
-                    await ModelUsage.create(session, model_usage)
-        except Exception as e:
-            logger.error(f"Error processing model usage: {e}")
+        completion_tokens = chat_completion.usage.completion_tokens
+        prompt_tokens = chat_completion.usage.prompt_tokens
+        user: User = request.state.user
+        model: Model = request.state.model
+        fields = {
+            "user_id": user.id,
+            "model_id": model.id,
+            "date": date.today(),
+        }
+        model_usage = ModelUsage(
+            **fields,
+            completion_token_count=completion_tokens,
+            prompt_token_count=prompt_tokens,
+            request_count=1,
+            operation="chat_completion",
+        )
+        async with AsyncSession(get_engine()) as session:
+            current_model_usage = await ModelUsage.one_by_fields(session, fields)
+            if current_model_usage:
+                current_model_usage.completion_token_count += completion_tokens
+                current_model_usage.prompt_token_count += prompt_tokens
+                current_model_usage.request_count += 1
+                await current_model_usage.update(session)
+            else:
+                await ModelUsage.create(session, model_usage)

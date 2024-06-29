@@ -106,7 +106,7 @@ function download_gguf_parser() {
 
 
 function download_llama_box() {
-    local version="v0.0.2"
+    local version="v0.0.4"
 
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"
@@ -145,8 +145,8 @@ function download_llama_box() {
 #
 
 gpustack::log::info "+++ DEPENDENCIES +++"
-download_llama_box
 download_deps
+download_llama_box
 download_gguf_parser
 download_fastfetch
 download_ui
