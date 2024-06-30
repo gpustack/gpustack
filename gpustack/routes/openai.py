@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
+from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.server.deps import SessionDep
 
@@ -35,6 +36,9 @@ async def list_models(session: SessionDep):
     return result
 
 
+load_balancer = LoadBalancer()
+
+
 @router.post("/chat/completions")
 async def chat_completion(session: SessionDep, request: Request):
     body = await request.json()
@@ -55,16 +59,13 @@ async def chat_completion(session: SessionDep, request: Request):
         session=session, field="model_id", value=model.id
     )
 
-    instance = next(
-        (
-            inst
-            for inst in model_instances
-            if inst.state == ModelInstanceStateEnum.running
-        ),
-        None,
-    )
-    if not instance:
+    running_instances = [
+        inst for inst in model_instances if inst.state == ModelInstanceStateEnum.running
+    ]
+    if not running_instances:
         raise ServiceUnavailableException(message="No running instances available")
+
+    instance = await load_balancer.get_instance(running_instances)
 
     url = f"http://{instance.worker_ip}:{instance.port}/v1/chat/completions"
     logger.debug(f"proxying to {url}")
