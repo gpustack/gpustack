@@ -5,6 +5,7 @@ import sys
 from gpustack import logging
 from gpustack.cmd import setup_start_cmd
 from gpustack.cmd.chat import setup_chat_cmd
+from gpustack.cmd.version import setup_version_cmd
 
 
 def handle_signal(sig, frame):
@@ -29,6 +30,7 @@ def main():
 
     setup_start_cmd(subparsers)
     setup_chat_cmd(subparsers)
+    setup_version_cmd(subparsers)
 
     args = parser.parse_args()
     logging.setup_logging(debug=args.debug)
