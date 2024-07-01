@@ -15,7 +15,7 @@ from gpustack.config import Config
 from gpustack.server.controller import ModelController
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
-from gpustack.server.system_load import SystemLoadCollector
+from gpustack.server.data_collector import DataCollector
 
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ class Server:
         logger.debug("Controller started.")
 
     def _start_system_load_collector(self):
-        collector = SystemLoadCollector()
+        collector = DataCollector()
         asyncio.create_task(collector.start())
 
         logger.debug("System load collector started.")

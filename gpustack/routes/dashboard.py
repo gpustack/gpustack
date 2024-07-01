@@ -21,7 +21,7 @@ from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep
 from gpustack.schemas import Worker
-from gpustack.server.system_load import compute_system_load
+from gpustack.server.data_collector import compute_system_load
 
 router = APIRouter()
 

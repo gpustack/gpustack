@@ -1,7 +1,10 @@
 import asyncio
+from datetime import date
 import logging
 
 from sqlmodel.ext.asyncio.session import AsyncSession
+from gpustack.schemas.model_usage import ModelUsage, ResourceClaim
+from gpustack.schemas.models import ModelInstance
 from gpustack.schemas.workers import UtilizationInfo, Worker
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.server.db import get_engine
@@ -98,7 +101,7 @@ def compute_system_load(workers: list[Worker]) -> SystemLoad:
     return load
 
 
-class SystemLoadCollector:
+class DataCollector:
     def __init__(self, interval=60):
         self.interval = interval
         self._engine = get_engine()
@@ -107,9 +110,61 @@ class SystemLoadCollector:
         while True:
             await asyncio.sleep(self.interval)
             try:
-                async with AsyncSession(self._engine) as session:
-                    workers = await Worker.all(session=session)
-                    system_load = compute_system_load(workers)
-                    await SystemLoad.create(session, system_load)
+                await self.collect_data()
             except Exception as e:
-                logger.error(f"failed to collect system load: {e}")
+                logger.error(f"Failed to collect data: {e}")
+
+    async def collect_data(self):
+        tasks = [
+            self.collect_system_load(),
+            self.collect_model_usage(),
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task, result in zip(
+            ["collect_system_load", "collect_model_usage"], results
+        ):
+            if isinstance(result, Exception):
+                raise Exception(f"Failed to run {task}: {result}")
+
+    async def collect_system_load(self):
+        async with AsyncSession(self._engine) as session:
+            workers = await Worker.all(session=session)
+            system_load = compute_system_load(workers)
+            await SystemLoad.create(session, system_load)
+
+    async def collect_model_usage(self):
+        async with AsyncSession(self._engine) as session:
+            model_usages = await ModelUsage.all_by_field(
+                session=session, field="date", value=date.today()
+            )
+
+        if len(model_usages) == 0:
+            return
+
+        for model_usage in model_usages:
+            model_instances = await ModelInstance.all_by_field(
+                session=session, field="model_id", value=model_usage.model_id
+            )
+
+            claim_memory = 0
+            claim_gpu_memory = 0
+            for instance in model_instances:
+                if instance.computed_resource_claim is None:
+                    continue
+
+                if instance.computed_resource_claim.memory is not None:
+                    claim_memory += instance.computed_resource_claim.memory
+                if instance.computed_resource_claim.gpu_memory is not None:
+                    claim_gpu_memory += instance.computed_resource_claim.gpu_memory
+
+            if (
+                model_usage.resource_claim is not None
+                and model_usage.resource_claim.memory == claim_memory
+                and model_usage.resource_claim.gpu_memory == claim_gpu_memory
+            ):
+                continue
+
+            model_usage.resource_claim = ResourceClaim(
+                memory=claim_memory, gpu_memory=claim_gpu_memory
+            )
+            await model_usage.update(session)
