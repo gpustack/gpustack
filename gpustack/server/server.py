@@ -81,9 +81,17 @@ class Server:
 
         from alembic import command
         from alembic.config import Config as AlembicConfig
+        import importlib.util
 
+        spec = importlib.util.find_spec("gpustack")
+        if spec is None:
+            raise ImportError("The 'gpustack' package is not found.")
+
+        pkg_path = spec.submodule_search_locations[0]
         alembic_cfg = AlembicConfig()
-        alembic_cfg.set_main_option("script_location", "gpustack/migrations")
+        alembic_cfg.set_main_option(
+            "script_location", os.path.join(pkg_path, "migrations")
+        )
         alembic_cfg.set_main_option("sqlalchemy.url", self._config.database_url)
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migration completed.")
