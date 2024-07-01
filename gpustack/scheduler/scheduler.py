@@ -153,43 +153,47 @@ class Scheduler:
         async with AsyncSession(self._engine) as session:
             workers = await Worker.all(session)
 
-        if len(workers) != 0:
-            try:
-                candidates = await self._get_model_instance_schedule_candidates(workers)
-                for policy in filterPolicies:
-                    candidates = await policy.filter(candidates)
-            except Exception as e:
-                state_message = f"Failed to filter workers with policies: {e}"
-                logger.error(state_message)
+            if len(workers) != 0:
+                try:
+                    candidates = await self._get_model_instance_schedule_candidates(
+                        workers
+                    )
+                    for policy in filterPolicies:
+                        candidates = await policy.filter(candidates)
+                except Exception as e:
+                    state_message = f"Failed to filter workers with policies: {e}"
+                    logger.error(state_message)
 
-        model_instance = await ModelInstance.one_by_id(session, instance.id)
-        if len(candidates) == 0:
-            # update model instance.
-            model_instance.state = ModelInstanceStateEnum.pending
-            model_instance.state_message = "No fit worker"
-            if state_message != "":
-                model_instance.state_message = state_message
+            model_instance = await ModelInstance.one_by_id(session, instance.id)
+            if len(candidates) == 0:
+                # update model instance.
+                model_instance.state = ModelInstanceStateEnum.pending
+                model_instance.state_message = "No fit worker"
+                if state_message != "":
+                    model_instance.state_message = state_message
 
-            await model_instance.update(session, model_instance)
-            logger.debug(f"No fit worker for model instance {model_instance.id}")
-        else:
-            # pick the first candidate now, should scoring all the candidates later.
-            candiate = candidates[0]
+                await model_instance.update(session, model_instance)
+                logger.debug(f"No fit worker for model instance {model_instance.id}")
+            else:
+                # pick the first candidate now, should scoring all the candidates later.
+                candiate = candidates[0]
 
-            # update model instance.
-            model_instance.state = ModelInstanceStateEnum.scheduled
-            model_instance.state_message = ""
-            model_instance.worker_id = candiate.worker.id
-            model_instance.worker_ip = candiate.worker.ip
-            model_instance.computed_resource_claim = candiate.computed_resource_claim
-            model_instance.gpu_index = candiate.gpu_index
+                # update model instance.
+                model_instance.state = ModelInstanceStateEnum.scheduled
+                model_instance.state_message = ""
+                model_instance.worker_id = candiate.worker.id
+                model_instance.worker_ip = candiate.worker.ip
+                model_instance.computed_resource_claim = (
+                    candiate.computed_resource_claim
+                )
+                model_instance.gpu_index = candiate.gpu_index
 
-            await model_instance.update(session, model_instance)
+                await model_instance.update(session, model_instance)
 
-            logger.debug(
-                f"Scheduled model instance {model_instance.id} to node "
-                f"{candiate.worker.id} gpu {candiate.gpu_index}"
-            )
+                logger.debug(
+                    f"Scheduled model instance {model_instance.id} to node "
+                    f"{model_instance.worker_id} gpu {candiate.gpu_index}"
+                )
 
     async def _get_model_instance_schedule_candidates(
         self, workers: List[Worker]
