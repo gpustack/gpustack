@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from typing import List
 from fastapi import APIRouter
+from sqlalchemy import Integer
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -10,6 +11,7 @@ from gpustack.schemas.dashboard import (
     ModelSummary,
     ModelUsageSummary,
     ModelUsageUserSummary,
+    ResourceClaim,
     ResourceCounts,
     SystemLoadSummary,
     SystemSummary,
@@ -213,6 +215,28 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
             Model.name,
             func.count(ModelInstance.id).label('instance_count'),
             func.sum(
+                func.coalesce(
+                    func.cast(
+                        func.json_extract(
+                            ModelInstance.computed_resource_claim, '$.memory'
+                        ),
+                        Integer,
+                    ),
+                    0,
+                )
+            ).label('total_memory_claim'),
+            func.sum(
+                func.coalesce(
+                    func.cast(
+                        func.json_extract(
+                            ModelInstance.computed_resource_claim, '$.gpu_memory'
+                        ),
+                        Integer,
+                    ),
+                    0,
+                )
+            ).label('total_gpu_memory_claim'),
+            func.sum(
                 ModelUsage.prompt_token_count + ModelUsage.completion_token_count
             ).label('total_token_count'),
         )
@@ -233,8 +257,10 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
             ModelSummary(
                 id=result.id,
                 name=result.name,
-                gpu_utilization=0.0,
-                gpu_memory_utilization=0.0,
+                resource_claim=ResourceClaim(
+                    memory=result.total_memory_claim,
+                    gpu_memory=result.total_gpu_memory_claim,
+                ),
                 instance_count=result.instance_count,
                 token_count=result.total_token_count,
             )
