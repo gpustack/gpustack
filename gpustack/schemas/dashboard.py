@@ -42,11 +42,15 @@ class ModelUsageSummary(BaseModel):
     top_users: List[ModelUsageUserSummary]
 
 
+class ResourceClaim(BaseModel):
+    memory: int  # in bytes
+    gpu_memory: int  # in bytes
+
+
 class ModelSummary(BaseModel):
     id: int
     name: str
-    gpu_utilization: float
-    gpu_memory_utilization: float
+    resource_claim: ResourceClaim
     instance_count: int
     token_count: int
 
