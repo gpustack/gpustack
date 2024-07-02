@@ -16,7 +16,7 @@ from gpustack.api.exceptions import ForbiddenException, UnauthorizedException
 from gpustack.schemas.users import User
 from gpustack.security import (
     API_KEY_PREFIX,
-    decode_access_token,
+    JWTManager,
     verify_hashed_secret,
 )
 
@@ -50,7 +50,8 @@ async def get_current_user(
     elif basic_credentials:
         user = await authenticate_basic_user(session, basic_credentials)
     elif cookie_token:
-        user = await get_user_from_jwt_token(session, cookie_token)
+        jwt_manager: JWTManager = request.app.state.jwt_manager
+        user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
     elif bearer_token:
         user = await get_user_from_bearer_token(session, bearer_token)
 
@@ -121,10 +122,10 @@ def get_access_token(
 
 
 async def get_user_from_jwt_token(
-    session: AsyncSession, access_token: str
+    session: AsyncSession, jwt_manager: JWTManager, access_token: str
 ) -> Optional[User]:
     try:
-        payload = decode_access_token(access_token)
+        payload = jwt_manager.decode_jwt_token(access_token)
         username = payload.get("sub")
     except Exception:
         return None

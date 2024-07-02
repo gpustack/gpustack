@@ -1,12 +1,11 @@
-from datetime import timedelta
 from typing import Annotated
-from fastapi import APIRouter, Form, Response
+from fastapi import APIRouter, Form, Request, Response
 from pydantic import BaseModel
 from gpustack.api.exceptions import UnauthorizedException
 from gpustack.schemas.users import UpdatePassword
 from gpustack.security import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
-    create_access_token,
+    JWT_TOKEN_EXPIRE_MINUTES,
+    JWTManager,
     get_secret_hash,
     verify_hashed_secret,
 )
@@ -24,6 +23,7 @@ class Token(BaseModel):
 
 @router.post("/login")
 async def login(
+    request: Request,
     response: Response,
     session: SessionDep,
     username: Annotated[str, Form()],
@@ -31,17 +31,17 @@ async def login(
 ):
     user = await authenticate_user(session, username, password)
 
-    access_token = create_access_token(
+    jwt_manager: JWTManager = request.app.state.jwt_manager
+    access_token = jwt_manager.create_jwt_token(
         username=user.username,
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        expires=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=JWT_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 

@@ -8,7 +8,7 @@ import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
 from gpustack.schemas.users import User
-from gpustack.security import generate_secure_password, get_secret_hash
+from gpustack.security import JWTManager, generate_secure_password, get_secret_hash
 from gpustack.server.app import app
 from gpustack.config import Config
 from gpustack.server.controller import ModelController
@@ -57,8 +57,10 @@ class Server:
         if self._config.host:
             host = self._config.host
 
+        jwt_manager = JWTManager(self._config.jwt_secret_key)
         # Start FastAPI server
         app.state.server_config = self._config
+        app.state.jwt_manager = jwt_manager
         config = uvicorn.Config(
             app,
             host=host,
