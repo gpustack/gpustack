@@ -81,8 +81,8 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=json.loads,
         help="The system reserves resources for the worker during scheduling, measured in GiB. \
         By default, 1 GiB of memory and 1 GiB of GPU memory are reserved. \
-        Example: {'memory': 1, 'gpuMemory': 1}.",
-        default={"memory": 1, "gpuMemory": 1},
+        Example: {'memory': 1, 'gpu_memory': 1}.",
+        default={"memory": 1, "gpu_memory": 1},
     )
     group.add_argument(
         "--ssl-keyfile",

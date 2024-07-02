@@ -42,7 +42,7 @@ class Scheduler:
                 int(system_reserved.get("memory", 0)) * 1024 * 1024 * 1024
             )  # GB to Bytes
             gpu_memory = (
-                int(system_reserved.get("gpuMemory", 0)) * 1024 * 1024 * 1024
+                int(system_reserved.get("gpu_memory", 0)) * 1024 * 1024 * 1024
             )  # GB to Bytes
             self._system_reserved = SystemReservedResource(
                 memory=memory, gpu_memory=gpu_memory
