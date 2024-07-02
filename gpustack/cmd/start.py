@@ -118,7 +118,13 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--metrics-port",
         type=int,
         help="Port to expose metrics.",
-        default=10051,
+        default=10151,
+    )
+    group.add_argument(
+        "--worker-port",
+        type=int,
+        help="Port to bind the worker to.",
+        default=10150,
     )
     group.add_argument(
         "--log-dir",
@@ -217,6 +223,7 @@ def set_worker_options(args, config_data: dict):
         "worker_ip",
         "enable_metrics",
         "metrics_port",
+        "worker_port",
         "log_dir",
     ]
 

@@ -37,7 +37,7 @@ class Worker:
 
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
-        self._port = 10050
+        self._port = cfg.worker_port
         self._exporter_enabled = cfg.enable_metrics
         self._exporter = MetricExporter(
             worker_ip=cfg.worker_ip, port=cfg.metrics_port, clientset=clientset

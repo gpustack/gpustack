@@ -30,6 +30,7 @@ class Config(BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         enable_metrics: Enable metrics.
         metrics_port: Port to expose metrics on.
+        worker_port: Port to bind the worker to.
         log_dir: Directory to store logs.
     """
 
@@ -54,7 +55,8 @@ class Config(BaseSettings):
     server_url: str | None = None
     worker_ip: str | None = None
     enable_metrics: bool = True
-    metrics_port: int = 10051
+    worker_port: int = 10150
+    metrics_port: int = 10151
     log_dir: str | None = None
 
     def __init__(self, **values):

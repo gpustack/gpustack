@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 import httpx
 
+from gpustack.config.config import Config
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -69,8 +70,10 @@ async def get_serving_logs(
     if not worker:
         raise NotFoundException(message="Model instance's worker not found")
 
+    server_config: Config = request.app.state.server_config
+
     model_instance_log_url = (
-        f"http://{worker.ip}:10050/serveLogs"
+        f"http://{worker.ip}:{server_config.worker_port}/serveLogs"
         f"/{model_instance.id}?{log_options.url_encode()}"
     )
 
