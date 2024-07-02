@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 def compute_cpu_load(workers: list[Worker]) -> UtilizationInfo:
     total_cpu = sum(worker.status.cpu.total for worker in workers)
     used_cpu = sum(
-        # TODO use cpu.used when available
         worker.status.cpu.total * worker.status.cpu.utilization_rate / 100
         for worker in workers
         if worker.status.cpu.total >= 0
@@ -50,7 +49,6 @@ def compute_gpu_load(workers: list[Worker]) -> UtilizationInfo:
         if gpu.core.total >= 0
     )
     used_gpu = sum(
-        # TODO use gpu.core.used when available
         gpu.core.total * gpu.core.utilization_rate / 100
         for worker in workers
         for gpu in worker.status.gpu_devices

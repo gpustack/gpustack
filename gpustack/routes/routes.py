@@ -18,25 +18,25 @@ from gpustack.server.auth import get_admin_user, get_current_user
 
 
 api_router = APIRouter(responses=error_responses)
-api_router.include_router(probes.router, tags=["probes"])
-api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(probes.router, tags=["Probes"])
+api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 
 # authed routes
 
 base_router = APIRouter(dependencies=[Depends(get_current_user)])
-base_router.include_router(users.me_router, prefix="/users", tags=["users"])
-base_router.include_router(api_keys.router, prefix="/api-keys", tags=["api keys"])
+base_router.include_router(users.me_router, prefix="/users", tags=["Users"])
+base_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 
 admin_router = APIRouter()
-admin_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
-admin_router.include_router(users.router, prefix="/users", tags=["users"])
-admin_router.include_router(models.router, prefix="/models", tags=["models"])
-admin_router.include_router(workers.router, prefix="/workers", tags=["workers"])
+admin_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
+admin_router.include_router(users.router, prefix="/users", tags=["Users"])
+admin_router.include_router(models.router, prefix="/models", tags=["Models"])
+admin_router.include_router(workers.router, prefix="/workers", tags=["Workers"])
 admin_router.include_router(
-    model_instances.router, prefix="/model-instances", tags=["model instances"]
+    model_instances.router, prefix="/model-instances", tags=["Model Instances"]
 )
 admin_router.include_router(
-    gpu_devices.router, prefix="/gpu-devices", tags=["gpu-devices"]
+    gpu_devices.router, prefix="/gpu-devices", tags=["GPU Devices"]
 )
 
 
@@ -50,5 +50,5 @@ api_router.include_router(
     openai.router,
     dependencies=[Depends(get_current_user)],
     prefix="/v1-openai",
-    tags=["openai"],
+    tags=["OpenAI Compatible APIs"],
 )

@@ -5,7 +5,7 @@ from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList
 from gpustack.schemas.workers import GPUDeviceInfo
 
-# GPUDevice is table view createdfrom table worker.
+# GPUDevice is a view created from the `workers` table.
 
 
 class GPUDeviceBase(GPUDeviceInfo, BaseModel):
