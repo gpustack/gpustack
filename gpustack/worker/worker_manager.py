@@ -8,7 +8,7 @@ from gpustack.api.exceptions import (
 )
 
 from gpustack.client import ClientSet
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.worker.collector import WorkerStatusCollector
 
 logger = logging.getLogger(__name__)
@@ -49,10 +49,7 @@ class WorkerManager:
 
         current = result.items[0]
         worker.id = current.id
-
-        if current.status == worker.status.model_dump():
-            logger.info(f"Worker {self._hostname} status is up to date.")
-            return
+        worker.state = WorkerStateEnum.running
 
         try:
             result = self._clientset.workers.update(id=current.id, model_update=worker)

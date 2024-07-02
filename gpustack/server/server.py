@@ -15,6 +15,7 @@ from gpustack.server.controller import ModelController
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
+from gpustack.server.worker_syncer import WorkerSyncer
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class Server:
         self._start_scheduler()
         self._start_controllers()
         self._start_system_load_collector()
+        self._start_worker_syncer()
 
         port = 80
         if self._config.port:
@@ -125,6 +127,12 @@ class Server:
         asyncio.create_task(collector.start())
 
         logger.debug("System load collector started.")
+
+    def _start_worker_syncer(self):
+        worker_syncer = WorkerSyncer()
+        asyncio.create_task(worker_syncer.start())
+
+        logger.debug("Worker syncer started.")
 
     def _start_sub_processes(self):
         for process in self._sub_processes:
