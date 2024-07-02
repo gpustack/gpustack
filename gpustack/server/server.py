@@ -7,7 +7,6 @@ import uvicorn
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
-from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import generate_secure_password, get_secret_hash
 from gpustack.server.app import app
@@ -135,38 +134,9 @@ class Server:
             os.makedirs(data_dir)
 
     async def _init_data(self, session: AsyncSession):
-        init_data_funcs = [self._init_model, self._init_user]
+        init_data_funcs = [self._init_user]
         for init_data_func in init_data_funcs:
             await init_data_func(session)
-
-    async def _init_model(self, session: AsyncSession):
-        if not self._config.serve_default_models:
-            return
-
-        data = [
-            {
-                "name": "Qwen1.5-0.5B-Chat",
-                "source": "huggingface",
-                "huggingface_repo_id": "Qwen/Qwen1.5-0.5B-Chat-GGUF",
-                "huggingface_filename": "qwen1_5-0_5b-chat-q5_k_m.gguf",
-            },
-            {
-                "name": "Llama-3-8B-Instruct",
-                "source": "huggingface",
-                "huggingface_repo_id": "QuantFactory/Meta-Llama-3-8B-Instruct-GGUF-v2",
-                "huggingface_filename": "Meta-Llama-3-8B-Instruct-v2.Q5_K_M.gguf",
-            },
-        ]
-
-        default_models: List[Model] = [Model(**item_data) for item_data in data]
-
-        for model in default_models:
-            existing = await Model.first_by_field(session, "name", model.name)
-            if existing:
-                continue
-            await Model.create(session, model)
-
-        logger.debug("Created default models.")
 
     async def _init_user(self, session: AsyncSession):
         user = await User.first_by_field(

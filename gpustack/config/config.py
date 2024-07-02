@@ -19,7 +19,6 @@ class Config(BaseSettings):
         ssl_certfile: Path to the SSL certificate file.
         database_url: URL of the database.
         disable_worker: Disable embedded worker.
-        serve_default_models: Serve default models on bootstrap.
         bootstrap_password: Password for the bootstrap admin user.
         secret_key: Secret key for the application.
         system_reserved: Reserved system resources.
@@ -44,7 +43,6 @@ class Config(BaseSettings):
     port: int | None = None
     database_url: str | None = None
     disable_worker: bool = False
-    serve_default_models: bool | None = None
     bootstrap_password: str | None = None
     secret_key: str = secrets.token_hex(16)
     system_reserved: dict | None = None

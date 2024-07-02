@@ -66,12 +66,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=False,
     )
     group.add_argument(
-        "--serve-default-models",
-        action="store_true",
-        help="Serve default models on bootstrap.",
-        default=False,
-    )
-    group.add_argument(
         "--bootstrap-password",
         type=str,
         help="Initial password for the default admin user. Random by default.",
@@ -206,7 +200,6 @@ def set_server_options(args, config_data: dict):
         "port",
         "database_url",
         "disable_worker",
-        "serve_default_models",
         "bootstrap_password",
         "system_reserved",
         "ssl_keyfile",
