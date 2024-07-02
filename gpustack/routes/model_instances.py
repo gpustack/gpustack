@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 import httpx
@@ -21,14 +22,19 @@ router = APIRouter()
 
 
 @router.get("", response_model=ModelInstancesPublic)
-async def get_model_instances(session: SessionDep, params: ListParamsDep):
+async def get_model_instances(
+    session: SessionDep, params: ListParamsDep, model_id: Optional[int] = None
+):
     fields = {}
     if params.query:
         fields = {"name": params.query}
 
+    if model_id:
+        fields["model_id"] = model_id
+
     if params.watch:
         return StreamingResponse(
-            ModelInstance.streaming(session=session), media_type="text/event-stream"
+            ModelInstance.streaming(session, fields), media_type="text/event-stream"
         )
 
     return await ModelInstance.paginated_by_query(

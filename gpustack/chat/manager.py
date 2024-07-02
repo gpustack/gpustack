@@ -9,7 +9,12 @@ from pydantic_settings import BaseSettings
 from tqdm import tqdm
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.schemas.models import ModelCreate, SourceEnum
+from gpustack.schemas.models import (
+    ModelCreate,
+    ModelInstance,
+    ModelInstanceStateEnum,
+    SourceEnum,
+)
 from gpustack.server.bus import Event
 from openai.types.chat import (
     ChatCompletionMessageParam,
@@ -51,7 +56,7 @@ def print_error(message):
 
 class ChatManager:
     def __init__(self, cfg: ChatConfig) -> None:
-        self._model = cfg.model
+        self._model_name = cfg.model
         self._prompt = cfg.prompt
         self._clientset = ClientSet(base_url=cfg.base_url, api_key=cfg.api_key)
         self._openai_client = OpenAI(
@@ -69,9 +74,13 @@ class ChatManager:
         user_input = None
         while True:
             user_input = input(">")
-            if user_input == "exit":
+            if user_input == "\\q" or user_input == "\\quit":
                 break
-            elif user_input.startswith("#"):
+            elif user_input == "\\?" or user_input == "\\h" or user_input == "\\help":
+                self._print_help()
+                continue
+            elif user_input == "\\c" or user_input == "\\clear":
+                self._clear_context()
                 continue
             elif not user_input.strip():
                 continue
@@ -81,49 +90,75 @@ class ChatManager:
             except Exception as e:
                 print_error(e)
 
+    @staticmethod
+    def _print_help():
+        print("Commands:")
+        print("  \\q or \\quit - Quit the chat")
+        print("  \\c or \\clear - Clear chat context in prompt")
+        print("  \\h or \\? or \\help - Print this help message")
+
+    def _clear_context(self):
+        self._history = []
+        print("Chat context cleared.")
+
     def _ensure_model(self):
         models = self._clientset.models.list()
         for model in models.items:
-            if model.name == self._model:
-                return
+            if model.name == self._model_name:
+                self._model = model
+                break
 
-        self.create_and_watch_model()
+        if not hasattr(self, "_model"):
+            self._create_model()
 
-    def create_and_watch_model(self):
+        self._wait_for_model_ready()
+
+    def _create_model(self):
         model_create = ModelCreate(
-            name=self._model,
+            name=self._model_name,
             source=SourceEnum.OLLAMA_LIBRARY,
-            ollama_library_model_name=self._model,
+            ollama_library_model_name=self._model_name,
         )
-        created_model = self._clientset.models.create(model_create=model_create)
+        created = self._clientset.models.create(model_create=model_create)
+        self._model = created
 
+    def _wait_for_model_ready(self):
         def stop_when_running(event: Event) -> bool:
-            if (
-                event.data["id"] == created_model.id
-                and event.data["state"] == "Running"
-            ):
+            if event.data["id"] == self._model.id and event.data["state"] == "Running":
                 return True
+            elif event.data["state"] == ModelInstanceStateEnum.error:
+                raise Exception(f"Error running model: {event.data['state_message']}")
             return False
 
         with tqdm(
-            total=100, desc=f"Downloading {self._model} model", leave=False
+            total=0,
+            desc=f"Preparing {self._model_name} model...",
+            bar_format="{desc}",
+            leave=False,
         ) as pbar:
             current_progress = 0
 
             def print_progress(event: Event):
                 nonlocal current_progress
-                if (
-                    "download_progress" in event.data
-                    and event.data["download_progress"] is not None
-                ):
-                    increment = event.data["download_progress"] - current_progress
-                    if increment > 0:
-                        pbar.update(increment)
-                        current_progress = event.data["download_progress"]
+                mi = ModelInstance.model_validate(event.data)
+                if mi.download_progress is not None:
+                    increment = mi.download_progress - current_progress
+                    if increment <= 0:
+                        return
+
+                    if pbar.total == 0:
+                        pbar.total = 100
+                        pbar.bar_format = "{l_bar}{bar}{r_bar}"
+                        pbar.set_description(f"Downloading {self._model_name} model")
+                        pbar.reset()
+
+                    pbar.update(increment)
+                    current_progress = mi.download_progress
 
             self._clientset.model_instances.watch(
                 stop_condition=stop_when_running,
                 callback=print_progress,
+                params={"model_id": self._model.id},
             )
 
     def chat_completion(self, prompt: str):
@@ -132,7 +167,7 @@ class ChatManager:
         )
 
         completion = self._openai_client.chat.completions.create(
-            model=self._model,
+            model=self._model_name,
             messages=self._history,
             stream=True,
         )
