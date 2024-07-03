@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 from dataclasses import dataclass
 from typing import List
@@ -100,17 +101,27 @@ async def calculate_model_resource_claim(
     model_url = get_model_url(model)
     command = _gguf_parser_command(model_url)
     try:
-        cmd_result = subprocess.run(command, capture_output=True, text=True, check=True)
-        cmd_output = cmd_result.stdout
+        process = await asyncio.create_subprocess_exec(
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
 
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(
+                process.returncode, command, output=stdout, stderr=stderr
+            )
+
+        cmd_output = stdout.decode()
         claim = modelResoruceClaim.from_json(cmd_output)
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
+
     except subprocess.CalledProcessError as e:
-        e.add_note(command.__str__() + "execution failed")
+        e.add_note(command.__str__() + " execution failed")
         raise
     except Exception as e:
         e.add_note(
-            "error occurred when trying execute and parse the output of "
+            "error occurred when trying to execute and parse the output of "
             + command.__str__()
         )
         raise e
