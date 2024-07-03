@@ -1,13 +1,17 @@
 from datetime import date
 import json
 import logging
+import time
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
+from jwt import DecodeError, ExpiredSignatureError
 from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
+from gpustack.security import JWT_TOKEN_EXPIRE_MINUTES, JWTManager
+from gpustack.server.auth import SESSION_COOKIE_NAME
 from gpustack.server.db import get_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -87,3 +91,32 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                 await current_model_usage.update(session)
             else:
                 await ModelUsage.create(session, model_usage)
+
+
+class RefreshTokenMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        jwt_manager: JWTManager = request.app.state.jwt_manager
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+
+        if token:
+            try:
+                payload = jwt_manager.decode_jwt_token(token)
+                if payload:
+                    # Check if the token is about to expire (less than 5 minutes left)
+                    if payload['exp'] - time.time() < 5 * 60:
+                        new_token = jwt_manager.create_jwt_token(
+                            username=payload['sub']
+                        )
+                        response.set_cookie(
+                            key=SESSION_COOKIE_NAME,
+                            value=new_token,
+                            httponly=True,
+                            max_age=JWT_TOKEN_EXPIRE_MINUTES * 60,
+                            expires=JWT_TOKEN_EXPIRE_MINUTES * 60,
+                        )
+            except (ExpiredSignatureError, DecodeError):
+                pass
+
+        return response
