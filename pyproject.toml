@@ -1,9 +1,8 @@
 [tool.poetry]
 name = "gpustack"
-version = "0.0.1"
-description = "GPU Stack"
-authors = ["Your Name <you@example.com>"]
-readme = "README.md"
+version = "0.0.0"
+description = "GPUStack"
+authors = ["GPUStack Authors <contact@gpustack.ai>"]
 include = ["*/third_party/**/*","*/ui/**/*"]
 
 [tool.poetry.dependencies]

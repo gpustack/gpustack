@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["*.*.*"]
   pull_request:
     branches: [main]
 
@@ -32,17 +33,23 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install poetry
-          poetry install
+          make install
 
       - name: Lint with Flake8
         run: |
-          poetry run flake8 .
+          make lint
 
       - name: Run Tests
         run: |
-          poetry run pytest
+          make test
 
       - name: Build
         run: |
-          poetry build
+          make build
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          PYPI_API_TOKEN: ${{ secrets.CI_PYPI_API_TOKEN }}
+        run: |
+          make publish-pypi

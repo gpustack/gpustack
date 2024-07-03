@@ -65,11 +65,11 @@ function gpustack::version::get_version_vars() {
       fi
     fi
 
-    # specify to dev if the tree is dirty.
+    # specify to 0.0.0 if the tree is dirty.
     if [[ "${GIT_TREE_STATE:-dirty}" == "dirty" ]]; then
-      GIT_VERSION="dev"
-    elif ! [[ "${GIT_VERSION}" =~ ^v([0-9]+)\.([0-9]+)(\.[0-9]+)?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-      GIT_VERSION="dev"
+      GIT_VERSION="0.0.0"
+    elif ! [[ "${GIT_VERSION}" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?(-?[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+      GIT_VERSION="0.0.0"
     fi
 
     # respect specified version

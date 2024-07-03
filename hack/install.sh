@@ -10,7 +10,7 @@ THIRD_PARTY_DIR="${ROOT_DIR}/gpustack/third_party"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function download_deps() {
-  pip install poetry==1.7.1
+  pip install poetry==1.7.1 pre-commit==3.7.1
   poetry install
   pre-commit install
 }
@@ -106,16 +106,16 @@ function download_gguf_parser() {
 
 
 function download_llama_box() {
-    local version="v0.0.4"
+    local version="v0.0.7"
 
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"
     
 
-    platforms=("darwin-amd64-metal" "darwin-arm64-metal" "linux-amd64-cuda-12.5")
+    platforms=("darwin-amd64-metal" "darwin-arm64-metal" "linux-amd64-cuda-12.5-s")
 
     for platform in "${platforms[@]}"; do
-      local target_file="${llama_box_dir}/llama-box-${platform}"
+      local target_file="${llama_box_dir}/llama-box-${platform%-s}" # cut off the suffix
       if [ -f "${target_file}" ]; then
           gpustack::log::info "llama-box-${platform} already exists, skipping download"
           continue
