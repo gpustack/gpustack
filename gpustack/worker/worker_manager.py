@@ -1,4 +1,3 @@
-import os
 import platform
 import socket
 import logging
@@ -86,11 +85,11 @@ class WorkerManager:
         )
         worker = collector.collect()
 
-        os_info = os.uname()
+        os_info = platform.uname()
         arch_info = platform.machine()
 
         worker.labels = {
-            "os": os_info.sysname,
+            "os": os_info.system,
             "arch": arch_info,
         }
 

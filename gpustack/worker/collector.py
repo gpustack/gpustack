@@ -21,6 +21,8 @@ import subprocess
 from gpustack.schemas.workers import WorkerStatus, Worker
 import importlib.resources as pkg_resources
 
+from gpustack.utils.command import get_platform_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +37,6 @@ class WorkerStatusCollector:
     def collect(self) -> Worker:
         """Collect worker status information."""
         status = WorkerStatus()
-        is_unified_memory = False
 
         results = self._run_fastfetch_and_parse_result()
         for result in results:
@@ -66,18 +67,30 @@ class WorkerStatusCollector:
                     )
                 case "CPU":
                     total = self._get_value(r, "cores", "online")
-                    utilization_rate = self._get_value(r, "cores", "utilizationRate")
-                    status.cpu = CPUInfo(
-                        total=total,
-                        utilization_rate=utilization_rate,
-                    )
+                    if status.cpu is None:
+                        status.cpu = CPUInfo(
+                            total=total,
+                        )
+                    else:
+                        status.cpu.total = total
+                case "CPUUsage":
+                    core_count = len(r)
+                    sum = 0
+                    for usage_per_core in r:
+                        sum += usage_per_core
+
+                    utilization_rate = sum / core_count if core_count > 0 else 0
+                    if status.cpu is None:
+                        status.cpu = CPUInfo(
+                            utilization_rate=utilization_rate,
+                        )
+                    else:
+                        status.cpu.utilization_rate = utilization_rate
                 case "GPU":
                     device = []
                     list = sorted(r, key=lambda x: x["name"])
                     for index, value in enumerate(list):
                         name = self._get_value(value, "name")
-                        if str.startswith(name, "Apple M"):
-                            is_unified_memory = True
 
                         memory_total = (
                             self._get_value(value, "memory", "dedicated", "total") or 0
@@ -142,23 +155,18 @@ class WorkerStatusCollector:
                                 name=self._get_value(disk, "name"),
                                 mount_point=self._get_value(disk, "mountpoint"),
                                 mount_from=self._get_value(disk, "mountFrom"),
-                                total=self._get_value(disk, "bytes", "total"),
-                                used=self._get_value(disk, "bytes", "used"),
-                                free=self._get_value(disk, "bytes", "free"),
-                                available=self._get_value(disk, "bytes", "available"),
+                                total=self._get_value(disk, "bytes", "total") or 0,
+                                used=self._get_value(disk, "bytes", "used") or 0,
+                                free=self._get_value(disk, "bytes", "free") or 0,
+                                available=self._get_value(disk, "bytes", "available")
+                                or 0,
                             )
                         )
                     status.filesystem = mountpoints
 
-        status.memory.is_unified_memory = is_unified_memory
-        if is_unified_memory:
-            for index, _ in enumerate(status.gpu_devices):
-                status.gpu_devices[index].memory = status.memory
-
-        allocated = self._get_allocated_resource()
-        status.memory.allocated = allocated.memory
-        for ag, agv in allocated.gpu_memory.items():
-            status.gpu_devices[ag].memory.allocated = agv
+        self._inject_unified_memory(status)
+        self._inject_computed_filesystem_usage(status)
+        self._inject_allocated_resource(status)
 
         return Worker(
             name=self._hostname,
@@ -168,7 +176,48 @@ class WorkerStatusCollector:
             status=status,
         )
 
-    def _get_allocated_resource(self) -> Allocated:
+    def _inject_unified_memory(self, status: WorkerStatus):
+        if status.gpu_devices is None or "macOS" not in status.os.name:
+            return
+
+        is_unified_memory = False
+        for index, gpu_device in enumerate(status.gpu_devices):
+            if str.startswith(gpu_device.name, "Apple M"):
+                is_unified_memory = True
+                status.gpu_devices[index].memory.is_unified_memory = True
+                status.gpu_devices[index].memory = status.memory
+
+        status.memory.is_unified_memory = is_unified_memory
+
+    def _inject_computed_filesystem_usage(self, status: WorkerStatus):
+        if (
+            status.os is None
+            or "Windows" not in status.os.name
+            or status.filesystem is None
+        ):
+            return
+
+        try:
+            computed = MountPoint(
+                name="computed",
+                mount_point="/",
+                total=0,
+                used=0,
+                free=0,
+                available=0,
+            )
+            for mountpoint in status.filesystem:
+                computed.total = computed.total + mountpoint.total
+                computed.used = computed.used + mountpoint.used
+                computed.free = computed.free + mountpoint.free
+                computed.available = computed.available + mountpoint.available
+
+            # inject computed filesystem usage
+            status.filesystem.append(computed)
+        except Exception as e:
+            logger.error(f"Failed to inject filesystem usage: {e}")
+
+    def _inject_allocated_resource(self, status: WorkerStatus) -> Allocated:
         allocated = Allocated(memory=0, gpu_memory={})
         try:
             model_instances = self._clientset.model_instances.list()
@@ -176,19 +225,24 @@ class WorkerStatusCollector:
                 if model_instance.worker_ip != self._worker_ip:
                     continue
 
-                if model_instance.computed_resource_claim is not None:
-                    memory = model_instance.computed_resource_claim.memory or 0
-                    gpu_memory = model_instance.computed_resource_claim.gpu_memory or 0
+                if model_instance.computed_resource_claim is None:
+                    continue
 
-                    allocated.memory += memory
+                memory = model_instance.computed_resource_claim.memory or 0
+                gpu_memory = model_instance.computed_resource_claim.gpu_memory or 0
 
-                    if model_instance.gpu_index is not None:
-                        allocated.gpu_memory[model_instance.gpu_index] = (
-                            allocated.gpu_memory.get(model_instance.gpu_index) or 0
-                        ) + gpu_memory
+                allocated.memory += memory
+                if model_instance.gpu_index is not None:
+                    allocated.gpu_memory[model_instance.gpu_index] = (
+                        allocated.gpu_memory.get(model_instance.gpu_index) or 0
+                    ) + gpu_memory
+
+            # inject allocated resources
+            status.memory.allocated = allocated.memory
+            for ag, agv in allocated.gpu_memory.items():
+                status.gpu_devices[ag].memory.allocated = agv
         except Exception as e:
-            logger.error(f"Failed to get allocated resources: {e}")
-        return allocated
+            logger.error(f"Failed to inject allocated resources: {e}")
 
     def _run_fastfetch_and_parse_result(self):
         command = self._fastfetch_command()
@@ -205,29 +259,31 @@ class WorkerStatusCollector:
             raise e
 
     def _fastfetch_command(self):
-        command = ""
-        command_path = "gpustack.third_party.fastfetch"
+        command_map = {
+            ("Windows", "amd64"): "fastfetch-windows-amd64.exe",
+            ("Darwin", "amd64"): "fastfetch-macos-universal",
+            ("Darwin", "arm64"): "fastfetch-macos-universal",
+            ("Linux", "amd64"): "fastfetch-linux-amd64",
+            ("Linux", "arm64"): "fastfetch-linux-arm64",
+        }
 
-        match platform.system():
-            case "Windows":
-                command = "fastfetch.exe"
-            case "Darwin":
-                command = "fastfetch-macos-universal"
-            case "Linux":
-                if "amd64" in platform.machine() or "x86_64" in platform.machine():
-                    command = "fastfetch-linux-amd64"
-                elif "arm" in platform.machine() or "aarch64" in platform.machine():
-                    command = "fastfetch-linux-aarch64"
-
+        command = get_platform_command(command_map)
         if command == "":
-            raise ValueError(
-                "Unsupported platform: %s %s" % (platform.system(), platform.machine())
+            raise Exception(
+                f"No supported fastfetch command found for {platform.system()} {platform.machine()}."
             )
 
-        with pkg_resources.path(command_path, command) as executable_path:
+        with pkg_resources.path(
+            "gpustack.third_party.bin.fastfetch", command
+        ) as executable_path:
             os.chmod(executable_path, 0o755)
 
-        # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true --format json
+        with pkg_resources.path(
+            "gpustack.third_party.config.fastfetch", "config.jsonc"
+        ) as config_path:
+            config_file_path = str(config_path)
+
+        # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true --format json --config ${path}/config.jsonc
         executable_command = [
             str(executable_path),
             "--gpu-driver-specific",
@@ -236,6 +292,8 @@ class WorkerStatusCollector:
             "true",
             "--format",
             "json",
+            "--config",
+            config_file_path,
         ]
         return executable_command
 
