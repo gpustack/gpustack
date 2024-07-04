@@ -1,4 +1,4 @@
-from gpustack.utils import normalize_route_path
+from gpustack.utils.network import normalize_route_path
 
 
 def test_normalize_route_path():

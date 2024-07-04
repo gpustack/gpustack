@@ -13,7 +13,7 @@ from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
-from gpustack.utils import run_periodically_async
+from gpustack.utils.task import run_periodically_async
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.logs import log_generator
 
