@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 
+# Set error handling
 set -o errexit
 set -o nounset
 set -o pipefail
 
+# Get the root directory and third_party directory
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-THIRD_PARTY_DIR="${ROOT_DIR}/gpustack/third_party"
+THIRD_PARTY_DIR="${ROOT_DIR}/gpustack/third_party/bin"
 
+# Include the common functions
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function download_deps() {
@@ -16,7 +19,7 @@ function download_deps() {
 }
 
 function download_fastfetch() {
-    local version="2.14.0"
+    local version="2.17.1"
 
     local fastfetch_dir="${THIRD_PARTY_DIR}/fastfetch"
     local fastfetch_tmp_dir="${fastfetch_dir}/tmp"
