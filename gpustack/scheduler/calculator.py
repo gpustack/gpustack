@@ -8,6 +8,7 @@ import importlib.resources as pkg_resources
 
 
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
+from gpustack.utils.command import get_platform_command
 from gpustack.worker.downloaders import OllamaLibraryDownloader, HfDownloader
 
 
@@ -57,18 +58,21 @@ class ModelInstanceResourceClaim:
 
 
 def _gguf_parser_command(model_url):
-    command = ""
-    command_path = "gpustack.third_party.gguf-parser"
-    match platform.system():
-        case "Darwin":
-            command = "gguf-parser-darwin-universal"
-        case "Linux":
-            if "amd64" in platform.machine() or "x86_64" in platform.machine():
-                command = "gguf-parser-linux-amd64"
-            elif "arm" in platform.machine() or "aarch64" in platform.machine():
-                command = "gguf-parser-linux-arm64"
+    command_map = {
+        ("Windows", "amd64"): "gguf-parser-windows-amd64.exe",
+        ("Darwin", "amd64"): "gguf-parser-darwin-universal",
+        ("Darwin", "arm64"): "gguf-parser-darwin-universal",
+        ("Linux", "amd64"): "gguf-parser-linux-amd64",
+        ("Linux", "arm64"): "gguf-parser-linux-arm64",
+    }
 
-    command_path = pkg_resources.files("gpustack.third_party.gguf-parser").joinpath(
+    command = get_platform_command(command_map)
+    if command == "":
+        raise Exception(
+            f"No supported gguf-parser command found for {platform.system()} {platform.machine()}."
+        )
+
+    command_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(
         command
     )
     execuable_command = [

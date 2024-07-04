@@ -13,6 +13,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     ModelInstanceStateEnum,
 )
+from gpustack.utils.command import get_platform_command
 from gpustack.worker.downloaders import HfDownloader, OllamaLibraryDownloader
 
 
@@ -87,9 +88,9 @@ class InferenceServer:
             raise e
 
     def start(self):
-        command_path = pkg_resources.files("gpustack.third_party.llama-box").joinpath(
-            self._get_command()
-        )
+        command_path = pkg_resources.files(
+            "gpustack.third_party.bin.llama-box"
+        ).joinpath(self._get_command())
 
         layers = -1
         claim = self._model_instance.computed_resource_claim
@@ -131,23 +132,17 @@ class InferenceServer:
                 return {"CUDA_VISIBLE_DEVICES": str(index)}
 
     def _get_command(self):
-        command = ""
+        command_map = {
+            ("Windows", "amd64"): "llama-box-windows-amd64-cuda-12.5.exe",
+            ("Darwin", "amd64"): "llama-box-darwin-amd64-metal",
+            ("Darwin", "arm64"): "llama-box-darwin-arm64-metal",
+            ("Linux", "amd64"): "llama-box-linux-amd64-cuda-12.5",
+        }
 
-        match platform.system():
-            case "Darwin":
-                if "amd64" in platform.machine() or "x86_64" in platform.machine():
-                    command = "llama-box-darwin-amd64-metal"
-                elif "arm" in platform.machine() or "aarch64" in platform.machine():
-                    command = "llama-box-darwin-arm64-metal"
-            case "Linux":
-                if (
-                    "amd64" in platform.machine() or "x86_64" in platform.machine()
-                ) and cuda_driver_installed():
-                    command = "llama-box-linux-amd64-cuda-12.5"
-
+        command = get_platform_command(command_map)
         if command == "":
-            raise ValueError(
-                "Unsupported platform: %s %s" % (platform.system(), platform.machine())
+            raise Exception(
+                f"No supported llama-box command found for {platform.system()} {platform.machine()}."
             )
         return command
 
