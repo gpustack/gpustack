@@ -154,7 +154,9 @@ class Server:
         )
         if not user:
             bootstrap_password = self._config.bootstrap_password
+            require_password_change = False
             if not bootstrap_password:
+                require_password_change = True
                 bootstrap_password = generate_secure_password()
                 bootstrap_password_file = os.path.join(
                     self._config.data_dir, "initial_admin_password"
@@ -171,7 +173,7 @@ class Server:
                 full_name="Default System Admin",
                 hashed_password=get_secret_hash(bootstrap_password),
                 is_admin=True,
-                require_password_change=True,
+                require_password_change=require_password_change,
             )
             await User.create(session, user)
 
