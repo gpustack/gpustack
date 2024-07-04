@@ -19,6 +19,7 @@
 #        BUILD_DATE  -  The build date of the version.
 
 function gpustack::version::get_version_vars() {
+  #shellcheck disable=SC2034
   BUILD_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   GIT_TREE_STATE="unknown"
   GIT_COMMIT="unknown"

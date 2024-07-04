@@ -19,5 +19,5 @@ function ci() {
 #
 
 gpustack::log::info "+++ CI +++"
-ci
+ci "$@"
 gpustack::log::info "--- CI ---"

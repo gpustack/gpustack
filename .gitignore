@@ -150,5 +150,5 @@ __pycache__/
 .vscode
 
 # GPUStack related
-*/third_party/
+*/third_party/bin
 */ui/

@@ -2331,6 +2331,20 @@ files = [
 test = ["pytest"]
 
 [[package]]
+name = "shellcheck-py"
+version = "0.10.0.1"
+description = "Python wrapper around invoking shellcheck (https://www.shellcheck.net/)"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "shellcheck_py-0.10.0.1-py2.py3-none-macosx_11_0_x86_64.whl", hash = "sha256:48f08965cafbb3363b265c4ef40628ffced19cb6fc7c4bb5ce72d32cbcfb4bb9"},
+    {file = "shellcheck_py-0.10.0.1-py2.py3-none-macosx_14_0_arm64.whl", hash = "sha256:8f3bf12ee6d0845dd5ac1a7bac8c4b1fec0379e115950986883c9488af40ada7"},
+    {file = "shellcheck_py-0.10.0.1-py2.py3-none-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c1c266f7f54cd286057c592ead3095f93d123acdcabf048879a7d8900c3aac7b"},
+    {file = "shellcheck_py-0.10.0.1-py2.py3-none-win_amd64.whl", hash = "sha256:be73a16931c05f79643ff74b6519d1e1203b394583ab8c68a48a8e7f257d1090"},
+    {file = "shellcheck_py-0.10.0.1.tar.gz", hash = "sha256:390826b340b8c19173922b0da5ef7b66ef34d4d087dc48aad3e01f7e77e164d9"},
+]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 description = "Tool to Detect Surrounding Shell"
@@ -2992,4 +3006,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "019a120247fe6df634965dcb18bd0fa42c4f9706164937bc5150b2c1dc39ad9e"
+content-hash = "928537304b43e61c740b3631539a9766d62c64156eb0feb100878cfe82cfbcd1"

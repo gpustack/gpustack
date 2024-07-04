@@ -9,4 +9,4 @@ if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
   exit 1
 fi
 
-poetry publish --username __token__ --password $PYPI_API_TOKEN
+poetry publish --username __token__ --password "$PYPI_API_TOKEN"

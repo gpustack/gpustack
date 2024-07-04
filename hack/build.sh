@@ -15,10 +15,13 @@ function prepare_dependencies() {
   bash "${ROOT_DIR}/hack/install.sh"
 }
 
-function set_version() {
+function set_version() {  
   local version_file="${ROOT_DIR}/gpustack/__init__.py"
   local git_commit="${GIT_COMMIT:-HEAD}"
   local git_commit_short="${git_commit:0:7}"
+
+  gpustack::log::info "setting version to $GIT_VERSION"
+  gpustack::log::info "setting git commit to $git_commit_short"
 
   # Replace the __version__ variable in the __init__.py file
   gpustack::util::sed "s/__version__ = .*/__version__ = '${GIT_VERSION}'/" "${version_file}"
