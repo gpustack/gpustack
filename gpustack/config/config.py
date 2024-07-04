@@ -2,7 +2,7 @@ import os
 import secrets
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
-from gpustack.utils import get_first_non_loopback_ip
+from gpustack.utils.network import get_first_non_loopback_ip
 
 
 class Config(BaseSettings):

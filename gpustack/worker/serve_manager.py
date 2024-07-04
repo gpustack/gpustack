@@ -10,7 +10,7 @@ import logging
 from contextlib import redirect_stdout, redirect_stderr
 
 
-from gpustack import utils
+from gpustack.utils import network
 from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
@@ -97,7 +97,7 @@ class ServeManager:
 
         try:
             if mi.port is None:
-                mi.port = utils.get_free_port()
+                mi.port = network.get_free_port()
 
             logger.info(f"Start serving model instance {mi.id} on port {mi.port}")
 
