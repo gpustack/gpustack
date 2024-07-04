@@ -1,15 +1,36 @@
-SHELL := /bin/bash
+# Detect operating system
+ifeq ($(OS),Windows_NT)
+    PLATFORM_SHELL := pwsh
+    SCRIPT_EXT := .ps1
+    SCRIPT_DIR := hack/windows
+else
+    PLATFORM_SHELL := /bin/bash
+    SCRIPT_EXT := .sh
+    SCRIPT_DIR := hack
+endif
 
 # Borrowed from https://stackoverflow.com/questions/18136918/how-to-get-current-relative-directory-of-your-makefile
 curr_dir := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 # Borrowed from https://stackoverflow.com/questions/2214575/passing-arguments-to-make-run
 rest_args := $(wordlist 2, $(words $(MAKECMDGOALS)), $(MAKECMDGOALS))
+
 $(eval $(rest_args):;@:)
 
-targets := $(shell ls $(curr_dir)/hack | grep '.sh' | sed 's/\.sh//g')
+# List targets based on script extension and directory
+ifeq ($(OS),Windows_NT)
+	targets := $(shell powershell -ExecutionPolicy RemoteSigned -Command "Get-ChildItem -Path $(curr_dir)/$(SCRIPT_DIR) | Where-Object {$$_.Name -match '$(SCRIPT_EXT)$$'} | ForEach-Object { $$_ -replace '$(SCRIPT_EXT)$$', '' }")
+else
+	targets := $(shell ls $(curr_dir)/$(SCRIPT_DIR) | grep $(SCRIPT_EXT)$$ | sed 's/$(SCRIPT_EXT)//g')
+endif
+
 $(targets):
-	@$(curr_dir)/hack/$@.sh $(rest_args)
+	@$(eval TARGET_NAME=$@)
+ifeq ($(PLATFORM_SHELL),/bin/bash)
+	$(curr_dir)/$(SCRIPT_DIR)/$(TARGET_NAME)$(SCRIPT_EXT) $(rest_args)
+else
+	powershell "$(curr_dir)/$(SCRIPT_DIR)/$(TARGET_NAME)$(SCRIPT_EXT) $(rest_args)"
+endif
 
 help:
 	#
@@ -17,7 +38,7 @@ help:
 	#
 	#   * [dev] `make install`, install all dependencies.
 	#
-	#   * [dev] `make generate`, generate something.
+	#   * [dev] `make generate`, generate codes.
 	#
 	#   * [dev] `make lint`, check style.
 	#
@@ -25,9 +46,9 @@ help:
 	#
 	#   * [dev] `make build`, execute building.
 	#
-	#   * [dev] `make build-docs`, build docs.
+	#   * [dev] `make build-docs`, build docs, not supported on Windows.
 	#
-	#   * [dev] `make serve-docs`, serve docs.
+	#   * [dev] `make serve-docs`, serve docs, not supported on Windows.
 	#
 	#   * [ci]  `make ci`, execute `make install`, `make lint`, `make test`, `make build`.
 	#
