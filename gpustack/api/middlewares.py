@@ -52,9 +52,16 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                     data = chunk.decode("utf-8")
                     yield chunk
                     if '"completion_tokens":' in data:
-                        completion_dict = json.loads(data.split('data: ')[-1])
-                        completion_chunk = ChatCompletionChunk(**completion_dict)
-                        await self.process_model_usage(request, completion_chunk)
+                        lines = data.split('\n')
+                        json_line = None
+                        for line in lines:
+                            if '"completion_tokens":' in line:
+                                json_line = line
+                                break
+                        if json_line:
+                            completion_dict = json.loads(json_line.split('data: ')[-1])
+                            completion_chunk = ChatCompletionChunk(**completion_dict)
+                            await self.process_model_usage(request, completion_chunk)
                         break
 
                 async for chunk in response.body_iterator:
