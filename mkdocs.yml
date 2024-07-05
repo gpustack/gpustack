@@ -4,15 +4,15 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: light green
-      accent: amber
+      primary: light blue
+      accent: orange
       toggle:
         icon: material/lightbulb
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: light green
-      accent: amber
+      primary: light blue
+      accent: orange
       toggle:
         icon: material/lightbulb-outline
         name: Switch to light mode
@@ -26,12 +26,26 @@ theme:
     - content.code.annotate
     - content.code.copy
     - content.code.select
-    - navigation.tabs
+    # - navigation.tabs
   icon:
     repo: fontawesome/brands/github-alt
   language: en
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.tilde
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.inlinehilite
+  - pymdownx.tasklist:
+      custom_checkbox: true
 nav:
+  - Overview: overview.md
   - Quickstart: quickstart.md
-  - Usage:
-      - Overview: usage/overview.md
-      - Installation: usage/installation.md
+  - User Guide:
+      - Installation: user-guide/installation.md
+      - CLI Reference:
+          - Start: user-guide/cli-reference/start.md
+          - Chat: user-guide/cli-reference/chat.md
