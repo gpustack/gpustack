@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from .common import PaginatedList
@@ -7,12 +8,13 @@ from ..mixins import BaseModelMixin
 
 
 class ApiKeyBase(SQLModel):
-    name: str = Field(unique=True)
+    name: str
     description: Optional[str] = None
 
 
 class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     __tablename__ = 'api_keys'
+    __table_args__ = (UniqueConstraint('name', 'user_id', name='uix_name_user_id'),)
     id: Optional[int] = Field(default=None, primary_key=True)
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
