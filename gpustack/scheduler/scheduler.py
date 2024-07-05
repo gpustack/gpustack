@@ -146,8 +146,6 @@ class Scheduler:
         state_message = ""
         instance = item.model_instance
         estimate = item.resource_claim_estimate
-        candiate: ModelInstanceScheduleCandidate = None
-
         filterPolicies = [ResourceFitPolicy(estimate, self._system_reserved)]
 
         async with AsyncSession(self._engine) as session:
@@ -175,24 +173,31 @@ class Scheduler:
                 await model_instance.update(session, model_instance)
                 logger.debug(f"No fit worker for model instance {model_instance.id}")
             else:
-                # pick the first candidate now, should scoring all the candidates later.
-                candiate = candidates[0]
+                # pick the highest offload layer, should scoring all the candidates later.
+                candidate: ModelInstanceScheduleCandidate = candidates[0]
+                if len(candidates) > 1:
+                    for i in range(1, len(candidates)):
+                        if (
+                            candidates[i].computed_resource_claim.offload_layers
+                            > candidate.computed_resource_claim.offload_layers
+                        ):
+                            candidate = candidates[i]
 
                 # update model instance.
                 model_instance.state = ModelInstanceStateEnum.scheduled
                 model_instance.state_message = ""
-                model_instance.worker_id = candiate.worker.id
-                model_instance.worker_ip = candiate.worker.ip
+                model_instance.worker_id = candidate.worker.id
+                model_instance.worker_ip = candidate.worker.ip
                 model_instance.computed_resource_claim = (
-                    candiate.computed_resource_claim
+                    candidate.computed_resource_claim
                 )
-                model_instance.gpu_index = candiate.gpu_index
+                model_instance.gpu_index = candidate.gpu_index
 
                 await model_instance.update(session, model_instance)
 
                 logger.debug(
                     f"Scheduled model instance {model_instance.id} to node "
-                    f"{model_instance.worker_id} gpu {candiate.gpu_index}"
+                    f"{model_instance.worker_id} gpu {candidate.gpu_index}"
                 )
 
     async def _get_model_instance_schedule_candidates(
@@ -201,7 +206,7 @@ class Scheduler:
         """
         Convert the workers to the candidates.
         """
-        candiates = []
+        candidates = []
         for worker in workers:
-            candiates.append(ModelInstanceScheduleCandidate(worker, None, None))
-        return candiates
+            candidates.append(ModelInstanceScheduleCandidate(worker, None, None))
+        return candidates

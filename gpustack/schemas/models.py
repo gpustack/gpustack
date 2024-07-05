@@ -89,6 +89,7 @@ class ModelInstanceStateEnum(str, Enum):
 class ComputedResourceClaim(BaseModel):
     is_unified_memory: Optional[bool] = False
     offload_layers: Optional[int] = None
+    total_layers: Optional[int] = None
     memory: Optional[int] = Field(default=None)  # in bytes
     gpu_memory: Optional[int] = Field(default=None)  # in bytes
 

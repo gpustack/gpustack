@@ -54,18 +54,19 @@ class ResourceFitPolicy:
 
         candidates = []
         for worker in workers:
-            candidate = await self._filterOne(worker.worker)
-            if candidate is not None:
-                candidates.append(candidate)
+            filterd_candidates = await self._filter_one(worker.worker)
+            if len(filterd_candidates) != 0:
+                candidates.extend(filterd_candidates)
         return candidates
 
-    async def _filterOne(self, worker: Worker) -> ModelInstanceScheduleCandidate:
+    async def _filter_one(self, worker: Worker) -> List[ModelInstanceScheduleCandidate]:
         """
         Find a candidate worker for the model instance.
         """
 
+        candidates = []
+        total_layers = len(self._estimate.memory)
         is_unified_memory = worker.status.memory.is_unified_memory
-        candidate: ModelInstanceScheduleCandidate = None
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
@@ -76,17 +77,20 @@ class ResourceFitPolicy:
 
             index = binary_search(arr, allocatable.memory)
             if index != -1:
-                candidate = ModelInstanceScheduleCandidate(
-                    worker=worker,
-                    gpu_index=0,
-                    computed_resource_claim=ComputedResourceClaim(
-                        is_unified_memory=True,
-                        offload_layers=index,
-                        memory=self._estimate.memory[index].uma,
-                    ),
+                candidates.append(
+                    ModelInstanceScheduleCandidate(
+                        worker=worker,
+                        gpu_index=0,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=True,
+                            offload_layers=index,
+                            memory=self._estimate.memory[index].uma,
+                            total_layers=total_layers,
+                        ),
+                    )
                 )
 
-            return candidate
+            return candidates
 
         else:
             arr = []
@@ -99,18 +103,20 @@ class ResourceFitPolicy:
                     index != -1
                     and allocatable.memory > self._estimate.memory[index].nonUMA.ram
                 ):
-                    candidate = ModelInstanceScheduleCandidate(
-                        worker=worker,
-                        gpu_index=gpu_index,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=index,
-                            gpu_memory=self._estimate.memory[index].nonUMA.vram,
-                            memory=self._estimate.memory[index].nonUMA.ram,
-                        ),
+                    candidates.append(
+                        ModelInstanceScheduleCandidate(
+                            worker=worker,
+                            gpu_index=gpu_index,
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                offload_layers=index,
+                                gpu_memory=self._estimate.memory[index].nonUMA.vram,
+                                memory=self._estimate.memory[index].nonUMA.ram,
+                                total_layers=total_layers,
+                            ),
+                        )
                     )
-                    break
-            return candidate
+            return candidates
 
     async def _get_worker_allocatable_resource(self, worker: Worker) -> Allocatable:
         """
