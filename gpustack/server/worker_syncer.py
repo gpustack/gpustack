@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta, timezone
 import logging
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -32,7 +32,7 @@ class WorkerSyncer:
         Mark workers which are not updated for a while to unknown state.
         """
         async with AsyncSession(self._engine) as session:
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             three_minutes_ago = now - timedelta(seconds=self._worker_unknown_timeout)
             statement = select(Worker).where(
                 Worker.updated_at < three_minutes_ago,

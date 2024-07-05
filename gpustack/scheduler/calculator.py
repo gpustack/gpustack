@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from typing import List
 from dataclasses_json import dataclass_json
 import platform
-import importlib.resources as pkg_resources
 
 
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
 from gpustack.utils.command import get_platform_command
 from gpustack.worker.downloaders import OllamaLibraryDownloader, HfDownloader
+from gpustack.utils.compat_importlib import pkg_resources
 
 
 @dataclass_json
@@ -69,7 +69,8 @@ def _gguf_parser_command(model_url):
     command = get_platform_command(command_map)
     if command == "":
         raise Exception(
-            f"No supported gguf-parser command found for {platform.system()} {platform.machine()}."
+            f"No supported gguf-parser command found for "
+            f"{platform.system()} {platform.machine()}."
         )
 
     command_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(

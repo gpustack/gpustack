@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install `python@3.11`.
+Install `python 3.9+`.
 
 ## Set Up Environment
 

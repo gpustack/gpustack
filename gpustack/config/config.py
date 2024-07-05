@@ -1,5 +1,6 @@
 import os
 import secrets
+from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils.network import get_first_non_loopback_ip
@@ -36,28 +37,28 @@ class Config(BaseSettings):
 
     # Common options
     debug: bool = False
-    data_dir: str | None = None
-    token: str | None = None
+    data_dir: Optional[str] = None
+    token: Optional[str] = None
 
     # Server options
-    host: str | None = None
-    port: int | None = None
-    database_url: str | None = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    database_url: Optional[str] = None
     disable_worker: bool = False
-    bootstrap_password: str | None = None
-    jwt_secret_key: str | None = None
-    system_reserved: dict | None = None
-    ssl_keyfile: str | None = None
-    ssl_certfile: str | None = None
+    bootstrap_password: Optional[str] = None
+    jwt_secret_key: Optional[str] = None
+    system_reserved: Optional[dict] = None
+    ssl_keyfile: Optional[str] = None
+    ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
 
     # Worker options
-    server_url: str | None = None
-    worker_ip: str | None = None
+    server_url: Optional[str] = None
+    worker_ip: Optional[str] = None
     enable_metrics: bool = True
     worker_port: int = 10150
     metrics_port: int = 10151
-    log_dir: str | None = None
+    log_dir: Optional[str] = None
 
     def __init__(self, **values):
         super().__init__(**values)

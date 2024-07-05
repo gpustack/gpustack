@@ -120,7 +120,7 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     __tablename__ = 'model_instances'
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    model: Model | None = Relationship(
+    model: Optional[Model] = Relationship(
         back_populates="instances",
         sa_relationship_kwargs={"lazy": "selectin"},
     )

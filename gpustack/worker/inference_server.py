@@ -4,7 +4,7 @@ import platform
 import subprocess
 import sys
 import time
-import importlib.resources as pkg_resources
+from typing import Optional
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.schemas.models import (
@@ -15,7 +15,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.utils.command import get_platform_command
 from gpustack.worker.downloaders import HfDownloader, OllamaLibraryDownloader
-
+from gpustack.utils.compat_importlib import pkg_resources
 
 logger = logging.getLogger(__name__)
 
@@ -122,14 +122,17 @@ class InferenceServer:
         except Exception as e:
             logger.error(f"Failed to run the llama.cpp server: {e}")
 
-    def _get_env(self, gpu_index: int | None = None):
+    def _get_env(self, gpu_index: Optional[int] = None):
         index = gpu_index or 0
-        match platform.system():
-            case "Darwin":
-                return None
-            case "Linux":
-                # TODO: support more.
-                return {"CUDA_VISIBLE_DEVICES": str(index)}
+        system = platform.system()
+
+        if system == "Darwin":
+            return None
+        elif system == "Linux":
+            return {"CUDA_VISIBLE_DEVICES": str(index)}
+        else:
+            # TODO: support more.
+            return None
 
     def _get_command(self):
         command_map = {
@@ -142,7 +145,8 @@ class InferenceServer:
         command = get_platform_command(command_map)
         if command == "":
             raise Exception(
-                f"No supported llama-box command found for {platform.system()} {platform.machine()}."
+                f"No supported llama-box command found "
+                f"for {platform.system()} {platform.machine()}."
             )
         return command
 

@@ -138,7 +138,7 @@ class ActiveRecordMixin:
 
     @classmethod
     def convert_without_saving(
-        cls, source: dict | SQLModel, update: dict | None = None
+        cls, source: Union[dict, SQLModel], update: Optional[dict] = None
     ) -> SQLModel:
         """
         Convert the source to the model without saving to the database.
@@ -153,8 +153,11 @@ class ActiveRecordMixin:
 
     @classmethod
     async def create(
-        cls, session: AsyncSession, source: dict | SQLModel, update: dict | None = None
-    ) -> SQLModel | None:
+        cls,
+        session: AsyncSession,
+        source: Union[dict, SQLModel],
+        update: Optional[dict] = None,
+    ) -> Optional[SQLModel]:
         """Create and save a new record for the model."""
 
         obj = cls.convert_without_saving(source, update)
@@ -167,8 +170,11 @@ class ActiveRecordMixin:
 
     @classmethod
     async def create_or_update(
-        cls, session: AsyncSession, source: dict | SQLModel, update: dict | None = None
-    ) -> SQLModel | None:
+        cls,
+        session: AsyncSession,
+        source: Union[dict, SQLModel],
+        update: Optional[dict] = None,
+    ) -> Optional[SQLModel]:
         """Create or update a record for the model."""
 
         obj = cls.convert_without_saving(source, update)
@@ -208,7 +214,7 @@ class ActiveRecordMixin:
             raise e
 
     async def update(
-        self, session: AsyncSession, source: dict | SQLModel | None = None
+        self, session: AsyncSession, source: Union[dict, SQLModel, None] = None
     ):
         """Update the object with the source and save to the database."""
 

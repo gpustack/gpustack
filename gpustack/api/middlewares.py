@@ -2,6 +2,7 @@ from datetime import date
 import json
 import logging
 import time
+from typing import Union
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 from jwt import DecodeError, ExpiredSignatureError
@@ -64,7 +65,9 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         return StreamingResponse(streaming_generator(), headers=dict(response.headers))
 
     async def process_model_usage(
-        self, request: Request, chat_completion: ChatCompletion | ChatCompletionChunk
+        self,
+        request: Request,
+        chat_completion: Union[ChatCompletion, ChatCompletionChunk],
     ):
         completion_tokens = chat_completion.usage.completion_tokens
         prompt_tokens = chat_completion.usage.prompt_tokens

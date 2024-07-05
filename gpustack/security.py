@@ -1,6 +1,7 @@
 import secrets
 import string
 from datetime import datetime, timedelta, timezone
+from typing import Optional, Union
 import jwt
 from argon2 import PasswordHasher
 
@@ -10,14 +11,14 @@ API_KEY_PREFIX = "gpustack"
 JWT_TOKEN_EXPIRE_MINUTES = 15
 
 
-def verify_hashed_secret(hashed: str | bytes, plain: str | bytes) -> bool:
+def verify_hashed_secret(hashed: Union[str, bytes], plain: Union[str, bytes]) -> bool:
     try:
         return ph.verify(hashed, plain)
     except Exception:
         return False
 
 
-def get_secret_hash(plain: str | bytes):
+def get_secret_hash(plain: Union[str, bytes]):
     return ph.hash(plain)
 
 
@@ -43,7 +44,7 @@ class JWTManager:
         self,
         secret_key: str,
         algorithm: str = "HS256",
-        expires_delta: timedelta | None = None,
+        expires_delta: Optional[timedelta] = None,
     ):
         if expires_delta is None:
             expires_delta = timedelta(minutes=JWT_TOKEN_EXPIRE_MINUTES)

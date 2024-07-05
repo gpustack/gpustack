@@ -1,5 +1,6 @@
 from datetime import datetime
 import re
+from typing import Optional
 from pydantic import field_validator
 from sqlmodel import Field, SQLModel
 
@@ -10,7 +11,7 @@ from ..mixins import BaseModelMixin
 class UserBase(SQLModel):
     username: str
     is_admin: bool = False
-    full_name: str | None = None
+    full_name: Optional[str] = None
     require_password_change: bool = Field(default=False)
 
 
@@ -31,7 +32,7 @@ class UserCreate(UserBase):
 
 
 class UserUpdate(UserBase):
-    password: str | None = None
+    password: Optional[str] = None
 
 
 class UpdatePassword(SQLModel):
@@ -53,7 +54,7 @@ class UpdatePassword(SQLModel):
 
 class User(UserBase, BaseModelMixin, table=True):
     __tablename__ = 'users'
-    id: int | None = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     hashed_password: str
 
 

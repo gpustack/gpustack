@@ -88,14 +88,14 @@ class WorkerStateEnum(str, Enum):
 
 
 class WorkerStatus(BaseModel):
-    cpu: CPUInfo | None = Field(sa_column=Column(JSON), default=None)
-    memory: MemoryInfo | None = Field(sa_column=Column(JSON), default=None)
-    gpu_devices: GPUDevicesInfo | None = Field(sa_column=Column(JSON), default=None)
-    swap: SwapInfo | None = Field(sa_column=Column(JSON), default=None)
-    filesystem: FileSystemInfo | None = Field(sa_column=Column(JSON), default=None)
-    os: OperatingSystemInfo | None = Field(sa_column=Column(JSON), default=None)
-    kernel: KernelInfo | None = Field(sa_column=Column(JSON), default=None)
-    uptime: UptimeInfo | None = Field(sa_column=Column(JSON), default=None)
+    cpu: Optional[CPUInfo] = Field(sa_column=Column(JSON), default=None)
+    memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
+    gpu_devices: Optional[GPUDevicesInfo] = Field(sa_column=Column(JSON), default=None)
+    swap: Optional[SwapInfo] = Field(sa_column=Column(JSON), default=None)
+    filesystem: Optional[FileSystemInfo] = Field(sa_column=Column(JSON), default=None)
+    os: Optional[OperatingSystemInfo] = Field(sa_column=Column(JSON), default=None)
+    kernel: Optional[KernelInfo] = Field(sa_column=Column(JSON), default=None)
+    uptime: Optional[UptimeInfo] = Field(sa_column=Column(JSON), default=None)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -107,14 +107,14 @@ class WorkerBase(SQLModel):
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
     state: WorkerStateEnum = WorkerStateEnum.unknown
-    status: WorkerStatus | None = Field(
+    status: Optional[WorkerStatus] = Field(
         sa_column=Column(pydantic_column_type(WorkerStatus))
     )
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):
     __tablename__ = 'workers'
-    id: int | None = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class WorkerCreate(WorkerBase):

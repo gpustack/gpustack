@@ -1,5 +1,5 @@
 import json
-from typing import Generic, Type, TypeVar
+from typing import Generic, Optional, Type, TypeVar
 
 from fastapi import Query
 from fastapi.encoders import jsonable_encoder
@@ -17,7 +17,7 @@ class Pagination(BaseModel):
 
 
 class ListParams(BaseModel):
-    query: str | None = None
+    query: Optional[str] = None
     page: int = Query(default=1, ge=1)
     perPage: int = Query(default=100, ge=1, le=100)
     watch: bool = Query(default=False)

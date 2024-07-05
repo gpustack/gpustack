@@ -156,7 +156,7 @@ GPUStack users can generate their own API keys in the UI.
 
 ## Build
 
-1. Install `python@3.11`.
+1. Install `python 3.9+`.
 
 2. Run `make build`.
 
