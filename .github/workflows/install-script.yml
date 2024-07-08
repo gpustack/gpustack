@@ -1,0 +1,72 @@
+name: Install Script
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "install.sh"
+      - ".github/workflows/install-script.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "install.sh"
+      - ".github/workflows/install-script.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build Wheel
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Build
+        run: |
+          make build
+
+      - name: Upload wheel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*.whl
+
+  test-install:
+    name: Test Install
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: ./dist
+
+      - name: Run install script
+        run: |
+          INSTALL_PACKAGE_SPEC=$(echo dist/*.whl) ./install.sh
+
+      - name: Verify installation
+        run: |
+          gpustack version
+          curl --fail --retry 5 --retry-delay 2 --retry-all-errors http://127.0.0.1/readyz
