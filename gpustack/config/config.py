@@ -111,7 +111,7 @@ class Config(BaseSettings):
         if os.name == "nt":  # Windows
             data_dir = os.path.join(os.environ["APPDATA"], app_name)
         elif os.name == "posix":
-            data_dir = os.path.expanduser(f"~/.local/share/{app_name}")
+            data_dir = f"/var/lib/{app_name}"
         else:
             raise Exception("Unsupported OS")
 
