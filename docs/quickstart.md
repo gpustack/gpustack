@@ -19,7 +19,7 @@ curl -sfL https://get.gpustack.ai | sh - --server-url http://myserver --token my
 The token here is a secret used for adding workers. In the default setup, you can run the following to get the token:
 
 ```bash
-cat ~/.local/share/gpustack/token
+cat /var/lib/gpustack/token
 ```
 
 ### Windows
@@ -41,7 +41,7 @@ gpustack chat llama3 "tell me a joke."
 2. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
 ```bash
-cat ~/.local/share/gpustack/initial_admin_password
+cat /var/lib/gpustack/initial_admin_password
 ```
 
 3. Click `Playground` in the navigation menus. Now you can chat with the LLM in the UI playground.
