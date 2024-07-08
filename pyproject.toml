@@ -62,4 +62,3 @@ force-exclude = '''
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
-gen = "gpustack.codegen.generate:main"
