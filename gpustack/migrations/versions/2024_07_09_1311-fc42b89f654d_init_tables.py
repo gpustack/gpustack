@@ -1,8 +1,8 @@
 """init tables
 
-Revision ID: 4992ab3e8af6
+Revision ID: fc42b89f654d
 Revises: 
-Create Date: 2024-07-05 18:33:46.068181
+Create Date: 2024-07-09 13:11:58.801640
 
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import gpustack
 
 
 # revision identifiers, used by Alembic.
-revision: str = '4992ab3e8af6'
+revision: str = 'fc42b89f654d'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -91,11 +91,12 @@ def upgrade() -> None:
     sa.Column('ollama_library_model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('worker_id', sa.Integer(), nullable=True),
+    sa.Column('worker_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('worker_ip', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('pid', sa.Integer(), nullable=True),
     sa.Column('port', sa.Integer(), nullable=True),
     sa.Column('download_progress', sa.Float(), nullable=True),
-    sa.Column('state', sa.Enum('initializing', 'pending', 'running', 'scheduled', 'error', 'downloading', name='modelinstancestateenum'), nullable=False),
+    sa.Column('state', sa.Enum('initializing', 'pending', 'running', 'scheduled', 'error', 'downloading', 'analyzing', name='modelinstancestateenum'), nullable=False),
     sa.Column('state_message', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('computed_resource_claim', gpustack.schemas.common.JSON(), nullable=True),
     sa.Column('gpu_index', sa.Integer(), nullable=True),
