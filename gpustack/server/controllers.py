@@ -46,20 +46,20 @@ class ModelController:
                         await instance.delete(session)
 
                 elif len(instances) < model.replicas:
-                    name_prefix = ''.join(
-                        random.choices(string.ascii_letters + string.digits, k=5)
-                    )
-                    instance = ModelInstanceCreate(
-                        name=f"{model.name}-{name_prefix}",
-                        model_id=model.id,
-                        model_name=model.name,
-                        source=model.source,
-                        huggingface_repo_id=model.huggingface_repo_id,
-                        huggingface_filename=model.huggingface_filename,
-                        ollama_library_model_name=model.ollama_library_model_name,
-                        state=ModelInstanceStateEnum.pending,
-                    )
                     for _ in range(model.replicas - len(instances)):
+                        name_prefix = ''.join(
+                            random.choices(string.ascii_letters + string.digits, k=5)
+                        )
+                        instance = ModelInstanceCreate(
+                            name=f"{model.name}-{name_prefix}",
+                            model_id=model.id,
+                            model_name=model.name,
+                            source=model.source,
+                            huggingface_repo_id=model.huggingface_repo_id,
+                            huggingface_filename=model.huggingface_filename,
+                            ollama_library_model_name=model.ollama_library_model_name,
+                            state=ModelInstanceStateEnum.pending,
+                        )
                         await ModelInstance.create(session, instance)
                         logger.debug(f"Created model instance for model {model.name}")
 
