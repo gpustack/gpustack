@@ -241,7 +241,7 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
             ).label('total_token_count'),
         )
         .join(ModelInstance, Model.id == ModelInstance.model_id)
-        .join(ModelUsage, Model.id == ModelUsage.model_id)
+        .outerjoin(ModelUsage, Model.id == ModelUsage.model_id)
         .group_by(Model.id)
         .order_by(
             func.sum(
@@ -262,7 +262,11 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
                     gpu_memory=result.total_gpu_memory_claim,
                 ),
                 instance_count=result.instance_count,
-                token_count=result.total_token_count,
+                token_count=(
+                    result.total_token_count
+                    if result.total_token_count is not None
+                    else 0
+                ),
             )
         )
 
