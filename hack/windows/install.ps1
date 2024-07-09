@@ -15,7 +15,7 @@ function Install-Dependency {
 }
 
 function Get-FastFetch {
-    $version = "2.17.1"
+    $version = "2.17.2"
     $fastfetchDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "fastfetch"
     $fastfetchTmpDir = Join-Path -Path $fastfetchDir -ChildPath "tmp"
 
@@ -86,7 +86,7 @@ function Get-UI {
 }
 
 function Get-GGUFParser {
-    $version = "v0.0.15"
+    $version = "v0.2.1"
     $ggufParserDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "gguf-parser"
     New-Item -ItemType Directory -Path $ggufParserDir -ErrorAction Ignore | Out-Null
 

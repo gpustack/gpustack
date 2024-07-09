@@ -19,7 +19,7 @@ function download_deps() {
 }
 
 function download_fastfetch() {
-    local version="2.17.1"
+    local version="2.17.2"
 
     local fastfetch_dir="${THIRD_PARTY_DIR}/fastfetch"
     local fastfetch_tmp_dir="${fastfetch_dir}/tmp"
@@ -83,7 +83,7 @@ function download_ui() {
 }
 
 function download_gguf_parser() {
-    local version="v0.0.15"
+    local version="v0.2.1"
 
     local gguf_parser_dir="${THIRD_PARTY_DIR}/gguf-parser"
     mkdir -p "${gguf_parser_dir}"
