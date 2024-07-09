@@ -127,21 +127,24 @@ async def calculate_model_resource_claim(
 
         logger.info(
             f"Calculated resource claim for model instance {model_instance.id}, "
-            f"least: {claim.estimate.memory[0]},"
+            f"least: {claim.estimate.memory[0]}, "
             f"most: {claim.estimate.memory[len(claim.estimate.memory)-1]}"
         )
 
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
 
     except subprocess.CalledProcessError as e:
-        e.add_note(command.__str__() + " execution failed")
-        raise
-    except Exception as e:
-        e.add_note(
-            "error occurred when trying to execute and parse the output of "
-            + command.__str__()
+        raise Exception(
+            f"Failed to execution {command.__str__()}, " f"error: {e}, ",
+            f"stderr: {e.stderr.decode()}, ",
+            f"stdout: {e.stdout.decode()}",
         )
-        raise e
+    except Exception as e:
+        raise Exception(
+            f"Failed to parse the output of {command.__str__()}, " f"error: {e}, ",
+            f"stderr: {e.stderr.decode()}, ",
+            f"stdout: {e.stdout.decode()}",
+        )
 
 
 def _gguf_parser_command_args_from_source(model: Model) -> List[str]:
