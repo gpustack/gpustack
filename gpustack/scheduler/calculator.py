@@ -107,7 +107,7 @@ async def calculate_model_resource_claim(
         model: Model to calculate the resource claim for.
     """
 
-    logger.info(f"Calculating resource claim for model instance {model_instance.id}")
+    logger.info(f"Calculating resource claim for model instance {model_instance.name}")
 
     command = _gguf_parser_command(model)
     try:
@@ -126,7 +126,7 @@ async def calculate_model_resource_claim(
         claim = modelResoruceClaim.from_json(cmd_output)
 
         logger.info(
-            f"Calculated resource claim for model instance {model_instance.id}, "
+            f"Calculated resource claim for model instance {model_instance.name}, "
             f"least: {claim.estimate.memory[0]}, "
             f"most: {claim.estimate.memory[len(claim.estimate.memory)-1]}"
         )
