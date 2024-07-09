@@ -1,0 +1,39 @@
+{
+    "name": "hostmacosmetal",
+    "hostname": "hostmacosmetal",
+    "ip": "192.168.50.147",
+    "labels": {},
+    "state": "Running",
+    "status": {
+        "memory": {
+            "total": 34359738368,
+            "utilization_rate": 74.34005737304688,
+            "is_unified_memory": true,
+            "used": 25543049216,
+            "allocated": 0
+        },
+        "gpu_devices": [
+            {
+                "uuid": "4170706c-6520-4d31-2050-726f00000000",
+                "name": "Apple M1 Pro",
+                "vendor": "Apple",
+                "index": 0,
+                "core": {
+                    "total": 16,
+                    "utilization_rate": 5.0
+                },
+                "memory": {
+                    "total": 22906503168,
+                    "utilization_rate": 0.0002861021584977348,
+                    "is_unified_memory": true,
+                    "used": 65536,
+                    "allocated": 0
+                },
+                "temperature": 48.857120513916016
+            }
+        ]
+    },
+    "id": 1,
+    "created_at": "2024-07-04T15:22:19",
+    "updated_at": "2024-07-08T03:31:42"
+}

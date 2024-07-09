@@ -11,6 +11,7 @@ from gpustack.schemas.workers import (
     SwapInfo,
     GPUDeviceInfo,
     MountPoint,
+    VendorEnum,
     WorkerStateEnum,
 )
 import socket
@@ -78,53 +79,74 @@ class WorkerStatusCollector:
                 for usage_per_core in r:
                     sum += usage_per_core
 
-                utilization_rate = sum / core_count if core_count > 0 else 0
-                if status.cpu is None:
-                    status.cpu = CPUInfo(
-                        utilization_rate=utilization_rate,
-                    )
-                else:
-                    status.cpu.utilization_rate = utilization_rate
+                    utilization_rate = sum / core_count if core_count > 0 else 0
+                    if status.cpu is None:
+                        status.cpu = CPUInfo(
+                            utilization_rate=utilization_rate,
+                        )
+                    else:
+                        status.cpu.utilization_rate = utilization_rate
             elif typ == "GPU":
                 device = []
                 list = sorted(r, key=lambda x: x["name"])
-                for index, value in enumerate(list):
+                for i, value in enumerate(list):
                     name = self._get_value(value, "name")
+                    vender = self._get_value(value, "vendor")
+                    index = self._get_value(value, "index") or i
 
-                    memory_total = (
-                        self._get_value(value, "memory", "dedicated", "total") or 0
-                    )
-                    memory_used = (
-                        self._get_value(value, "memory", "dedicated", "used") or 0
-                    )
+                    is_unified_memory = False
+                    if (
+                        vender == VendorEnum.Apple
+                        and self._get_value(value, "type") == "Integrated"
+                    ):
+                        is_unified_memory = True
+
+                    memory_total = 0
+                    memory_used = 0
+                    if is_unified_memory:
+                        memory_total = (
+                            self._get_value(value, "memory", "shared", "total") or 0
+                        )
+                        memory_used = (
+                            self._get_value(value, "memory", "shared", "used") or 0
+                        )
+                    else:
+                        memory_total = (
+                            self._get_value(value, "memory", "dedicated", "total") or 0
+                        )
+                        memory_used = (
+                            self._get_value(value, "memory", "dedicated", "used") or 0
+                        )
+
                     memory_utilization_rate = (
                         (memory_used / memory_total * 100) if memory_total > 0 else 0
                     )
                     memory = MemoryInfo(
+                        is_unified_memory=is_unified_memory,
                         total=memory_total,
                         used=memory_used,
                         utilization_rate=memory_utilization_rate,
                     )
 
-                    core_count = self._get_value(value, "coreCount") or 0
-                    core_utilization_rate = (
-                        self._get_value(value, "coreUtilizationRate") or 0
-                    )
-                    core = GPUCoreInfo(
-                        total=core_count, utilization_rate=core_utilization_rate
-                    )
+                core_count = self._get_value(value, "coreCount") or 0
+                core_utilization_rate = (
+                    self._get_value(value, "coreUtilizationRate") or 0
+                )
+                core = GPUCoreInfo(
+                    total=core_count, utilization_rate=core_utilization_rate
+                )
 
-                    device.append(
-                        GPUDeviceInfo(
-                            name=name,
-                            uuid=self._get_value(value, "uuid"),
-                            vendor=self._get_value(value, "vendor"),
-                            index=index,
-                            core=core,
-                            memory=memory,
-                            temperature=self._get_value(value, "temperature"),
-                        )
+                device.append(
+                    GPUDeviceInfo(
+                        name=name,
+                        uuid=self._get_value(value, "uuid"),
+                        vendor=self._get_value(value, "vendor"),
+                        index=index,
+                        core=core,
+                        memory=memory,
+                        temperature=self._get_value(value, "temperature"),
                     )
+                )
                 status.gpu_devices = device
             elif typ == "Memory":
                 total = self._get_value(r, "total") or 0
@@ -173,15 +195,9 @@ class WorkerStatusCollector:
         )
 
     def _inject_unified_memory(self, status: WorkerStatus):
-        if status.gpu_devices is None or "macOS" not in status.os.name:
-            return
-
         is_unified_memory = False
-        for index, gpu_device in enumerate(status.gpu_devices):
-            if str.startswith(gpu_device.name, "Apple M"):
-                is_unified_memory = True
-                status.gpu_devices[index].memory.is_unified_memory = True
-                status.gpu_devices[index].memory = status.memory
+        if len(status.gpu_devices) != 0:
+            is_unified_memory = status.gpu_devices[0].memory.is_unified_memory
 
         status.memory.is_unified_memory = is_unified_memory
 

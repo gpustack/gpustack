@@ -93,13 +93,6 @@ class HfDownloader:
 
         return model_path
 
-    @classmethod
-    def model_url(cls, repo_id: str, filename: str) -> str:
-        if filename is None:
-            return f"{cls._registry_url}/{repo_id}"
-        else:
-            return f"{cls._registry_url}/{repo_id}/resolve/main/{filename}"
-
     def __call__(self):
         return self.download()
 
@@ -151,27 +144,3 @@ class OllamaLibraryDownloader:
             cls.download_blob(blob_url, model_path)
 
         return model_path
-
-    @classmethod
-    def model_url(cls, model_name: str) -> str:
-        if ":" in model_name:
-            model, tag = model_name.split(":")
-        else:
-            model, tag = model_name, "latest"
-
-        manifest_url = f"{cls._registry_url}/v2/library/{model}/manifests/{tag}"
-        response = requests.get(manifest_url)
-
-        if response.status_code != 200:
-            raise Exception(
-                f"Failed to download model {model_name}, status code: {response.status_code}"
-            )
-
-        manifest = response.json()
-        blobs = manifest.get("layers", [])
-
-        for blob in blobs:
-            if blob["mediaType"] == "application/vnd.ollama.image.model":
-                return f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}"
-
-        return None

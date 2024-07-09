@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import logging
 from typing import Dict, List, Optional
-from gpustack.scheduler.calculator import binary_search, estimate
+from gpustack.scheduler.calculator import estimate
 from gpustack.schemas.models import ComputedResourceClaim, ModelInstance
 from gpustack.schemas.workers import Worker
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -46,7 +46,7 @@ class ResourceFitPolicy:
         self._engine = get_engine()
 
     async def filter(
-        self, workers: List[ModelInstanceScheduleCandidate]
+        self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Filter the workers with the resource fit claim.
@@ -54,7 +54,7 @@ class ResourceFitPolicy:
 
         candidates = []
         for worker in workers:
-            filterd_candidates = await self._filter_one(worker.worker)
+            filterd_candidates = await self._filter_one(worker)
             if len(filterd_candidates) != 0:
                 candidates.extend(filterd_candidates)
         return candidates
@@ -65,95 +65,138 @@ class ResourceFitPolicy:
         """
 
         candidates = []
-        total_layers = len(self._estimate.memory)
+        total_layers = self._estimate.memory[-1].offloadLayers
         is_unified_memory = worker.status.memory.is_unified_memory
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
-        if is_unified_memory:
-            arr = []
-            for memory in self._estimate.memory:
-                arr.append(memory.uma)
-
-            index = binary_search(arr, allocatable.memory)
-            if index != -1:
-                candidates.append(
-                    ModelInstanceScheduleCandidate(
-                        worker=worker,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=True,
-                            offload_layers=index,
-                            memory=self._estimate.memory[index].uma,
-                            total_layers=total_layers,
-                        ),
-                    )
-                )
-
-            return candidates
-
-        else:
-            arr = []
-            for memory in self._estimate.memory:
+        arr = []
+        estimate_arr = []
+        for memory in self._estimate.memory:
+            if is_unified_memory:
+                arr.append(memory.uma.vram)
+                estimate_arr.append(memory.uma)
+            else:
                 arr.append(memory.nonUMA.vram)
+                estimate_arr.append(memory.nonUMA)
 
-            for gpu_index in allocatable.gpu_memory:
-                index = binary_search(arr, allocatable.gpu_memory[gpu_index])
-                if (
-                    index != -1
-                    and allocatable.memory > self._estimate.memory[index].nonUMA.ram
-                ):
-                    candidates.append(
-                        ModelInstanceScheduleCandidate(
-                            worker=worker,
-                            gpu_index=gpu_index,
-                            computed_resource_claim=ComputedResourceClaim(
-                                is_unified_memory=False,
-                                offload_layers=index,
-                                gpu_memory=self._estimate.memory[index].nonUMA.vram,
-                                memory=self._estimate.memory[index].nonUMA.ram,
-                                total_layers=total_layers,
-                            ),
-                        )
-                    )
-            return candidates
+        for gpu_index in allocatable.gpu_memory:
+            index = binary_search(arr, allocatable.gpu_memory[gpu_index])
+            if index == -1:
+                continue
+
+            # For UMA, we need to remove the claim of gpu memory before check if the memory.
+            if (
+                is_unified_memory
+                and (
+                    self._estimate.memory[index].uma.ram
+                    > allocatable.memory - arr[index]
+                )
+                or (self._estimate.memory[index].nonUMA.ram > allocatable.memory)
+            ):
+                continue
+
+            offload_layers = self._estimate.memory[index].offloadLayers
+            candidates.append(
+                ModelInstanceScheduleCandidate(
+                    worker=worker,
+                    gpu_index=gpu_index,
+                    computed_resource_claim=ComputedResourceClaim(
+                        is_unified_memory=is_unified_memory,
+                        offload_layers=offload_layers,
+                        gpu_memory=estimate_arr[index].vram,
+                        memory=estimate_arr[index].ram,
+                        total_layers=total_layers,
+                    ),
+                )
+            )
+        return candidates
+
+    async def _get_worker_model_instances(self, worker: Worker) -> List[ModelInstance]:
+        async with AsyncSession(self._engine) as session:
+            model_instances = await ModelInstance.all_by_field(
+                session, "worker_id", worker.id
+            )
+            return model_instances
 
     async def _get_worker_allocatable_resource(self, worker: Worker) -> Allocatable:
         """
         Get the worker with the latest allocatable resources.
         """
 
-        async with AsyncSession(self._engine) as session:
-            model_instances = await ModelInstance.all_by_field(
-                session, "worker_id", worker.id
-            )
+        is_unified_memory = worker.status.memory.is_unified_memory
+        model_instances = await self._get_worker_model_instances(worker)
 
         allocated = Allocated(memory=0, gpu_memory={})
         for model_instance in model_instances:
+            if model_instance.worker_id != worker.id:
+                continue
+
             allocated.memory += model_instance.computed_resource_claim.memory or 0
             gpu_index = model_instance.gpu_index
             if gpu_index is not None:
                 allocated.gpu_memory[gpu_index] = (
-                    allocated.gpu_memory.get(gpu_index) or 0
+                    allocated.gpu_memory.get(gpu_index, 0)
                 ) + (model_instance.computed_resource_claim.gpu_memory or 0)
 
         allocatable = Allocatable(memory=0, gpu_memory={})
-        allocatable.memory = (
-            worker.status.memory.total - self._system_reserved.memory - allocated.memory
-        )
-
         for gpu_index, gpu in enumerate(worker.status.gpu_devices):
             if gpu.memory is None or gpu.memory.total is None:
                 continue
 
-            allocatable.gpu_memory[gpu_index] = gpu.memory.total - (
-                allocated.gpu_memory.get(gpu_index) or 0
+            allocatable_gpu_memory = gpu.memory.total - (
+                allocated.gpu_memory.get(gpu_index, 0)
             )
 
-            if gpu_index == 0 and not worker.status.memory.is_unified_memory:
-                allocatable.gpu_memory[gpu_index] = (
-                    allocatable.gpu_memory.get(gpu_index)
-                    - self._system_reserved.gpu_memory
+            # allocatable.gpu_memory[gpu_index] =
+            if gpu_index == 0:
+                allocatable_gpu_memory = (
+                    allocatable_gpu_memory - self._system_reserved.gpu_memory
                 )
+            allocatable.gpu_memory[gpu_index] = allocatable_gpu_memory
+
+        allocatable.memory = (
+            worker.status.memory.total - self._system_reserved.memory - allocated.memory
+        )
+
+        if is_unified_memory:
+            allocatable.memory = (
+                allocatable.memory
+                - self._system_reserved.gpu_memory
+                - sum(allocated.gpu_memory.values())
+            )
+
+            # For UMA, we need to set the gpu memory to the minimum of the caculated with max allow gpu memory and the allocatable memory.
+            allocatable.gpu_memory[0] = min(
+                allocatable.memory, allocatable.gpu_memory[0]
+            )
 
         return allocatable
+
+
+# arr is a sorted list from smallest to largest
+def binary_search(arr, target):
+    """
+    Binary search the target in the arr.
+    """
+    if len(arr) == 0:
+        return -1
+
+    if arr[0] > target:
+        return -1
+
+    if arr[-1] < target:
+        return len(arr) - 1
+
+    low, high = 0, len(arr) - 1
+
+    while low <= high:
+        mid = (low + high) // 2
+        if arr[mid] == target:
+            return mid
+        elif arr[mid] < target:
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    return high

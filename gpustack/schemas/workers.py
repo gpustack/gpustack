@@ -51,6 +51,13 @@ class GPUDeviceInfo(BaseModel):
 GPUDevicesInfo = List[GPUDeviceInfo]
 
 
+class VendorEnum(str, Enum):
+    NVIDIA = "NVIDIA"
+    AMD = "AMD"
+    Intel = "Intel"
+    Apple = "Apple"
+
+
 class MountPoint(BaseModel):
     name: str = Field(default="")
     mount_point: str = Field(default="")

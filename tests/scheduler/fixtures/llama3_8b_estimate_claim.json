@@ -1,0 +1,418 @@
+{
+    "estimate": {
+      "memory": [
+        {
+          "offloadLayers": 0,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 1161948120,
+            "vram": 0
+          },
+          "nonUMA": {
+            "ram": 1319234520,
+            "vram": 964157440
+          }
+        },
+        {
+          "offloadLayers": 1,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 1128393688,
+            "vram": 156270592
+          },
+          "nonUMA": {
+            "ram": 1285680088,
+            "vram": 1120428032
+          }
+        },
+        {
+          "offloadLayers": 2,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 1094839256,
+            "vram": 312541184
+          },
+          "nonUMA": {
+            "ram": 1252125656,
+            "vram": 1276698624
+          }
+        },
+        {
+          "offloadLayers": 3,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 1061284824,
+            "vram": 468811776
+          },
+          "nonUMA": {
+            "ram": 1218571224,
+            "vram": 1432969216
+          }
+        },
+        {
+          "offloadLayers": 4,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 1027730392,
+            "vram": 625082368
+          },
+          "nonUMA": {
+            "ram": 1185016792,
+            "vram": 1589239808
+          }
+        },
+        {
+          "offloadLayers": 5,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 994175960,
+            "vram": 781352960
+          },
+          "nonUMA": {
+            "ram": 1151462360,
+            "vram": 1745510400
+          }
+        },
+        {
+          "offloadLayers": 6,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 960621528,
+            "vram": 937623552
+          },
+          "nonUMA": {
+            "ram": 1117907928,
+            "vram": 1901780992
+          }
+        },
+        {
+          "offloadLayers": 7,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 927067096,
+            "vram": 1093894144
+          },
+          "nonUMA": {
+            "ram": 1084353496,
+            "vram": 2058051584
+          }
+        },
+        {
+          "offloadLayers": 8,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 893512664,
+            "vram": 1250164736
+          },
+          "nonUMA": {
+            "ram": 1050799064,
+            "vram": 2214322176
+          }
+        },
+        {
+          "offloadLayers": 9,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 859958232,
+            "vram": 1406435328
+          },
+          "nonUMA": {
+            "ram": 1017244632,
+            "vram": 2370592768
+          }
+        },
+        {
+          "offloadLayers": 10,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 826403800,
+            "vram": 1562705920
+          },
+          "nonUMA": {
+            "ram": 983690200,
+            "vram": 2526863360
+          }
+        },
+        {
+          "offloadLayers": 11,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 792849368,
+            "vram": 1718976512
+          },
+          "nonUMA": {
+            "ram": 950135768,
+            "vram": 2683133952
+          }
+        },
+        {
+          "offloadLayers": 12,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 759294936,
+            "vram": 1875247104
+          },
+          "nonUMA": {
+            "ram": 916581336,
+            "vram": 2839404544
+          }
+        },
+        {
+          "offloadLayers": 13,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 725740504,
+            "vram": 2031517696
+          },
+          "nonUMA": {
+            "ram": 883026904,
+            "vram": 2995675136
+          }
+        },
+        {
+          "offloadLayers": 14,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 692186072,
+            "vram": 2187788288
+          },
+          "nonUMA": {
+            "ram": 849472472,
+            "vram": 3151945728
+          }
+        },
+        {
+          "offloadLayers": 15,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 658631640,
+            "vram": 2344058880
+          },
+          "nonUMA": {
+            "ram": 815918040,
+            "vram": 3308216320
+          }
+        },
+        {
+          "offloadLayers": 16,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 625077208,
+            "vram": 2500329472
+          },
+          "nonUMA": {
+            "ram": 782363608,
+            "vram": 3464486912
+          }
+        },
+        {
+          "offloadLayers": 17,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 591522776,
+            "vram": 2656600064
+          },
+          "nonUMA": {
+            "ram": 748809176,
+            "vram": 3620757504
+          }
+        },
+        {
+          "offloadLayers": 18,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 557968344,
+            "vram": 2812870656
+          },
+          "nonUMA": {
+            "ram": 715254744,
+            "vram": 3777028096
+          }
+        },
+        {
+          "offloadLayers": 19,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 524413912,
+            "vram": 2969141248
+          },
+          "nonUMA": {
+            "ram": 681700312,
+            "vram": 3933298688
+          }
+        },
+        {
+          "offloadLayers": 20,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 490859480,
+            "vram": 3125411840
+          },
+          "nonUMA": {
+            "ram": 648145880,
+            "vram": 4089569280
+          }
+        },
+        {
+          "offloadLayers": 21,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 457305048,
+            "vram": 3281682432
+          },
+          "nonUMA": {
+            "ram": 614591448,
+            "vram": 4245839872
+          }
+        },
+        {
+          "offloadLayers": 22,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 423750616,
+            "vram": 3437953024
+          },
+          "nonUMA": {
+            "ram": 581037016,
+            "vram": 4402110464
+          }
+        },
+        {
+          "offloadLayers": 23,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 390196184,
+            "vram": 3594223616
+          },
+          "nonUMA": {
+            "ram": 547482584,
+            "vram": 4558381056
+          }
+        },
+        {
+          "offloadLayers": 24,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 356641752,
+            "vram": 3750494208
+          },
+          "nonUMA": {
+            "ram": 513928152,
+            "vram": 4714651648
+          }
+        },
+        {
+          "offloadLayers": 25,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 323087320,
+            "vram": 3906764800
+          },
+          "nonUMA": {
+            "ram": 480373720,
+            "vram": 4870922240
+          }
+        },
+        {
+          "offloadLayers": 26,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 289532888,
+            "vram": 4063035392
+          },
+          "nonUMA": {
+            "ram": 446819288,
+            "vram": 5027192832
+          }
+        },
+        {
+          "offloadLayers": 27,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 255978456,
+            "vram": 4219305984
+          },
+          "nonUMA": {
+            "ram": 413264856,
+            "vram": 5183463424
+          }
+        },
+        {
+          "offloadLayers": 28,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 222424024,
+            "vram": 4375576576
+          },
+          "nonUMA": {
+            "ram": 379710424,
+            "vram": 5339734016
+          }
+        },
+        {
+          "offloadLayers": 29,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 188869592,
+            "vram": 4531847168
+          },
+          "nonUMA": {
+            "ram": 346155992,
+            "vram": 5496004608
+          }
+        },
+        {
+          "offloadLayers": 30,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 155315160,
+            "vram": 4688117760
+          },
+          "nonUMA": {
+            "ram": 312601560,
+            "vram": 5652275200
+          }
+        },
+        {
+          "offloadLayers": 31,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 121760728,
+            "vram": 4844388352
+          },
+          "nonUMA": {
+            "ram": 279047128,
+            "vram": 5808545792
+          }
+        },
+        {
+          "offloadLayers": 32,
+          "fullOffloaded": false,
+          "uma": {
+            "ram": 88206296,
+            "vram": 5000658944
+          },
+          "nonUMA": {
+            "ram": 245492696,
+            "vram": 5964816384
+          }
+        },
+        {
+          "offloadLayers": 33,
+          "fullOffloaded": true,
+          "uma": {
+            "ram": 88206296,
+            "vram": 5000658944
+          },
+          "nonUMA": {
+            "ram": 245492696,
+            "vram": 5964816384
+          }
+        }
+      ],
+      "architecture": "llama",
+      "contextSize": 8192,
+      "flashAttention": true,
+      "noMMap": false
+    }
+  }
