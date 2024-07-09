@@ -59,6 +59,7 @@ class WorkerStatusCollector:
                     version=self._get_value(r, "version"),
                     architecure=self._get_value(r, "architecure"),
                 )
+
                 status.kernel = k
             elif typ == "Uptime":
                 status.uptime = UptimeInfo(
@@ -79,17 +80,19 @@ class WorkerStatusCollector:
                 for usage_per_core in r:
                     sum += usage_per_core
 
-                    utilization_rate = sum / core_count if core_count > 0 else 0
-                    if status.cpu is None:
-                        status.cpu = CPUInfo(
-                            utilization_rate=utilization_rate,
-                        )
-                    else:
-                        status.cpu.utilization_rate = utilization_rate
+                utilization_rate = sum / core_count if core_count > 0 else 0
+
+                if status.cpu is None:
+                    status.cpu = CPUInfo(
+                        utilization_rate=utilization_rate,
+                    )
+                else:
+                    status.cpu.utilization_rate = utilization_rate
             elif typ == "GPU":
                 device = []
                 list = sorted(r, key=lambda x: x["name"])
                 for i, value in enumerate(list):
+                    # Metadatas.
                     name = self._get_value(value, "name")
                     vender = self._get_value(value, "vendor")
                     index = self._get_value(value, "index") or i
@@ -101,6 +104,7 @@ class WorkerStatusCollector:
                     ):
                         is_unified_memory = True
 
+                    # Memory.
                     memory_total = 0
                     memory_used = 0
                     if is_unified_memory:
@@ -117,7 +121,6 @@ class WorkerStatusCollector:
                         memory_used = (
                             self._get_value(value, "memory", "dedicated", "used") or 0
                         )
-
                     memory_utilization_rate = (
                         (memory_used / memory_total * 100) if memory_total > 0 else 0
                     )
@@ -128,30 +131,35 @@ class WorkerStatusCollector:
                         utilization_rate=memory_utilization_rate,
                     )
 
-                core_count = self._get_value(value, "coreCount") or 0
-                core_utilization_rate = (
-                    self._get_value(value, "coreUtilizationRate") or 0
-                )
-                core = GPUCoreInfo(
-                    total=core_count, utilization_rate=core_utilization_rate
-                )
-
-                device.append(
-                    GPUDeviceInfo(
-                        name=name,
-                        uuid=self._get_value(value, "uuid"),
-                        vendor=self._get_value(value, "vendor"),
-                        index=index,
-                        core=core,
-                        memory=memory,
-                        temperature=self._get_value(value, "temperature"),
+                    # Core.
+                    core_count = self._get_value(value, "coreCount") or 0
+                    core_utilization_rate = (
+                        self._get_value(value, "coreUtilizationRate") or 0
                     )
-                )
+                    core = GPUCoreInfo(
+                        total=core_count, utilization_rate=core_utilization_rate
+                    )
+
+                    # Append.
+                    device.append(
+                        GPUDeviceInfo(
+                            name=name,
+                            uuid=self._get_value(value, "uuid"),
+                            vendor=self._get_value(value, "vendor"),
+                            index=index,
+                            core=core,
+                            memory=memory,
+                            temperature=self._get_value(value, "temperature"),
+                        )
+                    )
+
+                # Set to status.
                 status.gpu_devices = device
             elif typ == "Memory":
                 total = self._get_value(r, "total") or 0
                 used = self._get_value(r, "used") or 0
                 utilization_rate = used / total * 100 if total > 0 else 0
+
                 status.memory = MemoryInfo(
                     total=total,
                     used=used,
@@ -161,6 +169,7 @@ class WorkerStatusCollector:
                 total = self._get_value(r, "total") or 0
                 used = self._get_value(r, "used") or 0
                 utilization_rate = used / total * 100 if total > 0 else 0
+
                 status.swap = SwapInfo(
                     total=total,
                     used=used,
@@ -180,6 +189,7 @@ class WorkerStatusCollector:
                             available=self._get_value(disk, "bytes", "available") or 0,
                         )
                     )
+
                 status.filesystem = mountpoints
 
         self._inject_unified_memory(status)
