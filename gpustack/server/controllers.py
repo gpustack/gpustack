@@ -61,15 +61,15 @@ class ModelController:
                     )
                     for _ in range(model.replicas - len(instances)):
                         await ModelInstance.create(session, instance)
-                        logger.debug(f"Created model instance for model {model.id}")
+                        logger.debug(f"Created model instance for model {model.name}")
 
                 elif len(instances) > model.replicas:
                     for instance in instances[model.replicas :]:
                         await instance.delete(session)
-                        logger.debug(f"Deleted model instance {instance.id}")
+                        logger.debug(f"Deleted model instance {instance.name}")
 
         except Exception as e:
-            logger.error(f"Failed to reconcile model {model.id}: {e}")
+            logger.error(f"Failed to reconcile model {model.name}: {e}")
 
 
 class ModelInstanceController:
@@ -118,12 +118,14 @@ class ModelInstanceController:
                     )
                     for _ in range(model.replicas - len(instances)):
                         await ModelInstance.create(session, instance)
-                        logger.debug(f"Created model instance for model {model.id}")
+                        logger.debug(f"Created model instance for model {model.name}")
 
                 elif len(instances) > model.replicas:
                     for instance in instances[model.replicas :]:
                         await instance.delete(session)
-                        logger.debug(f"Deleted model instance {instance.id}")
+                        logger.debug(f"Deleted model instance {instance.name}")
 
         except Exception as e:
-            logger.error(f"Failed to reconcile model instance {model_instance.id}: {e}")
+            logger.error(
+                f"Failed to reconcile model instance {model_instance.name}: {e}"
+            )

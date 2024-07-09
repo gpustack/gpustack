@@ -99,7 +99,7 @@ class ServeManager:
             if mi.port is None:
                 mi.port = network.get_free_port()
 
-            logger.info(f"Start serving model instance {mi.id} on port {mi.port}")
+            logger.info(f"Start serving model instance {mi.name} on port {mi.port}")
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,

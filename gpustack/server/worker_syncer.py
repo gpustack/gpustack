@@ -44,9 +44,11 @@ class WorkerSyncer:
             if not workers:
                 return
 
+            unknown_worker_names = []
             for worker in workers:
+                unknown_worker_names.append(worker.name)
                 worker.state = WorkerStateEnum.unknown
                 session.add(worker)
 
             await session.commit()
-            logger.debug(f"Marked {len(workers)} worker as unknown")
+            logger.debug(f"Marked worker {', '.join(unknown_worker_names)} as unknown")

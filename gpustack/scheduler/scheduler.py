@@ -141,7 +141,7 @@ class Scheduler:
         Args:
             item: ModelInstanceResourceClaim to schedule.
         """
-        logger.debug(f"Scheduling model instance {item.model_instance.id}")
+        logger.debug(f"Scheduling model instance {item.model_instance.name}")
 
         state_message = ""
         instance = item.model_instance
@@ -171,7 +171,7 @@ class Scheduler:
                     model_instance.state_message = state_message
 
                 await model_instance.update(session, model_instance)
-                logger.debug(f"No fit worker for model instance {model_instance.id}")
+                logger.debug(f"No fit worker for model instance {model_instance.name}")
             else:
                 # pick the highest offload layer, should scoring all the candidates later.
                 candidate: ModelInstanceScheduleCandidate = candidates[0]
@@ -187,6 +187,7 @@ class Scheduler:
                 model_instance.state = ModelInstanceStateEnum.scheduled
                 model_instance.state_message = ""
                 model_instance.worker_id = candidate.worker.id
+                model_instance.worker_name = candidate.worker.name
                 model_instance.worker_ip = candidate.worker.ip
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim
@@ -196,8 +197,8 @@ class Scheduler:
                 await model_instance.update(session, model_instance)
 
                 logger.debug(
-                    f"Scheduled model instance {model_instance.id} to node "
-                    f"{model_instance.worker_id} gpu {candidate.gpu_index}"
+                    f"Scheduled model instance {model_instance.name} to worker "
+                    f"{model_instance.worker_name} gpu {candidate.gpu_index}"
                 )
 
     async def _get_model_instance_schedule_candidates(

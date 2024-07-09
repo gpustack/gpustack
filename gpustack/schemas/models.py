@@ -97,6 +97,7 @@ class ComputedResourceClaim(BaseModel):
 class ModelInstanceBase(SQLModel, ModelSource):
     name: str
     worker_id: Optional[int] = None
+    worker_name: Optional[str] = None
     worker_ip: Optional[str] = None
     pid: Optional[int] = None
     port: Optional[int] = None
