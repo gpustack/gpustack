@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
+from sqlmodel import select
 
 from gpustack.api.exceptions import (
     InvalidException,
@@ -22,8 +23,14 @@ logger = logging.getLogger(__name__)
 
 @router.get("/models")
 async def list_models(session: SessionDep):
+    statement = (
+        select(Model)
+        .join(ModelInstance, Model.id == ModelInstance.model_id)
+        .where(ModelInstance.state == ModelInstanceStateEnum.running)
+        .distinct()
+    )
+    models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")
-    models = await Model.all(session)
     for model in models:
         result.data.append(
             OAIModel(
