@@ -1,0 +1,39 @@
+{
+    "name": "host4090",
+    "hostname": "host4090",
+    "ip": "192.168.50.3",
+    "labels": {},
+    "state": "Unknown",
+    "status": {
+        "memory": {
+            "total": 67183366144,
+            "utilization_rate": 5.905919020930682,
+            "is_unified_memory": false,
+            "used": 3967795200,
+            "allocated": 0
+        },
+        "gpu_devices": [
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
+                "name": "NVIDIA Device 2685 (VGA compatible)",
+                "vendor": "NVIDIA",
+                "index": 0,
+                "core": {
+                    "total": 14592,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 26015170560,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 650438837,
+                    "allocated": null
+                },
+                "temperature": 36.0
+            }
+        ]
+    },
+    "id": 2,
+    "created_at": "2024-07-05T02:17:42",
+    "updated_at": "2024-07-05T10:36:21"
+}

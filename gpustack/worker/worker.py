@@ -60,8 +60,8 @@ class Worker:
         if self._exporter_enabled:
             asyncio.create_task(self._exporter.start())
 
-        # Report the worker node status to the server periodically.
-        run_periodically_async(self._worker_manager.sync_worker_status, 1 * 60)
+        # Report the worker node status to the server every 30 seconds.
+        run_periodically_async(self._worker_manager.sync_worker_status, 30)
 
         # watch model instances and handle them.
         asyncio.create_task(self._serve_model_instances())

@@ -1,7 +1,7 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import logging
 import queue
-from typing import List
 from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -14,7 +14,11 @@ from gpustack.scheduler.policy import (
 )
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.schemas.workers import Worker
-from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    ModelInstanceStateEnum,
+)
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
 from gpustack.scheduler.calculator import (
@@ -83,28 +87,30 @@ class Scheduler:
         """
 
         async with AsyncSession(self._engine) as session:
-            instances = await ModelInstance.all_by_field(
-                session, "state", ModelInstanceStateEnum.pending
-            )
+            instances = await ModelInstance.all(session)
+            tasks = []
+            for instance in instances:
+                if self._should_schedule(instance):
+                    task = asyncio.create_task(
+                        self._process_calculate_model_resource_claim(instance)
+                    )
+                    tasks.append(task)
 
-        tasks = []
-        for instance in instances:
-            if self._should_schedule(instance):
-                task = asyncio.create_task(
-                    self._process_calculate_model_resource_claim(instance)
-                )
-                tasks.append(task)
-
-        await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks)
 
     async def _process_calculate_model_resource_claim(self, instance: ModelInstance):
         try:
             async with AsyncSession(self._engine) as session:
+                instance = await ModelInstance.one_by_id(session, instance.id)
+                instance.state = ModelInstanceStateEnum.analyzing
+                instance.state_message = "Analyzing model resource claim"
+                await instance.update(session, instance)
+
                 model = await Model.one_by_id(session, instance.model_id)
 
-            task_output = await calculate_model_resource_claim(instance, model)
+                task_output = await calculate_model_resource_claim(instance, model)
 
-            await self._queue.put(task_output)
+                await self._queue.put(task_output)
 
         except Exception as e:
             logger.error(f"Failed to calculate model resource claim: {e}")
@@ -116,9 +122,14 @@ class Scheduler:
             instance: ModelInstance to check.
         """
 
-        return (
-            instance.worker_id is None
-            and instance.state == ModelInstanceStateEnum.pending
+        return instance.worker_id is None and (
+            instance.state == ModelInstanceStateEnum.pending
+            or (
+                instance.state == ModelInstanceStateEnum.analyzing
+                and datetime.now(timezone.utc)
+                - instance.updated_at.replace(tzinfo=timezone.utc)
+                > timedelta(minutes=3)
+            )
         )
 
     async def _schedule_cycle(self):
@@ -150,14 +161,11 @@ class Scheduler:
 
         async with AsyncSession(self._engine) as session:
             workers = await Worker.all(session)
-
+            candidates = []
             if len(workers) != 0:
                 try:
-                    candidates = await self._get_model_instance_schedule_candidates(
-                        workers
-                    )
                     for policy in filterPolicies:
-                        candidates = await policy.filter(candidates)
+                        candidates = await policy.filter(workers)
                 except Exception as e:
                     state_message = f"Failed to filter workers with policies: {e}"
                     logger.error(state_message)
@@ -200,14 +208,3 @@ class Scheduler:
                     f"Scheduled model instance {model_instance.name} to worker "
                     f"{model_instance.worker_name} gpu {candidate.gpu_index}"
                 )
-
-    async def _get_model_instance_schedule_candidates(
-        self, workers: List[Worker]
-    ) -> List[ModelInstanceScheduleCandidate]:
-        """
-        Convert the workers to the candidates.
-        """
-        candidates = []
-        for worker in workers:
-            candidates.append(ModelInstanceScheduleCandidate(worker, None, None))
-        return candidates

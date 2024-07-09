@@ -84,6 +84,7 @@ class ModelInstanceStateEnum(str, Enum):
     scheduled = "Scheduled"
     error = "Error"
     downloading = "Downloading"
+    analyzing = "Analyzing"
 
 
 class ComputedResourceClaim(BaseModel):

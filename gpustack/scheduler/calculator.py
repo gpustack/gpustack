@@ -1,20 +1,23 @@
 import asyncio
+import logging
 import subprocess
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 from dataclasses_json import dataclass_json
 import platform
 
 
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
 from gpustack.utils.command import get_platform_command
-from gpustack.worker.downloaders import OllamaLibraryDownloader, HfDownloader
 from gpustack.utils.compat_importlib import pkg_resources
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass_json
 @dataclass
-class nonUMA:
+class memoryResource:
     ram: int
     vram: int
 
@@ -23,8 +26,8 @@ class nonUMA:
 @dataclass
 class memoryEstimate:
     offloadLayers: int
-    uma: int
-    nonUMA: nonUMA
+    uma: memoryResource
+    nonUMA: memoryResource
 
 
 @dataclass_json
@@ -57,7 +60,7 @@ class ModelInstanceResourceClaim:
         return False
 
 
-def _gguf_parser_command(model_url):
+def _gguf_parser_command(model: Model):
     command_map = {
         ("Windows", "amd64"): "gguf-parser-windows-amd64.exe",
         ("Darwin", "amd64"): "gguf-parser-darwin-universal",
@@ -78,8 +81,6 @@ def _gguf_parser_command(model_url):
     )
     execuable_command = [
         command_path,
-        "-url",
-        model_url,
         "-ctx-size",
         "-1",
         "-flash-attention",
@@ -90,6 +91,9 @@ def _gguf_parser_command(model_url):
         "-skip-model",
         "-json",
     ]
+
+    source_args = _gguf_parser_command_args_from_source(model)
+    execuable_command.extend(source_args)
     return execuable_command
 
 
@@ -103,8 +107,9 @@ async def calculate_model_resource_claim(
         model: Model to calculate the resource claim for.
     """
 
-    model_url = get_model_url(model)
-    command = _gguf_parser_command(model_url)
+    logger.info(f"Calculating resource claim for model instance {model_instance.id}")
+
+    command = _gguf_parser_command(model)
     try:
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -119,6 +124,13 @@ async def calculate_model_resource_claim(
 
         cmd_output = stdout.decode()
         claim = modelResoruceClaim.from_json(cmd_output)
+
+        logger.info(
+            f"Calculated resource claim for model instance {model_instance.id}, "
+            f"least: {claim.estimate.memory[0]},"
+            f"most: {claim.estimate.memory[len(claim.estimate.memory)-1]}"
+        )
+
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
 
     except subprocess.CalledProcessError as e:
@@ -132,45 +144,27 @@ async def calculate_model_resource_claim(
         raise e
 
 
-# arr is a sorted list from smallest to largest
-def binary_search(arr, target):
-    """
-    Binary search the target in the arr.
-    """
-    if len(arr) == 0:
-        return -1
-
-    if arr[0] > target:
-        return -1
-
-    if arr[-1] < target:
-        return len(arr) - 1
-
-    low, high = 0, len(arr) - 1
-
-    while low <= high:
-        mid = (low + high) // 2
-        if arr[mid] == target:
-            return mid
-        elif arr[mid] < target:
-            low = mid + 1
-        else:
-            high = mid - 1
-
-    return high
-
-
-def get_model_url(model: Model) -> str:
+def _gguf_parser_command_args_from_source(model: Model) -> List[str]:
     """
     Get the model url based on the model source.
     Args:
         model: Model to get the url for.
     """
     if model.source == SourceEnum.HUGGING_FACE:
-        return HfDownloader.model_url(
+        model_url = hf_model_url(
             repo_id=model.huggingface_repo_id, filename=model.huggingface_filename
         )
+
+        return ["-url", model_url]
     elif model.source == SourceEnum.OLLAMA_LIBRARY:
-        return OllamaLibraryDownloader.model_url(
-            model_name=model.ollama_library_model_name
-        )
+        return ["-ol-crawl", "-ol-model", model.ollama_library_model_name]
+    else:
+        raise ValueError(f"Unsupported source: {model.source}")
+
+
+def hf_model_url(repo_id: str, filename: Optional[str] = None) -> str:
+    _registry_url = "https://huggingface.co"
+    if filename is None:
+        return f"{_registry_url}/{repo_id}"
+    else:
+        return f"{_registry_url}/{repo_id}/resolve/main/{filename}"
