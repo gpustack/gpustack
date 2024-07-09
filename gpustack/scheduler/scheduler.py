@@ -102,9 +102,10 @@ class Scheduler:
         try:
             async with AsyncSession(self._engine) as session:
                 instance = await ModelInstance.one_by_id(session, instance.id)
-                instance.state = ModelInstanceStateEnum.analyzing
-                instance.state_message = "Analyzing model resource claim"
-                await instance.update(session, instance)
+                if instance.state != ModelInstanceStateEnum.analyzing:
+                    instance.state = ModelInstanceStateEnum.analyzing
+                    instance.state_message = "Analyzing model resource claim"
+                    await instance.update(session, instance)
 
                 model = await Model.one_by_id(session, instance.model_id)
 
