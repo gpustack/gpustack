@@ -34,6 +34,7 @@ httpx = {extras = ["socks"], version = "^0.27.0"}
 alembic = "^1.13.2"
 shellcheck-py = "^0.10.0.1"
 importlib-resources = "^6.4.0"
+validators = "^0.31.0"
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"

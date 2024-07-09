@@ -3,6 +3,7 @@ import secrets
 from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+import validators
 from gpustack.utils.network import get_first_non_loopback_ip
 
 
@@ -84,13 +85,19 @@ class Config(BaseSettings):
             self.worker_ip = get_first_non_loopback_ip()
 
     @model_validator(mode="after")
-    def check_ssl_files(self):
+    def check_all(self):
         if (self.ssl_keyfile and not self.ssl_certfile) or (
             self.ssl_certfile and not self.ssl_keyfile
         ):
             raise Exception(
                 'Both "ssl_keyfile" and "ssl_certfile" must be provided, or neither.'
             )
+
+        if self.server_url:
+            self.server_url = self.server_url.rstrip("/")
+            if validators.url(self.server_url) is not True:
+                raise Exception("Invalid server URL.")
+
         return self
 
     def init_database_url(self):
