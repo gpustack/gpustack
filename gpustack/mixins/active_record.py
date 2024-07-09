@@ -296,6 +296,7 @@ class ActiveRecordMixin:
             items = await cls.all(session_or_engine)
             for item in items:
                 yield Event(type=EventType.CREATED, data=item)
+            await session_or_engine.close()
         elif isinstance(session_or_engine, AsyncEngine):
             async with AsyncSession(session_or_engine) as session:
                 items = await cls.all(session)

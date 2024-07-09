@@ -166,7 +166,8 @@ class ResourceFitPolicy:
                 - sum(allocated.gpu_memory.values())
             )
 
-            # For UMA, we need to set the gpu memory to the minimum of the caculated with max allow gpu memory and the allocatable memory.
+            # For UMA, we need to set the gpu memory to the minimum of
+            # the caculated with max allow gpu memory and the allocatable memory.
             allocatable.gpu_memory[0] = min(
                 allocatable.memory, allocatable.gpu_memory[0]
             )

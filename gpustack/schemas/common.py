@@ -36,6 +36,9 @@ def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
     class PydanticJSONType(TypeDecorator, Generic[T]):
         impl = JSON()
 
+        # https://docs.sqlalchemy.org/en/20/core/type_api.html#sqlalchemy.types.ExternalType.cache_ok
+        cache_ok = True
+
         def __init__(self, json_encoder=json):
             self.json_encoder = json_encoder
             super(PydanticJSONType, self).__init__()

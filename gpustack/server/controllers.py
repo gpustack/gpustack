@@ -98,6 +98,9 @@ class ModelInstanceController:
                     return
 
                 model = await Model.one_by_id(session, model_instance.model_id)
+                if not model:
+                    return
+
                 instances = await ModelInstance.all_by_field(
                     session, "model_id", model.id
                 )

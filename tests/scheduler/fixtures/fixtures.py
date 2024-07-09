@@ -11,12 +11,16 @@ from gpustack.schemas.workers import (
 
 
 def llama3_8b_estimate_claim():
-    # gguf-parser-darwin-universal(0.2.1) -ol-crawl -ol-model llama3:8b --offload-layers=-1 --offload-layers-step=1 -ctx-size -1 -flash-attention -skip-tokenizer -skip-architecture -skip-model -json
+    # gguf-parser-darwin-universal(0.2.1) -ol-crawl -ol-model llama3:8b \
+    # --offload-layers=-1 --offload-layers-step=1 -ctx-size -1 \
+    # -flash-attention -skip-tokenizer -skip-architecture -skip-model -json
     return load_model_estimate_claim_from_file("llama3_8b_estimate_claim.json")
 
 
 def llama3_70b_estimate_claim():
-    # gguf-parser-darwin-universal(0.2.1) -ol-crawl -ol-model llama3:70b --offload-layers=-1 --offload-layers-step=1 -ctx-size -1 -flash-attention -skip-tokenizer -skip-architecture -skip-model -json
+    # gguf-parser-darwin-universal(0.2.1) -ol-crawl -ol-model llama3:70b \
+    # --offload-layers=-1 --offload-layers-step=1 -ctx-size -1 \
+    # -flash-attention -skip-tokenizer -skip-architecture -skip-model -json
     return load_model_estimate_claim_from_file("llama3_70b_estimate_claim.json")
 
 
