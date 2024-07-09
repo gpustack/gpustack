@@ -32,7 +32,10 @@ class Worker:
             worker_ip=cfg.worker_ip, clientset=clientset
         )
         self._serve_manager = ServeManager(
-            server_url=cfg.server_url, log_dir=cfg.log_dir, clientset=clientset
+            server_url=cfg.server_url,
+            clientset=clientset,
+            log_dir=cfg.log_dir,
+            data_dir=cfg.data_dir,
         )
 
         self._log_dir = cfg.log_dir

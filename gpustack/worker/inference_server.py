@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import platform
 import subprocess
 import sys
@@ -47,19 +48,25 @@ def time_decorator(func):
         return sync_wrapper
 
 
-def download_model(mi: ModelInstance) -> str:
+def download_model(mi: ModelInstance, cache_dir: Optional[str] = None) -> str:
     if mi.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.download(
             repo_id=mi.huggingface_repo_id,
             filename=mi.huggingface_filename,
+            cache_dir=os.path.join(cache_dir, "huggingface"),
         )
     elif mi.source == SourceEnum.OLLAMA_LIBRARY:
-        return OllamaLibraryDownloader.download(model_name=mi.ollama_library_model_name)
+        return OllamaLibraryDownloader.download(
+            model_name=mi.ollama_library_model_name,
+            cache_dir=os.path.join(cache_dir, "ollama"),
+        )
 
 
 class InferenceServer:
     @time_decorator
-    def __init__(self, clientset: ClientSet, mi: ModelInstance):
+    def __init__(
+        self, clientset: ClientSet, mi: ModelInstance, cache_dir: Optional[str] = None
+    ):
         self.hijack_tqdm_progress()
 
         self._clientset = clientset
@@ -71,7 +78,7 @@ class InferenceServer:
             }
             self._update_model_instance(mi.id, **patch_dict)
 
-            self._model_path = download_model(mi)
+            self._model_path = download_model(mi, cache_dir)
 
             patch_dict = {"state": ModelInstanceStateEnum.running}
             self._update_model_instance(mi.id, **patch_dict)

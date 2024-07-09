@@ -99,7 +99,7 @@ class HfDownloader:
 
 class OllamaLibraryDownloader:
     _registry_url = "https://registry.ollama.ai"
-    _cache_dir = os.path.expanduser("~/.cache/gpustack/models")
+    _default_cache_dir = "/var/lib/gpustack/cache/ollama"
 
     @staticmethod
     def download_blob(url: str, filename: str):
@@ -129,13 +129,17 @@ class OllamaLibraryDownloader:
         print(f"Downloaded {filename}")
 
     @classmethod
-    def download(cls, model_name: str) -> str:
+    def download(cls, model_name: str, cache_dir: Optional[str] = None) -> str:
         sanitized_filename = re.sub(r"[^a-zA-Z0-9]", "_", model_name)
-        if not os.path.exists(cls._cache_dir):
-            os.makedirs(cls._cache_dir)
+
+        if cache_dir is None:
+            cache_dir = cls._default_cache_dir
+
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
 
         # Check if the model is already downloaded
-        model_path = os.path.join(cls._cache_dir, sanitized_filename)
+        model_path = os.path.join(cache_dir, sanitized_filename)
         if os.path.exists(model_path):
             return model_path
 

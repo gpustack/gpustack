@@ -37,12 +37,15 @@ def signal_handler(signum, frame):
 
 
 class ServeManager:
-    def __init__(self, server_url: str, log_dir: str, clientset: ClientSet):
+    def __init__(
+        self, server_url: str, log_dir: str, clientset: ClientSet, data_dir: str
+    ):
         self._hostname = socket.gethostname()
         self._server_url = server_url
         self._serve_log_dir = f"{log_dir}/serve"
         self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
         self._clientset = clientset
+        self._cache_dir = os.path.join(data_dir, "cache")
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -103,7 +106,13 @@ class ServeManager:
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,
-                args=(mi, self._server_url, self._clientset.headers, log_file_path),
+                args=(
+                    mi,
+                    self._server_url,
+                    self._clientset.headers,
+                    log_file_path,
+                    self._cache_dir,
+                ),
             )
             process.daemon = False
             process.start()
@@ -126,7 +135,11 @@ class ServeManager:
 
     @staticmethod
     def serve_model_instance(
-        mi: ModelInstance, server_url: str, client_headers: dict, log_file_path: str
+        mi: ModelInstance,
+        server_url: str,
+        client_headers: dict,
+        log_file_path: str,
+        cache_dir: str,
     ):
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
         signal.signal(signal.SIGTERM, signal_handler)
@@ -137,7 +150,7 @@ class ServeManager:
         )
         with open(log_file_path, "a", buffering=1) as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                InferenceServer(clientset, mi).start()
+                InferenceServer(clientset, mi, cache_dir).start()
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
