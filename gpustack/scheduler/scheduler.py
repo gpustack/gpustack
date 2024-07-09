@@ -13,7 +13,7 @@ from gpustack.scheduler.policy import (
     SystemReservedResource,
 )
 from gpustack.scheduler.queue import AsyncUniqueQueue
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.models import (
     Model,
     ModelInstance,
@@ -161,7 +161,10 @@ class Scheduler:
         filterPolicies = [ResourceFitPolicy(estimate, self._system_reserved)]
 
         async with AsyncSession(self._engine) as session:
-            workers = await Worker.all(session)
+            workers = await Worker.all_by_field(
+                session, "state", WorkerStateEnum.running
+            )
+
             candidates = []
             if len(workers) != 0:
                 try:
