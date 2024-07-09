@@ -8,7 +8,7 @@ from argon2 import PasswordHasher
 ph = PasswordHasher()
 
 API_KEY_PREFIX = "gpustack"
-JWT_TOKEN_EXPIRE_MINUTES = 15
+JWT_TOKEN_EXPIRE_MINUTES = 120
 
 
 def verify_hashed_secret(hashed: Union[str, bytes], plain: Union[str, bytes]) -> bool:

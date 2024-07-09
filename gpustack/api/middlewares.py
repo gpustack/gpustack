@@ -114,8 +114,8 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
             try:
                 payload = jwt_manager.decode_jwt_token(token)
                 if payload:
-                    # Check if the token is about to expire (less than 5 minutes left)
-                    if payload['exp'] - time.time() < 5 * 60:
+                    # Check if the token is about to expire (less than 15 minutes left)
+                    if payload['exp'] - time.time() < 15 * 60:
                         new_token = jwt_manager.create_jwt_token(
                             username=payload['sub']
                         )
