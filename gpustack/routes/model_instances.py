@@ -24,7 +24,11 @@ router = APIRouter()
 
 @router.get("", response_model=ModelInstancesPublic)
 async def get_model_instances(
-    session: SessionDep, params: ListParamsDep, model_id: Optional[int] = None
+    session: SessionDep,
+    params: ListParamsDep,
+    model_id: Optional[int] = None,
+    worker_id: Optional[int] = None,
+    state: Optional[str] = None,
 ):
     fields = {}
     if params.query:
@@ -32,6 +36,12 @@ async def get_model_instances(
 
     if model_id:
         fields["model_id"] = model_id
+
+    if worker_id:
+        fields["worker_id"] = worker_id
+
+    if state:
+        fields["state"] = state
 
     if params.watch:
         return StreamingResponse(

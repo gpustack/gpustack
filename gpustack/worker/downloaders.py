@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import re
+from filelock import FileLock
 import requests
 from typing import List, Literal, Optional, Union
 import fnmatch
@@ -8,6 +10,9 @@ from pathlib import Path
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download, HfFileSystem
 from huggingface_hub.utils import validate_repo_id
+
+
+logger = logging.getLogger(__name__)
 
 
 class HfDownloader:
@@ -104,6 +109,7 @@ class OllamaLibraryDownloader:
     @staticmethod
     def download_blob(url: str, filename: str):
         temp_filename = filename + ".part"
+
         headers = {}
         if os.path.exists(temp_filename):
             existing_file_size = os.path.getsize(temp_filename)
@@ -147,14 +153,19 @@ class OllamaLibraryDownloader:
 
         # Check if the model is already downloaded
         model_path = os.path.join(cache_dir, sanitized_filename)
-        if os.path.exists(model_path):
+
+        lock_filename = model_path + ".lock"
+
+        logger.info("Retriving file lock.")
+        with FileLock(lock_filename):
+            if os.path.exists(model_path):
+                return model_path
+
+            blob_url = cls.model_url(model_name=model_name)
+            if blob_url is not None:
+                cls.download_blob(blob_url, model_path)
+
             return model_path
-
-        blob_url = cls.model_url(model_name=model_name)
-        if blob_url is not None:
-            cls.download_blob(blob_url, model_path)
-
-        return model_path
 
     @classmethod
     def model_url(cls, model_name: str) -> str:

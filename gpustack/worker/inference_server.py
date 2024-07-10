@@ -180,14 +180,34 @@ class InferenceServer:
                         (float(self.n) / float(self.total)) * 100, 2
                     )
                 }
-                server_self._update_model_instance(
-                    server_self._model_instance.id, **patch_dict
+                server_self._update_model_instance_set(
+                    server_self._model_instance, **patch_dict
                 )
             except Exception as e:
                 logger.error(f"Failed to update model instance: {e}")
 
         tqdm.__init__ = _new_init
         tqdm.update = _new_update
+
+    def _update_model_instance_set(self, mi: ModelInstance, **kwargs):
+        """
+        Update model instances of the same model and worker.
+        So that they can share the same download progress.
+        """
+
+        instances = self._clientset.model_instances.list(
+            {
+                "model_id": mi.model_id,
+                "worker_id": mi.worker_id,
+                "state": ModelInstanceStateEnum.downloading.value,
+            }
+        )
+
+        for instance in instances.items:
+            mi = ModelInstanceUpdate(**instance.model_dump())
+            for key, value in kwargs.items():
+                setattr(mi, key, value)
+            self._clientset.model_instances.update(id=instance.id, model_update=mi)
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
