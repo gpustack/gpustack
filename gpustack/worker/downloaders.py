@@ -118,7 +118,14 @@ class OllamaLibraryDownloader:
         chunk_size = 10 * 1024 * 1024  # 10MB
         with (
             open(temp_filename, mode) as file,
-            tqdm(total=total_size, initial=existing_file_size) as bar,
+            tqdm(
+                total=total_size,
+                initial=existing_file_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=os.path.basename(filename),
+            ) as bar,
         ):
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk:
