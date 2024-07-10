@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 from typing import List
 from fastapi import APIRouter
 from sqlalchemy import Integer
-from sqlmodel import select, func
+from sqlmodel import distinct, select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.dashboard import (
@@ -213,7 +213,7 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
         select(
             Model.id,
             Model.name,
-            func.count(ModelInstance.id).label('instance_count'),
+            func.count(distinct(ModelInstance.id)).label('instance_count'),
             func.sum(
                 func.coalesce(
                     func.cast(

@@ -64,11 +64,7 @@ class Worker:
             asyncio.create_task(self._exporter.start())
 
         # Report the worker node status to the server every 30 seconds.
-        run_periodically_in_thread(
-            self._worker_manager.sync_worker_status,
-            interval=30,
-            initial_delay=2,
-        )
+        run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
         # Monitor the processes of model instances every 60 seconds.
         run_periodically_in_thread(self._serve_manager.monitor_processes, 60)
         # Watch model instances with retry.
