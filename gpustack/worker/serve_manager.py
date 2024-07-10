@@ -69,15 +69,11 @@ class ServeManager:
         if not hasattr(self, "_worker_id"):
             self._get_current_worker_id()
 
-        while True:
-            try:
-                self._clientset.model_instances.watch(
-                    callback=self._handle_model_instance_event
-                )
-            except Exception as e:
-                logger.error(f"Failed to watch model instances: {e}")
-            # Retry after 5 seconds.
-            time.sleep(5)
+        logger.debug("Started watching model instances.")
+
+        self._clientset.model_instances.watch(
+            callback=self._handle_model_instance_event
+        )
 
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance(**event.data)
@@ -172,14 +168,12 @@ class ServeManager:
 
     def monitor_processes(self):
         logger.debug("Started serving process monitor.")
-        interval = 60
-        while True:
-            time.sleep(interval)
-            for id in list(self._serving_model_instances.keys()):
-                process = self._serving_model_instances[id]
-                if not process.is_alive():
-                    exitcode = process.exitcode
-                    if exitcode != 0:
-                        print(f"Process {process.pid} exited with exitcode {exitcode}")
-                    logger.info(f"Model instance {id} has stopped.")
-                    self._serving_model_instances.pop(id)
+
+        for id in list(self._serving_model_instances.keys()):
+            process = self._serving_model_instances[id]
+            if not process.is_alive():
+                exitcode = process.exitcode
+                if exitcode != 0:
+                    print(f"Process {process.pid} exited with exitcode {exitcode}")
+                logger.info(f"Model instance {id} has stopped.")
+                self._serving_model_instances.pop(id)

@@ -13,7 +13,7 @@ from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
-from gpustack.utils.task import run_periodically_async
+from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.logs import log_generator
 
@@ -64,25 +64,18 @@ class Worker:
             asyncio.create_task(self._exporter.start())
 
         # Report the worker node status to the server every 30 seconds.
-        run_periodically_async(self._worker_manager.sync_worker_status, 30)
-
-        # watch model instances and handle them.
-        asyncio.create_task(self._serve_model_instances())
+        run_periodically_in_thread(
+            self._worker_manager.sync_worker_status,
+            interval=30,
+            initial_delay=2,
+        )
+        # Monitor the processes of model instances every 60 seconds.
+        run_periodically_in_thread(self._serve_manager.monitor_processes, 60)
+        # Watch model instances with retry.
+        run_periodically_in_thread(self._serve_manager.watch_model_instances, 5)
 
         # Start the worker server to expose APIs.
         await self._serve_apis()
-
-    async def _serve_model_instances(self):
-        logger.info("Start serving model instances.")
-
-        while True:
-            await self._do_serve_model_instances()
-            await asyncio.sleep(5)  # rewatch if it fails
-
-    async def _do_serve_model_instances(self):
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._serve_manager.watch_model_instances)
-        await loop.run_in_executor(None, self._serve_manager.monitor_processes)
 
     async def _serve_apis(self):
         """
@@ -112,4 +105,7 @@ class Worker:
         setup_logging()
         logger.info(f"Serving worker APIs on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
-        await server.serve()
+        try:
+            await server.serve()
+        finally:
+            logger.info("Worker stopped.")
