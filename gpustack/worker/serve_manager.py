@@ -69,14 +69,15 @@ class ServeManager:
         if not hasattr(self, "_worker_id"):
             self._get_current_worker_id()
 
-        try:
-            self._clientset.model_instances.watch(
-                callback=self._handle_model_instance_event
-            )
-        except Exception as e:
-            logger.error(f"Failed to watch model instances: {e}")
-        finally:
-            logger.info("Stopped watching model instances.")
+        while True:
+            try:
+                self._clientset.model_instances.watch(
+                    callback=self._handle_model_instance_event
+                )
+            except Exception as e:
+                logger.error(f"Failed to watch model instances: {e}")
+            # Retry after 5 seconds.
+            time.sleep(5)
 
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance(**event.data)
