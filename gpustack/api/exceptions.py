@@ -53,11 +53,14 @@ ServiceUnavailableException = http_exception_factory(
 )
 
 
-def raise_if_response_error(response: httpx.Response):
+def raise_if_response_error(response: httpx.Response):  # noqa: C901
     if response.status_code < status.HTTP_400_BAD_REQUEST:
         return
 
-    error = ErrorResponse.model_validate(response.json())
+    try:
+        error = ErrorResponse.model_validate(response.json())
+    except Exception:
+        raise HTTPException(response.status_code, "Unknown", response.text)
 
     if response.status_code == status.HTTP_404_NOT_FOUND:
         raise NotFoundException(error.message)
