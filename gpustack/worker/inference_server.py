@@ -72,6 +72,7 @@ class InferenceServer:
         self._clientset = clientset
         self._model_instance = mi
         try:
+            self._until_model_instance_initializing()
             patch_dict = {
                 "download_progress": 0,
                 "state": ModelInstanceStateEnum.downloading,
@@ -208,6 +209,15 @@ class InferenceServer:
             for key, value in kwargs.items():
                 setattr(mi, key, value)
             self._clientset.model_instances.update(id=instance.id, model_update=mi)
+
+    def _until_model_instance_initializing(self):
+        for _ in range(5):
+            mi = self._clientset.model_instances.get(id=self._model_instance.id)
+            if mi.state == ModelInstanceStateEnum.initializing:
+                return
+            time.sleep(1)
+
+        raise Exception("Timeout waiting for model instance to be initializing.")
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
