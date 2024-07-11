@@ -104,7 +104,7 @@ class Scheduler:
                 instance = await ModelInstance.one_by_id(session, instance.id)
                 if instance.state != ModelInstanceStateEnum.analyzing:
                     instance.state = ModelInstanceStateEnum.analyzing
-                    instance.state_message = "Analyzing model resource claim"
+                    instance.state_message = "Evaluating resource requirements."
                     await instance.update(session)
 
                 model = await Model.one_by_id(session, instance.model_id)
@@ -186,13 +186,15 @@ class Scheduler:
             model_instance = await ModelInstance.one_by_id(session, instance.id)
             if len(candidates) == 0:
                 # update model instance.
-                model_instance.state = ModelInstanceStateEnum.pending
-                model_instance.state_message = "No fit worker"
+                model_instance.state = ModelInstanceStateEnum.error
+                model_instance.state_message = "No suitable workers."
                 if state_message != "":
                     model_instance.state_message = state_message
 
                 await model_instance.update(session, model_instance)
-                logger.debug(f"No fit worker for model instance {model_instance.name}")
+                logger.debug(
+                    f"No suitable workers for model instance {model_instance.name}"
+                )
             else:
                 # pick the highest offload layer, should scoring all the candidates later.
                 candidate: ModelInstanceScheduleCandidate = candidates[0]
