@@ -128,7 +128,7 @@ async def calculate_model_resource_claim(
         logger.info(
             f"Calculated resource claim for model instance {model_instance.name}, "
             f"least: {claim.estimate.memory[0]}, "
-            f"most: {claim.estimate.memory[len(claim.estimate.memory)-1]}"
+            f"most: {claim.estimate.memory[len(claim.estimate.memory) - 1]}"
         )
 
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
