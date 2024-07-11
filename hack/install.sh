@@ -83,7 +83,7 @@ function download_ui() {
 }
 
 function download_gguf_parser() {
-    local version="v0.2.1"
+    local version="v0.2.2"
 
     local gguf_parser_dir="${THIRD_PARTY_DIR}/gguf-parser"
     mkdir -p "${gguf_parser_dir}"
@@ -109,7 +109,7 @@ function download_gguf_parser() {
 
 
 function download_llama_box() {
-    local version="v0.0.7"
+    local version="v0.0.9"
 
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"

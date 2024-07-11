@@ -82,7 +82,8 @@ def _gguf_parser_command(model: Model):
     execuable_command = [
         command_path,
         "-ctx-size",
-        "-1",
+        "8192",
+        "-in-max-ctx-size",
         "-flash-attention",
         "-offload-layers-step",
         "1",
