@@ -1,6 +1,6 @@
 import random
 import socket
-import netifaces
+import psutil
 
 
 def normalize_route_path(path: str) -> str:
@@ -15,14 +15,13 @@ def normalize_route_path(path: str) -> str:
 
 def get_first_non_loopback_ip():
     """
-    Get the first non-loopback IP address of the machine.
+    Get the first non-loopback IP address of the machine using psutil.
     """
 
-    for interface in netifaces.interfaces():
-        addresses = netifaces.ifaddresses(interface)
-        if netifaces.AF_INET in addresses:
-            for link in addresses[netifaces.AF_INET]:
-                ip_address = link["addr"]
+    for _, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == socket.AF_INET:
+                ip_address = addr.address
                 if not ip_address.startswith("127.") and not ip_address.startswith(
                     "169.254."
                 ):
