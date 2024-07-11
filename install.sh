@@ -97,8 +97,8 @@ check_python() {
   fi
   
   PYTHON_VERSION=$(python3 -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)")
-  if [ "$PYTHON_VERSION" -lt 39 ]; then
-    fatal "Python version is less than 3.9. Please upgrade Python to at least version 3.9."
+  if [ "$PYTHON_VERSION" -lt 40 ]; then
+    fatal "Python version is less than 3.10. Please upgrade Python to at least version 3.10."
   fi
 
   if ! command -v pipx &> /dev/null; then
