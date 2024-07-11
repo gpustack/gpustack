@@ -99,13 +99,13 @@ class Scheduler:
             await asyncio.gather(*tasks)
 
     async def _process_calculate_model_resource_claim(self, instance: ModelInstance):
-        try:
-            async with AsyncSession(self._engine) as session:
+        async with AsyncSession(self._engine) as session:
+            try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
                 if instance.state != ModelInstanceStateEnum.analyzing:
                     instance.state = ModelInstanceStateEnum.analyzing
                     instance.state_message = "Analyzing model resource claim"
-                    await instance.update(session, instance)
+                    await instance.update(session)
 
                 model = await Model.one_by_id(session, instance.model_id)
 
@@ -113,8 +113,17 @@ class Scheduler:
 
                 await self._queue.put(task_output)
 
-        except Exception as e:
-            logger.error(f"Failed to calculate model resource claim: {e}")
+            except Exception as e:
+                try:
+                    instance.state = ModelInstanceStateEnum.error
+                    instance.state_message = (
+                        f"Failed to calculate model resource claim: {e}"
+                    )
+                    await instance.update(session)
+                except Exception as ue:
+                    logger.error(
+                        f"Failed to update model instance: {ue}. Original error: {e}"
+                    )
 
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """
