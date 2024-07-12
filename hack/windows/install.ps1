@@ -55,33 +55,40 @@ function Get-FastFetch {
 function Get-UI {
     $defaultTag = "latest"
     $uiPath = Join-Path -Path $ROOT_DIR -ChildPath "gpustack/ui"
-    $tmpUIPath = Join-Path -Path $uiPath -ChildPath "tmp"
+    $tmpPath = Join-Path -Path $uiPath -ChildPath "tmp"
+    $tmpUIPath = Join-Path -Path $tmpPath -ChildPath "ui"
     $tag = "latest"
 
-    Remove-Item -Recurse -Force $uiPath -ErrorAction Ignore
-    New-Item -ItemType Directory -Path (Join-Path -Path $tmpUIPath -ChildPath "ui") | Out-Null
+    $null = Remove-Item -Recurse -Force $uiPath -ErrorAction Ignore
+    $null = New-Item -ItemType Directory -Path $tmpUIPath
 
     GPUStack.Log.Info "downloading UI assets"
 
     try {
-        Invoke-WebRequest -Uri "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$tag.tar.gz" -OutFile "$tmpUIPath/ui.tar.gz" -UseBasicParsing
-        tar -xzf "$tmpUIPath/ui.tar.gz" -C "$tmpUIPath/ui"
+        Invoke-WebRequest -Uri "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$tag.tar.gz" -OutFile "$tmpPath/ui.tar.gz" -UseBasicParsing
+
+        # For git action's bug, can't use tar directly.
+        # https://github.com/julia-actions/setup-julia/issues/205
+        & "$env:WINDIR/System32/tar" -xzf "$tmpPath/ui.tar.gz" -C "$tmpUIPath"
     } catch {
-        if ($tag -match "^v([0-9]+)\.([0-9]+)(\.[0-9]+)?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$") {
-            GPUStack.Log.Fatal "failed to download '$tag' UI archive: $($_.Exception.Message)"
+        GPUStack.Log.Fatal "failed to download '$tag' UI archive: $($_.Exception.Message)"
+
+        if (-eq $tag $defaultTag) {
+            GPUStack.Log.Info "return"
+            return
         }
 
         GPUStack.Log.Warn "failed to download '$tag' UI archive, fallback to '$defaultTag' UI archive"
 
         try {
-            Invoke-WebRequest -Uri "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$defaultTag.tar.gz" -OutFile "$tmpUIPath/ui.tar.gz" -UseBasicParsing
-            tar -xzf "$tmpUIPath/ui.tar.gz" -C "$tmpUIPath/ui"
+            Invoke-WebRequest -Uri "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$defaultTag.tar.gz" -OutFile "$tmpPath/ui.tar.gz" -UseBasicParsing
+            tar -xzf "$tmpPath/ui.tar.gz" -C "$tmpUIPath"
         } catch {
             GPUStack.Log.Fatal "failed to download '$defaultTag' UI archive: : $($_.Exception.Message)"
         }
     }
 
-    Copy-Item -Path "$tmpUIPath/ui/dist/*" -Destination $uiPath -Recurse
+    Copy-Item -Path "$tmpUIPath/dist/*" -Destination $uiPath -Recurse
     Remove-Item -Recurse -Force $tmpUIPath -ErrorAction Ignore
 }
 
@@ -113,12 +120,12 @@ function Get-GGUFParser {
 }
 
 function Get-LlamaBox {
-    $version = "v0.0.5"
+    $version = "v0.0.7"
     $llamaBoxDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "llama-box"
     $llamaBoxTmpDir = Join-Path -Path $llamaBoxDir -ChildPath "tmp"
 
     # Include more platforms if needed
-    $platforms = @("windows-amd64-cuda-12.5")
+    $platforms = @("windows-amd64-cuda-12.5-s")
 
     foreach ($platform in $platforms) {
         $binFile = "llama-box.exe"

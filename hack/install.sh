@@ -24,8 +24,11 @@ function download_fastfetch() {
     local fastfetch_dir="${THIRD_PARTY_DIR}/fastfetch"
     local fastfetch_tmp_dir="${fastfetch_dir}/tmp"
 
-
-    platforms=("linux-amd64" "linux-aarch64" "macos-universal")
+    if gpustack::util::is_darwin; then
+      platforms=("macos-universal")
+    elif gpustack::util::is_linux; then
+      platforms=("linux-amd64" "linux-aarch64")
+    fi
 
     for platform in "${platforms[@]}"; do
       local target_file="${fastfetch_dir}/fastfetch-${platform}"
@@ -88,7 +91,11 @@ function download_gguf_parser() {
     local gguf_parser_dir="${THIRD_PARTY_DIR}/gguf-parser"
     mkdir -p "${gguf_parser_dir}"
 
-    platforms=("linux-amd64" "linux-arm64" "darwin-universal")
+    if gpustack::util::is_darwin; then
+      platforms=("darwin-universal")
+    elif gpustack::util::is_linux; then
+      platforms=("linux-amd64" "linux-arm64")
+    fi
 
     for platform in "${platforms[@]}"; do
       local target_file="${gguf_parser_dir}/gguf-parser-${platform}"
@@ -114,8 +121,11 @@ function download_llama_box() {
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"
     
-
-    platforms=("darwin-amd64-metal" "darwin-arm64-metal" "linux-amd64-cuda-12.5-s")
+    if gpustack::util::is_darwin; then
+      platforms=("darwin-amd64-metal" "darwin-arm64-metal")
+    elif gpustack::util::is_linux; then
+      platforms=("linux-amd64-cuda-12.5-s")
+    fi
 
     for platform in "${platforms[@]}"; do
       local target_file="${llama_box_dir}/llama-box-${platform%-s}" # cut off the suffix

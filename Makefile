@@ -1,6 +1,6 @@
 # Detect operating system
 ifeq ($(OS),Windows_NT)
-    PLATFORM_SHELL := pwsh
+    PLATFORM_SHELL := powershell
     SCRIPT_EXT := .ps1
     SCRIPT_DIR := hack/windows
 else
@@ -19,7 +19,7 @@ $(eval $(rest_args):;@:)
 
 # List targets based on script extension and directory
 ifeq ($(OS),Windows_NT)
-	targets := $(shell powershell -ExecutionPolicy RemoteSigned -Command "Get-ChildItem -Path $(curr_dir)/$(SCRIPT_DIR) | Where-Object {$$_.Name -match '$(SCRIPT_EXT)$$'} | ForEach-Object { $$_ -replace '$(SCRIPT_EXT)$$', '' }")
+    targets := $(shell powershell -ExecutionPolicy RemoteSigned -Command "Get-ChildItem -Path $(curr_dir)/$(SCRIPT_DIR) -Filter *$(SCRIPT_EXT) | Select-Object -ExpandProperty BaseName")
 else
 	targets := $(shell ls $(curr_dir)/$(SCRIPT_DIR) | grep $(SCRIPT_EXT)$$ | sed 's/$(SCRIPT_EXT)//g')
 endif
