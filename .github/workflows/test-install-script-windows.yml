@@ -4,9 +4,9 @@ on:
   push:
     branches:
       - feat/12
-    paths:
-      - "install.ps1"
-      - ".github/workflows/install-script-windows.yml"
+    # paths:
+    #   - "install.ps1"
+    #   - ".github/workflows/install-script-windows.yml"
   pull_request:
     branches:
       - main
@@ -67,8 +67,6 @@ jobs:
           ./install.ps1
 
           nssm dump GPUSTack
-
-          Start-Sleep -s 20
 
           gpustack start --port 8080
 
