@@ -31,9 +31,6 @@ async def get_model_instances(
     state: Optional[str] = None,
 ):
     fields = {}
-    if params.query:
-        fields = {"name": params.query}
-
     if model_id:
         fields["model_id"] = model_id
 
@@ -45,7 +42,8 @@ async def get_model_instances(
 
     if params.watch:
         return StreamingResponse(
-            ModelInstance.streaming(session, fields), media_type="text/event-stream"
+            ModelInstance.streaming(session, fields=fields),
+            media_type="text/event-stream",
         )
 
     return await ModelInstance.paginated_by_query(

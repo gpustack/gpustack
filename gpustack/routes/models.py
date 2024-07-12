@@ -22,19 +22,20 @@ router = APIRouter()
 
 
 @router.get("", response_model=ModelsPublic)
-async def get_models(session: SessionDep, params: ListParamsDep):
-    fields = {}
-    if params.query:
-        fields = {"name": params.query}
+async def get_models(session: SessionDep, params: ListParamsDep, search: str = None):
+    fuzzy_fields = {}
+    if search:
+        fuzzy_fields = {"name": search}
 
     if params.watch:
         return StreamingResponse(
-            Model.streaming(session, fields), media_type="text/event-stream"
+            Model.streaming(session, fuzzy_fields=fuzzy_fields),
+            media_type="text/event-stream",
         )
 
     return await Model.paginated_by_query(
         session=session,
-        fields=fields,
+        fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
     )

@@ -23,7 +23,7 @@ async def get_api_keys(
 
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(session, fields),
+            ApiKey.streaming(session, fields=fields),
             media_type="text/event-stream",
         )
 

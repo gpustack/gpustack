@@ -104,7 +104,12 @@ class ActiveRecordMixin:
 
     @classmethod
     async def paginated_by_query(
-        cls, session: AsyncSession, fields: dict, page: int, per_page: int
+        cls,
+        session: AsyncSession,
+        fields: Optional[dict] = None,
+        fuzzy_fields: Optional[dict] = None,
+        page: int = 1,
+        per_page: int = 100,
     ) -> PaginatedList[SQLModel]:
         """
         Return a paginated list of objects match the given fields and values.
@@ -112,20 +117,26 @@ class ActiveRecordMixin:
         """
 
         statement = select(cls)
-        for key, value in fields.items():
+        for key, value in (fields or {}).items():
             statement = statement.where(col(getattr(cls, key)) == value)
+
+        for key, value in (fuzzy_fields or {}).items():
+            column = getattr(cls, key)
+            statement = statement.where(col(column).like(f"%{value}%"))
 
         if page is not None and per_page is not None:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
-        result = await session.exec(statement)
-        items = result.all()
+        items = (await session.exec(statement)).all()
 
-        statement = select(func.count(cls.id))
-        for key, value in fields.items():
-            statement = statement.where(col(getattr(cls, key)) == value)
+        count_statement = select(func.count(cls.id))
+        for key, value in (fields or {}).items():
+            count_statement = count_statement.where(col(getattr(cls, key)) == value)
 
-        result = await session.exec(statement)
-        count = result.one()
+        for key, value in (fuzzy_fields or {}).items():
+            column = getattr(cls, key)
+            count_statement = count_statement.where(col(column).like(f"%{value}%"))
+
+        count = (await session.exec(count_statement)).one()
         total_page = math.ceil(count / per_page)
         pagination = Pagination(
             page=page,
@@ -316,12 +327,22 @@ class ActiveRecordMixin:
 
     @classmethod
     async def streaming(
-        cls, session: AsyncSession, fields: Optional[dict] = None
+        cls,
+        session: AsyncSession,
+        fields: Optional[dict] = None,
+        fuzzy_fields: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
         async for event in cls.subscribe(session):
             skip_event = False
             for key, value in (fields or {}).items():
                 if getattr(event.data, key) != value:
+                    skip_event = True
+                    break
+            if skip_event:
+                continue
+
+            for key, value in (fuzzy_fields or {}).items():
+                if value not in str(getattr(event.data, key, "")):
                     skip_event = True
                     break
             if skip_event:
