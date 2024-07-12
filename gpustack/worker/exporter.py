@@ -7,8 +7,6 @@ import uvicorn
 import logging
 from fastapi import FastAPI
 
-from gpustack.logging import setup_logging
-
 logger = logging.getLogger(__name__)
 
 
@@ -105,9 +103,14 @@ class MetricExporter(Collector):
             labels=filesystem_labels,
         )
 
-        status = self._collector.collect().status
-        if status is None:
-            logger.error("Failed to get worker node status.")
+        try:
+            worker = self._collector.collect()
+            status = worker.status
+            if status is None:
+                logger.error("Empty worker node status from collector.")
+                return
+        except Exception as e:
+            logger.error(f"Failed to get worker node status for metrics exporter: {e}")
             return
 
         # system
@@ -242,8 +245,6 @@ class MetricExporter(Collector):
             access_log=False,
             log_level="error",
         )
-
-        setup_logging()
 
         logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
