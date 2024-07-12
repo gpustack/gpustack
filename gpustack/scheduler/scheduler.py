@@ -6,7 +6,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from gpustack.logging import setup_logging
 from gpustack.scheduler.policy import (
     ModelInstanceScheduleCandidate,
     ResourceFitPolicy,
@@ -56,7 +55,6 @@ class Scheduler:
         """
         Start the scheduler.
         """
-        setup_logging()
 
         # scheduler queue.
         asyncio.create_task(self._schedule_cycle())

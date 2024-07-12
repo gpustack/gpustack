@@ -271,14 +271,14 @@ class WorkerStatusCollector:
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=True)
             output = result.stdout
+            logger.debug(f"Fastfetch output: {output}")
+
             parsed_json = json.loads(output)
             return parsed_json
-        except json.JSONDecodeError as e:
-            e.add_note("failed to parse the output of " + command.__str__())
-            raise
         except Exception as e:
-            e.add_note("failed to execute and parse the output of " + command.__str__())
-            raise e
+            raise Exception(
+                f"Failed to execute and parse the output of {command.__str__()}: {e}"
+            )
 
     def _fastfetch_command(self):
         command_map = {
@@ -297,29 +297,31 @@ class WorkerStatusCollector:
             )
 
         with pkg_resources.path(
-            "gpustack.third_party.bin.fastfetch", command
-        ) as executable_path:
-            os.chmod(executable_path, 0o755)
-
-        with pkg_resources.path(
             "gpustack.third_party.config.fastfetch", "config.jsonc"
         ) as config_path:
             config_file_path = str(config_path)
 
-        # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true \
-        # --format json --config ${path}/config.jsonc
-        executable_command = [
-            str(executable_path),
-            "--gpu-driver-specific",
-            "true",
-            "--gpu-temp",
-            "true",
-            "--format",
-            "json",
-            "--config",
-            config_file_path,
-        ]
-        return executable_command
+        with pkg_resources.path(
+            "gpustack.third_party.bin.fastfetch", command
+        ) as executable_path:
+
+            if platform.system() not in ["Windows"]:
+                os.chmod(executable_path, 0o755)
+
+            # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true \
+            # --format json --config ${path}/config.jsonc
+            executable_command = [
+                str(executable_path),
+                "--gpu-driver-specific",
+                "true",
+                "--gpu-temp",
+                "true",
+                "--format",
+                "json",
+                "--config",
+                config_file_path,
+            ]
+            return executable_command
 
     def _get_value(self, input: dict, *keys):
         current_value = input
