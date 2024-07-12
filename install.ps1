@@ -336,7 +336,7 @@ function Install-Python {
     if (-not (Get-Command py40on -ErrorAction SilentlyContinue)) {
         try {
             Log-Info "Installing Python..."
-            choco install python --version=3.10.11 -y
+            $null = choco install python --version=3.10.11 -y
             Refresh-ChocolateyProfile
             Log-Info "Python installed successfully."
         }
