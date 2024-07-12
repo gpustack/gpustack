@@ -3,7 +3,7 @@ name: Install Script Linux
 on:
   push:
     branches:
-      - main
+      - feat/12
     # paths:
     #   - "install.sh"
     #   - ".github/workflows/install-script.yml"
@@ -79,7 +79,7 @@ jobs:
 
           echo "${{ runner.arch }}"
           echo "INSTALL_PACKAGE_SPEC: $INSTALL_PACKAGE_SPEC"
-          INSTALL_PACKAGE_SPEC=$(echo dist/*.whl) ./install.sh
+          ./install.sh
 
       - name: Verify installation
         run: |
