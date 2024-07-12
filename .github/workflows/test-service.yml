@@ -24,8 +24,11 @@ jobs:
       - name: CI
         shell: powershell
         run: |
-          pip install pypiserver
-          nssm install pypiserver
+          $currentDir = Get-Location
+          $exePath = Join-Path -Path $currentDir -ChildPath "test.bat"
+
+          pip install pypiserver 
+          nssm install pypiserver $exePath
           nssm start pypiserver
           nssm dump pyptiserver
           nssm status pypiserver
