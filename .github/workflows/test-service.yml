@@ -1,0 +1,49 @@
+name: Install Script Windows
+
+on:
+  push:
+    branches:
+      - feat/12
+  workflow_dispatch: {}
+
+jobs:
+  windows-amd64-build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [X64]
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: "3.10"
+
+      - name: CI
+        shell: powershell
+        run: |
+          pip install pypiserver
+          nssm install pypiserver
+          nssm start pypiserver
+          nssm dump pyptiserver
+          nssm status pypiserver
+
+          $uri = "http://127.0.0.1:8080"
+          $maxRetries = 5
+          $retryDelaySeconds = 2
+
+          for ($i = 0; $i -lt $maxRetries; $i++) {
+              try {
+                  $response = Invoke-WebRequest -Uri $uri -ErrorAction Stop
+                  Write-Host ": $($response.StatusCode)"
+                  break
+              } catch {
+                  Write-Host "request failed，retrying（$($i + 1) times...）"
+                  Start-Sleep -Seconds $retryDelaySeconds
+              }
+          }
+          if ($i -eq $maxRetries) {
+              Write-Host "request last error: $($Error[0].Exception.Message)"
+          }

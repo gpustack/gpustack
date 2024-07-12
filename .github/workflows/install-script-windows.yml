@@ -3,7 +3,7 @@ name: Install Script Windows
 on:
   push:
     branches:
-      - feat/12
+      - main
     paths:
       - "install.ps1"
       - ".github/workflows/install-script-windows.yml"
