@@ -65,7 +65,27 @@ jobs:
           $env:INSTALL_PACKAGE_SPEC = [System.IO.Path]::Combine("dist", $env:whlPackageName)   
           Write-Host "INSTALL_PACKAGE_SPEC: $env:INSTALL_PACKAGE_SPEC"          
           ./install.ps1
-          nssm
+
+          nssm dump GPUSTack
+
+          Start-Sleep -s 20
+
+          $appDataPath = $env:APPDATA
+          $gpustackDirectoryName = "gpustack"
+          $gpustackDirectoryPath = Join-Path -Path $appDataPath -ChildPath $gpustackDirectoryName
+          Get-ChildItem -Path  $gpustackDirectoryPath
+
+          $gpustackLogDirectoryPath = Join-Path -Path $gpustackDirectoryPath -ChildPath "log"
+
+          Get-ChildItem -Path  $gpustackLogDirectoryPath
+
+          $gpustackStdoutLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack_stdout.log"
+          $gpustackStderrLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack_stderr.log"
+          Get-Content -Path $gpustackStderrLogPath -Tail 200
+          Write-Host "-------------------------"
+          Write-Host "-------------------------"
+          Write-Host "-------------------------"
+          Get-Content -Path $gpustackStdoutLogPath -Tail 200
 
       - name: Verify installation
         run: |
@@ -87,18 +107,3 @@ jobs:
           if ($i -eq $maxRetries) {
               Write-Host "request last error: $($Error[0].Exception.Message)"
           }
-
-          nssm dump GPUSTack
-
-          $appDataPath = $env:APPDATA
-          $gpustackDirectoryName = "gpustack"
-          $gpustackDirectoryPath = Join-Path -Path $appDataPath -ChildPath $gpustackDirectoryName
-
-          $gpustackLogDirectoryPath = Join-Path -Path $gpustackDirectoryPath -ChildPath "log"
-          $gpustackStdoutLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack_stdout.log"
-          $gpustackStderrLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack_stderr.log"
-          Get-Content -Path $gpustackStderrLogPath -Tail 200
-          Write-Host "-------------------------"
-          Write-Host "-------------------------"
-          Write-Host "-------------------------"
-          Get-Content -Path $gpustackStdoutLogPath -Tail 200

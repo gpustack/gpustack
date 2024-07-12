@@ -240,16 +240,16 @@ function Get-Arg {
         $envList += "GPUSTACK_DISABLE_WORKER=true"
     }
 
-    if ($SystemReservedMemory -or $SystemReservedGPUMemory) {
-        $reserved = @{
-            memory     = $SystemReservedMemory
-            gpu_memory = $SystemReservedGPUMemory
-        }
+    # if ($SystemReservedMemory -or $SystemReservedGPUMemory) {
+    #     $reserved = @{
+    #         memory     = $SystemReservedMemory
+    #         gpu_memory = $SystemReservedGPUMemory
+    #     }
 
-        $jsonString = $reserved | ConvertTo-Json -Compress
-        $escapedJsonString = $jsonString -replace '"', '\`"'
-        $envList += "GPUSTACK_SYSTEM_RESERVED=`"$escapedJsonString`""
-    }
+    #     $jsonString = $reserved | ConvertTo-Json -Compress
+    #     $escapedJsonString = $jsonString -replace '"', '\`"'
+    #     $envList += "GPUSTACK_SYSTEM_RESERVED=`"$escapedJsonString`""
+    # }
 
     if ($SSLKeyFile) {
         $envList += "GPUSTACK_SSL_KEY_FILE=$SSLKeyFile"
@@ -478,14 +478,14 @@ function Setup-GPUStackService {
         Log-Info "Starting ${serviceName} service..."
         $null = nssm start $serviceName -y
 
-        # Wait for the service to start for 120 seconds.
-        $startTime = Get-Date
-        while ((nssm status $serviceName) -ne 'SERVICE_RUNNING' -and ((Get-Date) - $startTime).TotalSeconds -lt 120) {
-            Log-Info "Waiting for $serviceName service to start."
-            Start-Sleep -s 5
-        }
+        # Wait for the service to start for 60 seconds.
+        # $startTime = Get-Date
+        # while ((nssm status $serviceName) -ne 'SERVICE_RUNNING' -and ((Get-Date) - $startTime).TotalSeconds -lt 60) {
+        #     Log-Info "Waiting for $serviceName service to start."
+        #     Start-Sleep -s 5
+        # }
 
-        Log-Info "${serviceName} service created and started successfully."
+        # Log-Info "${serviceName} service created and started successfully."
     }
     catch {
         Log-Fatal "Failed to setup ${serviceName}: `"$($_.Exception.Message)`""
