@@ -1,5 +1,21 @@
-from datetime import datetime
+from datetime import timezone
 import sqlalchemy as sa
+
+
+class UTCDateTime(sa.TypeDecorator):
+    impl = sa.TIMESTAMP(timezone=True)
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            # Ensure the datetime is in UTC before storing
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            # Assume stored datetime is in UTC and attach tzinfo
+            value = value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class TimestampsMixin:
@@ -10,23 +26,19 @@ class TimestampsMixin:
 
     __created_at_name__ = "created_at"
     __updated_at_name__ = "updated_at"
-
-    @staticmethod
-    def get_local_time():
-        local_timezone = datetime.now().astimezone().tzinfo
-        return datetime.now(local_timezone)
+    __datetime_func__ = sa.func.now()
 
     created_at = sa.Column(
         __created_at_name__,
-        sa.TIMESTAMP(timezone=True),
-        default=get_local_time,
+        UTCDateTime,
+        default=__datetime_func__,
         nullable=False,
     )
 
     updated_at = sa.Column(
         __updated_at_name__,
-        sa.TIMESTAMP(timezone=True),
-        default=get_local_time,
-        onupdate=get_local_time,
+        UTCDateTime,
+        default=__datetime_func__,
+        onupdate=__datetime_func__,
         nullable=False,
     )

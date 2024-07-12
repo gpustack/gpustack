@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import Depends, Request
 from gpustack.config.config import Config
 from gpustack.schemas.api_keys import ApiKey
@@ -151,7 +151,10 @@ async def get_user_from_bearer_token(
             if (
                 api_key is not None
                 and verify_hashed_secret(api_key.hashed_secret_key, secret_key)
-                and (api_key.expires_at is None or api_key.expires_at > datetime.now())
+                and (
+                    api_key.expires_at is None
+                    or api_key.expires_at > datetime.now(timezone.utc)
+                )
             ):
                 user = await User.one_by_id(session, api_key.user_id)
                 if user is not None:

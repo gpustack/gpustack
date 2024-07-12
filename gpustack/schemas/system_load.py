@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Column
@@ -11,7 +11,9 @@ from gpustack.schemas.workers import UtilizationInfo
 class SystemLoad(SQLModel, ActiveRecordMixin, table=True):
     __tablename__ = 'system_loads'
     id: Optional[int] = Field(default=None, primary_key=True)
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.now(timezone.utc).timestamp())
+    )
     cpu: Optional[UtilizationInfo] = Field(
         sa_column=Column(pydantic_column_type(UtilizationInfo))
     )

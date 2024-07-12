@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import secrets
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -48,7 +48,7 @@ async def create_api_key(
         access_key = secrets.token_hex(8)
         secret_key = secrets.token_hex(16)
 
-        current = datetime.now()
+        current = datetime.now(timezone.utc)
         expires_at = current + timedelta(seconds=key_in.expires_in)
 
         api_key = ApiKey(

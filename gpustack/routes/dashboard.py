@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List
 from fastapi import APIRouter
 from sqlalchemy import Integer
@@ -66,7 +66,7 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
     workers = await Worker.all(session)
     current_system_load = compute_system_load(workers)
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     one_hour_ago = int((now - timedelta(hours=1)).timestamp())
 
