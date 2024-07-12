@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import multiprocessing
+import os
 from typing import Any, Dict
 
 import yaml
@@ -28,18 +29,20 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--debug",
         action="store_true",
         help="Enable debug mode.",
-        default=True,
+        default=get_env_or_default("DEBUG", True),
     )
     group.add_argument(
         "--data-dir",
         type=str,
         help="Directory to store data. Default is OS specific.",
+        default=get_env_or_default("DATA_DIR"),
     )
     group.add_argument(
         "-t",
         "--token",
         type=str,
         help="Shared secret used to add a worker.",
+        default=get_env_or_default("TOKEN"),
     )
 
     group = parser_server.add_argument_group("Server settings")
@@ -47,28 +50,31 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--host",
         type=str,
         help="Host to bind the server to.",
-        default="0.0.0.0",
+        default=get_env_or_default("HOST", "0.0.0.0"),
     )
     group.add_argument(
         "--port",
         type=int,
         help="Port to bind the server to.",
+        default=get_env_or_default("PORT"),
     )
     group.add_argument(
         "--database-url",
         type=str,
-        help="URL of the database. Example: postgresql://user:password@hostname:port/db_name",
+        help="URL of the database. Example: postgresql://user:password@hostname:port/db_name.",
+        default=get_env_or_default("DATABASE_URL"),
     )
     group.add_argument(
         "--disable-worker",
         action="store_true",
         help="Disable embedded worker.",
-        default=False,
+        default=get_env_or_default("DISABLE_WORKER", False),
     )
     group.add_argument(
         "--bootstrap-password",
         type=str,
         help="Initial password for the default admin user. Random by default.",
+        default=get_env_or_default("BOOTSTRAP_PASSWORD"),
     )
     group.add_argument(
         "--system-reserved",
@@ -76,24 +82,26 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="The system reserves resources for the worker during scheduling, measured in GiB. \
         By default, 1 GiB of memory and 1 GiB of GPU memory are reserved. \
         Example: {'memory': 1, 'gpu_memory': 1}.",
-        default={"memory": 1, "gpu_memory": 1},
+        default=get_env_or_default("SYSTEM_RESERVED", {"memory": 1, "gpu_memory": 1}),
     )
     group.add_argument(
         "--ssl-keyfile",
         type=str,
         help="Path to the SSL key file.",
+        default=get_env_or_default("SSL_KEYFILE"),
     )
     group.add_argument(
         "--ssl-certfile",
         type=str,
         help="Path to the SSL certificate file.",
+        default=get_env_or_default("SSL_CERTFILE"),
     )
     group.add_argument(
         "--force-auth-localhost",
         action="store_true",
         help="Force authentication for requests originating from localhost (127.0.0.1)."
         "When set to True, all requests from localhost will require authentication.",
-        default=False,
+        default=get_env_or_default("FORCE_AUTH_LOCALHOST", False),
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -102,34 +110,37 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--server-url",
         type=str,
         help="Server to connect to.",
+        default=get_env_or_default("SERVER_URL"),
     )
     group.add_argument(
         "--worker-ip",
         type=str,
         help="IP address of the worker node. Auto-detected by default.",
+        default=get_env_or_default("WORKER_IP"),
     )
     group.add_argument(
         "--enable-metrics",
         action="store_true",
         help="Enable metrics.",
-        default=True,
+        default=get_env_or_default("ENABLE_METRICS", True),
     )
     group.add_argument(
         "--metrics-port",
         type=int,
         help="Port to expose metrics.",
-        default=10151,
+        default=get_env_or_default("METRICS_PORT", 10151),
     )
     group.add_argument(
         "--worker-port",
         type=int,
         help="Port to bind the worker to.",
-        default=10150,
+        default=get_env_or_default("WORKER_PORT", 10150),
     )
     group.add_argument(
         "--log-dir",
         type=str,
         help="Directory to store logs.",
+        default=get_env_or_default("LOG_DIR"),
     )
 
     parser_server.set_defaults(func=run)
@@ -229,3 +240,8 @@ def set_worker_options(args, config_data: dict):
 
     for option in options:
         set_config_option(args, config_data, option)
+
+
+def get_env_or_default(env_var, default=None):
+    env_name = "GPUSTACK_" + env_var
+    return os.getenv(env_name, default)

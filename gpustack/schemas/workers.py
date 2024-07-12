@@ -39,10 +39,10 @@ class SwapInfo(UtilizationInfo):
 
 
 class GPUDeviceInfo(BaseModel):
-    uuid: str = Field(default="")
     name: str = Field(default="")
-    vendor: str = Field(default="")
-    index: int = Field(default=None)
+    uuid: Optional[str] = Field(default="")
+    vendor: Optional[str] = Field(default="")
+    index: Optional[int] = Field(default=None)
     core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
     memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
     temperature: Optional[float] = Field(default=None)  # in celsius

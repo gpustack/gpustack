@@ -34,12 +34,12 @@ class WorkerManager:
         collector = WorkerStatusCollector(
             worker_ip=self._worker_ip, clientset=self._clientset
         )
-        worker = collector.collect()
 
         try:
+            worker = collector.collect()
             result = self._clientset.workers.list(params={"query": self._hostname})
         except Exception as e:
-            logger.error(f"Failed to get workers {self._hostname}: {e}")
+            logger.error(f"Failed to update worker status {self._hostname}: {e}")
             return
 
         if result is None or len(result.items) == 0:
@@ -60,6 +60,8 @@ class WorkerManager:
             return
 
         worker = self._initialize_worker()
+        if worker is None:
+            return
         self._register_worker(worker)
         self._registration_completed = True
 
@@ -80,20 +82,24 @@ class WorkerManager:
         logger.info(f"Worker {worker.name} registered.")
 
     def _initialize_worker(self):
-        collector = WorkerStatusCollector(
-            worker_ip=self._worker_ip, clientset=self._clientset
-        )
-        worker = collector.collect()
+        try:
+            collector = WorkerStatusCollector(
+                worker_ip=self._worker_ip, clientset=self._clientset
+            )
+            worker = collector.collect()
 
-        os_info = platform.uname()
-        arch_info = platform.machine()
+            os_info = platform.uname()
+            arch_info = platform.machine()
 
-        worker.labels = {
-            "os": os_info.system,
-            "arch": arch_info,
-        }
+            worker.labels = {
+                "os": os_info.system,
+                "arch": arch_info,
+            }
 
-        return worker
+            return worker
+        except Exception as e:
+            logger.error(f"Failed to initialize worker: {e}")
+            return
 
     def _register_shutdown_hooks(self):
         pass
