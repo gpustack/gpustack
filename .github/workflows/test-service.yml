@@ -3,7 +3,7 @@ name: Install Script Windows
 on:
   push:
     branches:
-      - main
+      - feat/12
   workflow_dispatch: {}
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
           nssm dump pypiserver
           nssm status pypiserver
 
-          $uri = "http://127.0.0.1:8080"
+          $uri = "http://127.0.0.1:8086"
           $maxRetries = 5
           $retryDelaySeconds = 2
 

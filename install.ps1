@@ -645,8 +645,8 @@ try {
     Install-Python
     Install-NSSM
     Install-GPUStack
-    Setup-GPUStackService
-    Create-UninstallScript
+    # Setup-GPUStackService
+    # Create-UninstallScript
 }
 catch {
     Log-Fatal "Failed to install GPUStack: `"$($_.Exception.Message)`""

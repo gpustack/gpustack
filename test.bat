@@ -1,1 +1,1 @@
-pypi-server run -p 8080 &
+pypi-server run -p 8086 &

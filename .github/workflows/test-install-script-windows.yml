@@ -66,14 +66,19 @@ jobs:
           Write-Host "INSTALL_PACKAGE_SPEC: $env:INSTALL_PACKAGE_SPEC"          
           ./install.ps1
 
-          nssm dump GPUSTack
+          $currentDir = Get-Location
+          $exePath = Join-Path -Path $currentDir -ChildPath "gpustack.bat"
 
-          gpustack start --port 8080
-
-      - name: Verify installation
-        run: |
+          Write-Host "exePath: $exePath"
           gpustack version
-          $uri = "http://127.0.0.1/readyz"
+
+          Write-Host "installing gpustack"
+          nssm install GPUStack $exePath
+          nssm start GPUStack
+          nssm dump GPUStack
+          nssm status GPUStack
+
+          $uri = "http://127.0.0.1:8080"
           $maxRetries = 5
           $retryDelaySeconds = 2
 
@@ -90,3 +95,4 @@ jobs:
           if ($i -eq $maxRetries) {
               Write-Host "request last error: $($Error[0].Exception.Message)"
           }
+      
