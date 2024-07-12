@@ -1,0 +1,94 @@
+name: Install Script Windows
+
+on:
+  push:
+    branches:
+      - feat/12
+    paths:
+      - "install.ps1"
+      - ".github/workflows/install-script-windows.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "install.ps1"
+      - ".github/workflows/install-script-windows.yml"
+  workflow_dispatch: {}
+
+jobs:
+  windows-amd64-build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [X64]
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: CI
+        shell: powershell
+        run: |
+          make build
+
+      - name: Upload wheel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64-dist
+          path: dist/*.whl
+  windows-amd64-install-test:
+    name: Test Install
+    needs: windows-amd64-build
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [X64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-amd64-dist
+          path: ./dist
+
+      - name: Run install script
+        shell: powershell
+        run: |
+          $env:whlPackageName=Get-ChildItem -Path dist -Filter "*.whl" -File | ForEach-Object { $_.Name }
+          Write-Host "whlPackageName: $env:whlPackageName"
+          $env:INSTALL_PACKAGE_SPEC = [System.IO.Path]::Combine("dist", $env:whlPackageName)   
+          Write-Host "INSTALL_PACKAGE_SPEC: $env:INSTALL_PACKAGE_SPEC"          
+          ./install.ps1
+
+          nssm dump GPUSTack
+
+          Start-Sleep -s 20
+
+          gpustack start --port 8080
+
+      - name: Verify installation
+        run: |
+          gpustack version
+          $uri = "http://127.0.0.1/readyz"
+          $maxRetries = 5
+          $retryDelaySeconds = 2
+
+          for ($i = 0; $i -lt $maxRetries; $i++) {
+              try {
+                  $response = Invoke-WebRequest -Uri $uri -ErrorAction Stop
+                  Write-Host ": $($response.StatusCode)"
+                  break
+              } catch {
+                  Write-Host "request failed，retrying（$($i + 1) times...）"
+                  Start-Sleep -Seconds $retryDelaySeconds
+              }
+          }
+          if ($i -eq $maxRetries) {
+              Write-Host "request last error: $($Error[0].Exception.Message)"
+          }
