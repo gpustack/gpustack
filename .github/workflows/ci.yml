@@ -13,7 +13,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
 
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
           make ci
 
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.10'
         env:
           PYPI_API_TOKEN: ${{ secrets.CI_PYPI_API_TOKEN }}
         run: |
