@@ -1,9 +1,9 @@
-name: Install Script Windows
+name: Install Script Pypi Server
 
 on:
   push:
     branches:
-      - feat/12
+      - main
   workflow_dispatch: {}
 
 jobs:

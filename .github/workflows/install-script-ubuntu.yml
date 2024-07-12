@@ -1,9 +1,9 @@
-name: Install Script MacOS
+name: Install Script Linux
 
 on:
   push:
     branches:
-      - feat/12
+      - main
     # paths:
     #   - "install.sh"
     #   - ".github/workflows/install-script.yml"

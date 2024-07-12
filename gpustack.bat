@@ -1,1 +1,1 @@
-gpustack start --port 8080 &
+gpustack start --port 8080 --disable-worker &
