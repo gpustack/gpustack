@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.logging import setup_logging
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
@@ -32,7 +33,9 @@ def time_decorator(func):
             start_time = time.time()
             result = await func(*args, **kwargs)
             end_time = time.time()
-            logger.info(f"{func.__name__} execution time: {end_time - start_time} s")
+            logger.info(
+                f"{func.__name__} execution time: {end_time - start_time:.2f} seconds"
+            )
             return result
 
         return async_wrapper
@@ -42,7 +45,9 @@ def time_decorator(func):
             start_time = time.time()
             result = func(*args, **kwargs)
             end_time = time.time()
-            logger.info(f"{func.__name__} execution time: {end_time - start_time} s")
+            logger.info(
+                f"{func.__name__} execution time: {end_time - start_time} seconds"
+            )
             return result
 
         return sync_wrapper
@@ -67,6 +72,7 @@ class InferenceServer:
     def __init__(
         self, clientset: ClientSet, mi: ModelInstance, cache_dir: Optional[str] = None
     ):
+        setup_logging()
         self.hijack_tqdm_progress()
 
         self._clientset = clientset
@@ -84,16 +90,17 @@ class InferenceServer:
             patch_dict = {"state": ModelInstanceStateEnum.running}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
+            error_message = f"Failed to download model: {e}"
+            logger.error(error_message)
             try:
                 patch_dict = {
-                    "state_message": str(e),
+                    "state_message": error_message,
                     "state": ModelInstanceStateEnum.error,
                 }
                 self._update_model_instance(mi.id, **patch_dict)
-            except Exception as e:
-                logger.error(f"Failed to update model instance: {e}")
-
-            raise e
+            except Exception as ue:
+                logger.error(f"Failed to update model instance: {ue}")
+            sys.exit(1)
 
     def start(self):
         command_path = pkg_resources.files(
@@ -123,6 +130,7 @@ class InferenceServer:
         ]
 
         try:
+            logger.info("Starting llama-box server")
             subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,
@@ -130,7 +138,16 @@ class InferenceServer:
                 env=env,
             )
         except Exception as e:
-            logger.error(f"Failed to run the llama.cpp server: {e}")
+            error_message = f"Failed to run the llama-box server: {e}"
+            logger.error(error_message)
+            try:
+                patch_dict = {
+                    "state_message": error_message,
+                    "state": ModelInstanceStateEnum.error,
+                }
+                self._update_model_instance(self._model_instance.id, **patch_dict)
+            except Exception as ue:
+                logger.error(f"Failed to update model instance: {ue}")
 
     def _get_env(self, gpu_index: Optional[int] = None):
         index = gpu_index or 0

@@ -1,3 +1,4 @@
+import time
 import json
 import logging
 import os
@@ -73,7 +74,7 @@ class HfDownloader:
         subfolder = str(Path(matching_file).parent)
         filename = Path(matching_file).name
 
-        # download the file
+        logger.info(f"Downloading model {repo_id}/{filename}")
         hf_hub_download(
             repo_id=repo_id,
             filename=filename,
@@ -96,6 +97,7 @@ class HfDownloader:
         else:
             model_path = os.path.join(local_dir, filename)
 
+        logger.info(f"Downloaded model {repo_id}/{filename}")
         return model_path
 
     def __call__(self):
@@ -107,7 +109,7 @@ class OllamaLibraryDownloader:
     _default_cache_dir = "/var/lib/gpustack/cache/ollama"
 
     @staticmethod
-    def download_blob(url: str, filename: str):
+    def download_blob(url: str, filename: str, _nb_retries: int = 5):
         temp_filename = filename + ".part"
 
         headers = {}
@@ -133,13 +135,29 @@ class OllamaLibraryDownloader:
                 desc=os.path.basename(filename),
             ) as bar,
         ):
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    file.write(chunk)
-                    bar.update(len(chunk))
+            try:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        file.write(chunk)
+                        bar.update(len(chunk))
 
+                        _nb_retries = 5
+            except Exception as e:
+                if _nb_retries <= 0:
+                    logger.warning(
+                        "Error while downloading model: %s\nMax retries exceeded.",
+                        str(e),
+                    )
+                    raise
+                logger.warning(
+                    "Error while downloading model: %s\nTrying to resume download...",
+                    str(e),
+                )
+                time.sleep(1)
+                return OllamaLibraryDownloader.download_blob(
+                    url, filename, _nb_retries - 1
+                )
         os.rename(temp_filename, filename)
-        print(f"Downloaded {filename}")
 
     @classmethod
     def download(cls, model_name: str, cache_dir: Optional[str] = None) -> str:
@@ -156,15 +174,17 @@ class OllamaLibraryDownloader:
 
         lock_filename = model_path + ".lock"
 
-        logger.info("Retriving file lock.")
+        logger.info("Retriving file lock")
         with FileLock(lock_filename):
             if os.path.exists(model_path):
                 return model_path
 
+            logger.info(f"Downloading model {model_name}")
             blob_url = cls.model_url(model_name=model_name)
             if blob_url is not None:
                 cls.download_blob(blob_url, model_path)
 
+            logger.info(f"Downloaded model {model_name}")
             return model_path
 
     @classmethod

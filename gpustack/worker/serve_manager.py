@@ -167,8 +167,6 @@ class ServeManager:
             self._serving_model_instances.pop(id)
 
     def monitor_processes(self):
-        logger.debug("Started serving process monitor.")
-
         for id in list(self._serving_model_instances.keys()):
             process = self._serving_model_instances[id]
             if not process.is_alive():
