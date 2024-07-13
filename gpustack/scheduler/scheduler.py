@@ -106,6 +106,8 @@ class Scheduler:
                     await instance.update(session)
 
                 model = await Model.one_by_id(session, instance.model_id)
+                if model is None:
+                    raise Exception("Model not found.")
 
                 task_output = await calculate_model_resource_claim(instance, model)
 

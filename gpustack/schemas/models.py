@@ -43,6 +43,7 @@ class ModelBase(SQLModel, ModelSource):
     description: Optional[str] = None
 
     replicas: int = Field(default=1, ge=0)
+    ready_replicas: int = Field(default=0, ge=0)
 
 
 class Model(ModelBase, BaseModelMixin, table=True):

@@ -1,8 +1,8 @@
 """initialize tables
 
-Revision ID: 9dc7f491185b
+Revision ID: aea5fb7109d1
 Revises: 
-Create Date: 2024-07-09 18:14:56.495971
+Create Date: 2024-07-13 16:24:49.964617
 
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import gpustack
 
 
 # revision identifiers, used by Alembic.
-revision: str = '9dc7f491185b'
+revision: str = 'aea5fb7109d1'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -30,8 +30,9 @@ def upgrade() -> None:
     sa.Column('hashed_secret_key', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('expires_at', sa.DateTime(), nullable=False),
-    sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
-    sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+    sa.Column('created_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('deleted_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('hashed_secret_key'),
     sa.UniqueConstraint('name', 'user_id', name='uix_name_user_id')
@@ -45,9 +46,11 @@ def upgrade() -> None:
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('description', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('replicas', sa.Integer(), nullable=False),
+    sa.Column('ready_replicas', sa.Integer(), nullable=False),
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
-    sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+    sa.Column('created_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('deleted_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_models_name'), 'models', ['name'], unique=True)
@@ -67,8 +70,9 @@ def upgrade() -> None:
     sa.Column('require_password_change', sa.Boolean(), nullable=False),
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('hashed_password', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-    sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
-    sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+    sa.Column('created_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('deleted_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('workers',
@@ -79,8 +83,9 @@ def upgrade() -> None:
     sa.Column('state', sa.Enum('unknown', 'running', 'inactive', name='workerstateenum'), nullable=False),
     sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
-    sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+    sa.Column('created_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('deleted_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_workers_name'), 'workers', ['name'], unique=True)
@@ -103,8 +108,9 @@ def upgrade() -> None:
     sa.Column('model_id', sa.Integer(), nullable=False),
     sa.Column('model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.TIMESTAMP(), nullable=False),
-    sa.Column('updated_at', sa.TIMESTAMP(), nullable=False),
+    sa.Column('created_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=False),
+    sa.Column('deleted_at', gpustack.mixins.timestamp.UTCDateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(['model_id'], ['models.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

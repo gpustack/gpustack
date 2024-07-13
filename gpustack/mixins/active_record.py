@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import json
 import logging
 import math
@@ -242,7 +243,11 @@ class ActiveRecordMixin:
     async def delete(self, session: AsyncSession):
         """Delete the object from the database."""
 
-        await self._handle_cascade_delete(session)
+        if self._has_cascade_delete():
+            if hasattr(self, "deleted_at"):
+                self.deleted_at = datetime.now(timezone.utc)
+                await self.save(session)
+            await self._handle_cascade_delete(session)
 
         await session.delete(self)
         await session.commit()
@@ -262,6 +267,10 @@ class ActiveRecordMixin:
                         await related_object.delete(session)
                 elif related_objects:
                     await related_objects.delete(session)
+
+    def _has_cascade_delete(self):
+        """Check if the model has cascade delete relationships."""
+        return any(rel.cascade.delete for rel in self.__mapper__.relationships)
 
     @classmethod
     async def all(cls, session: AsyncSession):
