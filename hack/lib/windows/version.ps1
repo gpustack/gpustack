@@ -47,13 +47,13 @@ function Get-GPUStackVersionVar {
         if ($LASTEXITCODE -eq 0) {
             # Check if HEAD is tagged
             $gitTag = git tag -l --contains HEAD 2>$null | Select-Object -First 1
-            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrEmpty($gitTag)) {
+            if (-not [string]::IsNullOrEmpty($gitTag)) {
                 $GIT_VERSION = $gitTag
             }
         }
 
         # Set version to '0.0.0' if the tree is dirty or version format does not match
-        if ($GIT_TREE_STATE -eq "dirty" -or -not ($GIT_VERSION -match '^v([0-9]+)\.([0-9]+)(\.[0-9]+)?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')) {
+        if ($GIT_TREE_STATE -eq "dirty" -or -not ($GIT_VERSION -match '^([0-9]+)\.([0-9]+)(\.[0-9]+)?(-?[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')) {
             $GIT_VERSION = "0.0.0"
         }
 

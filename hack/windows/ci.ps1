@@ -15,6 +15,7 @@ function Invoke-CI {
     & make install @ciArgs
     & make lint @ciArgs
     & make test @ciArgs
+    & make validate @ciArgs
     & make build @ciArgs
 }
 
