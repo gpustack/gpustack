@@ -218,9 +218,13 @@ install_gpustack() {
   if [ "$INSTALL_PRE_RELEASE" -eq 1 ]; then
     install_args+=(--pip-args='--pre')
   fi
-  $SUDO pipx install "${install_args[@]}" "${INSTALL_PACKAGE_SPEC}"
+
+  info "Installing GPUStack with $INSTALL_PACKAGE_SPEC..."
+
+  $SUDO pipx install "${install_args[@]}" "${INSTALL_PACKAGE_SPEC}" --verbose
   $SUDO pipx ensurepath
-  PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
+
+  PIPX_BIN_DIR=$($SUDO pipx environment --value PIPX_BIN_DIR)
   export PATH="$PIPX_BIN_DIR:$PATH"
 }
 

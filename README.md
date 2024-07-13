@@ -34,7 +34,23 @@ cat /var/lib/gpustack/token
 
 ### Windows
 
-`// TODO`
+Open the Start menu, type Windows PowerShell, select Windows PowerShell, and then select Run as administrator, then run the following command to install GPUStack:
+
+```powershell
+`Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content`
+```
+
+You can add additional workers to form a GPUStack cluster by running the following command on worker nodes:
+
+```powershell
+Invoke-Expression "& { $(Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content } -ServerURL http://myserver -Token mytoken"
+```
+
+The token here is a secret used for adding workers. In the default setup, you can run the following to get the token:
+
+```powershell
+Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Raw
+```
 
 ### Manual Install
 

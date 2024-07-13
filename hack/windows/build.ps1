@@ -8,6 +8,21 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 
 function Build {
     poetry build
+
+    $distDir = Join-Path -Path $ROOT_DIR -ChildPath "dist"
+    $whlFiles = Get-ChildItem -Path $distDir -Filter "*.whl" -File
+    if ($whlFiles.Count -eq 0) {
+        GPUStack.Log.Fatal "no wheel files found in $distDir"
+    }
+
+    foreach ($whlFile in $whlFiles) {
+        $orginalName = $whlFile.Name
+        $newName = $orginalName -replace "any", "win_amd64"
+
+        $newFilePath = Join-Path -Path $distDir -ChildPath $newName
+        Rename-Item -Path $whlFile.FullName -NewName $newFilePath -Force
+        GPUStack.Log.Info "renamed $orginalName to $newName"
+    }
 }
 
 function Install-Dependency {
@@ -19,7 +34,7 @@ function Set-Version {
     $version = if ($null -ne $global:GIT_VERSION) { $global:GIT_VERSION } else { "0.0.0" }
     $gitCommit = if ($null -ne $global:GIT_COMMIT) { $global:GIT_COMMIT } else { "HEAD" }
     $gitCommitShort = $gitCommit.Substring(0, [Math]::Min(7, $gitCommit.Length))
-
+    
     GPUStack.Log.Info "setting version to $version"
     GPUStack.Log.Info "setting git commit to $gitCommitShort"
 

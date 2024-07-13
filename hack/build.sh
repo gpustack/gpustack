@@ -9,6 +9,29 @@ source "${ROOT_DIR}/hack/lib/init.sh"
 
 function build() {
   poetry build
+
+  dist_dir="$ROOT_DIR/dist"
+  whl_files=$(find "$dist_dir" -name "*.whl")
+  if [ -z "$whl_files" ]; then
+      gpustack::log::fatal "no wheel files found in $dist_dir"
+  fi
+
+  for whl_file in $whl_files; do
+      original_name=$(basename "$whl_file")
+      if gpustack::util::is_darwin; then
+        new_name=${original_name/any/macosx_11_0_universal2}
+        mv -f "$whl_file" "$dist_dir/$new_name"
+        gpustack::log::info "renamed $original_name to $new_name"
+      elif gpustack::util::is_linux; then
+        new_name_amd=${original_name/any/manylinux2014_x86_64}
+        new_name_arm=${original_name/any/manylinux2014_aarch64}
+        cp -f "$whl_file" "$dist_dir/$new_name_amd"
+        cp -f "$whl_file" "$dist_dir/$new_name_arm"
+        rm -rf "$whl_file"
+        gpustack::log::info "renamed $original_name to $new_name_amd"
+        gpustack::log::info "renamed $original_name to $new_name_arm"
+      fi
+  done
 }
 
 function prepare_dependencies() {

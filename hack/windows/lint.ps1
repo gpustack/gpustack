@@ -6,7 +6,7 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 # Include the common functions
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
-function Get-PSScriptAnalyzer{
+function Get-PSScriptAnalyzer {
     $module = Get-Module -ListAvailable -Name PSScriptAnalyzer
     if (-not $module) {
         Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
@@ -20,7 +20,7 @@ function Lint {
 
     GPUStack.Log.Info "linting $path"
 
-    Invoke-ScriptAnalyzer -ExcludeRule PSAvoidGlobalVars,PSUseShouldProcessForStateChangingFunctions,PSAvoidUsingWriteHost -Path $ROOT_DIR -Recurse
+    Invoke-ScriptAnalyzer -ExcludeRule PSAvoidUsingInvokeExpression, PSReviewUnusedParameter, PSUseApprovedVerbs, PSAvoidGlobalVars, PSUseShouldProcessForStateChangingFunctions, PSAvoidUsingWriteHost -Path $ROOT_DIR -Recurse
 
     poetry run pre-commit run flake8 --all-files
     poetry run pre-commit run black --all-files
@@ -37,7 +37,8 @@ GPUStack.Log.Info "+++ LINT +++"
 try {
     Get-PSScriptAnalyzer
     Lint "gpustack"
-} catch {
+}
+catch {
     GPUStack.Log.Fatal "failed to lint: $($_.Exception.Message)"
 }
 GPUStack.Log.Info "--- LINT ---"
