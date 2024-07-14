@@ -37,7 +37,7 @@ class WorkerManager:
 
         try:
             worker = collector.collect()
-            result = self._clientset.workers.list(params={"query": self._hostname})
+            result = self._clientset.workers.list(params={"name": self._hostname})
         except Exception as e:
             logger.error(f"Failed to update worker status {self._hostname}: {e}")
             return

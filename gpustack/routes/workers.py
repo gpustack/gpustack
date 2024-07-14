@@ -19,19 +19,26 @@ router = APIRouter()
 
 
 @router.get("", response_model=WorkersPublic)
-async def get_workers(session: SessionDep, params: ListParamsDep, search: str = None):
+async def get_workers(
+    session: SessionDep, params: ListParamsDep, name: str = None, search: str = None
+):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
 
+    fields = {}
+    if name:
+        fields = {"name": name}
+
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(session, fuzzy_fields=fuzzy_fields),
+            Worker.streaming(session, fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 
     return await Worker.paginated_by_query(
         session=session,
+        fields=fields,
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
