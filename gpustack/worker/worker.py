@@ -59,9 +59,9 @@ class Worker:
 
         logger.info("Starting GPUStack worker.")
 
-        # Start the metric exporter.
         if self._exporter_enabled:
-            asyncio.create_task(self._exporter.start())
+            # Start the metric exporter with retry.
+            run_periodically_in_thread(self._exporter.start, 15)
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)

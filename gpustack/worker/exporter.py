@@ -176,23 +176,23 @@ class MetricExporter(Collector):
                     },
                 )
                 gpu_cores.add_metric(
-                    [self._worker_ip, self._provider, str(i)], d.core_total
+                    [self._worker_ip, self._provider, str(i)], d.core.total
                 )
                 gpu_utilization_rate.add_metric(
-                    [self._worker_ip, self._provider, str(i)], d.core_utilization_rate
+                    [self._worker_ip, self._provider, str(i)], d.core.utilization_rate
                 )
                 gpu_temperature.add_metric(
                     [self._worker_ip, self._provider, str(i)], d.temperature
                 )
                 gram_total.add_metric(
-                    [self._worker_ip, self._provider, str(i)], d.memory_total
+                    [self._worker_ip, self._provider, str(i)], d.memory.total
                 )
                 gram_used.add_metric(
-                    [self._worker_ip, self._provider, str(i)], d.memory_used
+                    [self._worker_ip, self._provider, str(i)], d.memory.used
                 )
                 gram_utilization_rate.add_metric(
                     [self._worker_ip, self._provider, str(i)],
-                    _rate(d.memory_used, d.memory_total),
+                    _rate(d.memory.used, d.memory.total),
                 )
 
         # filesystem
@@ -229,26 +229,29 @@ class MetricExporter(Collector):
         yield filesystem_used
         yield filesystem_utilization_rate
 
-    async def start(self):
-        REGISTRY.register(self)
+    def start(self):
+        try:
+            REGISTRY.register(self)
 
-        # Start FastAPI server
-        metrics_app = make_asgi_app()
+            # Start FastAPI server
+            metrics_app = make_asgi_app()
 
-        app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
-        app.mount("/metrics", metrics_app)
+            app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
+            app.mount("/metrics", metrics_app)
 
-        config = uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=self._port,
-            access_log=False,
-            log_level="error",
-        )
+            config = uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=self._port,
+                access_log=False,
+                log_level="error",
+            )
 
-        logger.info(f"Serving on {config.host}:{config.port}.")
-        server = uvicorn.Server(config)
-        await server.serve()
+            logger.info(f"Serving metric exporter on {config.host}:{config.port}.")
+            server = uvicorn.Server(config)
+            server.run()
+        except Exception as e:
+            logger.error(f"Failed to start metric exporter: {e}")
 
 
 def _rate(used, total):
