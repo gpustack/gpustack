@@ -2,6 +2,7 @@ from prometheus_client.registry import Collector
 from prometheus_client import make_asgi_app, REGISTRY
 from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.logging import setup_logging
 from gpustack.worker.collector import WorkerStatusCollector
 import uvicorn
 import logging
@@ -247,6 +248,7 @@ class MetricExporter(Collector):
                 log_level="error",
             )
 
+            setup_logging()
             logger.info(f"Serving metric exporter on {config.host}:{config.port}.")
             server = uvicorn.Server(config)
             server.run()

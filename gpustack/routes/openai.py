@@ -23,12 +23,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/models")
 async def list_models(session: SessionDep):
-    statement = (
-        select(Model)
-        .join(ModelInstance, Model.id == ModelInstance.model_id)
-        .where(ModelInstance.state == ModelInstanceStateEnum.running)
-        .distinct()
-    )
+    statement = select(Model).where(Model.ready_replicas > 0)
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")
     for model in models:
