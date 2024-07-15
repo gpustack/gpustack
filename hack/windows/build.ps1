@@ -20,6 +20,7 @@ function Build {
         $newName = $orginalName -replace "any", "win_amd64"
 
         $newFilePath = Join-Path -Path $distDir -ChildPath $newName
+        Remove-Item -Path $newFilePath -Force -ErrorAction SilentlyContinue
         Rename-Item -Path $whlFile.FullName -NewName $newFilePath -Force
         GPUStack.Log.Info "renamed $orginalName to $newName"
     }
