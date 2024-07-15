@@ -85,7 +85,7 @@ def _gguf_parser_command(model: Model):
         "8192",
         "-in-max-ctx-size",
         "-flash-attention",
-        "-offload-layers-step",
+        "-gpu-layers-step",
         "1",
         "-skip-tokenizer",
         "-skip-architecture",
@@ -161,7 +161,7 @@ def _gguf_parser_command_args_from_source(model: Model) -> List[str]:
 
         return ["-url", model_url]
     elif model.source == SourceEnum.OLLAMA_LIBRARY:
-        return ["-ol-crawl", "-ol-model", model.ollama_library_model_name]
+        return ["-ol-model", model.ollama_library_model_name]
     else:
         raise ValueError(f"Unsupported source: {model.source}")
 
