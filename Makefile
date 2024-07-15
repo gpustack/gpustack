@@ -19,7 +19,7 @@ $(eval $(rest_args):;@:)
 
 # List targets based on script extension and directory
 ifeq ($(OS),Windows_NT)
-    targets := $(shell powershell -ExecutionPolicy RemoteSigned -Command "Get-ChildItem -Path $(curr_dir)/$(SCRIPT_DIR) -Filter *$(SCRIPT_EXT) | Select-Object -ExpandProperty BaseName")
+    targets := $(shell powershell -Command "Get-ChildItem -Path $(curr_dir)/$(SCRIPT_DIR) | Select-Object -ExpandProperty BaseName")
 else
 	targets := $(shell ls $(curr_dir)/$(SCRIPT_DIR) | grep $(SCRIPT_EXT) | sed 's/$(SCRIPT_EXT)$$//')
 endif
