@@ -95,7 +95,9 @@ class WorkerStatusCollector:
                     # Metadatas.
                     name = self._get_value(value, "name")
                     vender = self._get_value(value, "vendor")
-                    index = self._get_value(value, "index") or i
+                    index = self._get_value(value, "index")
+                    if index is None:
+                        index = i
 
                     is_unified_memory = False
                     if (

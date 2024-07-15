@@ -7,6 +7,7 @@ SELECT
     w.ip as worker_ip,
     w.created_at,
     w.updated_at,
+    w.deleted_at,
     json_extract(value, '$.uuid') AS uuid,
     json_extract(value, '$.name') AS name,
     json_extract(value, '$.vendor') AS vendor,

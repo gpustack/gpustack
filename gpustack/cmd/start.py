@@ -161,7 +161,9 @@ def run_server(cfg: Config):
     sub_processes = []
 
     if not cfg.disable_worker:
-        cfg.server_url = "http://127.0.0.1"
+        cfg.server_url = (
+            f"http://127.0.0.1:{cfg.port}" if cfg.port else "http://127.0.0.1"
+        )
         worker = Worker(cfg)
         worker_process = multiprocessing.Process(target=worker.start, args=(True,))
         sub_processes = [worker_process]
