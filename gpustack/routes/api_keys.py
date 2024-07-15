@@ -17,19 +17,24 @@ router = APIRouter()
 
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
-    session: SessionDep, user: CurrentUserDep, params: ListParamsDep
+    session: SessionDep, user: CurrentUserDep, params: ListParamsDep, search: str = None
 ):
     fields = {"user_id": user.id}
 
+    fuzzy_fields = {}
+    if search:
+        fuzzy_fields = {"name": search}
+
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(session, fields=fields),
+            ApiKey.streaming(session, fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 
     return await ApiKey.paginated_by_query(
         session=session,
         fields=fields,
+        fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
     )
