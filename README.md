@@ -7,7 +7,7 @@ GPUStack is designed to help you deploy and manage large language models (LLMs) 
 - **Supports a wide variety of hardware:** Whether you have a single GPU or a complex setup, GPUStack can handle it.
 - **Scales with your GPU inventory:** Add more GPUs to scale up your operations seamlessly.
 - **Lightweight Python package:** With minimal dependencies and operational overhead, GPUStack is easy to install and use.
-- **OpenAI-compatible APIs:** Integrate effortlessly with existing OpenAI APIs.
+- **OpenAI-compatible APIs:** Serve APIs that are compatible with OpenAI standards.
 - **User and API key management:** Simplified user and key management to keep your operations secure.
 - **GPU metrics monitoring:** Keep an eye on GPU performance and utilization.
 - **Token usage and rate metrics:** Track how many tokens are used and manage rate limits effectively.
