@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List
 from enum import Enum
+import copy
 
 
 class EventType(Enum):
@@ -58,7 +59,7 @@ class EventBus:
     async def publish(self, topic: str, event: Event):
         if topic in self.subscribers:
             for subscriber in self.subscribers[topic]:
-                await subscriber.enqueue(event)
+                await subscriber.enqueue(copy.deepcopy(event))
 
 
 event_bus = EventBus()
