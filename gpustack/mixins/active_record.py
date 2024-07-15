@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import importlib
 import json
 import logging
 import math
@@ -356,5 +357,11 @@ class ActiveRecordMixin:
                     break
             if skip_event:
                 continue
+
+            # Convert the current instance to the corresponding Public class if exists
+            class_module = importlib.import_module(cls.__module__)
+            public_class = getattr(class_module, f"{cls.__name__}Public", None)
+            if public_class:
+                event.data = public_class.model_validate(event.data)
 
             yield json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
