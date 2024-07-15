@@ -17,7 +17,7 @@ router = APIRouter()
 async def get_users(session: SessionDep, params: ListParamsDep, search: str = None):
     fuzzy_fields = {}
     if search:
-        fuzzy_fields = {"name": search}
+        fuzzy_fields = {"username": search, "full_name": search}
 
     if params.watch:
         return StreamingResponse(

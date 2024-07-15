@@ -7,7 +7,7 @@ from typing import Any, AsyncGenerator, Optional, Union, overload
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
-from sqlmodel import SQLModel, col, select
+from sqlmodel import SQLModel, and_, col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import FlushError
@@ -119,24 +119,36 @@ class ActiveRecordMixin:
         """
 
         statement = select(cls)
-        for key, value in (fields or {}).items():
-            statement = statement.where(col(getattr(cls, key)) == value)
+        if fields:
+            conditions = [
+                col(getattr(cls, key)) == value for key, value in fields.items()
+            ]
+            statement = statement.where(and_(*conditions))
 
-        for key, value in (fuzzy_fields or {}).items():
-            column = getattr(cls, key)
-            statement = statement.where(col(column).like(f"%{value}%"))
+        if fuzzy_fields:
+            fuzzy_conditions = [
+                col(getattr(cls, key)).like(f"%{value}%")
+                for key, value in fuzzy_fields.items()
+            ]
+            statement = statement.where(or_(*fuzzy_conditions))
 
         if page is not None and per_page is not None:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
         items = (await session.exec(statement)).all()
 
         count_statement = select(func.count(cls.id))
-        for key, value in (fields or {}).items():
-            count_statement = count_statement.where(col(getattr(cls, key)) == value)
+        if fields:
+            conditions = [
+                col(getattr(cls, key)) == value for key, value in fields.items()
+            ]
+            count_statement = count_statement.where(and_(*conditions))
 
-        for key, value in (fuzzy_fields or {}).items():
-            column = getattr(cls, key)
-            count_statement = count_statement.where(col(column).like(f"%{value}%"))
+        if fuzzy_fields:
+            fuzzy_conditions = [
+                col(getattr(cls, key)).like(f"%{value}%")
+                for key, value in fuzzy_fields.items()
+            ]
+            count_statement = count_statement.where(or_(*fuzzy_conditions))
 
         count = (await session.exec(count_statement)).one()
         total_page = math.ceil(count / per_page)
@@ -344,6 +356,8 @@ class ActiveRecordMixin:
     ) -> AsyncGenerator[str, None]:
         async for event in cls.subscribe(session):
             skip_event = False
+
+            # Check fields using AND condition
             for key, value in (fields or {}).items():
                 if getattr(event.data, key) != value:
                     skip_event = True
@@ -351,11 +365,13 @@ class ActiveRecordMixin:
             if skip_event:
                 continue
 
+            # Check fuzzy_fields using OR condition
+            fuzzy_match = False
             for key, value in (fuzzy_fields or {}).items():
-                if value not in str(getattr(event.data, key, "")):
-                    skip_event = True
+                if value in str(getattr(event.data, key, "")):
+                    fuzzy_match = True
                     break
-            if skip_event:
+            if fuzzy_fields and not fuzzy_match:
                 continue
 
             # Convert the current instance to the corresponding Public class if exists
