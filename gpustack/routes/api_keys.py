@@ -49,7 +49,9 @@ async def create_api_key(
         secret_key = secrets.token_hex(16)
 
         current = datetime.now(timezone.utc)
-        expires_at = current + timedelta(seconds=key_in.expires_in)
+        expires_at = None
+        if key_in.expires_in and key_in.expires_in > 0:
+            expires_at = current + timedelta(seconds=key_in.expires_in)
 
         api_key = ApiKey(
             name=key_in.name,

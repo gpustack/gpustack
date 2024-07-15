@@ -1,10 +1,10 @@
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
-from .common import PaginatedList
-from ..mixins import BaseModelMixin
+from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.common import PaginatedList, UTCDateTime
 
 
 class ApiKeyBase(SQLModel):
@@ -19,7 +19,7 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
     user_id: int
-    expires_at: datetime
+    expires_at: Optional[datetime] = Field(sa_column=Column(UTCDateTime), default=None)
 
 
 class ApiKeyCreate(ApiKeyBase):
@@ -31,7 +31,7 @@ class ApiKeyPublic(ApiKeyBase):
     value: Optional[str] = None  # only available when creating
     created_at: datetime
     updated_at: datetime
-    expires_at: datetime
+    expires_at: Optional[datetime] = None
 
 
 ApiKeysPublic = PaginatedList[ApiKeyPublic]

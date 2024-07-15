@@ -1,25 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from pydantic import Field
 import sqlalchemy as sa
 
-
-class UTCDateTime(sa.TypeDecorator):
-    impl = sa.TIMESTAMP(timezone=True)
-
-    cache_ok = True
-
-    def process_bind_param(self, value, dialect):
-        if value is not None and value.tzinfo is not None:
-            # Ensure the datetime is in UTC before storing
-            value = value.astimezone(timezone.utc).replace(tzinfo=None)
-        return value
-
-    def process_result_value(self, value, dialect):
-        if value is not None:
-            # Assume stored datetime is in UTC and attach tzinfo
-            value = value.replace(tzinfo=timezone.utc)
-        return value
+from gpustack.schemas.common import UTCDateTime
 
 
 class TimestampsMixin:

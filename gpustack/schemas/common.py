@@ -1,9 +1,11 @@
+from datetime import timezone
 import json
 from typing import Generic, Type, TypeVar
 
 from fastapi import Query
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, TypeAdapter
+import sqlalchemy as sa
 from sqlalchemy import JSON as SQLAlchemyJSON, TypeDecorator
 
 T = TypeVar("T", bound=BaseModel)
@@ -29,6 +31,24 @@ class PaginatedList(BaseModel, Generic[T]):
 
 class JSON(SQLAlchemyJSON):
     pass
+
+
+class UTCDateTime(sa.TypeDecorator):
+    impl = sa.TIMESTAMP(timezone=True)
+
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            # Ensure the datetime is in UTC before storing
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            # Assume stored datetime is in UTC and attach tzinfo
+            value = value.replace(tzinfo=timezone.utc)
+        return value
 
 
 def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
