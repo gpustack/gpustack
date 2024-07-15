@@ -1,14 +1,16 @@
 # GPUStack
 
-GPUStack aims to get you started with running LLMs and performing inference in a simple yet scalable manner.
+GPUStack is designed to help you deploy and manage large language models (LLMs) efficiently.
 
-- Supports a wide variety of hardware.
-- Scales with your GPU inventory.
-- A lightweight Python package with minimal dependencies and operational overhead.
-- OpenAI-compatible APIs.
-- User and API key management.
-- GPU metrics monitoring.
-- Token usage and rate metrics.
+### Key features:
+
+- **Supports a wide variety of hardware:** Whether you have a single GPU or a complex setup, GPUStack can handle it.
+- **Scales with your GPU inventory:** Add more GPUs to scale up your operations seamlessly.
+- **Lightweight Python package:** With minimal dependencies and operational overhead, GPUStack is easy to install and use.
+- **OpenAI-compatible APIs:** Integrate effortlessly with existing OpenAI APIs.
+- **User and API key management:** Simplified user and key management to keep your operations secure.
+- **GPU metrics monitoring:** Keep an eye on GPU performance and utilization.
+- **Token usage and rate metrics:** Track how many tokens are used and manage rate limits effectively.
 
 ## Installation
 
@@ -37,7 +39,7 @@ cat /var/lib/gpustack/token
 Open the Start menu, type Windows PowerShell, select Windows PowerShell, and then select Run as administrator, then run the following command to install GPUStack:
 
 ```powershell
-`Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content`
+Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
 
 You can add additional workers to form a GPUStack cluster by running the following command on worker nodes:
@@ -72,7 +74,7 @@ cat /var/lib/gpustack/initial_admin_password
 
 3. Click `Playground` in the navigation menus. Now you can chat with the LLM in the UI playground.
 
-// TODO add screenshot
+![Playground Screenshot](assets/playground-screenshot.png)
 
 4. Click `API Keys` in the navigation menus, then click the `New API Key` button.
 
@@ -111,12 +113,14 @@ curl http://myserver/v1-openai/chat/completions \
 
 ## Supported Accelerators
 
-We haven't tested everything out in the wild, but we plan to support all of the following in the near future.
-
 - [x] Apple Metal
 - [x] NVIDIA CUDA
+
+We plan to support the following accelerators in future releases.
+
 - [ ] AMD ROCm
 - [ ] Intel oneAPI
+- [ ] Qualcomm AI Engine
 
 ## Supported Models
 
