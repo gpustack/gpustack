@@ -333,7 +333,7 @@ function Install-Chocolatey {
 }
 
 function Install-Python {
-    if (-not (Get-Command py40on -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
         try {
             Log-Info "Installing Python..."
             $null = choco install python --version=3.10.11 -y
@@ -350,7 +350,7 @@ function Install-Python {
 
     $PYTHON_VERSION = python -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)"
     if ($PYTHON_VERSION -lt 40) {
-        Log-Fatal "Python version is less than 3.10. Please upgrade Python to at least version 3.10."
+        Log-Fatal "Python version is $PYTHON_VERSION, which is less than 3.10. Please upgrade Python to at least version 3.10."
     }
 
     if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
