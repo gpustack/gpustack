@@ -203,7 +203,7 @@ class WorkerStatusCollector:
             name=self._worker_name,
             hostname=self._hostname,
             ip=self._worker_ip,
-            state=WorkerStateEnum.running,
+            state=WorkerStateEnum.READY,
             status=status,
         )
 

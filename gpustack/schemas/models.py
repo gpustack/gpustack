@@ -79,13 +79,13 @@ ModelsPublic = PaginatedList[ModelPublic]
 
 
 class ModelInstanceStateEnum(str, Enum):
-    initializing = "Initializing"
-    pending = "Pending"
-    running = "Running"
-    scheduled = "Scheduled"
-    error = "Error"
-    downloading = "Downloading"
-    analyzing = "Analyzing"
+    INITIALIZING = "initializing"
+    PENDING = "pending"
+    RUNNING = "running"
+    SCHEDULED = "scheduled"
+    ERROR = "error"
+    DOWNLOADING = "downloading"
+    ANALYZING = "analyzing"
 
 
 class ComputedResourceClaim(BaseModel):
@@ -104,7 +104,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     pid: Optional[int] = None
     port: Optional[int] = None
     download_progress: Optional[float] = None
-    state: ModelInstanceStateEnum = ModelInstanceStateEnum.pending
+    state: ModelInstanceStateEnum = ModelInstanceStateEnum.PENDING
     state_message: Optional[str] = None
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None

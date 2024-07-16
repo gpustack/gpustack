@@ -1,8 +1,8 @@
 """initialize tables
 
-Revision ID: d038fa71cb26
+Revision ID: c79a2df13be7
 Revises: 
-Create Date: 2024-07-15 15:28:08.596483
+Create Date: 2024-07-16 17:24:48.246370
 
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import gpustack
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'd038fa71cb26'
+revision: str = 'c79a2df13be7'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -81,7 +81,8 @@ def upgrade() -> None:
     sa.Column('hostname', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('ip', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('labels', sa.JSON(), nullable=True),
-    sa.Column('state', sa.Enum('unknown', 'running', 'inactive', name='workerstateenum'), nullable=False),
+    sa.Column('state', sa.Enum('NOT_READY', 'READY', name='workerstateenum'), nullable=False),
+    sa.Column('state_message', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('created_at', gpustack.schemas.common.UTCDateTime(timezone=True), nullable=False),
@@ -102,7 +103,7 @@ def upgrade() -> None:
     sa.Column('pid', sa.Integer(), nullable=True),
     sa.Column('port', sa.Integer(), nullable=True),
     sa.Column('download_progress', sa.Float(), nullable=True),
-    sa.Column('state', sa.Enum('initializing', 'pending', 'running', 'scheduled', 'error', 'downloading', 'analyzing', name='modelinstancestateenum'), nullable=False),
+    sa.Column('state', sa.Enum('INITIALIZING', 'PENDING', 'RUNNING', 'SCHEDULED', 'ERROR', 'DOWNLOADING', 'ANALYZING', name='modelinstancestateenum'), nullable=False),
     sa.Column('state_message', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('computed_resource_claim', gpustack.schemas.common.JSON(), nullable=True),
     sa.Column('gpu_index', sa.Integer(), nullable=True),

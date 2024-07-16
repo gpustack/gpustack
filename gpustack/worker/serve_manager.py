@@ -82,7 +82,7 @@ class ServeManager:
             # Ignore model instances that are not assigned to this worker node.
             return
 
-        if mi.state == ModelInstanceStateEnum.error:
+        if mi.state == ModelInstanceStateEnum.ERROR:
             return
 
         if (
@@ -116,7 +116,7 @@ class ServeManager:
             self._serving_model_instances[mi.id] = process
 
             patch_dict = {
-                "state": ModelInstanceStateEnum.initializing,
+                "state": ModelInstanceStateEnum.INITIALIZING,
                 "port": mi.port,
                 "pid": process.pid,
             }
@@ -124,7 +124,7 @@ class ServeManager:
 
         except Exception as e:
             patch_dict = {
-                "state": ModelInstanceStateEnum.error,
+                "state": ModelInstanceStateEnum.ERROR,
                 "state_message": f"{e}",
             }
             self._update_model_instance(mi.id, **patch_dict)

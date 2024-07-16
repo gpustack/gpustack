@@ -81,13 +81,13 @@ class InferenceServer:
             self._until_model_instance_initializing()
             patch_dict = {
                 "download_progress": 0,
-                "state": ModelInstanceStateEnum.downloading,
+                "state": ModelInstanceStateEnum.DOWNLOADING,
             }
             self._update_model_instance(mi.id, **patch_dict)
 
             self._model_path = download_model(mi, cache_dir)
 
-            patch_dict = {"state": ModelInstanceStateEnum.running}
+            patch_dict = {"state": ModelInstanceStateEnum.RUNNING}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             error_message = f"Failed to download model: {e}"
@@ -95,7 +95,7 @@ class InferenceServer:
             try:
                 patch_dict = {
                     "state_message": error_message,
-                    "state": ModelInstanceStateEnum.error,
+                    "state": ModelInstanceStateEnum.ERROR,
                 }
                 self._update_model_instance(mi.id, **patch_dict)
             except Exception as ue:
@@ -143,7 +143,7 @@ class InferenceServer:
             try:
                 patch_dict = {
                     "state_message": error_message,
-                    "state": ModelInstanceStateEnum.error,
+                    "state": ModelInstanceStateEnum.ERROR,
                 }
                 self._update_model_instance(self._model_instance.id, **patch_dict)
             except Exception as ue:
@@ -219,7 +219,7 @@ class InferenceServer:
             {
                 "model_id": mi.model_id,
                 "worker_id": mi.worker_id,
-                "state": ModelInstanceStateEnum.downloading.value,
+                "state": ModelInstanceStateEnum.DOWNLOADING.value,
             }
         )
 
@@ -232,7 +232,7 @@ class InferenceServer:
     def _until_model_instance_initializing(self):
         for _ in range(5):
             mi = self._clientset.model_instances.get(id=self._model_instance.id)
-            if mi.state == ModelInstanceStateEnum.initializing:
+            if mi.state == ModelInstanceStateEnum.INITIALIZING:
                 return
             time.sleep(1)
 

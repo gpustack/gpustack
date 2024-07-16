@@ -102,8 +102,8 @@ class Scheduler:
         async with AsyncSession(self._engine) as session:
             try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
-                if instance.state != ModelInstanceStateEnum.analyzing:
-                    instance.state = ModelInstanceStateEnum.analyzing
+                if instance.state != ModelInstanceStateEnum.ANALYZING:
+                    instance.state = ModelInstanceStateEnum.ANALYZING
                     instance.state_message = "Evaluating resource requirements."
                     await instance.update(session)
 
@@ -117,7 +117,7 @@ class Scheduler:
 
             except Exception as e:
                 try:
-                    instance.state = ModelInstanceStateEnum.error
+                    instance.state = ModelInstanceStateEnum.ERROR
                     instance.state_message = (
                         f"Failed to calculate model resource claim: {e}"
                     )
@@ -137,20 +137,22 @@ class Scheduler:
         return (
             (
                 instance.worker_id is None
-                and instance.state == ModelInstanceStateEnum.pending
+                and instance.state == ModelInstanceStateEnum.PENDING
             )
             or (
-                # Reschedule while it stays in anayzing state for too long, maybe the server is restarted.
+                # Reschedule while it stays in anayzing state for too long,
+                # maybe the server is restarted.
                 instance.worker_id is None
-                and instance.state == ModelInstanceStateEnum.analyzing
+                and instance.state == ModelInstanceStateEnum.ANALYZING
                 and datetime.now(timezone.utc)
                 - instance.updated_at.replace(tzinfo=timezone.utc)
                 > timedelta(minutes=3)
             )
             or (
-                # Reschedule while it stays in scheduled state for too long, maybe the worker is down.
+                # Reschedule while it stays in scheduled state for too long,
+                # maybe the worker is down.
                 instance.worker_id is not None
-                and instance.state == ModelInstanceStateEnum.scheduled
+                and instance.state == ModelInstanceStateEnum.SCHEDULED
                 and datetime.now(timezone.utc)
                 - instance.updated_at.replace(tzinfo=timezone.utc)
                 > timedelta(minutes=3)
@@ -185,9 +187,7 @@ class Scheduler:
         filterPolicies = [ResourceFitPolicy(estimate, self._system_reserved)]
 
         async with AsyncSession(self._engine) as session:
-            workers = await Worker.all_by_field(
-                session, "state", WorkerStateEnum.running
-            )
+            workers = await Worker.all_by_field(session, "state", WorkerStateEnum.READY)
 
             candidates = []
             if len(workers) != 0:
@@ -201,7 +201,7 @@ class Scheduler:
             model_instance = await ModelInstance.one_by_id(session, instance.id)
             if len(candidates) == 0:
                 # update model instance.
-                model_instance.state = ModelInstanceStateEnum.error
+                model_instance.state = ModelInstanceStateEnum.ERROR
                 model_instance.state_message = "No suitable workers."
                 if state_message != "":
                     model_instance.state_message = state_message
@@ -222,7 +222,7 @@ class Scheduler:
                             candidate = candidates[i]
 
                 # update model instance.
-                model_instance.state = ModelInstanceStateEnum.scheduled
+                model_instance.state = ModelInstanceStateEnum.SCHEDULED
                 model_instance.state_message = ""
                 model_instance.worker_id = candidate.worker.id
                 model_instance.worker_name = candidate.worker.name
