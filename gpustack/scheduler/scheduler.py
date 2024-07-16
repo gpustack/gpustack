@@ -72,7 +72,7 @@ class Scheduler:
 
         # scheduler job trigger by event.
         async for event in ModelInstance.subscribe(self._engine):
-            if event.type == EventType.DELETED:
+            if event.type != EventType.CREATED:
                 continue
 
             await self._enqueue_pending_instances()
@@ -83,18 +83,20 @@ class Scheduler:
         """
         Get the pending model instances.
         """
+        try:
+            async with AsyncSession(self._engine) as session:
+                instances = await ModelInstance.all(session)
+                tasks = []
+                for instance in instances:
+                    if self._should_schedule(instance):
+                        task = asyncio.create_task(
+                            self._process_calculate_model_resource_claim(instance)
+                        )
+                        tasks.append(task)
 
-        async with AsyncSession(self._engine) as session:
-            instances = await ModelInstance.all(session)
-            tasks = []
-            for instance in instances:
-                if self._should_schedule(instance):
-                    task = asyncio.create_task(
-                        self._process_calculate_model_resource_claim(instance)
-                    )
-                    tasks.append(task)
-
-            await asyncio.gather(*tasks)
+                await asyncio.gather(*tasks)
+        except Exception as e:
+            logger.error(f"Failed to enqueue pending model instances: {e}")
 
     async def _process_calculate_model_resource_claim(self, instance: ModelInstance):
         async with AsyncSession(self._engine) as session:
@@ -132,10 +134,23 @@ class Scheduler:
             instance: ModelInstance to check.
         """
 
-        return instance.worker_id is None and (
-            instance.state == ModelInstanceStateEnum.pending
+        return (
+            (
+                instance.worker_id is None
+                and instance.state == ModelInstanceStateEnum.pending
+            )
             or (
-                instance.state == ModelInstanceStateEnum.analyzing
+                # Reschedule while it stays in anayzing state for too long, maybe the server is restarted.
+                instance.worker_id is None
+                and instance.state == ModelInstanceStateEnum.analyzing
+                and datetime.now(timezone.utc)
+                - instance.updated_at.replace(tzinfo=timezone.utc)
+                > timedelta(minutes=3)
+            )
+            or (
+                # Reschedule while it stays in scheduled state for too long, maybe the worker is down.
+                instance.worker_id is not None
+                and instance.state == ModelInstanceStateEnum.scheduled
                 and datetime.now(timezone.utc)
                 - instance.updated_at.replace(tzinfo=timezone.utc)
                 > timedelta(minutes=3)
