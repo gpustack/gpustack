@@ -109,7 +109,7 @@ async def sync_replicas(
                 huggingface_repo_id=model.huggingface_repo_id,
                 huggingface_filename=model.huggingface_filename,
                 ollama_library_model_name=model.ollama_library_model_name,
-                state=ModelInstanceStateEnum.pending,
+                state=ModelInstanceStateEnum.PENDING,
             )
             await ModelInstance.create(session, instance)
             logger.debug(f"Created model instance for model {model.name}")
@@ -132,7 +132,7 @@ async def sync_ready_replicas(
 
     ready_replicas: int = 0
     for _, instance in enumerate(instances):
-        if instance.state == ModelInstanceStateEnum.running:
+        if instance.state == ModelInstanceStateEnum.RUNNING:
             ready_replicas += 1
 
     if model.ready_replicas != ready_replicas:

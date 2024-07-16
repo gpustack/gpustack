@@ -126,7 +126,7 @@ class ChatManager:
         def stop_when_running(event: Event) -> bool:
             if event.data["id"] == self._model.id and event.data["state"] == "Running":
                 return True
-            elif event.data["state"] == ModelInstanceStateEnum.error:
+            elif event.data["state"] == ModelInstanceStateEnum.ERROR:
                 raise Exception(f"Error running model: {event.data['state_message']}")
             return False
 

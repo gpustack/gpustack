@@ -89,9 +89,8 @@ class UptimeInfo(BaseModel):
 
 
 class WorkerStateEnum(str, Enum):
-    unknown = "Unknown"
-    running = "Running"
-    inactive = "Inactive"
+    NOT_READY = "not_ready"
+    READY = "ready"
 
 
 class WorkerStatus(BaseModel):
@@ -113,7 +112,8 @@ class WorkerBase(SQLModel):
     ip: str
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
-    state: WorkerStateEnum = WorkerStateEnum.unknown
+    state: WorkerStateEnum = WorkerStateEnum.NOT_READY
+    state_message: Optional[str] = None
     status: Optional[WorkerStatus] = Field(
         sa_column=Column(pydantic_column_type(WorkerStatus))
     )

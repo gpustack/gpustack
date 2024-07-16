@@ -49,7 +49,7 @@ class WorkerManager:
 
         current = result.items[0]
         worker.id = current.id
-        worker.state = WorkerStateEnum.running
+        worker.state = WorkerStateEnum.READY
 
         try:
             result = self._clientset.workers.update(id=current.id, model_update=worker)

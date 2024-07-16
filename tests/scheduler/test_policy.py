@@ -124,7 +124,7 @@ async def test_filter_with_system_reserved_and_existed_model_instances():
                 gpu_index=0,
                 model_id=1,
                 model_name="test",
-                state=ModelInstanceStateEnum.running,
+                state=ModelInstanceStateEnum.RUNNING,
                 computed_resource_claim=ComputedResourceClaim(
                     offload_layers=30,
                     is_unified_memory=True,
