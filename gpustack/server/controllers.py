@@ -9,7 +9,7 @@ from gpustack.schemas.models import (
     ModelInstanceCreate,
     ModelInstanceStateEnum,
 )
-from gpustack.server.bus import Event
+from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
 
 
@@ -74,6 +74,9 @@ class ModelInstanceController:
                 instances = await ModelInstance.all_by_field(
                     session, "model_id", model.id
                 )
+
+                if event.type == EventType.DELETED:
+                    await sync_replicas(session, model, instances)
 
                 await sync_ready_replicas(session, model, instances)
 
