@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import logging
 
 
@@ -7,6 +8,14 @@ def setup_logging(debug: bool = False):
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.StreamHandler()],
+    )
+
+    logging.Formatter.formatTime = (
+        lambda self, record, datefmt=None: datetime.fromtimestamp(
+            record.created, timezone.utc
+        )
+        .astimezone()
+        .isoformat(timespec="seconds")
     )
 
     # Disable third-party loggers
