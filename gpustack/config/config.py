@@ -4,7 +4,6 @@ from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 import validators
-from gpustack.utils.network import get_first_non_loopback_ip
 
 
 class Config(BaseSettings):
@@ -30,6 +29,7 @@ class Config(BaseSettings):
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
+        worker_name: Name of the worker node. Use the hostname by default.
         enable_metrics: Enable metrics.
         metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
@@ -56,6 +56,7 @@ class Config(BaseSettings):
     # Worker options
     server_url: Optional[str] = None
     worker_ip: Optional[str] = None
+    worker_name: Optional[str] = None
     enable_metrics: bool = True
     worker_port: int = 10150
     metrics_port: int = 10151
@@ -79,10 +80,6 @@ class Config(BaseSettings):
 
         # server options
         self.init_database_url()
-
-        # worker options
-        if self.worker_ip is None:
-            self.worker_ip = get_first_non_loopback_ip()
 
     @model_validator(mode="after")
     def check_all(self):

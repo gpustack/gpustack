@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 class WorkerStatusCollector:
-    def __init__(self, worker_ip: str, clientset: ClientSet):
+    def __init__(self, worker_ip: str, worker_name: str, clientset: ClientSet):
+        self._worker_name = worker_name
         self._hostname = socket.gethostname()
         self._worker_ip = worker_ip
         self._clientset = clientset
@@ -199,7 +200,7 @@ class WorkerStatusCollector:
         self._inject_allocated_resource(status)
 
         return Worker(
-            name=self._hostname,
+            name=self._worker_name,
             hostname=self._hostname,
             ip=self._worker_ip,
             state=WorkerStateEnum.running,

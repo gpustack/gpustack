@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+import socket
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -8,14 +9,15 @@ import setproctitle
 import uvicorn
 
 from gpustack.config import Config
-from gpustack.worker.logs import LogOptionsDep
-from gpustack.worker.worker_manager import WorkerManager
-from gpustack.worker.serve_manager import ServeManager
+from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.logs import LogOptionsDep
+from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.logs import log_generator
+from gpustack.worker.worker_manager import WorkerManager
 
 
 logger = logging.getLogger(__name__)
@@ -23,28 +25,59 @@ logger = logging.getLogger(__name__)
 
 class Worker:
     def __init__(self, cfg: Config):
-        clientset = ClientSet(
-            base_url=cfg.server_url,
-            username=f"system/worker/{cfg.worker_ip}",
-            password=cfg.token,
-        )
-        self._worker_manager = WorkerManager(
-            worker_ip=cfg.worker_ip, clientset=clientset
-        )
-        self._serve_manager = ServeManager(
-            server_url=cfg.server_url,
-            clientset=clientset,
-            log_dir=cfg.log_dir,
-            data_dir=cfg.data_dir,
-        )
-
+        self._config = cfg
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
         self._port = cfg.worker_port
         self._exporter_enabled = cfg.enable_metrics
-        self._exporter = MetricExporter(
-            worker_ip=cfg.worker_ip, port=cfg.metrics_port, clientset=clientset
+        self._enable_worker_ip_monitor = False
+
+        self._worker_ip = cfg.worker_ip
+        if self._worker_ip is None:
+            self._worker_ip = get_first_non_loopback_ip()
+            self._enable_worker_ip_monitor = True
+
+        self._worker_name = cfg.worker_name
+        if self._worker_name is None:
+            self._worker_name = self._get_worker_name()
+
+        self._clientset = ClientSet(
+            base_url=cfg.server_url,
+            username=f"system/worker/{self._worker_name}",
+            password=cfg.token,
         )
+        self._worker_manager = WorkerManager(
+            worker_ip=self._worker_ip,
+            worker_name=self._worker_name,
+            clientset=self._clientset,
+        )
+        self._serve_manager = ServeManager(
+            server_url=cfg.server_url,
+            clientset=self._clientset,
+            log_dir=cfg.log_dir,
+            data_dir=cfg.data_dir,
+        )
+        self._exporter = MetricExporter(
+            worker_ip=self._worker_ip,
+            worker_name=self._worker_name,
+            port=cfg.metrics_port,
+            clientset=self._clientset,
+        )
+
+    def _get_worker_name(self):
+        # Hostname might change with the network, so we store the worker name in a file.
+        # It avoids creating multiple workers for the same node.
+        # This is useful when running standalone on a PC.
+        worker_name_path = os.path.join(self._config.data_dir, "worker_name")
+        if os.path.exists(worker_name_path):
+            with open(worker_name_path, "r") as file:
+                worker_name = file.read().strip()
+        else:
+            worker_name = socket.gethostname()
+            with open(worker_name_path, "w") as file:
+                file.write(worker_name)
+
+        return worker_name
 
     def start(self, is_multiprocessing=False):
         if is_multiprocessing:
@@ -62,6 +95,10 @@ class Worker:
         if self._exporter_enabled:
             # Start the metric exporter with retry.
             run_periodically_in_thread(self._exporter.start, 15)
+
+        if self._enable_worker_ip_monitor:
+            # Check worker ip change every 15 seconds.
+            run_periodically_in_thread(self._check_worker_ip_change, 15)
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
@@ -105,3 +142,27 @@ class Worker:
             await server.serve()
         finally:
             logger.info("Worker stopped.")
+
+    def _check_worker_ip_change(self):
+        """
+        Detect if the worker IP has changed. If so, delete legacy model
+        instances so they can be recreated with the new worker IP.
+        """
+
+        current_ip = get_first_non_loopback_ip()
+        if current_ip != self._worker_ip:
+            logger.info(f"Worker IP changed from {self._worker_ip} to {current_ip}")
+            self._worker_ip = current_ip
+            self._worker_manager._worker_ip = current_ip
+            self._exporter._worker_ip = current_ip
+            self._exporter._collector._worker_ip = current_ip
+
+            workers = self._clientset.workers.list(params={"name": self._worker_name})
+
+            if workers is None or len(workers.items) == 0:
+                raise Exception(f"Worker {self._worker_name} not found")
+
+            for instance in self._clientset.model_instances.list(
+                params={"worker_id": workers.items[0].id}
+            ).items:
+                self._clientset.model_instances.delete(instance.id)

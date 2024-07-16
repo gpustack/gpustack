@@ -119,6 +119,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_env_or_default("WORKER_IP"),
     )
     group.add_argument(
+        "--worker-name",
+        type=str,
+        help="Name of the worker node. Use the hostname by default.",
+        default=get_env_or_default("WORKER_NAME"),
+    )
+    group.add_argument(
         "--enable-metrics",
         action="store_true",
         help="Enable metrics.",
@@ -234,9 +240,10 @@ def set_worker_options(args, config_data: dict):
     options = [
         "server_url",
         "worker_ip",
+        "worker_name",
+        "worker_port",
         "enable_metrics",
         "metrics_port",
-        "worker_port",
         "log_dir",
     ]
 

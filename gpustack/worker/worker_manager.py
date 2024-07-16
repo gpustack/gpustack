@@ -1,5 +1,4 @@
 import platform
-import socket
 import logging
 
 from gpustack.api.exceptions import (
@@ -14,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class WorkerManager:
-    def __init__(self, worker_ip: str, clientset: ClientSet):
+    def __init__(self, worker_ip: str, worker_name: str, clientset: ClientSet):
         self._registration_completed = False
-        self._hostname = socket.gethostname()
+        self._worker_name = worker_name
         self._worker_ip = worker_ip
         self._clientset = clientset
 
@@ -32,18 +31,20 @@ class WorkerManager:
 
     def _update_worker_status(self):
         collector = WorkerStatusCollector(
-            worker_ip=self._worker_ip, clientset=self._clientset
+            worker_ip=self._worker_ip,
+            worker_name=self._worker_name,
+            clientset=self._clientset,
         )
 
         try:
             worker = collector.collect()
-            result = self._clientset.workers.list(params={"name": self._hostname})
+            result = self._clientset.workers.list(params={"name": self._worker_name})
         except Exception as e:
-            logger.error(f"Failed to update worker status {self._hostname}: {e}")
+            logger.error(f"Failed to update worker status {self._worker_name}: {e}")
             return
 
         if result is None or len(result.items) == 0:
-            logger.error(f"Worker {self._hostname} not found")
+            logger.error(f"Worker {self._worker_name} not found")
             return
 
         current = result.items[0]
@@ -53,7 +54,7 @@ class WorkerManager:
         try:
             result = self._clientset.workers.update(id=current.id, model_update=worker)
         except Exception as e:
-            logger.error(f"Failed to update worker {self._hostname} status: {e}")
+            logger.error(f"Failed to update worker {self._worker_name} status: {e}")
 
     def register_with_server(self):
         if self._registration_completed:
@@ -84,7 +85,9 @@ class WorkerManager:
     def _initialize_worker(self):
         try:
             collector = WorkerStatusCollector(
-                worker_ip=self._worker_ip, clientset=self._clientset
+                worker_ip=self._worker_ip,
+                worker_name=self._worker_name,
+                clientset=self._clientset,
             )
             worker = collector.collect()
 
