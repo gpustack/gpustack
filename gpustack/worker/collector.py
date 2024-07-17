@@ -288,7 +288,7 @@ class WorkerStatusCollector:
             ("Darwin", "amd64"): "fastfetch-macos-universal",
             ("Darwin", "arm64"): "fastfetch-macos-universal",
             ("Linux", "amd64"): "fastfetch-linux-amd64",
-            ("Linux", "arm64"): "fastfetch-linux-arm64",
+            ("Linux", "arm64"): "fastfetch-linux-aarch64",
         }
 
         command = get_platform_command(command_map)

@@ -40,7 +40,7 @@ class WorkerManager:
             worker = collector.collect()
             result = self._clientset.workers.list(params={"name": self._worker_name})
         except Exception as e:
-            logger.error(f"Failed to update worker status {self._worker_name}: {e}")
+            logger.error(f"Failed to update status for worker {self._worker_name}: {e}")
             return
 
         if result is None or len(result.items) == 0:
