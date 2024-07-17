@@ -9,6 +9,7 @@ import setproctitle
 import uvicorn
 
 from gpustack.config import Config
+from gpustack.schemas.workers import SystemReserved
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -31,6 +32,16 @@ class Worker:
         self._port = cfg.worker_port
         self._exporter_enabled = cfg.enable_metrics
         self._enable_worker_ip_monitor = False
+        self._system_reserved = SystemReserved(memory=0, gpu_memory=0)
+
+        if cfg.system_reserved is not None:
+            # GB to Bytes
+            self._system_reserved.memory = (
+                cfg.system_reserved.get("memory", 0) * 1024 * 1024 * 1024
+            )
+            self._system_reserved.gpu_memory = (
+                cfg.system_reserved.get("gpu_memory", 0) * 1024 * 1024 * 1024
+            )
 
         self._worker_ip = cfg.worker_ip
         if self._worker_ip is None:
@@ -49,6 +60,7 @@ class Worker:
         self._worker_manager = WorkerManager(
             worker_ip=self._worker_ip,
             worker_name=self._worker_name,
+            system_reserved=self._system_reserved,
             clientset=self._clientset,
         )
         self._serve_manager = ServeManager(

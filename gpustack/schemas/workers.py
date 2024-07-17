@@ -88,6 +88,11 @@ class UptimeInfo(BaseModel):
     boot_time: str = Field(default="")
 
 
+class SystemReserved(BaseModel):
+    memory: int = Field(default=None)
+    gpu_memory: int = Field(default=None)
+
+
 class WorkerStateEnum(str, Enum):
     NOT_READY = "not_ready"
     READY = "ready"
@@ -112,6 +117,9 @@ class WorkerBase(SQLModel):
     ip: str
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
+    system_reserved: Optional[SystemReserved] = Field(
+        sa_column=Column(pydantic_column_type(SystemReserved))
+    )
     state: WorkerStateEnum = WorkerStateEnum.NOT_READY
     state_message: Optional[str] = None
     status: Optional[WorkerStatus] = Field(

@@ -4,6 +4,10 @@
     "ip": "192.168.50.2",
     "labels": {},
     "state": "Unknown",
+    "system_reserved": {
+        "memory": 1073741824,
+        "gpu_memory": 1073741824
+    },
     "status": {
         "memory": {
             "total": 67183366144,

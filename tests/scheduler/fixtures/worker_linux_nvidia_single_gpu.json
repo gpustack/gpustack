@@ -3,6 +3,10 @@
     "hostname": "host4090",
     "ip": "192.168.50.3",
     "labels": {},
+    "system_reserved": {
+        "memory": 1073741824,
+        "gpu_memory": 1073741824
+    },
     "state": "Unknown",
     "status": {
         "memory": {

@@ -77,14 +77,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_env_or_default("BOOTSTRAP_PASSWORD"),
     )
     group.add_argument(
-        "--system-reserved",
-        type=json.loads,
-        help="The system reserves resources for the worker during scheduling, measured in GiB. \
-        By default, 1 GiB of memory and 1 GiB of GPU memory are reserved. \
-        Example: {'memory': 1, 'gpu_memory': 1}.",
-        default=get_env_or_default("SYSTEM_RESERVED", {"memory": 1, "gpu_memory": 1}),
-    )
-    group.add_argument(
         "--ssl-keyfile",
         type=str,
         help="Path to the SSL key file.",
@@ -147,6 +139,17 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="Directory to store logs.",
         default=get_env_or_default("LOG_DIR"),
+    )
+    group.add_argument(
+        "--system-reserved",
+        type=json.loads,
+        help="The system reserves resources during scheduling, measured in GiB. \
+        Where memory is reserved per worker, and gpu_memory is reserved per GPU device. \
+        1 GiB of memory is reserved per worker and 1 GiB of GPU memory is reserved per GPU device. \
+        Example: '{\"memory\": 1, \"gpu_memory\": 1}'.",
+        default=get_env_or_default(
+            "SYSTEM_RESERVED", '{\"memory\": 1, \"gpu_memory\": 1}'
+        ),
     )
 
     parser_server.set_defaults(func=run)

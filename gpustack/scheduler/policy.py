@@ -33,16 +33,9 @@ class Allocated(AllocationResource):
     pass
 
 
-@dataclass
-class SystemReservedResource:
-    memory: int
-    gpu_memory: int
-
-
 class ResourceFitPolicy:
-    def __init__(self, estimate: estimate, system_reserved: SystemReservedResource):
+    def __init__(self, estimate: estimate):
         self._estimate = estimate
-        self._system_reserved = system_reserved
         self._engine = get_engine()
 
     async def filter(
@@ -144,25 +137,24 @@ class ResourceFitPolicy:
             if gpu.memory is None or gpu.memory.total is None:
                 continue
 
-            allocatable_gpu_memory = gpu.memory.total - (
-                allocated.gpu_memory.get(gpu_index, 0)
+            allocatable_gpu_memory = (
+                gpu.memory.total
+                - allocated.gpu_memory.get(gpu_index, 0)
+                - worker.system_reserved.gpu_memory
             )
 
-            # allocatable.gpu_memory[gpu_index] =
-            if gpu_index == 0:
-                allocatable_gpu_memory = (
-                    allocatable_gpu_memory - self._system_reserved.gpu_memory
-                )
             allocatable.gpu_memory[gpu_index] = allocatable_gpu_memory
 
         allocatable.memory = (
-            worker.status.memory.total - self._system_reserved.memory - allocated.memory
+            worker.status.memory.total
+            - allocated.memory
+            - worker.system_reserved.memory
         )
 
         if is_unified_memory:
             allocatable.memory = (
                 allocatable.memory
-                - self._system_reserved.gpu_memory
+                - worker.system_reserved.gpu_memory
                 - sum(allocated.gpu_memory.values())
             )
 
@@ -172,6 +164,12 @@ class ResourceFitPolicy:
                 allocatable.memory, allocatable.gpu_memory[0]
             )
 
+        logger.debug(
+            f"Worker {worker.name} reserved memory: {worker.system_reserved.memory}, "
+            f"reserved gpu memory: {worker.system_reserved.gpu_memory}, "
+            f"allocatable memory: {allocatable.memory}, "
+            f"allocatable gpu memory: {allocatable.gpu_memory}"
+        )
         return allocatable
 
 

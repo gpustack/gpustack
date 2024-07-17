@@ -6,18 +6,25 @@ from gpustack.api.exceptions import (
 )
 
 from gpustack.client import ClientSet
-from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.schemas.workers import SystemReserved, Worker, WorkerStateEnum
 from gpustack.worker.collector import WorkerStatusCollector
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerManager:
-    def __init__(self, worker_ip: str, worker_name: str, clientset: ClientSet):
+    def __init__(
+        self,
+        worker_ip: str,
+        worker_name: str,
+        system_reserved: SystemReserved,
+        clientset: ClientSet,
+    ):
         self._registration_completed = False
         self._worker_name = worker_name
         self._worker_ip = worker_ip
         self._clientset = clientset
+        self._system_reserved = system_reserved
 
     def sync_worker_status(self):
         """
@@ -50,6 +57,7 @@ class WorkerManager:
         current = result.items[0]
         worker.id = current.id
         worker.state = WorkerStateEnum.READY
+        worker.system_reserved = self._system_reserved
 
         try:
             result = self._clientset.workers.update(id=current.id, model_update=worker)
@@ -94,6 +102,7 @@ class WorkerManager:
             os_info = platform.uname()
             arch_info = platform.machine()
 
+            worker.system_reserved = self._system_reserved
             worker.labels = {
                 "os": os_info.system,
                 "arch": arch_info,
