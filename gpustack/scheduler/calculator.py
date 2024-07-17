@@ -84,7 +84,6 @@ def _gguf_parser_command(model: Model):
         "-ctx-size",
         "8192",
         "-in-max-ctx-size",
-        "-flash-attention",
         "-gpu-layers-step",
         "1",
         "-skip-tokenizer",
