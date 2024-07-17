@@ -1,7 +1,6 @@
 import logging
 import random
 import string
-from typing import Sequence
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.models import (
     Model,
@@ -37,11 +36,7 @@ class ModelController:
         model: Model = event.data
         try:
             async with AsyncSession(self._engine) as session:
-                instances = await ModelInstance.all_by_field(
-                    session, "model_id", model.id
-                )
-
-                await sync_replicas(session, model, instances)
+                await sync_replicas(session, model)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
 
@@ -71,14 +66,11 @@ class ModelInstanceController:
                 if not model:
                     return
 
-                instances = await ModelInstance.all_by_field(
-                    session, "model_id", model.id
-                )
-
                 if event.type == EventType.DELETED:
-                    await sync_replicas(session, model, instances)
+                    await sync_replicas(session, model)
 
-                await sync_ready_replicas(session, model, instances)
+                await model.refresh(session)
+                await sync_ready_replicas(session, model)
 
         except Exception as e:
             logger.error(
@@ -86,9 +78,7 @@ class ModelInstanceController:
             )
 
 
-async def sync_replicas(
-    session: AsyncSession, model: Model, instances: Sequence[ModelInstance]
-):
+async def sync_replicas(session: AsyncSession, model: Model):
     """
     Synchronize the replicas.
     """
@@ -96,6 +86,7 @@ async def sync_replicas(
     if model.deleted_at is not None:
         return
 
+    instances = await ModelInstance.all_by_field(session, "model_id", model.id)
     if len(instances) < model.replicas:
         for _ in range(model.replicas - len(instances)):
             name_prefix = ''.join(
@@ -120,15 +111,15 @@ async def sync_replicas(
             logger.debug(f"Deleted model instance {instance.name}")
 
 
-async def sync_ready_replicas(
-    session: AsyncSession, model: Model, instances: Sequence[ModelInstance]
-):
+async def sync_ready_replicas(session: AsyncSession, model: Model):
     """
     Synchronize the ready replicas.
     """
 
     if model.deleted_at is not None:
         return
+
+    instances = await ModelInstance.all_by_field(session, "model_id", model.id)
 
     ready_replicas: int = 0
     for _, instance in enumerate(instances):

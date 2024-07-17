@@ -9,7 +9,7 @@ import setproctitle
 import uvicorn
 
 from gpustack.config import Config
-from gpustack.schemas.workers import SystemReserved
+from gpustack.schemas.workers import SystemReserved, WorkerUpdate
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -174,7 +174,12 @@ class Worker:
             if workers is None or len(workers.items) == 0:
                 raise Exception(f"Worker {self._worker_name} not found")
 
+            worker = workers.items[0]
+            worker_update: WorkerUpdate = WorkerUpdate.model_validate(worker)
+            worker_update.ip = current_ip
+            self._clientset.workers.update(worker.id, worker_update)
+
             for instance in self._clientset.model_instances.list(
-                params={"worker_id": workers.items[0].id}
+                params={"worker_id": worker.id}
             ).items:
                 self._clientset.model_instances.delete(instance.id)

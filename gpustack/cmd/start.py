@@ -145,8 +145,8 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=json.loads,
         help="The system reserves resources during scheduling, measured in GiB. \
         Where memory is reserved per worker, and gpu_memory is reserved per GPU device. \
-        1 GiB of memory is reserved per worker and 1 GiB of GPU memory is reserved per GPU device. \
-        Example: '{\"memory\": 1, \"gpu_memory\": 1}'.",
+        1 GiB of memory is reserved per worker and 1 GiB of GPU memory is reserved \
+        per GPU device. Example: '{\"memory\": 1, \"gpu_memory\": 1}'.",
         default=get_env_or_default(
             "SYSTEM_RESERVED", '{\"memory\": 1, \"gpu_memory\": 1}'
         ),
