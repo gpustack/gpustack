@@ -3,15 +3,15 @@ set -e
 set -o noglob
 
 # Usage:
-#   curl ... | ENV_VAR=... sh - [args]
+#   curl ... | ENV_VAR=... sh -s - [args]
 #       or
 #   ENV_VAR=... ./install.sh [args]
 #
 # Example:
 #   Installing a server with bootstrap passowrd:
-#     curl ... | sh - --bootstrap-password mypassword
+#     curl ... | sh -s - --bootstrap-password mypassword
 #   Installing a worker to point at a server:
-#     curl ... | sh - --server-url http://myserver --token mytoken
+#     curl ... | sh -s - --server-url http://myserver --token mytoken
 #
 # Environment variables:
 #   - INSTALL_PACKAGE_SPEC
@@ -185,7 +185,7 @@ setup_launchd() {
 EOF
 
   for arg in "$@"; do
-    $SUDO echo "    <string>$arg</string>" >> /Library/LaunchDaemons/ai.gpustack.plist
+    echo "    <string>$arg</string>" | $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null
   done
 
   $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
