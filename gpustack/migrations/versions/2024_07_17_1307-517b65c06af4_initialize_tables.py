@@ -1,8 +1,8 @@
 """initialize tables
 
-Revision ID: c79a2df13be7
+Revision ID: 517b65c06af4
 Revises: 
-Create Date: 2024-07-16 17:24:48.246370
+Create Date: 2024-07-17 13:07:18.085589
 
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import gpustack
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'c79a2df13be7'
+revision: str = '517b65c06af4'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -81,6 +81,7 @@ def upgrade() -> None:
     sa.Column('hostname', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('ip', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('labels', sa.JSON(), nullable=True),
+    sa.Column('system_reserved', gpustack.schemas.common.JSON(), nullable=True),
     sa.Column('state', sa.Enum('NOT_READY', 'READY', name='workerstateenum'), nullable=False),
     sa.Column('state_message', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('status', gpustack.schemas.common.JSON(), nullable=True),

@@ -11,7 +11,6 @@ from tests.scheduler.fixtures.fixtures import (
     worker_macos_metal,
     worker_linux_nvidia_multi_gpu,
     worker_linux_nvidia_single_gpu,
-    system_reserved,
 )
 
 from unittest.mock import patch
@@ -25,10 +24,9 @@ async def test_filter():
         worker_linux_nvidia_multi_gpu(),
     ]
 
-    reserved = system_reserved()
     claim = llama3_8b_estimate_claim()
 
-    policy = ResourceFitPolicy(estimate=claim.estimate, system_reserved=reserved)
+    policy = ResourceFitPolicy(estimate=claim.estimate)
 
     with patch.object(policy, '_get_worker_model_instances', return_value=[]):
         filtered_workers = await policy.filter(workers)
@@ -65,12 +63,9 @@ async def test_filter_with_cannot_full_offload_model():
         worker_linux_nvidia_multi_gpu(),
     ]
 
-    reserved = system_reserved()
     estimate_claim = llama3_70b_estimate_claim()
 
-    policy = ResourceFitPolicy(
-        estimate=estimate_claim.estimate, system_reserved=reserved
-    )
+    policy = ResourceFitPolicy(estimate=estimate_claim.estimate)
 
     with patch.object(policy, '_get_worker_model_instances', return_value=[]):
         filtered_workers = await policy.filter(workers)
@@ -102,17 +97,14 @@ async def test_filter_with_cannot_full_offload_model():
 @pytest.mark.asyncio
 async def test_filter_with_system_reserved_and_existed_model_instances():
     workers = [
-        worker_macos_metal(),
-        worker_linux_nvidia_single_gpu(),
-        worker_linux_nvidia_multi_gpu(),
+        worker_macos_metal(reserved=True),
+        worker_linux_nvidia_single_gpu(reserved=True),
+        worker_linux_nvidia_multi_gpu(reserved=True),
     ]
 
-    reserved = system_reserved(memory=1, gpu_memory=1)
     estimate_claim = llama3_70b_estimate_claim()
 
-    policy = ResourceFitPolicy(
-        estimate=estimate_claim.estimate, system_reserved=reserved
-    )
+    policy = ResourceFitPolicy(estimate=estimate_claim.estimate)
 
     with patch.object(
         policy,
@@ -138,17 +130,17 @@ async def test_filter_with_system_reserved_and_existed_model_instances():
         filtered_workers = await policy.filter(workers)
         assert len(filtered_workers) == 3
 
-        assert filtered_workers[0].computed_resource_claim.offload_layers == 47
+        assert filtered_workers[0].computed_resource_claim.offload_layers == 45
         assert not filtered_workers[0].computed_resource_claim.is_unified_memory
-        assert filtered_workers[0].computed_resource_claim.memory == 1952683416
-        assert filtered_workers[0].computed_resource_claim.gpu_memory == 25604571136
+        assert filtered_workers[0].computed_resource_claim.memory == 2019792280
+        assert filtered_workers[0].computed_resource_claim.gpu_memory == 24574738432
 
-        assert filtered_workers[1].computed_resource_claim.offload_layers == 30
+        assert filtered_workers[1].computed_resource_claim.offload_layers == 28
         assert not filtered_workers[1].computed_resource_claim.is_unified_memory
-        assert filtered_workers[1].computed_resource_claim.memory == 2523108760
-        assert filtered_workers[1].computed_resource_claim.gpu_memory == 16850993152
+        assert filtered_workers[1].computed_resource_claim.memory == 2590217624
+        assert filtered_workers[1].computed_resource_claim.gpu_memory == 15821160448
 
-        assert filtered_workers[2].computed_resource_claim.offload_layers == 30
+        assert filtered_workers[2].computed_resource_claim.offload_layers == 28
         assert not filtered_workers[2].computed_resource_claim.is_unified_memory
-        assert filtered_workers[2].computed_resource_claim.memory == 2523108760
-        assert filtered_workers[2].computed_resource_claim.gpu_memory == 16850993152
+        assert filtered_workers[2].computed_resource_claim.memory == 2590217624
+        assert filtered_workers[2].computed_resource_claim.gpu_memory == 15821160448

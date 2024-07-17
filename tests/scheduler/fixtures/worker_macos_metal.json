@@ -3,6 +3,10 @@
     "hostname": "hostmacosmetal",
     "ip": "192.168.50.147",
     "labels": {},
+    "system_reserved": {
+        "memory": 1073741824,
+        "gpu_memory": 1073741824
+    },
     "state": "Running",
     "status": {
         "memory": {

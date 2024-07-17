@@ -9,7 +9,6 @@ from apscheduler.triggers.interval import IntervalTrigger
 from gpustack.scheduler.policy import (
     ModelInstanceScheduleCandidate,
     ResourceFitPolicy,
-    SystemReservedResource,
 )
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    def __init__(self, check_interval: int = 30, system_reserved: dict = None):
+    def __init__(self, check_interval: int = 30):
         """
         Init the scheduler with queue and interval.
         """
@@ -38,18 +37,6 @@ class Scheduler:
         self._check_interval = check_interval
         self._engine = get_engine()
         self._queue = AsyncUniqueQueue()
-        self._system_reserved = SystemReservedResource(0, 0)
-
-        if system_reserved is not None:
-            memory = (
-                int(system_reserved.get("memory", 0)) * 1024 * 1024 * 1024
-            )  # GB to Bytes
-            gpu_memory = (
-                int(system_reserved.get("gpu_memory", 0)) * 1024 * 1024 * 1024
-            )  # GB to Bytes
-            self._system_reserved = SystemReservedResource(
-                memory=memory, gpu_memory=gpu_memory
-            )
 
     async def start(self):
         """
@@ -184,7 +171,7 @@ class Scheduler:
         state_message = ""
         instance = item.model_instance
         estimate = item.resource_claim_estimate
-        filterPolicies = [ResourceFitPolicy(estimate, self._system_reserved)]
+        filterPolicies = [ResourceFitPolicy(estimate)]
 
         async with AsyncSession(self._engine) as session:
             workers = await Worker.all_by_field(session, "state", WorkerStateEnum.READY)
