@@ -8,10 +8,20 @@ function gpustack::util::sed() {
   fi
 }
 
+function gpustack::util::get_os_name() {
+  # Support overriding by BUILD_OS for cross-building
+  local os_name="${BUILD_OS:-}"
+  if [[ -n "$os_name" ]]; then
+    echo "$os_name" | tr '[:upper:]' '[:lower:]'
+  else
+    uname -s | tr '[:upper:]' '[:lower:]'
+  fi
+}
+
 function gpustack::util::is_darwin() {
-  [[ "$(uname -s)" == "Darwin" ]]
+  [[ "$(gpustack::util::get_os_name)" == "darwin" ]]
 }
 
 function gpustack::util::is_linux() {
-  [[ "$(uname -s)" == "Linux" ]]
+  [[ "$(gpustack::util::get_os_name)" == "linux" ]]
 }

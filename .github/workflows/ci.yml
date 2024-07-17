@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        os: [ubuntu-latest, macos-latest]
+        os: [linux, darwin]
     steps:
       - uses: actions/checkout@v4
         name: Checkout code
@@ -37,6 +37,8 @@ jobs:
       - name: Run CI build
         run: |
           make ci
+        env:
+          BUILD_OS: ${{ matrix.os }}
 
       - name: Upload wheel as artifact
         if: matrix.python-version == '3.11'
