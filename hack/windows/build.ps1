@@ -44,6 +44,9 @@ function Set-Version {
     $fileContent = $fileContent -replace "__version__ = .*", "__version__ = '$version'"
     $fileContent = $fileContent -replace "__git_commit__ = .*", "__git_commit__ = '$gitCommitShort'"
     Set-Content -Path $versionFile -Value $fileContent
+
+    # Update the poetry version
+    poetry version "$version"
 }
 
 function Restore-Version-File {
