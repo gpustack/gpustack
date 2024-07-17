@@ -8,6 +8,26 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function build() {
+  if gpustack::util::is_darwin; then
+    build_platform "macosx_11_0_universal2"
+  elif gpustack::util::is_linux; then
+    build_platform "manylinux2014_x86_64"
+    # This is a temporary workaround to make the wheel files different.
+    echo >> "${ROOT_DIR}/README.md"
+    build_platform "manylinux2014_aarch64"
+    # Remove the extra newline.
+    # shellcheck disable=SC2016
+    gpustack::util::sed '${/^$/d;}' "${ROOT_DIR}/README.md"
+  fi
+}
+
+
+function build_platform() {
+  platform="${1:-}"
+  if [ -z "$platform" ]; then
+    gpustack::log::fatal "undefined platform to build"
+  fi
+
   poetry build
 
   dist_dir="$ROOT_DIR/dist"
@@ -17,19 +37,11 @@ function build() {
   fi
 
   for whl_file in $whl_files; do
-      original_name=$(basename "$whl_file")
-      if gpustack::util::is_darwin; then
-        new_name=${original_name/any/macosx_11_0_universal2}
-        mv -f "$whl_file" "$dist_dir/$new_name"
-        gpustack::log::info "renamed $original_name to $new_name"
-      elif gpustack::util::is_linux; then
-        new_name_amd=${original_name/any/manylinux2014_x86_64}
-        new_name_arm=${original_name/any/manylinux2014_aarch64}
-        cp -f "$whl_file" "$dist_dir/$new_name_amd"
-        cp -f "$whl_file" "$dist_dir/$new_name_arm"
-        rm -rf "$whl_file"
-        gpustack::log::info "renamed $original_name to $new_name_amd"
-        gpustack::log::info "renamed $original_name to $new_name_arm"
+      if [[ "$whl_file" == *-any* ]]; then
+          original_name=$(basename "$whl_file")
+          new_name="${original_name/any/$platform}"
+          mv -f "$whl_file" "$dist_dir/$new_name"
+          gpustack::log::info "renamed $original_name to $new_name"
       fi
   done
 }

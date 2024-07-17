@@ -3,6 +3,7 @@ name = "gpustack"
 version = "0.0.0"
 description = "GPUStack"
 authors = ["GPUStack Authors <contact@gpustack.ai>"]
+readme = "README.md"
 include = ["*/third_party/**/*","*/ui/**/*"]
 
 [tool.poetry.dependencies]
@@ -47,6 +48,7 @@ deptry = "^0.16.1"
 pre-commit = "^3.7.1"
 mkdocs = "^1.6.0"
 mkdocs-material = "^9.5.27"
+twine = "^5.1.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

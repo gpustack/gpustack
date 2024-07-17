@@ -4,9 +4,12 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
-  gpustack::log::error "PYPI_API_TOKEN is not set"
-  exit 1
+DIST="dist/*.whl"
+if [[ ${PUBLISH_SOURCE:-} == "1" ]]; then
+  DIST="dist/*"
 fi
 
-poetry publish --username __token__ --password "$PYPI_API_TOKEN"
+# shellcheck disable=SC2086
+poetry run twine check $DIST
+# shellcheck disable=SC2086
+poetry run twine upload $DIST
