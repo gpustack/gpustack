@@ -19,7 +19,7 @@ jobs:
   linux-macos-build:
     timeout-minutes: 20
     name: Build Wheel
-    runs-on:  ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
@@ -89,8 +89,8 @@ jobs:
             export INSTALL_PACKAGE_SPEC=$(ls dist/*.whl)
           fi
 
-          ./install.sh
-      
+          cat install.sh | sh -
+
       - name: Verify installation
         run: |
           gpustack version
