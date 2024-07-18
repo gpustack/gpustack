@@ -1,8 +1,6 @@
 from typing import List
 from pydantic import BaseModel, ConfigDict
 
-from gpustack.schemas.workers import UtilizationInfo
-
 
 class TimeSeriesData(BaseModel):
     timestamp: int
@@ -10,10 +8,10 @@ class TimeSeriesData(BaseModel):
 
 
 class CurrentSystemLoad(BaseModel):
-    cpu: UtilizationInfo
-    memory: UtilizationInfo
-    gpu: UtilizationInfo
-    gpu_memory: UtilizationInfo
+    cpu: float
+    memory: float
+    gpu: float
+    gpu_memory: float
 
 
 class HistorySystemLoad(BaseModel):
