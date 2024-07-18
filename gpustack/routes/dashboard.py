@@ -82,25 +82,25 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
         cpu.append(
             TimeSeriesData(
                 timestamp=system_load.timestamp,
-                value=system_load.cpu.utilization_rate,
+                value=system_load.cpu,
             )
         )
         memory.append(
             TimeSeriesData(
                 timestamp=system_load.timestamp,
-                value=system_load.memory.utilization_rate,
+                value=system_load.memory,
             )
         )
         gpu.append(
             TimeSeriesData(
                 timestamp=system_load.timestamp,
-                value=system_load.gpu.utilization_rate,
+                value=system_load.gpu,
             )
         )
         gpu_memory.append(
             TimeSeriesData(
                 timestamp=system_load.timestamp,
-                value=system_load.gpu_memory.utilization_rate,
+                value=system_load.gpu_memory,
             )
         )
 

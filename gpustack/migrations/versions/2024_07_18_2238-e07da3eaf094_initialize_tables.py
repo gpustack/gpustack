@@ -1,8 +1,8 @@
 """initialize tables
 
-Revision ID: 517b65c06af4
+Revision ID: e07da3eaf094
 Revises: 
-Create Date: 2024-07-17 13:07:18.085589
+Create Date: 2024-07-18 22:38:47.966859
 
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import gpustack
 
 
 # revision identifiers, used by Alembic.
-revision: str = '517b65c06af4'
+revision: str = 'e07da3eaf094'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -57,10 +57,10 @@ def upgrade() -> None:
     op.create_table('system_loads',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('timestamp', sa.Integer(), nullable=False),
-    sa.Column('cpu', gpustack.schemas.common.JSON(), nullable=True),
-    sa.Column('memory', gpustack.schemas.common.JSON(), nullable=True),
-    sa.Column('gpu', gpustack.schemas.common.JSON(), nullable=True),
-    sa.Column('gpu_memory', gpustack.schemas.common.JSON(), nullable=True),
+    sa.Column('cpu', sa.Float(), nullable=True),
+    sa.Column('memory', sa.Float(), nullable=True),
+    sa.Column('gpu', sa.Float(), nullable=True),
+    sa.Column('gpu_memory', sa.Float(), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('users',

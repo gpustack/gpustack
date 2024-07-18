@@ -1,11 +1,8 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column
 from sqlmodel import Field, SQLModel
 from gpustack.mixins.active_record import ActiveRecordMixin
-from gpustack.schemas.common import pydantic_column_type
-from gpustack.schemas.workers import UtilizationInfo
 
 
 class SystemLoad(SQLModel, ActiveRecordMixin, table=True):
@@ -14,15 +11,14 @@ class SystemLoad(SQLModel, ActiveRecordMixin, table=True):
     timestamp: int = Field(
         default_factory=lambda: int(datetime.now(timezone.utc).timestamp())
     )
-    cpu: Optional[UtilizationInfo] = Field(
-        sa_column=Column(pydantic_column_type(UtilizationInfo))
-    )
-    memory: Optional[UtilizationInfo] = Field(
-        sa_column=Column(pydantic_column_type(UtilizationInfo))
-    )
-    gpu: Optional[UtilizationInfo] = Field(
-        sa_column=Column(pydantic_column_type(UtilizationInfo))
-    )
-    gpu_memory: Optional[UtilizationInfo] = Field(
-        sa_column=Column(pydantic_column_type(UtilizationInfo))
-    )
+    # average cpu utilization rate per worker
+    cpu: Optional[float] = Field(default=None)
+
+    # average memory utilization rate per worker
+    memory: Optional[float] = Field(default=None)
+
+    # average gpu utilization rate per gpu device
+    gpu: Optional[float] = Field(default=None)
+
+    # average gpu memory utilization rate per gpu device
+    gpu_memory: Optional[float] = Field(default=None)
