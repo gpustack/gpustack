@@ -1,5 +1,7 @@
 import os
 import sys
+import threading
+import time
 from typing import List, Optional
 
 from colorama import Fore, Style
@@ -123,12 +125,8 @@ class ChatManager:
         self._model = created
 
     def _wait_for_model_ready(self):
-        def stop_when_running(event: Event) -> bool:
-            if event.data["id"] == self._model.id and event.data["state"] == "Running":
-                return True
-            elif event.data["state"] == ModelInstanceStateEnum.ERROR:
-                raise Exception(f"Error running model: {event.data['state_message']}")
-            return False
+        if self._model_is_running():
+            return
 
         with tqdm(
             total=0,
@@ -148,18 +146,56 @@ class ChatManager:
 
                     if pbar.total == 0:
                         pbar.total = 100
-                        pbar.bar_format = "{l_bar}{bar}{r_bar}"
+                        pbar.bar_format = (
+                            "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                        )
                         pbar.set_description(f"Downloading {self._model_name} model")
                         pbar.reset()
 
                     pbar.update(increment)
                     current_progress = mi.download_progress
 
-            self._clientset.model_instances.watch(
-                stop_condition=stop_when_running,
-                callback=print_progress,
-                params={"model_id": self._model.id},
-            )
+            def refresh_pbar():
+                while not stop_event.is_set():
+                    pbar.refresh()
+                    time.sleep(1)
+
+            stop_event = threading.Event()
+            rate_thread = threading.Thread(target=refresh_pbar)
+            rate_thread.start()
+
+            try:
+                self._clientset.model_instances.watch(
+                    stop_condition=self._stop_when_running,
+                    callback=print_progress,
+                    params={"model_id": self._model.id},
+                )
+            finally:
+                stop_event.set()
+                rate_thread.join()
+
+    def _model_is_running(self):
+        instances = self._clientset.model_instances.list(
+            params={"model_id": self._model.id},
+        )
+        if (
+            instances.items
+            and len(instances.items) > 0
+            and instances.items[0].state == ModelInstanceStateEnum.RUNNING
+        ):
+            return True
+
+        return False
+
+    def _stop_when_running(self, event: Event) -> bool:
+        if (
+            event.data["id"] == self._model.id
+            and event.data["state"] == ModelInstanceStateEnum.RUNNING
+        ):
+            return True
+        elif event.data["state"] == ModelInstanceStateEnum.ERROR:
+            raise Exception(f"Error running model: {event.data['state_message']}")
+        return False
 
     def chat_completion(self, prompt: str):
         self._history.append(
