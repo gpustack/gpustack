@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
 
 from gpustack.schemas.workers import UtilizationInfo
@@ -9,7 +9,34 @@ class TimeSeriesData(BaseModel):
     value: float
 
 
-class CurrentSystemLoad(BaseModel):
+class GPUUtilizationInfo(UtilizationInfo):
+    worker_name: str
+    index: int
+
+
+class WorkerUtilizationInfo(UtilizationInfo):
+    worker_name: str
+
+
+class MaxMinUtilizationInfo:
+    # worker with the max utilization rate
+    max_cpu: Optional[WorkerUtilizationInfo] = None
+    max_memory: Optional[WorkerUtilizationInfo] = None
+
+    # gpu with the max utilization rate
+    max_gpu: Optional[GPUUtilizationInfo] = None
+    max_gpu_memory: Optional[GPUUtilizationInfo] = None
+
+    # worker with the min utilization rate
+    min_cpu: Optional[WorkerUtilizationInfo] = None
+    min_memory: Optional[WorkerUtilizationInfo] = None
+
+    # gpu with the min utilization rate
+    min_gpu: Optional[GPUUtilizationInfo] = None
+    min_gpu_memory: Optional[GPUUtilizationInfo] = None
+
+
+class CurrentSystemLoad(BaseModel, MaxMinUtilizationInfo):
     cpu: UtilizationInfo
     memory: UtilizationInfo
     gpu: UtilizationInfo

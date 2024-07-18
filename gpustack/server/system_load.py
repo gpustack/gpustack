@@ -2,6 +2,12 @@ import asyncio
 import logging
 
 from sqlmodel.ext.asyncio.session import AsyncSession
+from gpustack.schemas.dashboard import (
+    GPUUtilizationInfo,
+    MaxMinUtilizationInfo,
+    WorkerUtilizationInfo,
+)
+from gpustack.schemas.gpu_devices import GPUDevice
 from gpustack.schemas.workers import UtilizationInfo, Worker
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.server.db import get_engine
@@ -94,6 +100,96 @@ def compute_system_load(workers: list[Worker]) -> SystemLoad:
     load.gpu = compute_gpu_load(workers)
     load.gpu_memory = compute_gpu_memory_load(workers)
     return load
+
+
+def get_max_min_utilization_info(
+    workers: list[Worker],
+) -> MaxMinUtilizationInfo:
+    if len(workers) <= 1:
+        return None
+
+    gpu_utils = []
+    gpu_memory_utils = []
+    util_info = MaxMinUtilizationInfo()
+    util_info.min_cpu = util_info.max_cpu = worker_util_info(
+        workers[0], is_memory=False
+    )
+    util_info.min_memory = util_info.max_memory = worker_util_info(workers[0])
+
+    for worker in workers:
+        if worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                gpu_utils.append(gpu_util_info(worker.name, gpu, is_memory=False))
+                gpu_memory_utils.append(gpu_util_info(worker.name, gpu))
+
+        if worker.status.cpu.utilization_rate < util_info.min_cpu.utilization_rate:
+            util_info.min_cpu = worker_util_info(worker, is_memory=False)
+
+        if (
+            worker.status.memory.utilization_rate
+            < util_info.min_memory.utilization_rate
+        ):
+            util_info.min_memory = worker_util_info(worker)
+
+        if worker.status.cpu.utilization_rate > util_info.max_cpu.utilization_rate:
+            util_info.max_cpu = worker_util_info(worker, is_memory=False)
+
+        if (
+            worker.status.memory.utilization_rate
+            > util_info.max_memory.utilization_rate
+        ):
+            util_info.max_memory = worker_util_info(worker)
+
+    if gpu_utils:
+        sorted_gpu_utils = sorted(
+            gpu_utils, key=lambda gpu_util: gpu_util.utilization_rate
+        )
+
+        sorted_gpu_memory_utils = sorted(
+            gpu_memory_utils,
+            key=lambda gpu_memory_util: gpu_memory_util.utilization_rate,
+        )
+
+        util_info.min_gpu = sorted_gpu_utils[0]
+        util_info.min_gpu_memory = sorted_gpu_memory_utils[0]
+        util_info.max_gpu = sorted_gpu_utils[-1]
+        util_info.max_gpu_memory = sorted_gpu_memory_utils[-1]
+
+    return util_info
+
+
+def worker_util_info(worker: Worker, is_memory=True) -> WorkerUtilizationInfo:
+    if is_memory:
+        return WorkerUtilizationInfo(
+            worker_name=worker.name,
+            utilization_rate=worker.status.memory.utilization_rate,
+            total=worker.status.memory.total,
+        )
+
+    return WorkerUtilizationInfo(
+        worker_name=worker.name,
+        utilization_rate=worker.status.cpu.utilization_rate,
+        total=worker.status.cpu.total,
+    )
+
+
+def gpu_util_info(
+    worker_name: str, gpu: GPUDevice, is_memory=True
+) -> GPUUtilizationInfo:
+    if is_memory:
+        return GPUUtilizationInfo(
+            worker_name=worker_name,
+            index=gpu.index,
+            utilization_rate=gpu.memory.utilization_rate,
+            total=gpu.memory.total,
+        )
+
+    return GPUUtilizationInfo(
+        worker_name=worker_name,
+        index=gpu.index,
+        utilization_rate=gpu.core.utilization_rate,
+        total=gpu.core.total,
+    )
 
 
 class SystemLoadCollector:

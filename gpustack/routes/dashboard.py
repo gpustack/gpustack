@@ -23,7 +23,10 @@ from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep
 from gpustack.schemas import Worker
-from gpustack.server.system_load import compute_system_load
+from gpustack.server.system_load import (
+    compute_system_load,
+    get_max_min_utilization_info,
+)
 
 router = APIRouter()
 
@@ -65,6 +68,7 @@ async def get_resource_counts(session: AsyncSession) -> ResourceCounts:
 async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
     workers = await Worker.all(session)
     current_system_load = compute_system_load(workers)
+    utilization_info = get_max_min_utilization_info(workers)
 
     now = datetime.now(timezone.utc)
 
@@ -104,13 +108,25 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
             )
         )
 
+    current = CurrentSystemLoad(
+        cpu=current_system_load.cpu,
+        memory=current_system_load.memory,
+        gpu=current_system_load.gpu,
+        gpu_memory=current_system_load.gpu_memory,
+    )
+
+    if utilization_info is not None:
+        current.min_cpu = utilization_info.min_cpu
+        current.min_memory = utilization_info.min_memory
+        current.min_gpu = utilization_info.min_gpu
+        current.min_gpu_memory = utilization_info.min_gpu_memory
+        current.max_cpu = utilization_info.max_cpu
+        current.max_memory = utilization_info.max_memory
+        current.max_gpu = utilization_info.max_gpu
+        current.max_gpu_memory = utilization_info.max_gpu_memory
+
     return SystemLoadSummary(
-        current=CurrentSystemLoad(
-            cpu=current_system_load.cpu,
-            memory=current_system_load.memory,
-            gpu=current_system_load.gpu,
-            gpu_memory=current_system_load.gpu_memory,
-        ),
+        current=current,
         history=HistorySystemLoad(
             cpu=cpu,
             memory=memory,
