@@ -140,7 +140,7 @@ install_dependencies() {
 # Function to check CUDA for NVIDIA GPUs
 check_cuda() {
   if command -v nvidia-smi > /dev/null 2>&1; then
-    if ! dpkg-query -W cuda; then
+    if ! command -v nvcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libcudart); then
       fatal "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
     fi
   fi
