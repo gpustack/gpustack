@@ -6,8 +6,10 @@ from fastapi.responses import StreamingResponse
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
+    BadRequestException,
     InvalidException,
     NotFoundException,
     ServiceUnavailableException,
@@ -43,7 +45,13 @@ load_balancer = LoadBalancer()
 
 @router.post("/chat/completions")
 async def chat_completion(session: SessionDep, request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise BadRequestException(
+            message=f"We could not parse the JSON body of your request: {e}"
+        )
+
     model_name = body.get("model")
     if not model_name:
         raise InvalidException(message="Missing 'model' field")
@@ -57,26 +65,12 @@ async def chat_completion(session: SessionDep, request: Request):
     request.state.model = model
     request.state.stream = stream
 
-    model_instances = await ModelInstance.all_by_field(
-        session=session, field="model_id", value=model.id
-    )
-
-    running_instances = [
-        inst for inst in model_instances if inst.state == ModelInstanceStateEnum.RUNNING
-    ]
-    if not running_instances:
-        raise ServiceUnavailableException(message="No running instances available")
-
-    instance = await load_balancer.get_instance(running_instances)
+    instance = await get_running_instance(session, model.id)
 
     url = f"http://{instance.worker_ip}:{instance.port}/v1/chat/completions"
     logger.debug(f"proxying to {url}")
 
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() != "content-length" and key.lower() != "host"
-    }
+    headers = filter_headers(request.headers)
 
     timeout = 120
 
@@ -108,3 +102,23 @@ async def chat_completion(session: SessionDep, request: Request):
                 return Response(content=resp.content, headers=dict(resp.headers))
     except Exception as e:
         raise ServiceUnavailableException(message=f"An unexpected error occurred: {e}")
+
+
+def filter_headers(headers):
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() != "content-length" and key.lower() != "host"
+    }
+
+
+async def get_running_instance(session: AsyncSession, model_id: int):
+    model_instances = await ModelInstance.all_by_field(
+        session=session, field="model_id", value=model_id
+    )
+    running_instances = [
+        inst for inst in model_instances if inst.state == ModelInstanceStateEnum.RUNNING
+    ]
+    if not running_instances:
+        raise ServiceUnavailableException(message="No running instances available")
+    return await load_balancer.get_instance(running_instances)
