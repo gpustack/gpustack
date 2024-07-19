@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     A script to run GPUStack server or worker.
 
@@ -356,8 +356,17 @@ function Install-Python {
     if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
         try {
             Log-Info "Pipx could not be found. Attempting to install..."
+
             python -m pip install pipx
+            if ($LASTEXITCODE -ne 0) {
+                Log-Fatal "failed to install pipx."
+            }
+
             pipx ensurepath
+            if ($LASTEXITCODE -ne 0) {
+                Log-Fatal "failed to run pipx ensurepath."
+            }
+
             Log-Info "Pipx installed successfully."
         }
         catch {
@@ -378,7 +387,15 @@ function Install-NSSM {
     try {
         Log-Info "Installing NSSM..."
         choco install nssm -y
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "failed to install nssm."
+        }
+
         Refresh-ChocolateyProfile
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "failed to refresh chocolatey profile."
+        }
+
         Log-Info "NSSM installed successfully."
     }
     catch {
@@ -400,21 +417,37 @@ function Install-GPUStack {
         }
 
         Log-Info "Installing GPUStack with $INSTALL_PACKAGE_SPEC $installArgs"
-        
+
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
 
         Log-Info "Installing GPUStack with pipx and pythin $pythonPath..."
-        
+
         pipx install $installArgs $INSTALL_PACKAGE_SPEC --force --verbose
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "failed to install $INSTALL_PACKAGE_SPEC."
+        }
+
         pipx ensurepath
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "failed to run pipx ensurepath."
+        }
 
         Log-Info "Updating PATH environment variable..."
-        
+
         $pipEnv = (pipx environment --value PIPX_BIN_DIR)
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "failed to run pipx environment."
+        }
+
         $env:Path = "$pipEnv;$env:Path"
 
-        [Environment]::SetEnvironmentVariable("Path", $env:Path, [EnvironmentVariableTarget]::Machine)
+        $currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+        if (!$currentPath.Contains($pipEnv)) {
+            [Environment]::SetEnvironmentVariable("Path", $env:Path, [EnvironmentVariableTarget]::Machine)
+        } else {
+            Log-Info "Path already contains $pipEnv"
+        }
     }
     catch {
         Log-Fatal "Failed to install GPUStack: `"$($_.Exception.Message)`""
@@ -453,33 +486,43 @@ function Setup-GPUStackService {
         $appDataPath = $env:APPDATA
         $gpustackDirectoryName = "gpustack"
         $gpustackDirectoryPath = Join-Path -Path $appDataPath -ChildPath $gpustackDirectoryName
-        
+
         $gpustackLogDirectoryPath = Join-Path -Path $gpustackDirectoryPath -ChildPath "log"
-        $gpustackStdoutLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack_stdout.log"
-        $gpustackStderrLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack_stderr.log"
+        $gpustackLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack.log"
 
         $null = New-Item -Path $gpustackDirectoryPath -ItemType "Directory" -ErrorAction SilentlyContinue -Force
         $null = New-Item -Path $gpustackLogDirectoryPath -ItemType "Directory" -ErrorAction SilentlyContinue -Force
-        
-        $null = nssm install $serviceName $exePath
-        $null = nssm set $serviceName AppDirectory $gpustackDirectoryPath
-        $null = nssm set $serviceName AppParameters "start"
-
-        $null = nssm set $serviceName DisplayName $serviceDisplayName
-        $null = nssm set $serviceName Description "GPUStack aims to get you started with managing GPU devices, running LLMs and performing inference in a simple yet scalable manner."
-        $null = nssm set $serviceName Start SERVICE_AUTO_START
-
-        $null = nssm set $serviceName ObjectName LocalSystem
-        $null = nssm set $serviceName AppExit Default Restart
-        $null = nssm set $serviceName AppStdout $gpustackStdoutLogPath
-        $null = nssm set $serviceName AppStderr $gpustackStderrLogPath
 
         $envListString = Get-Arg
-        $nssmSetEnvCommand = "nssm set $serviceName AppEnvironmentExtra $envListString"
-        $null = Invoke-Expression $nssmSetEnvCommand
+
+        $null = nssm install $serviceName $exePath
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "Failed to install service $serviceName"
+        }
+
+        $commands = @(
+            "nssm set $serviceName AppDirectory $gpustackDirectoryPath",
+            "nssm set $serviceName AppParameters 'start'",
+            "nssm set $serviceName DisplayName $serviceDisplayName",
+            "nssm set $serviceName Description 'GPUStack aims to get you started with managing GPU devices, running LLMs and performing inference in a simple yet scalable manner.'",
+            "nssm set $serviceName Start SERVICE_AUTO_START",
+            "nssm set $serviceName ObjectName LocalSystem",
+            "nssm set $serviceName AppExit Default Restart",
+            "nssm set $serviceName AppStdout $gpustackLogPath",
+            "nssm set $serviceName AppStderr $gpustackLogPath",
+            "nssm set $serviceName AppEnvironmentExtra $envListString"
+        )
+
+        foreach ($cmd in $commands) {
+            $null = Invoke-Expression $cmd
+            if ($LASTEXITCODE -ne 0) { Log-Fatal "Failed to run nssm set environment: $cmd" }
+        }
 
         Log-Info "Starting ${serviceName} service..."
         $null = nssm start $serviceName -y
+        if ($LASTEXITCODE -ne 0) {
+            Log-Fatal "Failed to start service $serviceName"
+        }
 
         # Wait for the service to start for 120 seconds.
         $startTime = Get-Date
@@ -491,14 +534,14 @@ function Setup-GPUStackService {
             Log-Info "${serviceName} service created and started successfully."
         }
         else {
-            Log-Info "$serviceName Stderr log:"
-            Get-Content -Path $gpustackStderrLogPath -Tail 200
-            
-            Log-Info "$serviceName Stdout log:"
-            Get-Content -Path $gpustackStdoutLogPath -Tail 200
-            
+            Log-Info "$serviceName log:"
+            Get-Content -Path $gpustackLogPath -Tail 300
+
             Log-Info "$serviceName service dump:"
             nssm dump GPUStack
+            if ($LASTEXITCODE -ne 0) {
+                Log-Fatal "Failed to dump service $serviceName"
+            }
         }
     }
     catch {
@@ -613,6 +656,13 @@ function Uninstall-GPUStack {
         }
         else {
             Log-Info "Package ${packageName} is not installed."
+        }
+
+        Log-Info "Cleaning up..."
+        $appDataPath = $env:APPDATA
+        $gpustackDirectoryPath = Join-Path -Path $appDataPath -ChildPath $packageName
+        if (Test-Path -Path $gpustackDirectoryPath) {
+            Get-ChildItem -Path $gpustackDirectoryPath | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     catch {

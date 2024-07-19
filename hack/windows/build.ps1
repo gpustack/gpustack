@@ -1,4 +1,4 @@
-# Set error handling
+﻿# Set error handling
 $ErrorActionPreference = "Stop"
 
 $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-Path -Parent | Split-Path -Parent -Resolve
@@ -8,6 +8,9 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 
 function Build {
     poetry build
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed to run poetry build."
+    }
 
     $distDir = Join-Path -Path $ROOT_DIR -ChildPath "dist"
     $whlFiles = Get-ChildItem -Path $distDir -Filter "*.whl" -File
@@ -35,7 +38,7 @@ function Set-Version {
     $version = if ($null -ne $global:GIT_VERSION) { $global:GIT_VERSION } else { "0.0.0" }
     $gitCommit = if ($null -ne $global:GIT_COMMIT) { $global:GIT_COMMIT } else { "HEAD" }
     $gitCommitShort = $gitCommit.Substring(0, [Math]::Min(7, $gitCommit.Length))
-    
+
     GPUStack.Log.Info "setting version to $version"
     GPUStack.Log.Info "setting git commit to $gitCommitShort"
 
@@ -53,6 +56,9 @@ function Restore-Version-File {
     $versionFile = Join-Path -Path $ROOT_DIR -ChildPath "gpustack\__init__.py"
 
     git checkout -- $versionFile
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed restore version file."
+    }
 }
 
 #

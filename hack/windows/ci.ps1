@@ -13,10 +13,20 @@ function Invoke-CI {
     )
 
     & make install @ciArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     & make lint @ciArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     & make test @ciArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     & make validate @ciArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     & make build @ciArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 }
 
 #
@@ -24,5 +34,9 @@ function Invoke-CI {
 #
 
 GPUStack.Log.Info "+++ CI +++"
-Invoke-CI $args
+try {
+    Invoke-CI $args
+} catch {
+    GPUStack.Log.Fatal "failed run ci: $($_.Exception.Message)"
+}
 GPUStack.Log.Info "--- CI ---"

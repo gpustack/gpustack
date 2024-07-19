@@ -8,6 +8,9 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 
 function Test {
     poetry run pytest
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed to run poetry run pytest."
+    }
 }
 
 #

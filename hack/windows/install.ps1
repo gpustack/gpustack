@@ -10,8 +10,19 @@ $THIRD_PARTY_DIR = Join-Path -Path $ROOT_DIR -ChildPath "gpustack/third_party/bi
 
 function Install-Dependency {
     pip install poetry==1.7.1
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed to install poetry."
+    }
+
     poetry install
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed run poetry install."
+    }
+
     poetry run pre-commit install
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed run pre-commint install."
+    }
 }
 
 function Get-FastFetch {
@@ -74,7 +85,6 @@ function Get-UI {
         GPUStack.Log.Fatal "failed to download '$tag' UI archive: $($_.Exception.Message)"
 
         if (-eq $tag $defaultTag) {
-            GPUStack.Log.Info "return"
             return
         }
 

@@ -25,7 +25,7 @@ function Validate {
         Remove-Item -Path $generatedChecksumFile
     }
     else {
-        GPUStack.Log.Fatal "Checksums do not match!`nPlease run 'Get-FileHash -Path ${file} -Algorithm SHA256 | Select -ExpandProperty Hash > ${file}.sha256sum' to update the checksum."
+        GPUStack.Log.Fatal "Checksums do not match!`nPlease run 'Get-FileHash -Path install.ps1 -Algorithm SHA256 | Select -ExpandProperty Hash > install.ps1.sha256sum' to update the checksum."
     }
 }
 

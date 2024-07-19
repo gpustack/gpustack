@@ -8,6 +8,9 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 
 function Generate {
     poetry run gen
+    if ($LASTEXITCODE -ne 0) {
+        GPUStack.Log.Fatal "failed to run poetry run gen."
+    }
 }
 
 #
