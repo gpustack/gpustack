@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
     tags: ["*.*.*"]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "**.mdx"
+      - "**.png"
+      - "**.jpg"
 
 jobs:
   linux-macos:

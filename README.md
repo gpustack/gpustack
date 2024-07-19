@@ -74,7 +74,7 @@ cat /var/lib/gpustack/initial_admin_password
 
 3. Click `Playground` in the navigation menus. Now you can chat with the LLM in the UI playground.
 
-![Playground Screenshot](assets/playground-screenshot.png)
+![Playground Screenshot](docs/assets/playground-screenshot.png)
 
 4. Click `API Keys` in the navigation menus, then click the `New API Key` button.
 

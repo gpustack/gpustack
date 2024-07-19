@@ -3,6 +3,12 @@ name: PR Checking
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "**.mdx"
+      - "**.png"
+      - "**.jpg"
 
 jobs:
   linux-macos:
