@@ -1,14 +1,16 @@
 # GPUStack
 
-GPUStack aims to get you started with running LLMs and performing inference in a simple yet scalable manner.
+GPUStack is an open-source GPU cluster manager designed to run large language models(LLMs) efficiently.
 
-- Supports a wide variety of hardware.
-- Scales with your GPU inventory.
-- A lightweight Python package with minimal dependencies and operational overhead.
-- OpenAI-compatible APIs.
-- User and API key management.
-- GPU metrics monitoring.
-- Token usage and rate metrics.
+### Key Features:
+
+- **Supports a Wide Variety of Hardware:** Run with any brand of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
+- **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.
+- **Lightweight Python Package:** Minimal dependencies and operational overhead.
+- **OpenAI-compatible APIs:** Serve APIs that are compatible with OpenAI standards.
+- **User and API key management:** Simplified management of users and API keys to enhance security.
+- **GPU metrics monitoring:** Monitor GPU performance and utilization in real-time.
+- **Token usage and rate metrics:** Track token usage and manage rate limits effectively.
 
 ## Supported Platforms
 
@@ -18,12 +20,14 @@ GPUStack aims to get you started with running LLMs and performing inference in a
 
 ## Supported Accelerators
 
-We haven't tested everything out in the wild, but we plan to support all of the following in the near future.
-
 - [x] Apple Metal
 - [x] NVIDIA CUDA
+
+We plan to support the following accelerators in future releases.
+
 - [ ] AMD ROCm
 - [ ] Intel oneAPI
+- [ ] Qualcomm AI Engine
 
 ## Supported Models
 
@@ -47,10 +51,10 @@ Here are some example models:
 - [x] [Deepseek](https://huggingface.co/models?search=deepseek-ai/deepseek)
 - [x] [Qwen](https://huggingface.co/models?search=Qwen/Qwen)
 - [x] [Phi](https://huggingface.co/models?search=microsoft/phi)
-- [x] [Gemma](https://ai.google.dev/gemma)
-- [x] [Mamba](https://github.com/state-spaces/mamba)
-- [x] [Grok-1](https://huggingface.co/keyfan/grok-1-hf)
+- [x] [Gemma](https://huggingface.co/models?search=google/gemma)
+- [x] [Mamba](https://huggingface.co/models?search=state-spaces/mamba)
+- [x] [Grok-1](https://huggingface.co/xai-org/grok-1)
 
-## Architecture
+## OpenAI-Compatible APIs
 
-// TODO
+GPUStack serves OpenAI compatible APIs. For details, please refer to [OpenAI Compatible APIs](./user-guide/openai-compatible-apis.md)

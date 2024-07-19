@@ -7,16 +7,16 @@
 GPUStack provides a script to install it as a service on systemd or launchd based systems. To install GPUStack using this method, just run:
 
 ```bash
-curl -sfL https://get.gpustack.ai | sh -
+curl -sfL https://get.gpustack.ai | sh -s -
 ```
 
-You can add additional workers to form a GPUStack cluster by running the following command on worker nodes:
+Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes:
 
 ```bash
-curl -sfL https://get.gpustack.ai | sh - --server-url http://myserver --token mytoken
+curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
 ```
 
-The token here is a secret used for adding workers. In the default setup, you can run the following to get the token:
+In the default setup, you can run the following to get the token used for adding workers:
 
 ```bash
 cat /var/lib/gpustack/token
@@ -24,11 +24,27 @@ cat /var/lib/gpustack/token
 
 ### Windows
 
-`// TODO`
+Run PowerShell as administrator, then run the following command to install GPUStack:
 
-### Manual Install
+```powershell
+Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+```
 
-For manual installation or detail configurations, refer to the [installation](./user-guide/installation.md) docs.
+Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes:
+
+```powershell
+Invoke-Expression "& { $(Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content } -ServerURL http://myserver -Token mytoken"
+```
+
+In the default setup, you can run the following to get the token used for adding workers:
+
+```powershell
+Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Raw
+```
+
+### Manual Installation
+
+For manual installation or detail configurations, refer to the [installation](.docs/user-guide/installation.md) docs.
 
 ## Gettting Started
 
@@ -46,7 +62,7 @@ cat /var/lib/gpustack/initial_admin_password
 
 3. Click `Playground` in the navigation menus. Now you can chat with the LLM in the UI playground.
 
-// TODO add screenshot
+![Playground Screenshot](assets/playground-screenshot.png)
 
 4. Click `API Keys` in the navigation menus, then click the `New API Key` button.
 

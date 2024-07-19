@@ -1,16 +1,16 @@
 # GPUStack
 
-GPUStack is designed to help you deploy and manage large language models (LLMs) efficiently.
+GPUStack is an open-source GPU cluster manager designed to run large language models(LLMs) efficiently.
 
-### Key features:
+### Key Features:
 
-- **Supports a wide variety of hardware:** Whether you have a single GPU or a complex setup, GPUStack can handle it.
-- **Scales with your GPU inventory:** Add more GPUs to scale up your operations seamlessly.
-- **Lightweight Python package:** With minimal dependencies and operational overhead, GPUStack is easy to install and use.
+- **Supports a Wide Variety of Hardware:** Run with any brand of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
+- **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.
+- **Lightweight Python Package:** Minimal dependencies and operational overhead.
 - **OpenAI-compatible APIs:** Serve APIs that are compatible with OpenAI standards.
-- **User and API key management:** Simplified user and key management to keep your operations secure.
-- **GPU metrics monitoring:** Keep an eye on GPU performance and utilization.
-- **Token usage and rate metrics:** Track how many tokens are used and manage rate limits effectively.
+- **User and API key management:** Simplified management of users and API keys to enhance security.
+- **GPU metrics monitoring:** Monitor GPU performance and utilization in real-time.
+- **Token usage and rate metrics:** Track token usage and manage rate limits effectively.
 
 ## Installation
 
@@ -19,16 +19,16 @@ GPUStack is designed to help you deploy and manage large language models (LLMs) 
 GPUStack provides a script to install it as a service on systemd or launchd based systems. To install GPUStack using this method, just run:
 
 ```bash
-curl -sfL https://get.gpustack.ai | sh -
+curl -sfL https://get.gpustack.ai | sh -s -
 ```
 
-You can add additional workers to form a GPUStack cluster by running the following command on worker nodes:
+Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes:
 
 ```bash
-curl -sfL https://get.gpustack.ai | sh - --server-url http://myserver --token mytoken
+curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
 ```
 
-The token here is a secret used for adding workers. In the default setup, you can run the following to get the token:
+In the default setup, you can run the following to get the token used for adding workers:
 
 ```bash
 cat /var/lib/gpustack/token
@@ -36,25 +36,25 @@ cat /var/lib/gpustack/token
 
 ### Windows
 
-Open the Start menu, type Windows PowerShell, select Windows PowerShell, and then select Run as administrator, then run the following command to install GPUStack:
+Run PowerShell as administrator, then run the following command to install GPUStack:
 
 ```powershell
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
 
-You can add additional workers to form a GPUStack cluster by running the following command on worker nodes:
+Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes:
 
 ```powershell
 Invoke-Expression "& { $(Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content } -ServerURL http://myserver -Token mytoken"
 ```
 
-The token here is a secret used for adding workers. In the default setup, you can run the following to get the token:
+In the default setup, you can run the following to get the token used for adding workers:
 
 ```powershell
 Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Raw
 ```
 
-### Manual Install
+### Manual Installation
 
 For manual installation or detail configurations, refer to the [installation](.docs/user-guide/installation.md) docs.
 
@@ -144,9 +144,9 @@ Here are some example models:
 - [x] [Deepseek](https://huggingface.co/models?search=deepseek-ai/deepseek)
 - [x] [Qwen](https://huggingface.co/models?search=Qwen/Qwen)
 - [x] [Phi](https://huggingface.co/models?search=microsoft/phi)
-- [x] [Gemma](https://ai.google.dev/gemma)
-- [x] [Mamba](https://github.com/state-spaces/mamba)
-- [x] [Grok-1](https://huggingface.co/keyfan/grok-1-hf)
+- [x] [Gemma](https://huggingface.co/models?search=google/gemma)
+- [x] [Mamba](https://huggingface.co/models?search=state-spaces/mamba)
+- [x] [Grok-1](https://huggingface.co/xai-org/grok-1)
 
 ## OpenAI-Compatible APIs
 
@@ -159,7 +159,7 @@ For example, you can use the official [OpenAI Python API library](https://github
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://myserver/v1-openai",api_key="myapikey")
+client = OpenAI(base_url="http://myserver/v1-openai", api_key="myapikey")
 
 completion = client.chat.completions.create(
   model="llama3",
