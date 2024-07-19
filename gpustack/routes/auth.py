@@ -1,7 +1,7 @@
 from typing import Annotated
 from fastapi import APIRouter, Form, Request, Response
 from pydantic import BaseModel
-from gpustack.api.exceptions import UnauthorizedException
+from gpustack.api.exceptions import InvalidException
 from gpustack.schemas.users import UpdatePassword
 from gpustack.security import (
     JWT_TOKEN_EXPIRE_MINUTES,
@@ -57,7 +57,7 @@ async def update_password(
     update_in: UpdatePassword,
 ):
     if not verify_hashed_secret(user.hashed_password, update_in.current_password):
-        raise UnauthorizedException(message="Incorrect current password")
+        raise InvalidException(message="Incorrect current password")
 
     hashed_password = get_secret_hash(update_in.new_password)
     patch = {"hashed_password": hashed_password, "require_password_change": False}
