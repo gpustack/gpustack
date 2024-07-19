@@ -8,6 +8,7 @@ from gpustack.schemas.models import (
     ModelInstanceCreate,
     ModelInstanceStateEnum,
 )
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
 
@@ -129,3 +130,54 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
     if model.ready_replicas != ready_replicas:
         model.ready_replicas = ready_replicas
         await model.update(session)
+
+
+class WorkerController:
+    def __init__(self):
+        self._engine = get_engine()
+        pass
+
+    async def start(self):
+        """
+        Start the controller.
+        """
+
+        async for event in Worker.subscribe(self._engine):
+            if event.type in (EventType.UPDATED, EventType.DELETED):
+                try:
+                    await self._reconcile(event)
+                except Exception as e:
+                    logger.error(f"Failed to reconcile worker: {e}")
+
+    async def _reconcile(self, event):
+        """
+        Delete instances base on the worker state and event type.
+        """
+        worker: Worker = event.data
+        if not worker:
+            return
+
+        async with AsyncSession(self._engine) as session:
+            instances = await ModelInstance.all_by_field(
+                session, "worker_name", worker.name
+            )
+            if not instances:
+                return
+
+            if (
+                worker.state == WorkerStateEnum.NOT_READY
+                or event.type == EventType.DELETED
+            ):
+                instance_names = [instance.name for instance in instances]
+                for instance in instances:
+                    await instance.delete(session)
+
+                if instance_names:
+                    state = (
+                        worker.state
+                        if worker.state == WorkerStateEnum.NOT_READY
+                        else "deleted"
+                    )
+                    logger.debug(
+                        f"Delete instance {', '.join(instance_names)} since worker {worker.name} is {state}"
+                    )

@@ -11,7 +11,11 @@ from gpustack.schemas.users import User
 from gpustack.security import JWTManager, generate_secure_password, get_secret_hash
 from gpustack.server.app import app
 from gpustack.config import Config
-from gpustack.server.controllers import ModelController, ModelInstanceController
+from gpustack.server.controllers import (
+    ModelController,
+    ModelInstanceController,
+    WorkerController,
+)
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
@@ -122,6 +126,9 @@ class Server:
 
         model_instance_controller = ModelInstanceController()
         asyncio.create_task(model_instance_controller.start())
+
+        worker_controller = WorkerController()
+        asyncio.create_task(worker_controller.start())
 
         logger.debug("Controllers started.")
 
