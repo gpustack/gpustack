@@ -70,10 +70,10 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
 
     try:
         update_data = user_in.model_dump()
-        if "password" in update_data:
-            hashed_password = get_secret_hash(update_data["password"])
+        if user_in.password:
+            hashed_password = get_secret_hash(user_in.password)
             update_data["hashed_password"] = hashed_password
-            del update_data["password"]
+        del update_data["password"]
         await user.update(session, update_data)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
