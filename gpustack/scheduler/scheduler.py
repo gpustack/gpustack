@@ -7,7 +7,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from gpustack.scheduler.policy import (
-    ModelInstanceScheduleCandidate,
     ResourceFitPolicy,
 )
 from gpustack.scheduler.queue import AsyncUniqueQueue
@@ -186,9 +185,14 @@ class Scheduler:
                     logger.error(state_message)
 
             model_instance = await ModelInstance.one_by_id(session, instance.id)
-            if len(candidates) == 0:
+            candidate = self.pick_most_offload_layers_candidate(candidates)
+            if candidate is None:
                 # update model instance.
-                model_instance.state = ModelInstanceStateEnum.ERROR
+                if model_instance.state in (
+                    ModelInstanceStateEnum.SCHEDULED,
+                    ModelInstanceStateEnum.ANALYZING,
+                ):
+                    model_instance.state = ModelInstanceStateEnum.PENDING
                 model_instance.state_message = "No suitable workers."
                 if state_message != "":
                     model_instance.state_message = state_message
@@ -198,16 +202,6 @@ class Scheduler:
                     f"No suitable workers for model instance {model_instance.name}"
                 )
             else:
-                # pick the highest offload layer, should scoring all the candidates later.
-                candidate: ModelInstanceScheduleCandidate = candidates[0]
-                if len(candidates) > 1:
-                    for i in range(1, len(candidates)):
-                        if (
-                            candidates[i].computed_resource_claim.offload_layers
-                            > candidate.computed_resource_claim.offload_layers
-                        ):
-                            candidate = candidates[i]
-
                 # update model instance.
                 model_instance.state = ModelInstanceStateEnum.SCHEDULED
                 model_instance.state_message = ""
@@ -225,3 +219,22 @@ class Scheduler:
                     f"Scheduled model instance {model_instance.name} to worker "
                     f"{model_instance.worker_name} gpu {candidate.gpu_index}"
                 )
+
+    def pick_most_offload_layers_candidate(self, candidates):
+        """
+        Pick the most offload layers from candidates.
+        Args:
+            candidates: List of ModelInstanceScheduleCandidate.
+        """
+        if len(candidates) == 0:
+            return None
+
+        candidate = candidates[0]
+        for i in range(1, len(candidates)):
+            if (
+                candidates[i].computed_resource_claim.offload_layers
+                > candidate.computed_resource_claim.offload_layers
+            ):
+                candidate = candidates[i]
+
+        return candidate

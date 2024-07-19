@@ -87,7 +87,7 @@ class InferenceServer:
 
             self._model_path = download_model(mi, cache_dir)
 
-            patch_dict = {"state": ModelInstanceStateEnum.RUNNING}
+            patch_dict = {"state": ModelInstanceStateEnum.RUNNING, "state_message": ""}
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             error_message = f"Failed to download model: {e}"

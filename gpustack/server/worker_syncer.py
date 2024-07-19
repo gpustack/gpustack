@@ -49,9 +49,8 @@ class WorkerSyncer:
                 offline_worker_names.append(worker.name)
                 worker.state = WorkerStateEnum.NOT_READY
                 worker.state_message = "Worker has lost its heartbeat."
-                session.add(worker)
+                await worker.update(session, worker)
 
-            await session.commit()
             logger.debug(
                 f"Marked worker {', '.join(offline_worker_names)} as not_ready"
             )
