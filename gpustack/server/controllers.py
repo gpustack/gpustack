@@ -179,5 +179,6 @@ class WorkerController:
                         else "deleted"
                     )
                     logger.debug(
-                        f"Delete instance {', '.join(instance_names)} since worker {worker.name} is {state}"
+                        f"Delete instance {', '.join(instance_names)} "
+                        f"since worker {worker.name} is {state}"
                     )

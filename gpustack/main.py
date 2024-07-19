@@ -2,7 +2,6 @@ import argparse
 import signal
 import sys
 
-from gpustack import logging
 from gpustack.cmd import setup_start_cmd
 from gpustack.cmd.chat import setup_chat_cmd
 from gpustack.cmd.version import setup_version_cmd
@@ -25,7 +24,6 @@ def main():
             prog, max_help_position=55, indent_increment=2, width=200
         ),
     )
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode.")
     subparsers = parser.add_subparsers(help="sub-command help")
 
     setup_start_cmd(subparsers)
@@ -33,7 +31,6 @@ def main():
     setup_version_cmd(subparsers)
 
     args = parser.parse_args()
-    logging.setup_logging(debug=args.debug)
     if hasattr(args, "func"):
         args.func(args)
     else:

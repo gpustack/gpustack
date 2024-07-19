@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 import yaml
 
+from gpustack.logging import setup_logging
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
 from gpustack.server.server import Server
@@ -29,7 +30,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--debug",
         action="store_true",
         help="Enable debug mode.",
-        default=get_env_or_default("DEBUG", True),
+        default=get_env_or_default("DEBUG", False),
     )
     group.add_argument(
         "--data-dir",
@@ -158,6 +159,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
 def run(args):
     try:
         cfg = parse_args(args)
+        setup_logging(cfg.debug)
         if cfg.server_url:
             run_worker(cfg)
         else:
