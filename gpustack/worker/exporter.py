@@ -262,4 +262,4 @@ class MetricExporter(Collector):
 
 
 def _rate(used, total):
-    return round(used / total, 6) * 100
+    return round(used / total, 6) * 100 if total != 0 else 0
