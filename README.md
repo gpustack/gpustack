@@ -56,7 +56,7 @@ Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Ra
 
 ### Manual Installation
 
-For manual installation or detail configurations, refer to the [installation](.docs/user-guide/installation.md) docs.
+For manual installation or detail configurations, refer to the [installation](./docs/installation/manual-installation.md) docs.
 
 ## Gettting Started
 

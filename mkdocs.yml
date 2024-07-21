@@ -31,6 +31,8 @@ theme:
   icon:
     repo: fontawesome/brands/github-alt
   language: en
+extra:
+  generator: false
 extra_css:
   - stylesheets/extra.css
 markdown_extensions:
@@ -50,7 +52,6 @@ nav:
   - Installation:
       - Installation Script: installation/installation-script.md
       - Manual Installation: installation/manual-installation.md
-      - Configuration Options: installation/configuration-options.md
       - Uninstallation: installation/uninstallation.md
   - User Guide:
       - Playground: user-guide/playground.md
