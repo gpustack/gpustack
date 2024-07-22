@@ -24,7 +24,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         description="Run GPUStack server or worker.",
     )
     group = parser_server.add_argument_group("Common settings")
-    group.add_argument("--config-file", type=str, help="Path to the YAML config file")
+    group.add_argument(
+        "--config-file",
+        type=str,
+        help="Path to the YAML config file.",
+        default=get_env_or_default("CONFIG_FILE"),
+    )
     group.add_argument(
         "-d",
         "--debug",

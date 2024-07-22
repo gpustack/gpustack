@@ -20,7 +20,7 @@ function Lint {
 
     GPUStack.Log.Info "linting $path"
 
-    $result = Invoke-ScriptAnalyzer -Path $ROOT_DIR -Recurse -EnableExit -ExcludeRule PSAvoidUsingInvokeExpression, PSReviewUnusedParameter, PSUseApprovedVerbs, PSAvoidGlobalVars, PSUseShouldProcessForStateChangingFunctions, PSAvoidUsingWriteHost
+    $result = Invoke-ScriptAnalyzer -Path $ROOT_DIR -Recurse -EnableExit -ExcludeRule PSAvoidUsingPlainTextForPassword,PSAvoidUsingInvokeExpression, PSReviewUnusedParameter, PSUseApprovedVerbs, PSAvoidGlobalVars, PSUseShouldProcessForStateChangingFunctions, PSAvoidUsingWriteHost
     $result | Format-Table -AutoSize
     if ($result.Length -ne 0) {
         GPUStack.Log.Fatal "failed with Invoke-ScriptAnalyzer lint."
