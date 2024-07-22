@@ -140,7 +140,8 @@ function Get-LlamaBox {
     foreach ($platform in $platforms) {
         $binFile = "llama-box.exe"
 
-        $targetFile = Join-Path -Path $llamaBoxDir -ChildPath "llama-box-$platform.exe"
+        $modifiedFile = "llama-box-$platform.exe" -replace "-s\.exe$", ".exe"
+        $targetFile = Join-Path -Path $llamaBoxDir -ChildPath $modifiedFile
 
         if (Test-Path -Path $targetFile) {
             GPUStack.Log.Info "llama-box-$platform already exists, skipping download"
