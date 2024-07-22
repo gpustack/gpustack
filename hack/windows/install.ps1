@@ -103,7 +103,7 @@ function Get-UI {
 }
 
 function Get-GGUFParser {
-    $version = "v0.3.2"
+    $version = "v0.4.0"
     $ggufParserDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "gguf-parser"
     New-Item -ItemType Directory -Path $ggufParserDir -ErrorAction Ignore | Out-Null
 
