@@ -21,10 +21,10 @@ Run the following command to uninstall GPUStack:
 Run the following command in PowerShell to uninstall GPUStack:
 
 ```powershell
-# TODO
+Set-ExecutionPolicy Bypass -Scope Process -Force; & "$env:APPDATA\gpustack\uninstall.ps1"
 ```
 
-## Manual UnInstallation
+## Manual Uninstallation
 
 If you install GPUStack manually, the followings are example commands to uninstall GPUStack. You can modify according to your setup:
 
