@@ -86,7 +86,7 @@ function download_ui() {
 }
 
 function download_gguf_parser() {
-    local version="v0.3.2"
+    local version="v0.4.0"
 
     local gguf_parser_dir="${THIRD_PARTY_DIR}/gguf-parser"
     mkdir -p "${gguf_parser_dir}"
