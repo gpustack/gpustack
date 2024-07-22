@@ -664,7 +664,7 @@ function Uninstall-GPUStack {
         $gpustack = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($null -ne $gpustack) {
             try {
-                Log-Info "Stopping existing ${serviceName} service, creatig a new one..."
+                Log-Info "Stopping existing ${serviceName} service..."
                 $result = nssm stop $serviceName confirm
                 Log-Info "Stopped ${serviceName} result: $result"
 
@@ -698,7 +698,7 @@ function Uninstall-GPUStack {
         $appDataPath = $env:APPDATA
         $gpustackDirectoryPath = Join-Path -Path $appDataPath -ChildPath $packageName
         if (Test-Path -Path $gpustackDirectoryPath) {
-            Get-ChildItem -Path $gpustackDirectoryPath | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -Path $appDataPath -Filter $packageName | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     catch {
