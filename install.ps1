@@ -208,13 +208,12 @@ function Log-Fatal {
         [string]$message
     )
     Write-Host "[ERROR] $message" -ForegroundColor Red
-    exit 1
 }
 
 # Function to check if the script is run as administrator
 function Check-AdminPrivilege {
     if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        Log-Fatal "This script must be run as Administrator. Please restart the script with Administrator privileges."
+        throw "This script must be run as Administrator. Please restart the script with Administrator privileges."
     }
 }
 
@@ -222,14 +221,14 @@ function Check-AdminPrivilege {
 function Check-OS {
     $OS = (Get-CimInstance -Class Win32_OperatingSystem).Caption
     if ($OS -notmatch "Windows") {
-        Log-Fatal "Unsupported OS. Only Windows is supported."
+        throw "Unsupported OS. Only Windows is supported."
     }
 }
 
 function Check-CUDA {
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
         if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) {
-            Log-Fatal "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+            throw "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
         }
     }
 }
@@ -311,7 +310,8 @@ function Get-Arg {
 
     if ($EnableMetrics -eq $true -or $EnableMetrics -eq 1) {
         $envList += "GPUSTACK_ENABLE_METRICS=true"
-    } else {
+    }
+    else {
         $envList += "GPUSTACK_ENABLE_METRICS=false"
     }
 
@@ -333,20 +333,20 @@ function Get-Arg {
 function Refresh-ChocolateyProfile {
     $chocoInstallPath = [System.Environment]::GetEnvironmentVariable("ChocolateyInstall", "Machine")
     if (-not $chocoInstallPath) {
-        Log-Fatal "Chocolatey installation path not found. Ensure Chocolatey is installed correctly."
+        throw "Chocolatey installation path not found. Ensure Chocolatey is installed correctly."
     }
 
     $chocoHelpersPath = Join-Path -Path $chocoInstallPath -ChildPath "helpers\chocolateyProfile.psm1"
     try {
         Import-Module $chocoHelpersPath -ErrorAction Stop
         if (-not (Get-Command refreshenv -ErrorAction SilentlyContinue)) {
-            Log-Fatal "Could not find 'refreshenv'. Something is wrong with Chocolatey installation."
+            throw "Could not find 'refreshenv'. Something is wrong with Chocolatey installation."
         }
 
         refreshenv
     }
     catch {
-        Log-Fatal "Failed to import Chocolatey profile. Ensure Chocolatey is installed correctly."
+        throw "Failed to import Chocolatey profile. Ensure Chocolatey is installed correctly."
     }
 }
 
@@ -364,7 +364,7 @@ function Install-Chocolatey {
         Log-Info "Chocolatey installed successfully."
     }
     catch {
-        Log-Fatal "Failed to install Chocolatey: `"$($_.Exception.Message)`""
+        throw "Failed to install Chocolatey: `"$($_.Exception.Message)`""
     }
 }
 
@@ -377,7 +377,7 @@ function Install-Python {
             Log-Info "Python installed successfully."
         }
         catch {
-            Log-Fatal "Failed to install Python: `"$($_.Exception.Message)`""
+            throw "Failed to install Python: `"$($_.Exception.Message)`""
         }
     }
     else {
@@ -386,7 +386,7 @@ function Install-Python {
 
     $PYTHON_VERSION = python -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)"
     if ($PYTHON_VERSION -lt 40) {
-        Log-Fatal "Python version is $PYTHON_VERSION, which is less than 3.10. Please upgrade Python to at least version 3.10."
+        throw "Python version is $PYTHON_VERSION, which is less than 3.10. Please upgrade Python to at least version 3.10."
     }
 
     if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
@@ -395,18 +395,18 @@ function Install-Python {
 
             python -m pip install pipx
             if ($LASTEXITCODE -ne 0) {
-                Log-Fatal "failed to install pipx."
+                throw "failed to install pipx."
             }
 
             pipx ensurepath
             if ($LASTEXITCODE -ne 0) {
-                Log-Fatal "failed to run pipx ensurepath."
+                throw "failed to run pipx ensurepath."
             }
 
             Log-Info "Pipx installed successfully."
         }
         catch {
-            Log-Fatal "Failed to install Pipx: `"$($_.Exception.Message)`""
+            throw "Failed to install Pipx: `"$($_.Exception.Message)`""
         }
     }
     else {
@@ -424,18 +424,18 @@ function Install-NSSM {
         Log-Info "Installing NSSM..."
         choco install nssm -y
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "failed to install nssm."
+            throw "failed to install nssm."
         }
 
         Refresh-ChocolateyProfile
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "failed to refresh chocolatey profile."
+            throw "failed to refresh chocolatey profile."
         }
 
         Log-Info "NSSM installed successfully."
     }
     catch {
-        Log-Fatal "Failed to install NSSM: `"$($_.Exception.Message)`""
+        throw "Failed to install NSSM: `"$($_.Exception.Message)`""
     }
 }
 
@@ -457,23 +457,49 @@ function Install-GPUStack {
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
 
-        Log-Info "Installing GPUStack with pipx and pythin $pythonPath..."
 
+
+        $pipxSharedEnv = (pipx environment --value PIPX_SHARED_LIBS)
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to run pipx environment --value PIPX_SHARED_LIBS."
+        }
+
+        Log-Info "Check pipx environment..."
+        $pipxSharedConfigPath = (Join-Path -Path $pipxSharedEnv -ChildPath "pyvenv.cfg")
+        if (Test-Path $pipxSharedConfigPath) {
+            $configContent = Get-Content -Path (Join-Path -Path $pipxSharedEnv -ChildPath "pyvenv.cfg")
+            $homeValue = ""
+            foreach ($line in $configContent) {
+                if ($line.StartsWith("home =")) {
+                    $homeValue = $line.Split("=")[1].Trim()
+                    break
+                }
+            }
+            if (-not (Test-Path -Path $homeValue)) {
+                Log-Warn "Current pipx config is invalid with isn't exist python path $homeValue, try to refresh shared environment..."
+                python -m venv --clear $pipxSharedEnv
+                if ($LASTEXITCODE -ne 0) {
+                    throw "failed to refresh virtual environment."
+                }
+            }
+        }
+
+        Log-Info "Installing GPUStack with pipx and pythin $pythonPath..."
         pipx install $installArgs $INSTALL_PACKAGE_SPEC --force --verbose
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "failed to install $INSTALL_PACKAGE_SPEC."
+            throw "failed to install $INSTALL_PACKAGE_SPEC."
         }
 
         pipx ensurepath
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "failed to run pipx ensurepath."
+            throw "failed to run pipx ensurepath."
         }
 
         Log-Info "Updating PATH environment variable..."
 
         $pipEnv = (pipx environment --value PIPX_BIN_DIR)
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "failed to run pipx environment."
+            throw "failed to run pipx environment."
         }
 
         $env:Path = "$pipEnv;$env:Path"
@@ -481,12 +507,13 @@ function Install-GPUStack {
         $currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
         if (!$currentPath.Contains($pipEnv)) {
             [Environment]::SetEnvironmentVariable("Path", $env:Path, [EnvironmentVariableTarget]::Machine)
-        } else {
+        }
+        else {
             Log-Info "Path already contains $pipEnv"
         }
     }
     catch {
-        Log-Fatal "Failed to install GPUStack: `"$($_.Exception.Message)`""
+        throw "Failed to install GPUStack: `"$($_.Exception.Message)`""
     }
 }
 
@@ -506,13 +533,23 @@ function Setup-GPUStackService {
         try {
             Log-Info "Stopping existing ${serviceName} service, creatig a new one..."
             $result = nssm stop $serviceName confirm
-            Log-Info "Stopped ${serviceName} result: $result"
+            if ($LASTEXITCODE -eq 0) {
+                Log-Info "Stopped ${serviceName} success"
+            }
+            else {
+                Log-Warn "Failed to stop existing ${serviceName} service: `"$($result)`""
+            }
 
             $result = nssm remove $serviceName confirm
-            Log-Info "Removed ${serviceName} result: $result"
+            if ($LASTEXITCODE -eq 0) {
+                Log-Info "Removed ${serviceName} success"
+            }
+            else {
+                Log-Warn "Failed to remove existing ${serviceName} service: `"$($result)`""
+            }
         }
         catch {
-            Log-Fatal "Failed to stop and remove existing ${serviceName} service: `"$($_.Exception.Message)`""
+            throw "Failed to stop and remove existing ${serviceName} service: `"$($_.Exception.Message)`""
         }
     }
 
@@ -533,7 +570,7 @@ function Setup-GPUStackService {
 
         $null = nssm install $serviceName $exePath
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "Failed to install service $serviceName"
+            throw "Failed to install service $serviceName"
         }
 
         $commands = @(
@@ -551,13 +588,13 @@ function Setup-GPUStackService {
 
         foreach ($cmd in $commands) {
             $null = Invoke-Expression $cmd
-            if ($LASTEXITCODE -ne 0) { Log-Fatal "Failed to run nssm set environment: $cmd" }
+            if ($LASTEXITCODE -ne 0) { throw "Failed to run nssm set environment: $cmd" }
         }
 
         Log-Info "Starting ${serviceName} service..."
         $null = nssm start $serviceName -y
         if ($LASTEXITCODE -ne 0) {
-            Log-Fatal "Failed to start service $serviceName"
+            throw "Failed to start service $serviceName"
         }
 
         # Wait for the service to start for 120 seconds.
@@ -576,12 +613,12 @@ function Setup-GPUStackService {
             Log-Info "$serviceName service dump:"
             nssm dump GPUStack
             if ($LASTEXITCODE -ne 0) {
-                Log-Fatal "Failed to dump service $serviceName"
+                throw "Failed to dump service $serviceName"
             }
         }
     }
     catch {
-        Log-Fatal "Failed to setup ${serviceName}: `"$($_.Exception.Message)`""
+        throw "Failed to setup ${serviceName}: `"$($_.Exception.Message)`""
     }
 }
 
@@ -638,13 +675,12 @@ function Log-Fatal {
         [string]$message
     )
     Write-Host "[ERROR] $message" -ForegroundColor Red
-    exit 1
 }
 
 # Function to check if the script is run as administrator
 function Check-AdminPrivilege {
     if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        Log-Fatal "This script must be run as Administrator. Please restart the script with Administrator privileges."
+        throw "This script must be run as Administrator. Please restart the script with Administrator privileges."
     }
 }
 
@@ -652,7 +688,7 @@ function Check-AdminPrivilege {
 function Check-OS {
     $OS = (Get-CimInstance -Class Win32_OperatingSystem).Caption
     if ($OS -notmatch "Windows") {
-        Log-Fatal "Unsupported OS. Only Windows is supported."
+        throw "Unsupported OS. Only Windows is supported."
     }
 }
 
@@ -666,13 +702,24 @@ function Uninstall-GPUStack {
             try {
                 Log-Info "Stopping existing ${serviceName} service..."
                 $result = nssm stop $serviceName confirm
-                Log-Info "Stopped ${serviceName} result: $result"
+                if ($LASTEXITCODE -eq 0) {
+                    Log-Info "Stopped ${serviceName} success"
+                }
+                else {
+                    Log-Warn "Failed to stop existing ${serviceName} service: `"$($result)`""
+                }
 
-                $result =nssm remove $serviceName confirm
-                Log-Info "Removed ${serviceName} result: $result"
+                $result = nssm remove $serviceName confirm
+                if ($LASTEXITCODE -eq 0) {
+                    Log-Info "Removed ${serviceName} success"
+                }
+                else {
+                    Log-Warn "Failed to remove existing ${serviceName} service: `"$($result)`""
+                }
+
             }
             catch {
-                Log-Fatal "Failed to stop and remove existing ${serviceName} service: `"$($_.Exception.Message)`""
+                throw "Failed to stop and remove existing ${serviceName} service: `"$($_.Exception.Message)`""
             }
         }else{
             Log-Info "No existing ${serviceName} service found."
@@ -680,8 +727,7 @@ function Uninstall-GPUStack {
 
 
         if (-not(Get-Command pipx -ErrorAction SilentlyContinue)) {
-            Log-Fatal "Pipx not found."
-            return
+            throw "Pipx not found."
         }
 
         Log-Info "Uninstalling package ${packageName}..."
@@ -702,7 +748,7 @@ function Uninstall-GPUStack {
         }
     }
     catch {
-        Log-Fatal "Failed to uninstall GPUStack: `"$($_.Exception.Message)`""
+        throw "Failed to uninstall GPUStack: `"$($_.Exception.Message)`""
     }
 }
 
