@@ -10,6 +10,7 @@ import logging
 from contextlib import redirect_stdout, redirect_stderr
 
 
+from gpustack.api.exceptions import NotFoundException
 from gpustack.utils import network
 from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
@@ -171,7 +172,16 @@ class ServeManager:
             process = self._serving_model_instances[id]
             if not process.is_alive():
                 exitcode = process.exitcode
-                if exitcode != 0:
-                    print(f"Process {process.pid} exited with exitcode {exitcode}")
-                logger.info(f"Model instance {id} has stopped.")
+                try:
+                    mi = self._clientset.model_instances.get(id=id)
+                    if mi.state != ModelInstanceStateEnum.ERROR:
+                        self._update_model_instance(
+                            id,
+                            state=ModelInstanceStateEnum.ERROR,
+                            state_message=f"Inference server exited with code {exitcode}.",
+                        )
+                except NotFoundException:
+                    pass
+                except Exception:
+                    logger.error(f"Failed to update model instance {id} state.")
                 self._serving_model_instances.pop(id)
