@@ -1,8 +1,8 @@
 # GPUStack
 
-GPUStack is an open-source GPU cluster manager designed to run large language models(LLMs) efficiently.
-
 ![demo](assets/gpustack-demo.gif)
+
+GPUStack is an open-source GPU cluster manager for running large language models(LLMs).
 
 ### Key Features:
 
