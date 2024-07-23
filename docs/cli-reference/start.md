@@ -41,3 +41,35 @@ gpustack start [OPTIONS]
 | `--metrics-port` value           | `10151` | Port to expose metrics.                                  |
 | `--worker-port` value            | `10150` | Port to bind the worker to.                              |
 | `--log-dir` value                |         | Directory to store logs.                                 |
+
+## Config File
+
+You can configure start options using a YAML-format config file when starting GPUStack server or worker. Here is a complete example:
+
+```yaml
+# Common Options
+debug: false
+data_dir: /path/to/dir
+token: mytoken
+
+# Server Options
+host: 0.0.0.0
+port: 80
+database_url: postgresql://user:password@hostname:port/db_name
+disable_worker: false
+ssl_keyfile: /path/to/keyfile
+ssl_certfile: /path/to/certfile
+force_auth_localhost: false
+bootstrap_password: myadminpassword
+system_reserved:
+  memory: 1
+  gpu_memory: 1
+
+# Worker Options
+server_url: http://myserver
+worker_ip: 192.168.1.101
+enable_metrics: true
+metrics_port: 10151
+worker_port: 10150
+log_dir: /path/to/dir
+```
