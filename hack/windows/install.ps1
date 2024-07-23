@@ -48,13 +48,15 @@ function Get-FastFetch {
             Remove-Item -Recurse -Force $fastfetchTmpDir -ErrorAction Ignore
             New-Item -ItemType Directory -Path $fastfetchTmpDir | Out-Null
 
-            Invoke-WebRequest -Uri "https://github.com/aiwantaozi/fastfetch/releases/download/$version/fastfetch-$platform.zip" -OutFile $tmpFile -UseBasicParsing
+            $url = "https://github.com/aiwantaozi/fastfetch/releases/download/$version/fastfetch-$platform.zip"
+            DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 3
             Expand-Archive -Path $tmpFile -DestinationPath $fastfetchTmpDir
 
             $tmpBinFile = Join-Path -Path $fastfetchTmpDir -ChildPath "fastfetch.exe"
 
             Copy-Item -Path $tmpBinFile -Destination $targetFile
-        } catch {
+        }
+        catch {
             GPUStack.Log.Fatal "failed to download fastfetch-$platform '$version' archive: : $($_.Exception.Message)"
         }
 
@@ -76,12 +78,15 @@ function Get-UI {
     GPUStack.Log.Info "downloading UI assets"
 
     try {
-        Invoke-WebRequest -Uri "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$tag.tar.gz" -OutFile "$tmpPath/ui.tar.gz" -UseBasicParsing
+        $tmpFile = "$tmpPath/ui.tar.gz"
+        $url = "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$tag.tar.gz"
+        DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 3
 
         # For git action's bug, can't use tar directly.
         # https://github.com/julia-actions/setup-julia/issues/205
         & "$env:WINDIR/System32/tar" -xzf "$tmpPath/ui.tar.gz" -C "$tmpUIPath"
-    } catch {
+    }
+    catch {
         GPUStack.Log.Fatal "failed to download '$tag' UI archive: $($_.Exception.Message)"
 
         if (-eq $tag $defaultTag) {
@@ -91,9 +96,12 @@ function Get-UI {
         GPUStack.Log.Warn "failed to download '$tag' UI archive, fallback to '$defaultTag' UI archive"
 
         try {
-            Invoke-WebRequest -Uri "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$defaultTag.tar.gz" -OutFile "$tmpPath/ui.tar.gz" -UseBasicParsing
-            tar -xzf "$tmpPath/ui.tar.gz" -C "$tmpUIPath"
-        } catch {
+            $tmpFile = "$tmpPath/ui.tar.gz"
+            $url = "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$defaultTag.tar.gz"
+            DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 3
+            tar -xzf $tmpFile -C "$tmpUIPath"
+        }
+        catch {
             GPUStack.Log.Fatal "failed to download '$defaultTag' UI archive: : $($_.Exception.Message)"
         }
     }
@@ -121,9 +129,10 @@ function Get-GGUFParser {
 
         GPUStack.Log.Info "downloading gguf-parser-$platform '$version' archive"
         try {
-            Invoke-WebRequest -Uri "https://github.com/thxCode/gguf-parser-go/releases/download/$version/$targetBinFile" -OutFile $targetFile -UseBasicParsing
-            # chmod +x $targetFile
-        } catch {
+            $url = "https://github.com/thxCode/gguf-parser-go/releases/download/$version/$targetBinFile"
+            DownloadWithRetries -url $url -outFile $targetFile -maxRetries 3
+        }
+        catch {
             GPUStack.Log.Fatal "failed to download gguf-parser-$platform '$version' archive: $($_.Exception.Message)"
         }
     }
@@ -155,7 +164,8 @@ function Get-LlamaBox {
             New-Item -ItemType Directory -Path $llamaBoxPlatformTmpDir | Out-Null
 
             $tmpFile = Join-Path -Path $llamaBoxTmpDir -ChildPath "llama-box-$version-$platform.zip"
-            Invoke-WebRequest -Uri "https://github.com/thxCode/llama-box/releases/download/$version/llama-box-$platform.zip" -OutFile $tmpFile -UseBasicParsing
+            $url = "https://github.com/thxCode/llama-box/releases/download/$version/llama-box-$platform.zip"
+            DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 4
 
             Expand-Archive -Path $tmpFile -DestinationPath $llamaBoxPlatformTmpDir
             Copy-Item -Path "$llamaBoxPlatformTmpDir/$binFile" -Destination $targetFile
@@ -166,6 +176,28 @@ function Get-LlamaBox {
     }
 
     Remove-Item -Recurse -Force $llamaBoxTmpDir -ErrorAction Ignore
+}
+
+function DownloadWithRetries {
+    param (
+        [string]$url,
+        [string]$outFile,
+        [int]$maxRetries = 3
+    )
+
+    for ($i = 1; $i -le $maxRetries; $i++) {
+        try {
+            GPUStack.Log.Info "Attempting to download from $url (Attempt $i of $maxRetries)"
+            Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing
+            return
+        }
+        catch {
+            GPUStack.Log.Warn "Download attempt $i failed: $($_.Exception.Message)"
+            if ($i -eq $maxRetries) {
+                throw $_
+            }
+        }
+    }
 }
 
 #
