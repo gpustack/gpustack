@@ -2,13 +2,15 @@
 
 GPUStack is an open-source GPU cluster manager designed to run large language models(LLMs) efficiently.
 
+![demo](docs/assets/gpustack-demo.gif)
+
 ### Key Features:
 
-- **Supports a Wide Variety of Hardware:** Run with any brand of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
+- **Supports a Wide Variety of Hardware:** Run with different brands of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
 - **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.
 - **Lightweight Python Package:** Minimal dependencies and operational overhead.
 - **OpenAI-compatible APIs:** Serve APIs that are compatible with OpenAI standards.
-- **User and API key management:** Simplified management of users and API keys to enhance security.
+- **User and API key management:** Simplified management of users and API keys.
 - **GPU metrics monitoring:** Monitor GPU performance and utilization in real-time.
 - **Token usage and rate metrics:** Track token usage and manage rate limits effectively.
 
@@ -22,7 +24,7 @@ GPUStack provides a script to install it as a service on systemd or launchd base
 curl -sfL https://get.gpustack.ai | sh -s -
 ```
 
-Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes:
+Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes (replace `http://myserver` and `mytoken` with your actual server URL and token):
 
 ```bash
 curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
@@ -42,7 +44,7 @@ Run PowerShell as administrator, then run the following command to install GPUSt
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
 
-Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes:
+Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes (replace `http://myserver` and `mytoken` with your actual server URL and token):
 
 ```powershell
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -server-url http://myserver -token mytoken"
@@ -56,7 +58,7 @@ Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Ra
 
 ### Manual Installation
 
-For manual installation or detail configurations, refer to the [installation](./docs/installation/manual-installation.md) docs.
+For manual installation or detailed configurations, refer to the [installation](./docs/installation/manual-installation.md) docs.
 
 ## Gettting Started
 

@@ -9,6 +9,7 @@ on:
       - "**.mdx"
       - "**.png"
       - "**.jpg"
+      - "**.gif"
 
 jobs:
   linux-macos:
