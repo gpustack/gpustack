@@ -48,7 +48,7 @@ class WorkerSyncer:
             for worker in workers:
                 offline_worker_names.append(worker.name)
                 worker.state = WorkerStateEnum.NOT_READY
-                worker.state_message = "Worker has lost its heartbeat."
+                worker.state_message = "Heartbeat lost"
                 await worker.update(session, worker)
 
             logger.debug(

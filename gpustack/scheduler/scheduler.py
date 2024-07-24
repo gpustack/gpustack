@@ -90,7 +90,7 @@ class Scheduler:
                 instance = await ModelInstance.one_by_id(session, instance.id)
                 if instance.state != ModelInstanceStateEnum.ANALYZING:
                     instance.state = ModelInstanceStateEnum.ANALYZING
-                    instance.state_message = "Evaluating resource requirements."
+                    instance.state_message = "Evaluating resource requirements"
                     await instance.update(session)
 
                 model = await Model.one_by_id(session, instance.model_id)
@@ -193,7 +193,7 @@ class Scheduler:
                     ModelInstanceStateEnum.ANALYZING,
                 ):
                     model_instance.state = ModelInstanceStateEnum.PENDING
-                model_instance.state_message = "No suitable workers."
+                model_instance.state_message = "No suitable workers"
                 if state_message != "":
                     model_instance.state_message = state_message
 
