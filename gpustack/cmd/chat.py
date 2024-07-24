@@ -24,8 +24,8 @@ def setup_chat_cmd(subparsers: argparse._SubParsersAction):
 
 
 def run(args):
-    cfg = parse_arguments(args)
     try:
+        cfg = parse_arguments(args)
         ChatManager(cfg).start()
     except Exception as e:
         print(e)

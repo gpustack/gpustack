@@ -6,14 +6,14 @@ Chat with a large language model.
 gpustack chat model [prompt]
 ```
 
-## Positional arguments
+## Positional Arguments
 
 | Name   | Description                                 |
 | ------ | ------------------------------------------- |
 | model  | The model to use for chat.                  |
 | prompt | The prompt to send to the model. [Optional] |
 
-## One-time chat with a prompt
+## One-time Chat with a Prompt
 
 If a prompt is provided, it performs a one-time inference. For example:
 
@@ -29,7 +29,7 @@ Why couldn't the bicycle stand up by itself?
 Because it was two-tired!
 ```
 
-## Interactive chat
+## Interactive Chat
 
 If the `prompt` argument is not provided, you can chat with the large language model interactively. For example:
 
@@ -65,7 +65,7 @@ Do you want to hear another one?
 >\quit
 ```
 
-### Interactive commands
+### Interactive Commands
 
 Followings are available commands in interactive chat:
 
@@ -76,11 +76,11 @@ Commands:
   \? or \h or \help - Print this help message
 ```
 
-## Connect to external GPUStack server
+## Connect to External GPUStack Server
 
-If you are not running `gpustack chat` on the server node, you should provide the following environment variables:
+If you are not running `gpustack chat` on the server node, or if you are serving on a custom host or port, you should provide the following environment variables:
 
 | Name                | Description                                          |
 | ------------------- | ---------------------------------------------------- |
-| GPUSTACK_SERVER_URL | URL of the GPUStack server. e.g., `http://myserver`. |
+| GPUSTACK_SERVER_URL | URL of the GPUStack server, e.g., `http://myserver`. |
 | GPUSTACK_API_KEY    | GPUStack API key.                                    |

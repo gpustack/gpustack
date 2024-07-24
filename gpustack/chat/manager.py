@@ -3,13 +3,16 @@ import sys
 import threading
 import time
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from colorama import Fore, Style
 from openai import OpenAI
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from tqdm import tqdm
+import validators
 
+from gpustack.api.exceptions import HTTPException
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.schemas.models import (
     ModelCreate,
@@ -34,11 +37,13 @@ class ChatConfig(BaseSettings):
 
     @model_validator(mode="after")
     def check_api_key(self):
-        if self.base_url != "http://127.0.0.1" and not self.api_key:
-            raise ValueError(
-                "API key is required. Please set GPUSTACK_API_KEY env var."
-            )
-        elif self.base_url == "http://127.0.0.1" and not self.api_key:
+        if not validators.url(self.base_url):
+            raise Exception(f"Invalid server URL: {self.base_url}")
+
+        parsed_url = urlparse(self.base_url)
+        if parsed_url.hostname not in ["127.0.0.1", "localhost"] and not self.api_key:
+            raise Exception("API key is required. Please set GPUSTACK_API_KEY env var.")
+        elif parsed_url.hostname in ["127.0.0.1", "localhost"] and not self.api_key:
             self.api_key = "local"
 
 
@@ -66,8 +71,11 @@ class ChatManager:
         )
         self._history: List[ChatCompletionMessageParam] = []
 
-    def start(self):
-        self._ensure_model()
+    def start(self):  # noqa: C901
+        try:
+            self._ensure_model()
+        except HTTPException as e:
+            raise Exception(f"Request to server failed: {e}")
 
         if self._prompt:
             self.chat_completion(self._prompt)
