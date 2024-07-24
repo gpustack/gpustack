@@ -67,7 +67,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--database-url",
         type=str,
-        help="URL of the database. Example: postgresql://user:password@hostname:port/db_name.",
+        help=argparse.SUPPRESS,
         default=get_env_or_default("DATABASE_URL"),
     )
     group.add_argument(

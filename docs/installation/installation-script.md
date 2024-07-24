@@ -10,9 +10,6 @@ You can set additonal environment viariables and CLI flags when running the scri
 # Run server without the embedded worker.
 curl -sfL https://get.gpustack.ai | sh -s - --disable-worker
 
-# Run server with external postgresql database.
-curl -sfL https://get.gpustack.ai | sh -s - --database-url "postgresql://username:password@host:port/database_name"
-
 # Run server with TLS.
 curl -sfL https://get.gpustack.ai | sh -s - --ssl-keyfile /path/to/keyfile --ssl-certfile /path/to/certfile
 
@@ -47,9 +44,6 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 # Run server without the embedded worker.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -disable-worker"
 
-# Run server with external postgresql database.
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -database-url 'postgresql://username:password@host:port/database_name'"
-
 # Run server with TLS.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -ssl-keyfile 'C:\path\to\keyfile' -ssl-certfile 'C:\path\to\certfile'"
 
@@ -70,7 +64,6 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 ### Available Install Script Flags
 
-
 #### Common Flags
 
 | Flag        | Alias          | Default         | Description                                      |
@@ -82,18 +75,17 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 #### Server Options
 
-| Flag                     | Alias                         | Default                            | Description                                                                                                                                         |
-| ------------------------ | ----------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| -ServerHost              | `-server-host`                | `0.0.0.0`                          | Host to bind the server to.                                                                                                                         |
-| -ServerPort              | `-server-port`                | `80`                               | Port to bind the server to.                                                                                                                         |
-| -DatabaseURL             | `-database-url`               | `sqlite:///<data-dir>/database.db` | URL of the database. Example: postgresql://user:password@hostname:port/db_name                                                                      |
-| -DisableWorker           | `-disable-worker`             | `False`                            | Disable embedded worker.                                                                                                                            |
-| -BootstrapPassword       | `-bootstrap-password`         | Auto-generated.                    | Initial password for the default admin user.                                                                                                        |
-| -SystemReservedMemory    | `-system-reserved-memory`     | 1                                  | The system reserves memory for each worker during scheduling, measured in GiB. By default, 1 GiB of memory are reserved.                            |
-| -SystemReservedGPUMemory | `-system-reserved-gpu-memory` | 1                                  | The system reserves memory for each GPU during scheduling, measured in GiB. By default, 1 GiB of gpu memory are reserved.                           |
-| -SSLKeyFile              | `-ssl-keyfile`                |                                    | Path to the SSL key file.                                                                                                                           |
-| -SSLCertFile             | `-ssl-certfile`               |                                    | Path to the SSL certificate file.                                                                                                                   |
-| -ForceAuthLocalhost      | `-force-auth-localhost`       | `False`                            | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
+| Flag                     | Alias                         | Default         | Description                                                                                                                                         |
+| ------------------------ | ----------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| -ServerHost              | `-server-host`                | `0.0.0.0`       | Host to bind the server to.                                                                                                                         |
+| -ServerPort              | `-server-port`                | `80`            | Port to bind the server to.                                                                                                                         |
+| -DisableWorker           | `-disable-worker`             | `False`         | Disable embedded worker.                                                                                                                            |
+| -BootstrapPassword       | `-bootstrap-password`         | Auto-generated. | Initial password for the default admin user.                                                                                                        |
+| -SystemReservedMemory    | `-system-reserved-memory`     | 1               | The system reserves memory for each worker during scheduling, measured in GiB. By default, 1 GiB of memory are reserved.                            |
+| -SystemReservedGPUMemory | `-system-reserved-gpu-memory` | 1               | The system reserves memory for each GPU during scheduling, measured in GiB. By default, 1 GiB of gpu memory are reserved.                           |
+| -SSLKeyFile              | `-ssl-keyfile`                |                 | Path to the SSL key file.                                                                                                                           |
+| -SSLCertFile             | `-ssl-certfile`               |                 | Path to the SSL certificate file.                                                                                                                   |
+| -ForceAuthLocalhost      | `-force-auth-localhost`       | `False`         | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
 
 ### Worker Options
 
@@ -105,7 +97,6 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 | -MetricsPort   | `-metrics-port`   | `10151` | Port to expose metrics.                                  |
 | -WorkerPort    | `-worker-port`    | `10150` | Port to bind the worker to.                              |
 | -LogDir        | `-log-dir`        |         | Directory to store logs.                                 |
-
 
 ## Run Server
 
