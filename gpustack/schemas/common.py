@@ -34,13 +34,13 @@ class JSON(SQLAlchemyJSON):
 
 
 class UTCDateTime(sa.TypeDecorator):
-    impl = sa.TIMESTAMP(timezone=True)
+    impl = sa.TIMESTAMP(timezone=False)
 
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
         if value is not None and value.tzinfo is not None:
-            # Ensure the datetime is in UTC before storing
+            # Ensure the datetime is in UTC and clear tzinfo before storing
             value = value.astimezone(timezone.utc).replace(tzinfo=None)
         return value
 
