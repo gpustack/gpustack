@@ -7,6 +7,9 @@ You can use the installation script available at `https://get.gpustack.ai` to in
 You can set additonal environment viariables and CLI flags when running the script. The followings are examples running the installation script with different configuration:
 
 ```shell
+# Run server.
+curl -sfL https://get.gpustack.ai | sh -s -
+
 # Run server without the embedded worker.
 curl -sfL https://get.gpustack.ai | sh -s - --disable-worker
 

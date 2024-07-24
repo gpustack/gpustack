@@ -60,6 +60,7 @@ nav:
       - User Management: user-guide/user-management.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
   - Architecture: architecture.md
+  - Troubleshooting: troubleshooting.md
   - API Reference: api-reference.md
   - CLI Reference:
       - Start: cli-reference/start.md
