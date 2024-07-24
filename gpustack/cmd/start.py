@@ -177,8 +177,11 @@ def run_server(cfg: Config):
     sub_processes = []
 
     if not cfg.disable_worker:
+        scheme = "http://"
+        if cfg.ssl_certfile:
+            scheme = "https://"
         cfg.server_url = (
-            f"http://127.0.0.1:{cfg.port}" if cfg.port else "http://127.0.0.1"
+            f"{scheme}127.0.0.1:{cfg.port}" if cfg.port else f"{scheme}127.0.0.1"
         )
         worker = Worker(cfg)
         worker_process = multiprocessing.Process(target=worker.start, args=(True,))
