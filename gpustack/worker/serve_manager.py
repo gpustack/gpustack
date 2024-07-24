@@ -146,7 +146,7 @@ class ServeManager:
             base_url=server_url,
             headers=client_headers,
         )
-        with open(log_file_path, "w", buffering=1) as log_file:
+        with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
                 InferenceServer(clientset, mi, cache_dir).start()
 
