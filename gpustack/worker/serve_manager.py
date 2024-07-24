@@ -91,7 +91,7 @@ class ServeManager:
         ) and not self._serving_model_instances.get(mi.id):
             self._start_serve_process(mi)
         elif event.type == EventType.DELETED and mi.id in self._serving_model_instances:
-            self._stop_model_instance(mi.id)
+            self._stop_model_instance(mi)
 
     def _start_serve_process(self, mi: ModelInstance):
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
@@ -159,13 +159,41 @@ class ServeManager:
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def _stop_model_instance(self, id: str):
+    def _stop_model_instance(self, mi: ModelInstance):
+        id = mi.id
         if id not in self._serving_model_instances:
-            logger.error(f"Task {id} is not currently executing or does not exist.")
+            logger.warning(f"Model instance {mi.name} is not running. Skipping.")
             return
         else:
-            os.kill(self._serving_model_instances[id].pid, signal.SIGTERM)
+            pid = self._serving_model_instances[id].pid
+            try:
+                self._terminate_process_tree(pid)
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                logger.error(f"Failed to terminate process {pid}: {e}")
+
             self._serving_model_instances.pop(id)
+
+    def _terminate_process_tree(self, pid: int):
+        process = psutil.Process(pid)
+        children = process.children(recursive=True)
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(children, timeout=3)
+        for p in alive:
+            try:
+                p.kill()
+            except psutil.NoSuchProcess:
+                pass
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except psutil.TimeoutExpired:
+            process.kill()
 
     def monitor_processes(self):
         for id in list(self._serving_model_instances.keys()):

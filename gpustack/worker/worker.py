@@ -92,6 +92,7 @@ class Worker:
         return worker_name
 
     def start(self, is_multiprocessing=False):
+        setup_logging(self._config.debug)
         if is_multiprocessing:
             setproctitle.setproctitle("gpustack_worker")
 
