@@ -10,7 +10,6 @@ from openai import OpenAI
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from tqdm import tqdm
-import validators
 
 from gpustack.api.exceptions import HTTPException
 from gpustack.client.generated_clientset import ClientSet
@@ -37,10 +36,10 @@ class ChatConfig(BaseSettings):
 
     @model_validator(mode="after")
     def check_api_key(self):
-        if not validators.url(self.base_url):
+        parsed_url = urlparse(self.base_url)
+        if not parsed_url.scheme or not parsed_url.hostname:
             raise Exception(f"Invalid server URL: {self.base_url}")
 
-        parsed_url = urlparse(self.base_url)
         if parsed_url.hostname not in ["127.0.0.1", "localhost"] and not self.api_key:
             raise Exception("API key is required. Please set GPUSTACK_API_KEY env var.")
         elif parsed_url.hostname in ["127.0.0.1", "localhost"] and not self.api_key:
