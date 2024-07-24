@@ -1,5 +1,6 @@
 import ssl
 from typing import Any, Dict, Optional, Union
+import truststore
 
 import httpx
 from attrs import define, evolve, field
@@ -85,13 +86,18 @@ class HTTPClient:
 
     def get_httpx_client(self) -> httpx.Client:
         """Get the underlying httpx.Client, constructing a new one if not previously set"""
+
+        # Use system trust store.
+        verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if self._verify_ssl is None:
+            verify = self._verify_ssl
         if self._client is None:
             self._client = httpx.Client(
                 base_url=self._base_url,
                 cookies=self._cookies,
                 headers=self._headers,
                 timeout=self._timeout,
-                verify=self._verify_ssl,
+                verify=verify,
                 follow_redirects=self._follow_redirects,
                 **self._httpx_args,
             )
@@ -225,6 +231,11 @@ class AuthenticatedHTTPClient:
 
     def get_httpx_client(self) -> httpx.Client:
         """Get the underlying httpx.Client, constructing a new one if not previously set"""
+
+        # Use system trust store.
+        verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if self._verify_ssl is None:
+            verify = self._verify_ssl
         if self._client is None:
             self._headers[self.auth_header_name] = (
                 f"{self.prefix} {self.token}" if self.prefix else self.token
@@ -234,7 +245,7 @@ class AuthenticatedHTTPClient:
                 cookies=self._cookies,
                 headers=self._headers,
                 timeout=self._timeout,
-                verify=self._verify_ssl,
+                verify=verify,
                 follow_redirects=self._follow_redirects,
                 **self._httpx_args,
             )

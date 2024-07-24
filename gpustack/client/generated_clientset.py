@@ -32,12 +32,12 @@ class ClientSet:
         self.base_url = base_url
         self.headers = headers
 
-        verify_ssl = True
+        verify = None
         parsed_url = urlparse(base_url)
         if parsed_url.hostname == "127.0.0.1" and parsed_url.scheme == "https":
-            verify_ssl = False
+            verify = False
 
-        http_client = HTTPClient(base_url=base_url, verify_ssl=verify_ssl).with_headers(
+        http_client = HTTPClient(base_url=base_url, verify_ssl=verify).with_headers(
             headers
         )
 
