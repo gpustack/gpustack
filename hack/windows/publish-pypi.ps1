@@ -8,13 +8,10 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
 function Publish-Pypi {
-    if (-not $env:PYPI_API_TOKEN) {
-        GPUStack.Log.Fatal "PYPI_API_TOKEN is not set"
-    }
-
-    poetry publish --username __token__ --password $env:PYPI_API_TOKEN
+    poetry run twine check dist/*.whl
+    poetry run twine upload dist/*.whl
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed to run poetry publish."
+        GPUStack.Log.Fatal "twine upload failed."
     }
 }
 
