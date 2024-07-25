@@ -4,7 +4,7 @@
 
 GPUStack is an open-source GPU cluster manager for running large language models(LLMs).
 
-### Key Features:
+### Key Features
 
 - **Supports a Wide Variety of Hardware:** Run with different brands of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
 - **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.

@@ -28,6 +28,8 @@ theme:
     - content.code.annotate
     - content.code.copy
     - content.code.select
+    - content.action.view
+    - content.action.edit
   icon:
     repo: fontawesome/brands/github-alt
   language: en
@@ -46,6 +48,8 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.tasklist:
       custom_checkbox: true
+repo_url: https://github.com/gpustack/gpustack
+edit_uri: edit/main/docs/
 nav:
   - Overview: overview.md
   - Quickstart: quickstart.md
