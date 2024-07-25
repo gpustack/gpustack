@@ -19,7 +19,7 @@ function download_deps() {
 }
 
 function download_fastfetch() {
-    local version="2.18.1.2"
+    local version="2.18.1.3"
 
     local fastfetch_dir="${THIRD_PARTY_DIR}/fastfetch"
     local fastfetch_tmp_dir="${fastfetch_dir}/tmp"

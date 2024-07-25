@@ -26,7 +26,7 @@ function Install-Dependency {
 }
 
 function Get-FastFetch {
-    $version = "2.18.1.2"
+    $version = "2.18.1.3"
     $fastfetchDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "fastfetch"
     $fastfetchTmpDir = Join-Path -Path $fastfetchDir -ChildPath "tmp"
 
