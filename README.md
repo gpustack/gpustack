@@ -60,7 +60,7 @@ Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Ra
 
 For manual installation or detailed configurations, refer to the [installation](./docs/installation/manual-installation.md) docs.
 
-## Gettting Started
+## Getting Started
 
 1. Run and chat with the llama3 model:
 
