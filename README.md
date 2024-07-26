@@ -58,7 +58,7 @@ Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
 
 ### Manual Installation
 
-For manual installation or detailed configurations, refer to the [installation](./docs/installation/manual-installation.md) docs.
+For manual installation or detailed configurations, refer to the [installation](https://docs.gpustack.ai/installation/manual-installation/) docs.
 
 ## Getting Started
 
@@ -183,6 +183,10 @@ print(completion.choices[0].message)
 ```
 
 GPUStack users can generate their own API keys in the UI.
+
+## Documentation
+
+Please see the [official docs site](https://docs.gpustack.ai) for complete documentation.
 
 ## Build
 
