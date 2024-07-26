@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     A script to run GPUStack server or worker.
 
@@ -369,7 +369,29 @@ function Install-Chocolatey {
 }
 
 function Install-Python {
-    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+
+    $needInstallPython = $true
+    $PYTHON_VERSION = $null
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $PYTHON_VERSION = python -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)'
+        $pythonSource = $(Get-Command python).Source
+        $isDirty = (($null -eq $PYTHON_VERSION) -or ($PYTHON_VERSION -eq "")) -and ($pythonSource -match "WindowsApps")
+
+        if ($isDirty) {
+            Log-Info "Python command is just alias for open Windows Store, clean it up..."
+            Remove-Item "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
+            Remove-Item "$env:LOCALAPPDATA\Microsoft\WindowsApps\python3.exe" -ErrorAction SilentlyContinue
+        }
+        elseif ($PYTHON_VERSION -lt 40) {
+            throw "Python version is $PYTHON_VERSION, which is less than 3.10. Please upgrade Python to at least version 3.10."
+        }
+        else {
+            $needInstallPython = $false
+            Log-Info "Python already installed."
+        }
+    }
+
+    if ($needInstallPython) {
         try {
             Log-Info "Installing Python..."
             $null = choco install python --version=3.10.11 -y
@@ -379,14 +401,6 @@ function Install-Python {
         catch {
             throw "Failed to install Python: `"$($_.Exception.Message)`""
         }
-    }
-    else {
-        Log-Info "Python already installed."
-    }
-
-    $PYTHON_VERSION = python -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)"
-    if ($PYTHON_VERSION -lt 40) {
-        throw "Python version is $PYTHON_VERSION, which is less than 3.10. Please upgrade Python to at least version 3.10."
     }
 
     if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
@@ -453,11 +467,8 @@ function Install-GPUStack {
         }
 
         Log-Info "Installing GPUStack with $INSTALL_PACKAGE_SPEC $installArgs"
-
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
-
-
 
         $pipxSharedEnv = (pipx environment --value PIPX_SHARED_LIBS)
         if ($LASTEXITCODE -ne 0) {
@@ -791,8 +802,8 @@ try {
     Install-Python
     Install-NSSM
     Install-GPUStack
-    Setup-GPUStackService
     Create-UninstallScript
+    Setup-GPUStackService
 }
 catch {
     Log-Fatal "Failed to install GPUStack: `"$($_.Exception.Message)`""
