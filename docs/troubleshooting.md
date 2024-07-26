@@ -13,7 +13,7 @@ If you installed GPUStack using the installation script, you can view GPUStack l
 ### Windows
 
 ```powershell
-Join-Path -Path $env:APPDATA -ChildPath "gpustack\log\gpustack.log"
+"$env:APPDATA\gpustack\log\gpustack.log"
 ```
 
 ## Configure Log Level

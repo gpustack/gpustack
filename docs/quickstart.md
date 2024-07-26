@@ -39,7 +39,7 @@ Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseB
 In the default setup, you can run the following to get the token used for adding workers:
 
 ```powershell
-Get-Content -Path (Join-Path -Path $env:APPDATA -ChildPath "gpustack\token") -Raw
+Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
 ```
 
 ### Manual Installation
@@ -56,8 +56,16 @@ gpustack chat llama3 "tell me a joke."
 
 2. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
+**Linux or MacOS**
+
 ```bash
 cat /var/lib/gpustack/initial_admin_password
+```
+
+**Windows**
+
+```powershell
+Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 ```
 
 3. Click `Playground` in the navigation menus. Now you can chat with the LLM in the UI playground.
