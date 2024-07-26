@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     A script to run GPUStack server or worker.
 
@@ -467,6 +467,7 @@ function Install-GPUStack {
         }
 
         Log-Info "Installing GPUStack with $INSTALL_PACKAGE_SPEC $installArgs"
+
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
 
@@ -604,9 +605,6 @@ function Setup-GPUStackService {
 
         Log-Info "Starting ${serviceName} service..."
         $null = nssm start $serviceName -y
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to start service $serviceName"
-        }
 
         # Wait for the service to start for 120 seconds.
         $startTime = Get-Date
