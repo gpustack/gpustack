@@ -8,7 +8,9 @@ from gpustack.mixins.active_record import ActiveRecordMixin
 
 
 class OperationEnum(str, Enum):
+    COMPLETION = "completion"
     CHAT_COMPLETION = "chat_completion"
+    EMBEDDING = "embedding"
 
 
 class ModelUsage(SQLModel, ActiveRecordMixin, table=True):

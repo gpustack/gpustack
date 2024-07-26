@@ -7,7 +7,9 @@ GPUStack serves [OpenAI compatible APIs](https://platform.openai.com/docs/api-re
 The following API endpoints are supported:
 
 - [x] List Models
-- [x] Chat Completions
+- [x] Create Completions
+- [x] Create Chat Completions
+- [x] Create Embeddings
 
 ## Usage
 

@@ -22,6 +22,8 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
+load_balancer = LoadBalancer()
+
 
 @router.get("/models")
 async def list_models(session: SessionDep):
@@ -40,11 +42,27 @@ async def list_models(session: SessionDep):
     return result
 
 
-load_balancer = LoadBalancer()
-
-
 @router.post("/chat/completions")
-async def chat_completion(session: SessionDep, request: Request):
+async def chat_completions(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "chat/completions")
+
+
+@router.post("/completions")
+async def completions(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "completions")
+
+
+@router.post("/embeddings")
+async def embeddings(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "embeddings")
+
+
+async def proxy_request_by_model(request: Request, session: SessionDep, endpoint: str):
+    """
+    Proxy the request to the model instance that is running the model specified in the
+    request body.
+    """
+
     try:
         body = await request.json()
     except Exception as e:
@@ -67,7 +85,7 @@ async def chat_completion(session: SessionDep, request: Request):
 
     instance = await get_running_instance(session, model.id)
 
-    url = f"http://{instance.worker_ip}:{instance.port}/v1/chat/completions"
+    url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
     logger.debug(f"proxying to {url}")
 
     headers = filter_headers(request.headers)
@@ -77,7 +95,7 @@ async def chat_completion(session: SessionDep, request: Request):
     try:
         if stream:
 
-            async def stream():
+            async def stream_generator():
                 async with httpx.AsyncClient() as client:
                     async with client.stream(
                         method=request.method,
@@ -89,7 +107,7 @@ async def chat_completion(session: SessionDep, request: Request):
                         async for chunk in resp.aiter_text():
                             yield chunk
 
-            return StreamingResponse(stream())
+            return StreamingResponse(stream_generator())
         else:
             async with httpx.AsyncClient() as client:
                 resp = await client.request(

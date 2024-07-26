@@ -2,13 +2,18 @@ from datetime import date
 import json
 import logging
 import time
-from typing import Union
+from typing import Type, Union
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
 from jwt import DecodeError, ExpiredSignatureError
 from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
-from gpustack.schemas.model_usage import ModelUsage
+from openai.types import Completion, CompletionUsage
+from openai.types.create_embedding_response import (
+    CreateEmbeddingResponse,
+    Usage as EmbeddingUsage,
+)
+from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import JWT_TOKEN_EXPIRE_MINUTES, JWTManager
@@ -22,21 +27,50 @@ logger = logging.getLogger(__name__)
 class ModelUsageMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        if (
-            not request.url.path == "/v1-openai/chat/completions"
-            or response.status_code != 200
-        ):
-            return response
+        if response.status_code == 200:
+            if request.url.path == "/v1-openai/chat/completions":
+                return await self.process_request(
+                    request,
+                    response,
+                    self.record_chat_completions_model_usage,
+                    ChatCompletion,
+                )
+            elif request.url.path == "/v1-openai/completions":
+                return await self.process_request(
+                    request, response, self.record_completions_model_usage, Completion
+                )
+            elif request.url.path == "/v1-openai/embeddings":
+                return await self.process_request(
+                    request,
+                    response,
+                    self.record_embeddings_model_usage,
+                    CreateEmbeddingResponse,
+                )
 
+        return response
+
+    async def process_request(
+        self,
+        request: Request,
+        response: StreamingResponse,
+        record_usage,
+        response_class: Type[
+            Union[ChatCompletion, Completion, CreateEmbeddingResponse]
+        ],
+    ):
         stream: bool = getattr(request.state, "stream", False)
         if stream:
-            response = await self.handle_streaming_response(request, response)
+            if response_class == ChatCompletion:
+                response_class = ChatCompletionChunk
+            return await self.handle_streaming_response(
+                request, response, record_usage, response_class
+            )
         else:
             response_body = b"".join([chunk async for chunk in response.body_iterator])
             try:
-                completion_dict = json.loads(response_body)
-                chat_completion = ChatCompletion(**completion_dict)
-                await self.process_model_usage(request, chat_completion)
+                response_dict = json.loads(response_body)
+                response_instance = response_class(**response_dict)
+                await record_usage(request, response_instance.usage)
             except Exception as e:
                 logger.error(f"Error processing model usage: {e}")
             response = Response(content=response_body, headers=dict(response.headers))
@@ -44,7 +78,11 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         return response
 
     async def handle_streaming_response(
-        self, request: Request, response: StreamingResponse
+        self,
+        request: Request,
+        response: StreamingResponse,
+        record_usage,
+        response_class: Type[Union[ChatCompletionChunk, Completion]],
     ):
         async def streaming_generator():
             try:
@@ -59,9 +97,9 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                                 json_line = line
                                 break
                         if json_line:
-                            completion_dict = json.loads(json_line.split('data: ')[-1])
-                            completion_chunk = ChatCompletionChunk(**completion_dict)
-                            await self.process_model_usage(request, completion_chunk)
+                            response_dict = json.loads(json_line.split('data: ')[-1])
+                            response_chunk = response_class(**response_dict)
+                            await record_usage(request, response_chunk.usage)
                         break
 
                 async for chunk in response.body_iterator:
@@ -71,26 +109,27 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
 
         return StreamingResponse(streaming_generator(), headers=dict(response.headers))
 
-    async def process_model_usage(
+    async def record_model_usage(
         self,
         request: Request,
-        chat_completion: Union[ChatCompletion, ChatCompletionChunk],
+        usage: Union[CompletionUsage, EmbeddingUsage],
+        operation: OperationEnum,
     ):
-        completion_tokens = chat_completion.usage.completion_tokens
-        prompt_tokens = chat_completion.usage.prompt_tokens
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = getattr(usage, 'completion_tokens', 0)
         user: User = request.state.user
         model: Model = request.state.model
         fields = {
             "user_id": user.id,
             "model_id": model.id,
             "date": date.today(),
+            "operation": operation,
         }
         model_usage = ModelUsage(
             **fields,
             completion_token_count=completion_tokens,
             prompt_token_count=prompt_tokens,
             request_count=1,
-            operation="chat_completion",
         )
         async with AsyncSession(get_engine()) as session:
             current_model_usage = await ModelUsage.one_by_fields(session, fields)
@@ -101,6 +140,21 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                 await current_model_usage.update(session)
             else:
                 await ModelUsage.create(session, model_usage)
+
+    async def record_chat_completions_model_usage(
+        self, request: Request, usage: CompletionUsage
+    ):
+        await self.record_model_usage(request, usage, OperationEnum.CHAT_COMPLETION)
+
+    async def record_completions_model_usage(
+        self, request: Request, usage: CompletionUsage
+    ):
+        await self.record_model_usage(request, usage, OperationEnum.COMPLETION)
+
+    async def record_embeddings_model_usage(
+        self, request: Request, usage: EmbeddingUsage
+    ):
+        await self.record_model_usage(request, usage, OperationEnum.EMBEDDING)
 
 
 class RefreshTokenMiddleware(BaseHTTPMiddleware):
