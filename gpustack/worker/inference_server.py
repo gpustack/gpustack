@@ -117,6 +117,7 @@ class InferenceServer:
         arguments = [
             "--host",
             "0.0.0.0",
+            "--embeddings",
             "--gpu-layers",
             str(layers),
             "--parallel",

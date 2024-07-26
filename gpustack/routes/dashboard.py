@@ -209,6 +209,17 @@ async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
 
 
 async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
+    usage_sum_query = (
+        select(
+            Model.id.label('model_id'),
+            func.sum(
+                ModelUsage.prompt_token_count + ModelUsage.completion_token_count
+            ).label('total_token_count'),
+        )
+        .outerjoin(ModelUsage, Model.id == ModelUsage.model_id)
+        .group_by(Model.id)
+    ).alias('usage_sum')
+
     statement = (
         select(
             Model.id,
@@ -236,18 +247,12 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
                     0,
                 )
             ).label('total_gpu_memory_claim'),
-            func.sum(
-                ModelUsage.prompt_token_count + ModelUsage.completion_token_count
-            ).label('total_token_count'),
+            usage_sum_query.c.total_token_count,
         )
         .join(ModelInstance, Model.id == ModelInstance.model_id)
-        .outerjoin(ModelUsage, Model.id == ModelUsage.model_id)
-        .group_by(Model.id)
-        .order_by(
-            func.sum(
-                ModelUsage.prompt_token_count + ModelUsage.completion_token_count
-            ).desc()
-        )
+        .outerjoin(usage_sum_query, Model.id == usage_sum_query.c.model_id)
+        .group_by(Model.id, usage_sum_query.c.total_token_count)
+        .order_by(usage_sum_query.c.total_token_count.desc())
         .limit(10)
     )
     results = (await session.exec(statement)).all()
