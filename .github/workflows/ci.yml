@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["*.*.*"]
     paths-ignore:
+      - "mkdocs.yml"
       - "docs/**"
       - "**.md"
       - "**.mdx"

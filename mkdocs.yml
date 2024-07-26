@@ -41,6 +41,7 @@ markdown_extensions:
   - pymdownx.highlight
   - pymdownx.superfences
   - admonition
+  - sane_lists
   - pymdownx.details
   - pymdownx.tilde
   - pymdownx.betterem
