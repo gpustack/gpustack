@@ -131,7 +131,7 @@ check_python_tools() {
   fi
 
   PYTHONPATH=$(python3 -c 'import site, sys; print(":".join(sys.path + [site.getusersitepackages()]))')
-  
+
   if ! command -v pipx > /dev/null 2>&1; then
     info "Pipx could not be found. Attempting to install..."
     pip3 install pipx
@@ -159,6 +159,15 @@ check_cuda() {
   if command -v nvidia-smi > /dev/null 2>&1; then
     if ! command -v nvcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libcudart); then
       fatal "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+    fi
+  fi
+}
+
+# Function to check MUSA for MTHREADS GPUs
+check_musa() {
+  if command -v mthreads-gmi > /dev/null 2>&1; then
+    if ! command -v mcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libmusart); then
+      fatal "MTHREADS GPU detected but MUSA is not installed. Please install MUSA."
     fi
   fi
 }
@@ -312,6 +321,7 @@ install_gpustack() {
   install_dependencies
   check_python_tools
   check_cuda
+  check_musa
   install_gpustack
   create_uninstall_script
   disable_service

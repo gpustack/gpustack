@@ -29,6 +29,7 @@ We plan to support the following accelerators in future releases.
 
 - [ ] AMD ROCm
 - [ ] Intel oneAPI
+- [ ] MTHREADS MUSA
 - [ ] Qualcomm AI Engine
 
 ## Supported Models
