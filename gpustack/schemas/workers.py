@@ -55,6 +55,7 @@ class VendorEnum(str, Enum):
     NVIDIA = "NVIDIA"
     AMD = "AMD"
     Intel = "Intel"
+    MTHREADS = "MTHREADS"
     Apple = "Apple"
 
 
