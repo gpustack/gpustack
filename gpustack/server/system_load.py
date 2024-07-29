@@ -37,7 +37,7 @@ def compute_avg_gpu_utilization_rate(workers: list[Worker]) -> Tuple[float, floa
     )
 
     if count == 0:
-        return 0
+        return 0, 0
 
     return util_sum_value / count, memory_sum_value / count
 
