@@ -38,7 +38,7 @@ cat /var/lib/gpustack/token
 
 ### Windows
 
-Run PowerShell as administrator, then run the following command to install GPUStack:
+Run PowerShell as administrator (**avoid** using PowerShell ISE), then run the following command to install GPUStack:
 
 ```powershell
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
