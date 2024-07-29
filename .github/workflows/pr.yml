@@ -43,3 +43,24 @@ jobs:
       - name: Run CI build
         run: |
           make ci
+  
+  windows:
+    timeout-minutes: 20
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: CI
+        shell: powershell
+        run: |
+          make ci
