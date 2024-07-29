@@ -116,7 +116,7 @@ function download_gguf_parser() {
 
 
 function download_llama_box() {
-    local version="v0.0.13"
+    local version="v0.0.20"
 
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"
