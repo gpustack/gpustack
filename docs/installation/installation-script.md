@@ -58,6 +58,10 @@ $env:INSTALL_PACKAGE_SPEC = "https://repo.mycompany.com/my-gpustack.whl"
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
 
+!!! warning
+
+    Avoid using PowerShell ISE as it is not compatible with the installation script.
+
 ### Available Environment Variables
 
 | Name                   | Default    | Description                                                                                                                                                     |

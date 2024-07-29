@@ -32,14 +32,14 @@ gpustack start [OPTIONS]
 
 ### Worker Options
 
-| Flag                             | Default | Description                                              |
-| -------------------------------- | ------- | -------------------------------------------------------- |
-| `-s` value, `--server-url` value |         | Server to connect to.                                    |
-| `--worker-ip` value              |         | IP address of the worker node. Auto-detected by default. |
-| `--enable-metrics`               | `True`  | Enable metrics.                                          |
-| `--metrics-port` value           | `10151` | Port to expose metrics.                                  |
-| `--worker-port` value            | `10150` | Port to bind the worker to.                              |
-| `--log-dir` value                |         | Directory to store logs.                                 |
+| Flag                             | Default | Description                                                         |
+| -------------------------------- | ------- | ------------------------------------------------------------------- |
+| `-s` value, `--server-url` value |         | Server to connect to.                                               |
+| `--worker-ip` value              |         | IP address of the worker node. Auto-detected by default.            |
+| `--enable-metrics`               | `True`  | Enable metrics.                                                     |
+| `--metrics-port` value           | `10151` | Port to expose metrics.                                             |
+| `--worker-port` value            | `10150` | Port to bind the worker to. Use a consistent value for all workers. |
+| `--log-dir` value                |         | Directory to store logs.                                            |
 
 ## Config File
 
