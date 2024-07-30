@@ -48,7 +48,7 @@ function Get-FastFetch {
             Remove-Item -Recurse -Force $fastfetchTmpDir -ErrorAction Ignore
             New-Item -ItemType Directory -Path $fastfetchTmpDir | Out-Null
 
-            $url = "https://github.com/aiwantaozi/fastfetch/releases/download/$version/fastfetch-$platform.zip"
+            $url = "https://github.com/gpustack/fastfetch/releases/download/$version/fastfetch-$platform.zip"
             DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 3
             Expand-Archive -Path $tmpFile -DestinationPath $fastfetchTmpDir
 
@@ -129,7 +129,7 @@ function Get-GGUFParser {
 
         GPUStack.Log.Info "downloading gguf-parser-$platform '$version' archive"
         try {
-            $url = "https://github.com/thxCode/gguf-parser-go/releases/download/$version/$targetBinFile"
+            $url = "https://github.com/gpustack/gguf-parser-go/releases/download/$version/$targetBinFile"
             DownloadWithRetries -url $url -outFile $targetFile -maxRetries 3
         }
         catch {
@@ -164,7 +164,7 @@ function Get-LlamaBox {
             New-Item -ItemType Directory -Path $llamaBoxPlatformTmpDir | Out-Null
 
             $tmpFile = Join-Path -Path $llamaBoxTmpDir -ChildPath "llama-box-$version-$platform.zip"
-            $url = "https://github.com/thxCode/llama-box/releases/download/$version/llama-box-$platform.zip"
+            $url = "https://github.com/gpustack/llama-box/releases/download/$version/llama-box-$platform.zip"
             DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 4
 
             Expand-Archive -Path $tmpFile -DestinationPath $llamaBoxPlatformTmpDir

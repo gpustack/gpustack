@@ -45,7 +45,7 @@ function download_fastfetch() {
 
       curl --retry 3 --retry-all-errors --retry-delay 3 \
         -o  "${tmp_file}" \
-        -sSfL "https://github.com/aiwantaozi/fastfetch/releases/download/${version}/fastfetch-${platform}.zip"
+        -sSfL "https://github.com/gpustack/fastfetch/releases/download/${version}/fastfetch-${platform}.zip"
     
       unzip -qu "${tmp_file}" -d "${fastfetch_tmp_dir}"
     
@@ -108,7 +108,7 @@ function download_gguf_parser() {
     
       curl --retry 3 --retry-all-errors --retry-delay 3 \
         -o  "${target_file}" \
-        -sSfL "https://github.com/thxCode/gguf-parser-go/releases/download/${version}/gguf-parser-${platform}"
+        -sSfL "https://github.com/gpustack/gguf-parser-go/releases/download/${version}/gguf-parser-${platform}"
 
       chmod +x "${target_file}"
     done
@@ -143,7 +143,7 @@ function download_llama_box() {
       local tmp_file="${llama_box_tmp_dir}/llama-box-${version}-${platform}.zip"
       curl --retry 3 --retry-all-errors --retry-delay 3 \
         -o  "${tmp_file}" \
-        -sSfL "https://github.com/thxCode/llama-box/releases/download/${version}/llama-box-${platform}.zip"
+        -sSfL "https://github.com/gpustack/llama-box/releases/download/${version}/llama-box-${platform}.zip"
 
       unzip -qu "${tmp_file}" -d "${llama_box_platform_tmp_dir}"
       cp "${llama_box_platform_tmp_dir}/llama-box" "${target_file}"
