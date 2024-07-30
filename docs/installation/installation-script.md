@@ -19,6 +19,9 @@ curl -sfL https://get.gpustack.ai | sh -s - --ssl-keyfile /path/to/keyfile --ssl
 # Run worker with specified IP.
 curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken --worker-ip 192.168.1.100
 
+# Install with a custom index URL.
+curl -sfL https://get.gpustack.ai | INSTALL_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple sh -s -
+
 # Install a custom wheel package other than releases form pypi.org.
 curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=https://repo.mycompany.com/my-gpustack.whl sh -s -
 ```
@@ -27,6 +30,7 @@ curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=https://repo.mycompany.
 
 | Name                   | Default    | Description                                                                                                                                                     |
 | ---------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INSTALL_INDEX_URL`    | (empty)    | Base URL of the Python Package Index.                                                                                                                           |
 | `INSTALL_PACKAGE_SPEC` | `gpustack` | The package spec to install. It supports PYPI package names, URLs, and local paths. See https://pip.pypa.io/en/stable/cli/pip_install/#pip-install for details. |
 | `INSTALL_PRE_RELEASE`  | (empty)    | If set to 1, pre-release packages will be installed.                                                                                                            |
 
@@ -53,6 +57,10 @@ Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseB
 # Run worker with specified IP.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -server-url 'http://myserver' -token 'mytoken' -worker-ip '192.168.1.100'"
 
+# Install with a custom index URL.
+$env:INSTALL_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+
 # Install a custom wheel package other than releases form pypi.org.
 $env:INSTALL_PACKAGE_SPEC = "https://repo.mycompany.com/my-gpustack.whl"
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
@@ -66,6 +74,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 | Name                   | Default    | Description                                                                                                                                                     |
 | ---------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INSTALL_INDEX_URL`    | (empty)    | Base URL of the Python Package Index.                                                                                                                           |
 | `INSTALL_PACKAGE_SPEC` | `gpustack` | The package spec to install. It supports PYPI package names, URLs, and local paths. See https://pip.pypa.io/en/stable/cli/pip_install/#pip-install for details. |
 | `INSTALL_PRE_RELEASE`  | (empty)    | If set to 1, pre-release packages will be installed.                                                                                                            |
 
