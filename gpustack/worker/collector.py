@@ -94,8 +94,11 @@ class WorkerStatusCollector:
                 list = sorted(r, key=lambda x: x["name"])
                 for i, value in enumerate(list):
                     # Metadatas.
-                    name = self._get_value(value, "name")
                     vender = self._get_value(value, "vendor")
+                    if vender is None or vender == "":
+                        continue
+
+                    name = self._get_value(value, "name")
                     index = self._get_value(value, "index")
                     if index is None:
                         index = i
@@ -107,10 +110,12 @@ class WorkerStatusCollector:
                     ):
                         is_unified_memory = True
 
+                    is_integrated = self._get_value(value, "type") == "Integrated"
+
                     # Memory.
                     memory_total = 0
                     memory_used = 0
-                    if is_unified_memory:
+                    if is_integrated:
                         memory_total = (
                             self._get_value(value, "memory", "shared", "total") or 0
                         )
@@ -209,7 +214,7 @@ class WorkerStatusCollector:
 
     def _inject_unified_memory(self, status: WorkerStatus):
         is_unified_memory = False
-        if len(status.gpu_devices) != 0:
+        if status.gpu_devices is not None and len(status.gpu_devices) != 0:
             is_unified_memory = status.gpu_devices[0].memory.is_unified_memory
 
         status.memory.is_unified_memory = is_unified_memory
@@ -272,14 +277,28 @@ class WorkerStatusCollector:
     def _run_fastfetch_and_parse_result(self):
         command = self._fastfetch_command()
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=True, encoding="utf-8"
+            )
             output = result.stdout
 
+            if result.returncode != 0:
+                raise Exception(f"Unexpected return code: {result.returncode}")
+
+            if output == "" or output is None:
+                raise Exception(f"Output is empty, return code: {result.returncode}")
+
+        except Exception as e:
+            raise Exception(
+                f"Failed to execute {command.__str__()}: {e}, stdout: {result.stdout}, stderr: {result.stderr}"
+            )
+
+        try:
             parsed_json = json.loads(output)
             return parsed_json
         except Exception as e:
             raise Exception(
-                f"Failed to execute and parse the output of {command.__str__()}: {e}"
+                f"Failed to parse the output of {command.__str__()}: {e}, output: {output}"
             )
 
     def _fastfetch_command(self):

@@ -5,7 +5,6 @@
     "os",
     "kernel",
     "uptime",
-    "terminalfont",
     "cpu",
     "cpuusage",
     "gpu",
