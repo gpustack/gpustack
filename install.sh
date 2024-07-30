@@ -81,14 +81,14 @@ detect_os() {
   fi
 }
 
-# Function to check and install Python
+# Function to check and install Python tools
 PYTHONPATH=""
-check_python() {
+check_python_tools() {
   if ! command -v python3 > /dev/null 2>&1; then
     info "Python3 could not be found. Attempting to install..."
     if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
-      $SUDO apt update && apt install -y python3
-    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ]; then
+      $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt install -y python3
+    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
       $SUDO yum install -y python3
     elif [ "$OS" = "macos" ]; then
       $SUDO brew install python
@@ -102,24 +102,32 @@ check_python() {
     fatal "Python version is less than 3.10. Please upgrade Python to at least version 3.10."
   fi
 
-  if ! command -v pip3 > /dev/null 2>&1; then
-    info "Pip3 could not be found. Attempting to install..."
+  if ! python3 -c "import ensurepip" > /dev/null 2>&1; then
+    info "Python module ensurepip could not be found. Attempting to install the python3-venv package..."
     if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
-      $SUDO apt update && $SUDO apt install -y python3-pip
-    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ]; then
-      $SUDO yum install -y python3-pip
-    elif [ "$OS" = "macos" ]; then
-      $SUDO brew install python
+      $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt install -y python3-venv
     else
-      fatal "Unsupported OS for automatic Pip3 installation. Please install Pip3 manually."
+      fatal "Unsupported OS for automatic ensurepip installation. Please install the ensurepip module manually."
     fi
   fi
 
-  PYTHONPATH=$(python3 -c 'import sys; print(":".join(sys.path))')
+  if ! command -v pip3 > /dev/null 2>&1; then
+    info "Pip3 could not be found. Attempting to ensure pip..."
+    python3 -m ensurepip --upgrade
+  fi
+
+  PIP_PYTHON_VERSION=$(pip3 -V | grep -oP '(?<=python\s)\d\.\d+' | head -n 1 | awk -F. '{print $1 * 10 + $2}')
+  if [ "$PIP_PYTHON_VERSION" -lt 40 ]; then
+    fatal "Python version for pip3 is less than 3.10. Please upgrade pip3 to be associated with at least Python 3.10."
+  fi
+
+  PYTHONPATH=$(python3 -c 'import site, sys; print(":".join(sys.path + [site.getusersitepackages()]))')
   
   if ! command -v pipx > /dev/null 2>&1; then
     info "Pipx could not be found. Attempting to install..."
     pip3 install pipx
+    USER_BASE_BIN=$(python3 -m site --user-base)/bin
+    export PATH="$USER_BASE_BIN:$PATH"
     pipx ensurepath
 
     PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
@@ -262,7 +270,7 @@ install_gpustack() {
   detect_os
   verify_system
   install_dependencies
-  check_python
+  check_python_tools
   check_cuda
   install_gpustack
   create_uninstall_script
