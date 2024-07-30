@@ -7,12 +7,14 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
 function Build {
+    $distDir = Join-Path -Path $ROOT_DIR -ChildPath "dist"
+    Remove-Item -Path $distDir -Recurse -Force -ErrorAction SilentlyContinue
+
     poetry build
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed to run poetry build."
     }
 
-    $distDir = Join-Path -Path $ROOT_DIR -ChildPath "dist"
     $whlFiles = Get-ChildItem -Path $distDir -Filter "*.whl" -File
     if ($whlFiles.Count -eq 0) {
         GPUStack.Log.Fatal "no wheel files found in $distDir"
