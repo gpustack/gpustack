@@ -20,9 +20,13 @@ set -o noglob
 #
 #   - INSTALL_PRE_RELEASE
 #     If set to true will install pre-release packages.
+#
+#   - INSTALL_INDEX_URL
+#     Base URL of the Python Package Index.
 
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-gpustack}"
 INSTALL_PRE_RELEASE="${INSTALL_PRE_RELEASE:-0}"
+INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 
 # --- helper functions for logs ---
 info()
@@ -258,9 +262,13 @@ install_gpustack() {
     install_args="--pip-args='--pre'"
   fi
 
+  if [ -n "$INSTALL_INDEX_URL" ]; then
+    install_args="--index-url $INSTALL_INDEX_URL $install_args"
+  fi
+
   echo "Installing GPUStack..."
 
-  # shellcheck disable=SC2090
+  # shellcheck disable=SC2090,SC2086
   pipx install $install_args "$INSTALL_PACKAGE_SPEC" --verbose
 }
 

@@ -185,6 +185,7 @@ $ErrorActionPreference = "Stop"
 
 $INSTALL_PACKAGE_SPEC = if ($env:INSTALL_PACKAGE_SPEC) { $env:INSTALL_PACKAGE_SPEC } else { "gpustack" }
 $INSTALL_PRE_RELEASE = if ($env:INSTALL_PRE_RELEASE) { $env:INSTALL_PRE_RELEASE } else { 0 }
+$INSTALL_INDEX_URL = if ($env:INSTALL_INDEX_URL) { $env:INSTALL_INDEX_URL } else { "" }
 
 function Log-Info {
     param (
@@ -461,12 +462,16 @@ function Install-GPUStack {
 
     try {
         Log-Info "Installing GPUStack..."
-        $installArgs = ""
+        $installArgs = @()
         if ($INSTALL_PRE_RELEASE -eq 1) {
-            $installArgs = "--pip-args='--pre'"
+            $installArgs += "--pip-args='--pre'"
         }
 
-        Log-Info "Installing GPUStack with $INSTALL_PACKAGE_SPEC $installArgs"
+        if ($INSTALL_INDEX_URL) {
+            $installArgs += "--index-url=$INSTALL_INDEX_URL"
+        }
+
+        Log-Info "Installing GPUStack with $($installArgs -join ' ') $INSTALL_PACKAGE_SPEC"
 
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
@@ -497,7 +502,7 @@ function Install-GPUStack {
         }
 
         Log-Info "Installing GPUStack with pipx and pythin $pythonPath..."
-        pipx install $installArgs $INSTALL_PACKAGE_SPEC --force --verbose
+        pipx install @installArgs $INSTALL_PACKAGE_SPEC --force --verbose
         if ($LASTEXITCODE -ne 0) {
             throw "failed to install $INSTALL_PACKAGE_SPEC."
         }
