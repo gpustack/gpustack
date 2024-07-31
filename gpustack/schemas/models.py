@@ -44,6 +44,7 @@ class ModelBase(SQLModel, ModelSource):
 
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
+    embedding_only: bool = False
 
 
 class Model(ModelBase, BaseModelMixin, table=True):

@@ -1,3 +1,4 @@
+from typing import Optional
 import httpx
 import logging
 
@@ -26,8 +27,12 @@ load_balancer = LoadBalancer()
 
 
 @router.get("/models")
-async def list_models(session: SessionDep):
+async def list_models(session: SessionDep, embedding_only: Optional[bool] = None):
     statement = select(Model).where(Model.ready_replicas > 0)
+
+    if embedding_only is not None:
+        statement = statement.where(Model.embedding_only == embedding_only)
+
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")
     for model in models:

@@ -413,6 +413,7 @@
       "architecture": "llama",
       "contextSize": 8192,
       "flashAttention": true,
-      "noMMap": false
+      "noMMap": false,
+      "embeddingOnly": false
     }
   }
