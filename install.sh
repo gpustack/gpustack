@@ -43,9 +43,10 @@ fatal()
     exit 1
 }
 
+ACTION="Install"
 install_complete()
 {
-    info 'Install complete. Run "gpustack" from the command line.'
+    info "$ACTION complete. Run \"gpustack\" from the command line."
 }
 
 # --- fatal if no systemd or launchd ---
@@ -120,7 +121,7 @@ check_python_tools() {
     python3 -m ensurepip --upgrade
   fi
 
-  PIP_PYTHON_VERSION=$(pip3 -V | grep -oP '(?<=python\s)\d\.\d+' | head -n 1 | awk -F. '{print $1 * 10 + $2}')
+  PIP_PYTHON_VERSION=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}' | awk -F. '{print $1 * 10 + $2}')
   if [ "$PIP_PYTHON_VERSION" -lt 40 ]; then
     fatal "Python version for pip3 is less than 3.10. Please upgrade pip3 to be associated with at least Python 3.10."
   fi
@@ -177,7 +178,7 @@ EOF
 
   $SUDO systemctl daemon-reload
   $SUDO systemctl enable gpustack.service
-  $SUDO systemctl start gpustack.service
+  $SUDO systemctl restart gpustack.service
 }
 
 # Function to setup launchd for macOS
@@ -204,6 +205,8 @@ EOF
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>/var/log/gpustack.log</string>
   <key>StandardErrorPath</key>
@@ -212,7 +215,33 @@ EOF
 </plist>
 EOF
 
-  $SUDO launchctl load /Library/LaunchDaemons/ai.gpustack.plist
+  $SUDO launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+}
+
+# Function to disable the service in launchd
+disable_service_in_launchd() {
+  if [ -f /Library/LaunchDaemons/ai.gpustack.plist ]; then
+    $SUDO launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    $SUDO rm /Library/LaunchDaemons/ai.gpustack.plist
+  fi
+}
+
+# Function to disable the service in systemd
+disable_service_in_systemd() {
+  if [ -f /etc/systemd/system/gpustack.service ]; then
+    $SUDO systemctl disable gpustack.service
+    $SUDO rm /etc/systemd/system/gpustack.service
+    $SUDO systemctl daemon-reload
+  fi
+}
+
+# Function to disable the service
+disable_service() {
+  if [ "$OS" = "macos" ]; then
+    disable_service_in_launchd
+  else
+    disable_service_in_systemd
+  fi
 }
 
 # Function to setup and start the service
@@ -234,9 +263,8 @@ export PYTHONPATH="$PYTHONPATH"
 export PIPX_HOME=$(pipx environment --value PIPX_HOME)
 export PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
 $(which pipx) uninstall gpustack > /dev/null
-rm -rf /var/lib/gpustack
 if [ "$OS" = "macos" ]; then
-  launchctl unload /Library/LaunchDaemons/ai.gpustack.plist
+  launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
   rm /Library/LaunchDaemons/ai.gpustack.plist
 else
   systemctl stop gpustack.service
@@ -244,6 +272,7 @@ else
   rm /etc/systemd/system/gpustack.service
   systemctl daemon-reload
 fi
+rm -rf /var/lib/gpustack
 echo "GPUStack has been uninstalled."
 EOF
   $SUDO chmod +x /var/lib/gpustack/uninstall.sh
@@ -252,8 +281,10 @@ EOF
 # Function to install GPUStack using pipx
 install_gpustack() {
   if command -v gpustack > /dev/null 2>&1; then
-    info "GPUStack is already installed."
-    return
+    ACTION="Upgrade"
+    info "GPUStack is already installed. Upgrading..."
+  else
+    info "Installing GPUStack..."
   fi
 
   install_args=""
@@ -266,10 +297,8 @@ install_gpustack() {
     install_args="--index-url $INSTALL_INDEX_URL $install_args"
   fi
 
-  echo "Installing GPUStack..."
-
   # shellcheck disable=SC2090,SC2086
-  pipx install $install_args "$INSTALL_PACKAGE_SPEC" --verbose
+  pipx install --force --verbose $install_args "$INSTALL_PACKAGE_SPEC"
 }
 
 # Main install process
@@ -282,6 +311,7 @@ install_gpustack() {
   check_cuda
   install_gpustack
   create_uninstall_script
+  disable_service
   setup_and_start "$@"
   install_complete
 }
