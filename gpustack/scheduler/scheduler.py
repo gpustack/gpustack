@@ -99,6 +99,12 @@ class Scheduler:
 
                 task_output = await calculate_model_resource_claim(instance, model)
 
+                if (
+                    task_output.resource_claim_estimate.embeddingOnly
+                    and not model.embedding_only
+                ):
+                    await self.set_model_embedding_only(session, model)
+
                 await self._queue.put(task_output)
 
             except Exception as e:
@@ -112,6 +118,16 @@ class Scheduler:
                     logger.error(
                         f"Failed to update model instance: {ue}. Original error: {e}"
                     )
+
+    async def set_model_embedding_only(self, session: AsyncSession, model: Model):
+        """
+        Set the model to be embedding only.
+        Args:
+            session: AsyncSession to use.
+            model: Model to set.
+        """
+        model.embedding_only = True
+        await model.update(session)
 
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """

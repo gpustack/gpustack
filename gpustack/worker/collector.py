@@ -290,7 +290,8 @@ class WorkerStatusCollector:
 
         except Exception as e:
             raise Exception(
-                f"Failed to execute {command.__str__()}: {e}, stdout: {result.stdout}, stderr: {result.stderr}"
+                f"Failed to execute {command.__str__()}: {e},"
+                f" stdout: {result.stdout}, stderr: {result.stderr}"
             )
 
         try:

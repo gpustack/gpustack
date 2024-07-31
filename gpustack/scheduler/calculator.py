@@ -36,6 +36,7 @@ class estimate:
     memory: List[memoryEstimate]
     contextSize: int
     architecture: str
+    embeddingOnly: bool
 
 
 @dataclass_json
