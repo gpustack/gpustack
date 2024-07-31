@@ -111,7 +111,7 @@ function Get-UI {
 }
 
 function Get-GGUFParser {
-    $version = "v0.4.2"
+    $version = "v0.5.1"
     $ggufParserDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "gguf-parser"
     New-Item -ItemType Directory -Path $ggufParserDir -ErrorAction Ignore | Out-Null
 
@@ -139,7 +139,7 @@ function Get-GGUFParser {
 }
 
 function Get-LlamaBox {
-    $version = "v0.0.20"
+    $version = "v0.0.21"
     $llamaBoxDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "llama-box"
     $llamaBoxTmpDir = Join-Path -Path $llamaBoxDir -ChildPath "tmp"
 
