@@ -64,10 +64,8 @@ class Worker:
             clientset=self._clientset,
         )
         self._serve_manager = ServeManager(
-            server_url=cfg.server_url,
             clientset=self._clientset,
-            log_dir=cfg.log_dir,
-            data_dir=cfg.data_dir,
+            cfg=cfg,
         )
         self._exporter = MetricExporter(
             worker_ip=self._worker_ip,

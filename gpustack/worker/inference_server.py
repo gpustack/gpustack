@@ -70,9 +70,13 @@ def download_model(mi: ModelInstance, cache_dir: Optional[str] = None) -> str:
 class InferenceServer:
     @time_decorator
     def __init__(
-        self, clientset: ClientSet, mi: ModelInstance, cache_dir: Optional[str] = None
+        self,
+        clientset: ClientSet,
+        mi: ModelInstance,
+        cache_dir: Optional[str] = None,
+        debug: bool = False,
     ):
-        setup_logging()
+        setup_logging(debug)
         self.hijack_tqdm_progress()
 
         self._clientset = clientset
@@ -132,6 +136,7 @@ class InferenceServer:
 
         try:
             logger.info("Starting llama-box server")
+            logger.debug(f"Run llama-box with arguments: {' '.join(arguments)}")
             subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,

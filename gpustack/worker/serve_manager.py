@@ -11,6 +11,7 @@ from contextlib import redirect_stdout, redirect_stderr
 
 
 from gpustack.api.exceptions import NotFoundException
+from gpustack.config.config import Config
 from gpustack.utils import network
 from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
@@ -38,15 +39,13 @@ def signal_handler(signum, frame):
 
 
 class ServeManager:
-    def __init__(
-        self, server_url: str, log_dir: str, clientset: ClientSet, data_dir: str
-    ):
+    def __init__(self, clientset: ClientSet, cfg: Config):
         self._hostname = socket.gethostname()
-        self._server_url = server_url
-        self._serve_log_dir = f"{log_dir}/serve"
+        self._config = cfg
+        self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
         self._clientset = clientset
-        self._cache_dir = os.path.join(data_dir, "cache")
+        self._cache_dir = os.path.join(cfg.data_dir, "cache")
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -106,10 +105,11 @@ class ServeManager:
                 target=ServeManager.serve_model_instance,
                 args=(
                     mi,
-                    self._server_url,
+                    self._config.server_url,
                     self._clientset.headers,
                     log_file_path,
                     self._cache_dir,
+                    self._config.debug,
                 ),
             )
             process.daemon = False
@@ -138,6 +138,7 @@ class ServeManager:
         client_headers: dict,
         log_file_path: str,
         cache_dir: str,
+        debug: bool = False,
     ):
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
         signal.signal(signal.SIGTERM, signal_handler)
@@ -148,7 +149,7 @@ class ServeManager:
         )
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                InferenceServer(clientset, mi, cache_dir).start()
+                InferenceServer(clientset, mi, cache_dir, debug).start()
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
