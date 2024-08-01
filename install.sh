@@ -46,7 +46,11 @@ fatal()
 ACTION="Install"
 install_complete()
 {
-    info "$ACTION complete. Run \"gpustack\" from the command line."
+    path_hint=""
+    if [ "$ACTION" = "Install" ]; then
+        path_hint=" (You may need to open a new terminal or re-login for the PATH changes to take effect.)"
+    fi
+    info "$ACTION complete. Run \"gpustack\" from the command line.$path_hint"
 }
 
 # --- fatal if no systemd or launchd ---
