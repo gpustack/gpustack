@@ -293,13 +293,14 @@ function Install-NSSM {
 }
 
 function Install-GPUStack {
+    $action = "Install"
     if (Get-Command gpustack -ErrorAction SilentlyContinue) {
-        Log-Info "GPUStack already installed."
-        return
+        $action = "Upgrade"
+        Log-Info "GPUStack already installed, Upgrading..."
     }
 
     try {
-        Log-Info "Installing GPUStack..."
+        Log-Info "$action GPUStack..."
         $installArgs = @()
         if ($INSTALL_PRE_RELEASE -eq 1) {
             $installArgs += "--pip-args='--pre'"
@@ -309,17 +310,17 @@ function Install-GPUStack {
             $installArgs += "--index-url=$INSTALL_INDEX_URL"
         }
 
-        Log-Info "Installing GPUStack with $($installArgs -join ' ') $INSTALL_PACKAGE_SPEC"
+        Log-Info "$action GPUStack with $($installArgs -join ' ') $INSTALL_PACKAGE_SPEC"
 
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
 
+        Log-Info "Check pipx environment..."
         $pipxSharedEnv = (pipx environment --value PIPX_SHARED_LIBS)
         if ($LASTEXITCODE -ne 0) {
             throw "failed to run pipx environment --value PIPX_SHARED_LIBS."
         }
 
-        Log-Info "Check pipx environment..."
         $pipxSharedConfigPath = (Join-Path -Path $pipxSharedEnv -ChildPath "pyvenv.cfg")
         if (Test-Path $pipxSharedConfigPath) {
             $configContent = Get-Content -Path (Join-Path -Path $pipxSharedEnv -ChildPath "pyvenv.cfg")
@@ -339,8 +340,19 @@ function Install-GPUStack {
             }
         }
 
-        Log-Info "Installing GPUStack with pipx and pythin $pythonPath..."
-        pipx install @installArgs $INSTALL_PACKAGE_SPEC --force --verbose
+        Log-Info "$action GPUStack with pipx and pythin $pythonPath..."
+        if ($action -ieq "Upgrade") {
+            Log-Info "Uninstall existing gpustack..."
+
+            Stop-GPUStackService
+
+            pipx uninstall gpustack
+            if ($LASTEXITCODE -ne 0) {
+                throw "failed to uninstall existing gpustack."
+            }
+        }
+
+        pipx install --force --verbose @installArgs $INSTALL_PACKAGE_SPEC
         if ($LASTEXITCODE -ne 0) {
             throw "failed to install $INSTALL_PACKAGE_SPEC."
         }
@@ -366,9 +378,40 @@ function Install-GPUStack {
         else {
             Log-Info "Path already contains $pipEnv"
         }
+
+        Log-Info "$action GPUStack success."
     }
     catch {
-        throw "Failed to install GPUStack: `"$($_.Exception.Message)`""
+        throw "Failed to $action GPUStack: `"$($_.Exception.Message)`""
+    }
+}
+
+function Stop-GPUStackService {
+    # Check if the service already exists.
+    $serviceName = "GPUStack"
+    $gpustack = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($null -ne $gpustack) {
+        try {
+            Log-Info "Stopping existing ${serviceName} service..."
+            $result = nssm stop $serviceName confirm
+            if ($LASTEXITCODE -eq 0) {
+                Log-Info "Stopped existing ${serviceName} success"
+            }
+            else {
+                Log-Warn "Failed to stop existing ${serviceName} service: `"$($result)`""
+            }
+
+            $result = nssm remove $serviceName confirm
+            if ($LASTEXITCODE -eq 0) {
+                Log-Info "Removed existing ${serviceName} success"
+            }
+            else {
+                Log-Warn "Failed to remove existing ${serviceName} service: `"$($result)`""
+            }
+        }
+        catch {
+            throw "Failed to stop and remove existing ${serviceName} service: `"$($_.Exception.Message)`""
+        }
     }
 }
 
@@ -386,33 +429,9 @@ function Setup-GPUStackService {
         $exePath = (Get-Item -Path $exeFile).Target
     }
 
-    # Check if the service already exists.
-    $gpustack = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-    if ($null -ne $gpustack) {
-        try {
-            Log-Info "Stopping existing ${serviceName} service, creatig a new one..."
-            $result = nssm stop $serviceName confirm
-            if ($LASTEXITCODE -eq 0) {
-                Log-Info "Stopped ${serviceName} success"
-            }
-            else {
-                Log-Warn "Failed to stop existing ${serviceName} service: `"$($result)`""
-            }
-
-            $result = nssm remove $serviceName confirm
-            if ($LASTEXITCODE -eq 0) {
-                Log-Info "Removed ${serviceName} success"
-            }
-            else {
-                Log-Warn "Failed to remove existing ${serviceName} service: `"$($result)`""
-            }
-        }
-        catch {
-            throw "Failed to stop and remove existing ${serviceName} service: `"$($_.Exception.Message)`""
-        }
-    }
-
     try {
+        Stop-GPUStackService
+
         Log-Info "Creating ${serviceName} service..."
 
         $appDataPath = $env:APPDATA
