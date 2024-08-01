@@ -57,6 +57,7 @@ nav:
   - Installation:
       - Installation Script: installation/installation-script.md
       - Manual Installation: installation/manual-installation.md
+      - Docker Installation: installation/docker-installation.md
       - Uninstallation: installation/uninstallation.md
   - Upgrade: upgrade.md
   - User Guide:
