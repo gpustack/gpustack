@@ -19,16 +19,16 @@ gpustack start [OPTIONS]
 
 ### Server Options
 
-| Flag                         | Default                          | Description                                                                                                                                         |
-| ---------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--host` value               | `0.0.0.0`                        | Host to bind the server to.                                                                                                                         |
-| `--port` value               | `80`                             | Port to bind the server to.                                                                                                                         |
-| `--disable-worker`           | `False`                          | Disable embedded worker.                                                                                                                            |
-| `--bootstrap-password` value | Auto-generated.                  | Initial password for the default admin user.                                                                                                        |
-| `--system-reserved` value    | `{'memory': 1, 'gpu_memory': 1}` | The system reserves resources for the worker during scheduling, measured in GiB. By default, 1 GiB of memory and 1 GiB of GPU memory are reserved.  |
-| `--ssl-keyfile` value        |                                  | Path to the SSL key file.                                                                                                                           |
-| `--ssl-certfile` value       |                                  | Path to the SSL certificate file.                                                                                                                   |
-| `--force-auth-localhost`     | `False`                          | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
+| Flag                         | Default                                | Description                                                                                                                                         |
+| ---------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--host` value               | `0.0.0.0`                              | Host to bind the server to.                                                                                                                         |
+| `--port` value               | `80`                                   | Port to bind the server to.                                                                                                                         |
+| `--disable-worker`           | `False`                                | Disable embedded worker.                                                                                                                            |
+| `--bootstrap-password` value | Auto-generated.                        | Initial password for the default admin user.                                                                                                        |
+| `--system-reserved` value    | `"{\"memory\": 1, \"gpu_memory\": 1}"` | The system reserves resources for the worker during scheduling, measured in GiB. By default, 1 GiB of memory and 1 GiB of GPU memory are reserved.  |
+| `--ssl-keyfile` value        |                                        | Path to the SSL key file.                                                                                                                           |
+| `--ssl-certfile` value       |                                        | Path to the SSL certificate file.                                                                                                                   |
+| `--force-auth-localhost`     | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
 
 ### Worker Options
 
