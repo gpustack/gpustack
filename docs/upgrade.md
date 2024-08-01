@@ -16,7 +16,9 @@ Running the installation script will:
 2. Update the system service (systemd, launchd, or Windows) init script to reflect the arguments passed to the installation script.
 3. Restart the GPUStack service.
 
-For example, to upgrade GPUStack to the latest version on a Linux system:
+### Linux and macOS
+
+For example, to upgrade GPUStack to the latest version on a Linux system and MacOS:
 
 ```bash
 curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
@@ -26,6 +28,23 @@ To upgrade to a specific version, specify the `INSTALL_PACKAGE_SPEC` environment
 
 ```bash
 curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=gpustack==x.y.z <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+```
+
+### Windows
+
+To upgrade GPUStack to the latest version on a Windows system:
+
+```powershell
+$env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
+Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+```
+
+To upgrade to a specific version:
+
+```powershell
+$env:INSTALL_PACKAGE_SPEC = gpustack==x.y.z
+$env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } <EXISTING_GPUSTACK_ARGS>"
 ```
 
 ## Manual Upgrade
