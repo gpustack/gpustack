@@ -102,3 +102,51 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.CI_PYPI_API_TOKEN }}
         run: |
           make publish-pypi
+  
+  publish-docker:
+    needs:
+      - linux-macos
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    timeout-minutes: 60
+    runs-on: ubuntu-22.04
+    env:
+      PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}} 
+      PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          image: tonistiigi/binfmt:qemu-v7.0.0
+          platforms: "arm64"
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.CI_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.CI_DOCKERHUB_PASSWORD }}
+      - name: Get Metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.PACKAGE_REGISTRY }}/${{ env.PACKAGE_IMAGE }}
+      - name: Package
+        uses: docker/build-push-action@v5
+        id: package
+        with:
+          push: ${{ github.event_name != 'pull_request' }}
+          file: ${{ github.workspace }}/Dockerfile
+          context: ${{ github.workspace }}
+          platforms: "linux/amd64,linux/arm64"
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          provenance: true
+          sbom: true
