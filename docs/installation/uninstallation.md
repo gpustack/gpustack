@@ -13,7 +13,7 @@ If you installed GPUStack using the installation script, a script to uninstall G
 Run the following command to uninstall GPUStack:
 
 ```bash
-/var/lib/gpustack/uninstall.sh
+sudo /var/lib/gpustack/uninstall.sh
 ```
 
 ### Windows

@@ -262,21 +262,20 @@ create_uninstall_script() {
   $SUDO mkdir -p /var/lib/gpustack
   $SUDO tee /var/lib/gpustack/uninstall.sh > /dev/null <<EOF
 #!/bin/bash
-set -e
 export PYTHONPATH="$PYTHONPATH"
 export PIPX_HOME=$(pipx environment --value PIPX_HOME)
 export PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
 $(which pipx) uninstall gpustack > /dev/null
 if [ "$OS" = "macos" ]; then
   launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-  rm /Library/LaunchDaemons/ai.gpustack.plist
+  rm -f /Library/LaunchDaemons/ai.gpustack.plist
 else
   systemctl stop gpustack.service
   systemctl disable gpustack.service
-  rm /etc/systemd/system/gpustack.service
+  rm -f /etc/systemd/system/gpustack.service
   systemctl daemon-reload
 fi
-rm -rf /var/lib/gpustack
+rm -rf /var/lib/gpustack /var/log/gpustack.log
 echo "GPUStack has been uninstalled."
 EOF
   $SUDO chmod +x /var/lib/gpustack/uninstall.sh
