@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  gpustack:
+    image: gpustack/gpustack:main
+    # uncomment and update the following line for starting GPUStack worker
+    # command: --server-url http://myserver --token mytoken
+    ports:
+      - "80:80"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    restart: always
