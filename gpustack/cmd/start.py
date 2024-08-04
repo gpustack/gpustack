@@ -266,4 +266,11 @@ def set_worker_options(args, config_data: dict):
 
 def get_env_or_default(env_var, default=None):
     env_name = "GPUSTACK_" + env_var
-    return os.getenv(env_name, default)
+    env_value = os.getenv(env_name, default)
+    if (
+        env_value is not None
+        and isinstance(default, bool)
+        and isinstance(env_value, str)
+    ):
+        return env_value.lower() in ["true", "True"]
+    return env_value
