@@ -76,6 +76,7 @@ function Get-Arg {
     )
 
     Log-Info "Getting arguments from flags..."
+    Write-Host "Received arguments: $($RemainingArgs -join ', ')"
 
     $envList = @()
 
@@ -83,7 +84,12 @@ function Get-Arg {
         $value = $RemainingArgs[$i + 1]
         switch ($RemainingArgs[$i]) {
             "--debug" {
-                $envList += "GPUSTACK_DEBUG=$value"
+                if ($value -eq "False" -or $value -eq "false") {
+                    $envList += "GPUSTACK_DEBUG=False"
+                }
+                else {
+                    $envList += "GPUSTACK_DEBUG=True"
+                }
                 $i++
             }
             "--config-file" {
@@ -95,6 +101,10 @@ function Get-Arg {
                 $i++
             }
             "--token" {
+                $envList += "GPUSTACK_TOKEN=$value"
+                $i++
+            }
+            "-t" {
                 $envList += "GPUSTACK_TOKEN=$value"
                 $i++
             }
@@ -115,7 +125,12 @@ function Get-Arg {
                 $i++
             }
             "--disable-worker" {
-                $envList += "GPUSTACK_DISABLE_WORKER=$value"
+                if ($value -eq "False" -or $value -eq "false") {
+                    $envList += "GPUSTACK_DISABLE_WORKER=False"
+                }
+                else {
+                    $envList += "GPUSTACK_DISABLE_WORKER=True"
+                }
                 $i++
             }
             "--system-reserved" {
@@ -132,10 +147,19 @@ function Get-Arg {
                 $i++
             }
             "--force-auth-localhost" {
-                $envList += "GPUSTACK_FORCE_AUTH_LOCALHOST=$value"
+                if ($value -eq "False" -or $value -eq "false") {
+                    $envList += "GPUSTACK_FORCE_AUTH_LOCALHOST=False"
+                }
+                else {
+                    $envList += "GPUSTACK_FORCE_AUTH_LOCALHOST=True"
+                }
                 $i++
             }
             "--server-url" {
+                $envList += "GPUSTACK_SERVER_URL=$value"
+                $i++
+            }
+            "-s" {
                 $envList += "GPUSTACK_SERVER_URL=$value"
                 $i++
             }
@@ -148,7 +172,12 @@ function Get-Arg {
                 $i++
             }
             "--enable-metrics" {
-                $envList += "GPUSTACK_ENABLE_METRICS=$value"
+                if ($value -eq "False" -or $value -eq "false") {
+                    $envList += "GPUSTACK_ENABLE_METRICS=False"
+                }
+                else {
+                    $envList += "GPUSTACK_ENABLE_METRICS=True"
+                }
                 $i++
             }
             "--metrics-port" {
@@ -160,6 +189,11 @@ function Get-Arg {
                 $i++
             }
         }
+    }
+
+    # For flag -d, it is powershell built-in debug flag.
+    if ($Debug) {
+        $envList += "GPUSTACK_DEBUG=True"
     }
 
     $envList += "APPDATA=$env:APPDATA"
