@@ -10,12 +10,12 @@ gpustack start [OPTIONS]
 
 ### Common Options
 
-| Flag                        | Default         | Description                                      |
-| --------------------------- | --------------- | ------------------------------------------------ |
-| `--config-file` value       |                 | Path to the YAML config file.                    |
-| `-d` value, `--debug` value | `False`         | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters.                               |
-| `--data-dir` value          |                 | Directory to store data. Default is OS specific. |
-| `-t` value, `--token` value | Auto-generated. | Shared secret used to add a worker.              |
+| Flag                        | Default         | Description                                                                                                                           |
+| --------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `--config-file` value       |                 | Path to the YAML config file.                                                                                                         |
+| `-d` value, `--debug` value | `False`         | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters. |
+| `--data-dir` value          |                 | Directory to store data. Default is OS specific.                                                                                      |
+| `-t` value, `--token` value | Auto-generated. | Shared secret used to add a worker.                                                                                                   |
 
 ### Server Options
 

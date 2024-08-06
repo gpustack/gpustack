@@ -47,7 +47,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes (replace `http://myserver` and `mytoken` with your actual server URL and token):
 
 ```powershell
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -server-url http://myserver -token mytoken"
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url http://myserver --token mytoken"
 ```
 
 In the default setup, you can run the following to get the token used for adding workers:
