@@ -139,7 +139,7 @@ function Get-GGUFParser {
 }
 
 function Get-LlamaBox {
-    $version = "v0.0.24"
+    $version = "v0.0.26"
     $llamaBoxDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "llama-box"
     $llamaBoxTmpDir = Join-Path -Path $llamaBoxDir -ChildPath "tmp"
 
