@@ -76,7 +76,6 @@ function Get-Arg {
     )
 
     Log-Info "Getting arguments from flags..."
-    Write-Host "Received arguments: $($RemainingArgs -join ', ')"
 
     $envList = @()
 
@@ -90,7 +89,6 @@ function Get-Arg {
                 else {
                     $envList += "GPUSTACK_DEBUG=True"
                 }
-                $i++
             }
             "--config-file" {
                 $envList += "GPUSTACK_CONFIG_File=$value"
@@ -131,7 +129,6 @@ function Get-Arg {
                 else {
                     $envList += "GPUSTACK_DISABLE_WORKER=True"
                 }
-                $i++
             }
             "--system-reserved" {
                 $escapedJsonString = $value -replace '"', '\`"'
@@ -178,7 +175,6 @@ function Get-Arg {
                 else {
                     $envList += "GPUSTACK_ENABLE_METRICS=True"
                 }
-                $i++
             }
             "--metrics-port" {
                 $envList += "GPUSTACK_METRICS_PORT=$value"
@@ -191,10 +187,6 @@ function Get-Arg {
         }
     }
 
-    # For flag -d, it is powershell built-in debug flag.
-    if ($Debug) {
-        $envList += "GPUSTACK_DEBUG=True"
-    }
 
     $envList += "APPDATA=$env:APPDATA"
 
