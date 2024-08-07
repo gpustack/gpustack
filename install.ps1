@@ -329,7 +329,7 @@ function Install-GPUStack {
         Log-Info "$action GPUStack..."
         $installArgs = @()
         if ($INSTALL_PRE_RELEASE -eq 1) {
-            $installArgs += "--pip-args='--pre'"
+            $installArgs += "--pip-args=--pre"
         }
 
         if ($INSTALL_INDEX_URL) {
