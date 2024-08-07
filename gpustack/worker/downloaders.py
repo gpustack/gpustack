@@ -11,7 +11,13 @@ from pathlib import Path
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download, HfFileSystem
 from huggingface_hub.utils import validate_repo_id
-
+import base64
+import random
+import string
+import hashlib
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
 logger = logging.getLogger(__name__)
 
@@ -104,18 +110,31 @@ class HfDownloader:
         return self.download()
 
 
+_header_user_agent = "User-Agent"
+_header_authorization = "Authorization"
+_header_accept = "Accept"
+_header_www_authenticate = "WWW-Authenticate"
+
+
 class OllamaLibraryDownloader:
     _registry_url = "https://registry.ollama.ai"
     _default_cache_dir = "/var/lib/gpustack/cache/ollama"
+    _user_agent = f"ollama/0.3.3 ({os.uname().machine} {os.uname().sysname}) Go/1.22.0"
 
-    @staticmethod
-    def download_blob(url: str, filename: str, _nb_retries: int = 5):
+    @classmethod
+    def download_blob(
+        cls, url: str, registry_token: str, filename: str, _nb_retries: int = 5
+    ):
         temp_filename = filename + ".part"
 
-        headers = {}
+        headers = {
+            _header_user_agent: cls._user_agent,
+            _header_authorization: registry_token,
+        }
+
         if os.path.exists(temp_filename):
             existing_file_size = os.path.getsize(temp_filename)
-            headers = {"Range": f"bytes={existing_file_size}-"}
+            headers["Range"] = f"bytes={existing_file_size}-"
         else:
             existing_file_size = 0
 
@@ -180,33 +199,177 @@ class OllamaLibraryDownloader:
                 return model_path
 
             logger.info(f"Downloading model {model_name}")
-            blob_url = cls.model_url(model_name=model_name)
+            blob_url, registry_token = cls.model_url(
+                model_name=model_name, cache_dir=cache_dir
+            )
             if blob_url is not None:
-                cls.download_blob(blob_url, model_path)
+                cls.download_blob(blob_url, registry_token, model_path)
 
             logger.info(f"Downloaded model {model_name}")
             return model_path
 
     @classmethod
-    def model_url(cls, model_name: str) -> str:
+    def model_url(cls, model_name: str, cache_dir: Optional[str] = None) -> str:
         if ":" in model_name:
             model, tag = model_name.split(":")
         else:
             model, tag = model_name, "latest"
 
         manifest_url = f"{cls._registry_url}/v2/library/{model}/manifests/{tag}"
-        response = requests.get(manifest_url)
 
-        if response.status_code != 200:
-            raise Exception(
-                f"Failed to download model {model_name}, status code: {response.status_code}"
-            )
+        headers = {
+            _header_user_agent: cls._user_agent,
+            _header_accept: "application/vnd.docker.distribution.manifest.v2+json",
+        }
+
+        response = None
+        token = None
+        for i in range(2):
+            response = requests.get(manifest_url, headers=headers)
+            if response.status_code == 200:
+                break
+            elif response.status_code == 401:
+                logger.debug("ollama registry requires authorization")
+
+                token = cls.get_request_auth_token(manifest_url, cache_dir)
+                if token:
+                    headers[_header_authorization] = token
+                else:
+                    logger.warning("Failed to get ollama registry token")
+            else:
+                raise Exception(
+                    f"Failed to download model {model_name}, status code: {response.status_code}"
+                )
 
         manifest = response.json()
         blobs = manifest.get("layers", [])
 
         for blob in blobs:
             if blob["mediaType"] == "application/vnd.ollama.image.model":
-                return f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}"
+                return (
+                    f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}",
+                    token,
+                )
 
         return None
+
+    @classmethod
+    def get_request_auth_token(cls, request_url, cache_dir: Optional[str] = None):
+
+        response = requests.get(
+            request_url, headers={_header_user_agent: cls._user_agent}
+        )
+
+        if response.status_code != 401 or response.request is None:
+            logger.debug(
+                f"ollama response status code from {request_url}: {response.status_code}"
+            )
+            return None
+
+        request = response.request
+        if _header_authorization in request.headers:
+            # Already authorized.
+            return request.headers[_header_authorization]
+
+        authn_token = response.headers.get(_header_www_authenticate, '').replace(
+            'Bearer ', ''
+        )
+
+        if not authn_token:
+            logger.debug("ollama WWW-Authenticate header not found")
+            return None
+
+        authz_token = cls.get_registry_auth_token(authn_token, cache_dir)
+        if not authz_token:
+            logger.debug("ollama registry authorize failed")
+            return None
+
+        return f"Bearer {authz_token}"
+
+    @classmethod
+    def get_registry_auth_token(cls, authn_token, cache_dir: Optional[str] = None):
+        pri_key = cls.load_sing_key(cache_dir)
+        if not pri_key:
+            return None
+
+        parts = authn_token.split(',')
+        if len(parts) < 3:
+            return None
+
+        realm, service, scope = None, None, None
+        for part in parts:
+            key, value = part.split('=')
+            value = value.strip('"\'')
+            if key == 'realm':
+                realm = value
+            elif key == 'service':
+                service = value
+            elif key == 'scope':
+                scope = value
+
+        if not realm or not service or not scope:
+            logger.debug("not all required parts found in WWW-Authenticate header")
+            return None
+
+        authz_url = f"{realm}?nonce={''.join(random.choices(string.ascii_letters + string.digits, k=16))}&scope={scope}service={service}&ts={int(time.time())}"
+
+        pub_key = (
+            pri_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH,
+            )
+            .split()[1]
+        )
+
+        sha = hashlib.sha256(b'').hexdigest()
+        sha_bytes = sha.encode()
+        nc = base64.b64encode(sha_bytes).decode()
+
+        py = f"GET,{authz_url},{nc}".encode()
+        sd = pri_key.sign(py)
+        authn_data = f"{pub_key.decode()}:{base64.b64encode(sd).decode()}"
+
+        headers = {_header_authorization: authn_data}
+        response = requests.get(authz_url, headers=headers)
+        if response.status_code != 200:
+            logger.debug(f"ollama registry authorize failed: {response.status_code}")
+            return None
+
+        token_data = response.json()
+        return token_data.get('token')
+
+    @classmethod
+    def load_sing_key(cls, cache_dir: Optional[str] = None):
+        key_dir = os.path.join(cache_dir, ".ollama")
+        pri_key_path = os.path.join(key_dir, "id_ed25519")
+
+        if not os.path.exists(pri_key_path):
+            os.makedirs(key_dir, exist_ok=True)
+            pri_key = ed25519.Ed25519PrivateKey.generate()
+            pub_key = pri_key.public_key()
+
+            pri_key_bytes = pri_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.OpenSSH,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+
+            pub_key_bytes = pub_key.public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH,
+            )
+
+            with open(pri_key_path, 'wb') as f:
+                f.write(pri_key_bytes)
+            with open(pri_key_path + ".pub", 'wb') as f:
+                f.write(pub_key_bytes)
+        else:
+            with open(pri_key_path, 'rb') as f:
+                pri_key_bytes = f.read()
+
+            pri_key = serialization.load_ssh_private_key(
+                pri_key_bytes, password=None, backend=default_backend()
+            )
+
+        return pri_key
