@@ -148,5 +148,6 @@ jobs:
           platforms: "linux/amd64,linux/arm64"
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          build-args: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && format('GPUSTACK_VERSION={0}', github.ref_name) || '' }}
           provenance: true
           sbom: true
