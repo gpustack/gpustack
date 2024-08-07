@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     A script to run GPUStack server or worker.
 
