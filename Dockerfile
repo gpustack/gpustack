@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install gpustack
+ARG GPUSTACK_VERSION=0.1.0
+
+RUN pip3 install gpustack==$GPUSTACK_VERSION
 
 ENTRYPOINT [ "gpustack", "start" ]
