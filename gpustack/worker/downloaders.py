@@ -1,3 +1,4 @@
+import platform
 import time
 import json
 import logging
@@ -119,7 +120,7 @@ _header_www_authenticate = "WWW-Authenticate"
 class OllamaLibraryDownloader:
     _registry_url = "https://registry.ollama.ai"
     _default_cache_dir = "/var/lib/gpustack/cache/ollama"
-    _user_agent = f"ollama/0.3.3 ({os.uname().machine} {os.uname().sysname}) Go/1.22.0"
+    _user_agent = f"ollama/0.3.3 ({platform.machine()} {platform.system()}) Go/1.22.0"
 
     @classmethod
     def download_blob(
