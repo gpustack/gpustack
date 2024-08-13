@@ -1,4 +1,4 @@
-# Guickstart
+# Quickstart
 
 ## Installation
 
