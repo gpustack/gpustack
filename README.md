@@ -163,8 +163,10 @@ Here are some example models:
 
 GPUStack serves the following OpenAI compatible APIs under the `/v1-openai` path:
 
-1. List models
-2. Create Chat completions
+- [x] List Models
+- [x] Create Completions
+- [x] Create Chat Completions
+- [x] Create Embeddings
 
 For example, you can use the official [OpenAI Python API library](https://github.com/openai/openai-python) to consume the APIs:
 
