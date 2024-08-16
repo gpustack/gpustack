@@ -172,8 +172,40 @@ check_musa() {
   fi
 }
 
+# Function to setup SeLinux permissions
+setup_selinux_permissions() {
+    BIN_PATH=$1
+    BIN_REAL_PATH=""
+
+    if ! $SUDO semanage fcontext -l | grep -q "${BIN_PATH}"; then
+        $SUDO semanage fcontext -a -t bin_t "${BIN_PATH}"
+    fi
+    $SUDO restorecon -v "${BIN_PATH}" > /dev/null
+
+    if [ -L "$BIN_PATH" ]; then
+        BIN_REAL_PATH=$(readlink -f "$BIN_PATH")
+        if ! $SUDO semanage fcontext -l | grep -q "${BIN_REAL_PATH}"; then
+            $SUDO semanage fcontext -a -t bin_t "${BIN_REAL_PATH}"
+        fi
+        $SUDO restorecon -v "${BIN_REAL_PATH}" > /dev/null
+    fi
+}
+
 # Function to setup systemd for Linux
 setup_systemd() {
+  # setup permissions
+  if command -v getenforce > /dev/null 2>&1; then
+      if [ "Disabled" != "$(getenforce)" ]; then
+          info "Setting up SeLinux permissions for Python3."
+          PYTHON3_BIN_PATH=$(which python3)
+          setup_selinux_permissions "$PYTHON3_BIN_PATH"
+
+          info "Setting up SeLinux permissions for gpustack."
+          GPUSTACK_BIN_PATH=$(which gpustack)
+          setup_selinux_permissions "$GPUSTACK_BIN_PATH"
+      fi
+  fi
+
   info "Setting up GPUStack as a service using systemd."
   $SUDO tee /etc/systemd/system/gpustack.service > /dev/null <<EOF
 [Unit]
