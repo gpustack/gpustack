@@ -92,6 +92,7 @@ class WorkerStatusCollector:
             elif typ == "GPU":
                 device = []
                 list = sorted(r, key=lambda x: x["name"])
+                key_set = set()
                 for i, value in enumerate(list):
                     # Metadatas.
                     vender = self._get_value(value, "vendor")
@@ -100,8 +101,20 @@ class WorkerStatusCollector:
 
                     name = self._get_value(value, "name")
                     index = self._get_value(value, "index")
+
                     if index is None:
                         index = i
+
+                    key = f"{name}-{index}"
+                    if key in key_set:
+                        for offset in range(len(list)):
+                            key = f"{name}-{offset}"
+                            if key not in key_set:
+                                index = offset
+                                key_set.add(key)
+                                break
+                    else:
+                        key_set.add(key)
 
                     is_unified_memory = False
                     if (
