@@ -1,7 +1,7 @@
 worker_after_create_stmt = """
 CREATE VIEW IF NOT EXISTS gpu_devices_view AS
 SELECT
-    w.name || '-' || json_extract(value, '$.index') AS id,
+    w.name || '-' || json_extract(value, '$.name') || '-' || json_extract(value, '$.index') AS id,
     w.id as worker_id,
     w.name as worker_name,
     w.ip as worker_ip,
