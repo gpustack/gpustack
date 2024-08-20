@@ -112,7 +112,7 @@ async def proxy_request_by_model(request: Request, session: SessionDep, endpoint
                         async for chunk in resp.aiter_text():
                             yield chunk
 
-            return StreamingResponse(stream_generator())
+            return StreamingResponse(stream_generator(), media_type="text/event-stream")
         else:
             async with httpx.AsyncClient() as client:
                 resp = await client.request(
