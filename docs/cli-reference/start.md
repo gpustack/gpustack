@@ -29,6 +29,7 @@ gpustack start [OPTIONS]
 | `--ssl-keyfile` value        |                                        | Path to the SSL key file.                                                                                                                           |
 | `--ssl-certfile` value       |                                        | Path to the SSL certificate file.                                                                                                                   |
 | `--force-auth-localhost`     | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
+| `--ollama-library-base-url`  | `https://registry.ollama.ai`           | Base URL for the Ollama library.                                                                                                                    |
 
 ### Worker Options
 
@@ -62,6 +63,7 @@ bootstrap_password: myadminpassword
 system_reserved:
   memory: 1
   gpu_memory: 1
+ollama_library_base_url: https://registry.mycompany.com
 
 # Worker Options
 server_url: http://myserver
