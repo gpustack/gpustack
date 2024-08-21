@@ -115,7 +115,7 @@ class Server:
         logger.debug("Data initialization completed.")
 
     def _start_scheduler(self):
-        scheduler = Scheduler()
+        scheduler = Scheduler(self._config)
         asyncio.create_task(scheduler.start())
 
         logger.debug("Scheduler started.")

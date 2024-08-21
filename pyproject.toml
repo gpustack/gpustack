@@ -34,7 +34,6 @@ httpx = {extras = ["socks"], version = "^0.27.0"}
 alembic = "^1.13.2"
 shellcheck-py = "^0.10.0.1"
 importlib-resources = "^6.4.0"
-validators = "^0.31.0"
 pytest-asyncio = "^0.23.7"
 truststore = "^0.9.1"
 cryptography = "^43.0.0"

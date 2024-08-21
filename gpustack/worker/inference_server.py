@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import (
     ModelInstance,
@@ -53,7 +54,11 @@ def time_decorator(func):
         return sync_wrapper
 
 
-def download_model(mi: ModelInstance, cache_dir: Optional[str] = None) -> str:
+def download_model(
+    mi: ModelInstance,
+    cache_dir: Optional[str] = None,
+    ollama_library_base_url: Optional[str] = None,
+) -> str:
     if mi.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.download(
             repo_id=mi.huggingface_repo_id,
@@ -61,7 +66,10 @@ def download_model(mi: ModelInstance, cache_dir: Optional[str] = None) -> str:
             cache_dir=os.path.join(cache_dir, "huggingface"),
         )
     elif mi.source == SourceEnum.OLLAMA_LIBRARY:
-        return OllamaLibraryDownloader.download(
+        ollama_downloader = OllamaLibraryDownloader(
+            registry_url=ollama_library_base_url
+        )
+        return ollama_downloader.download(
             model_name=mi.ollama_library_model_name,
             cache_dir=os.path.join(cache_dir, "ollama"),
         )
@@ -73,10 +81,9 @@ class InferenceServer:
         self,
         clientset: ClientSet,
         mi: ModelInstance,
-        cache_dir: Optional[str] = None,
-        debug: bool = False,
+        cfg: Config,
     ):
-        setup_logging(debug)
+        setup_logging(cfg.debug)
         self.hijack_tqdm_progress()
 
         self._clientset = clientset
@@ -89,7 +96,10 @@ class InferenceServer:
             }
             self._update_model_instance(mi.id, **patch_dict)
 
-            self._model_path = download_model(mi, cache_dir)
+            cache_dir = os.path.join(cfg.data_dir, "cache")
+            self._model_path = download_model(
+                mi, cache_dir, ollama_library_base_url=cfg.ollama_library_base_url
+            )
 
             patch_dict = {"state": ModelInstanceStateEnum.RUNNING, "state_message": ""}
             self._update_model_instance(mi.id, **patch_dict)

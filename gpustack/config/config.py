@@ -3,7 +3,7 @@ import secrets
 from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
-import validators
+from gpustack.utils import validators
 
 
 class Config(BaseSettings):
@@ -26,6 +26,7 @@ class Config(BaseSettings):
         force_auth_localhost: Force authentication for requests originating from
                               localhost (127.0.0.1). When set to True, all requests
                               from localhost will require authentication.
+        ollama_library_base_url: Base URL of the Ollama library. Default is https://registry.ollama.ai.
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
@@ -52,6 +53,7 @@ class Config(BaseSettings):
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
+    ollama_library_base_url: Optional[str] = None
 
     # Worker options
     server_url: Optional[str] = None
@@ -94,6 +96,11 @@ class Config(BaseSettings):
             self.server_url = self.server_url.rstrip("/")
             if validators.url(self.server_url) is not True:
                 raise Exception("Invalid server URL.")
+
+        if self.ollama_library_base_url:
+            self.ollama_library_base_url = self.ollama_library_base_url.rstrip("/")
+            if validators.url(self.ollama_library_base_url) is not True:
+                raise Exception("Invalid Ollama library base URL.")
 
         return self
 

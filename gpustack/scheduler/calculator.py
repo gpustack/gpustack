@@ -61,7 +61,7 @@ class ModelInstanceResourceClaim:
         return False
 
 
-def _gguf_parser_command(model: Model):
+def _gguf_parser_command(model: Model, **kwargs):
     command_map = {
         ("Windows", "amd64"): "gguf-parser-windows-amd64.exe",
         ("Darwin", "amd64"): "gguf-parser-darwin-universal",
@@ -93,13 +93,13 @@ def _gguf_parser_command(model: Model):
         "-json",
     ]
 
-    source_args = _gguf_parser_command_args_from_source(model)
+    source_args = _gguf_parser_command_args_from_source(model, **kwargs)
     execuable_command.extend(source_args)
     return execuable_command
 
 
 async def calculate_model_resource_claim(
-    model_instance: ModelInstance, model: Model
+    model_instance: ModelInstance, model: Model, **kwargs
 ) -> ModelInstanceResourceClaim:
     """
     Calculate the resource claim of the model instance.
@@ -110,7 +110,7 @@ async def calculate_model_resource_claim(
 
     logger.info(f"Calculating resource claim for model instance {model_instance.name}")
 
-    command = _gguf_parser_command(model)
+    command = _gguf_parser_command(model, **kwargs)
     try:
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -148,7 +148,7 @@ async def calculate_model_resource_claim(
         )
 
 
-def _gguf_parser_command_args_from_source(model: Model) -> List[str]:
+def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
     """
     Get the model url based on the model source.
     Args:
@@ -161,7 +161,11 @@ def _gguf_parser_command_args_from_source(model: Model) -> List[str]:
 
         return ["-url", model_url]
     elif model.source == SourceEnum.OLLAMA_LIBRARY:
-        return ["-ol-model", model.ollama_library_model_name]
+        args = ["-ol-model", model.ollama_library_model_name]
+        ol_base_url = kwargs.get("ollama_library_base_url")
+        if ol_base_url:
+            args.extend(["-ol-base-url", ol_base_url])
+        return args
     else:
         raise ValueError(f"Unsupported source: {model.source}")
 

@@ -6,6 +6,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from gpustack.config.config import Config
 from gpustack.scheduler.policy import (
     ResourceFitPolicy,
 )
@@ -27,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    def __init__(self, check_interval: int = 30):
+    def __init__(self, cfg: Config, check_interval: int = 30):
         """
         Init the scheduler with queue and interval.
         """
 
         self._id = "model-instance-scheduler"
+        self._config = cfg
         self._check_interval = check_interval
         self._engine = get_engine()
         self._queue = AsyncUniqueQueue()
@@ -97,7 +99,11 @@ class Scheduler:
                 if model is None:
                     raise Exception("Model not found.")
 
-                task_output = await calculate_model_resource_claim(instance, model)
+                task_output = await calculate_model_resource_claim(
+                    instance,
+                    model,
+                    ollama_library_base_url=self._config.ollama_library_base_url,
+                )
 
                 if (
                     task_output.resource_claim_estimate.embeddingOnly
