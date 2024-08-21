@@ -118,18 +118,22 @@ _header_www_authenticate = "WWW-Authenticate"
 
 
 class OllamaLibraryDownloader:
-    _registry_url = "https://registry.ollama.ai"
     _default_cache_dir = "/var/lib/gpustack/cache/ollama"
     _user_agent = f"ollama/0.3.3 ({platform.machine()} {platform.system()}) Go/1.22.0"
 
-    @classmethod
+    def __init__(
+        self, registry_url: Optional[str] = None, cache_dir: Optional[str] = None
+    ):
+        if registry_url is not None:
+            self._registry_url = registry_url
+
     def download_blob(
-        cls, url: str, registry_token: str, filename: str, _nb_retries: int = 5
+        self, url: str, registry_token: str, filename: str, _nb_retries: int = 5
     ):
         temp_filename = filename + ".part"
 
         headers = {
-            _header_user_agent: cls._user_agent,
+            _header_user_agent: self._user_agent,
             _header_authorization: registry_token,
         }
 
@@ -179,12 +183,11 @@ class OllamaLibraryDownloader:
                 )
         os.rename(temp_filename, filename)
 
-    @classmethod
-    def download(cls, model_name: str, cache_dir: Optional[str] = None) -> str:
+    def download(self, model_name: str, cache_dir: Optional[str] = None) -> str:
         sanitized_filename = re.sub(r"[^a-zA-Z0-9]", "_", model_name)
 
         if cache_dir is None:
-            cache_dir = cls._default_cache_dir
+            cache_dir = self._default_cache_dir
 
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
@@ -200,26 +203,25 @@ class OllamaLibraryDownloader:
                 return model_path
 
             logger.info(f"Downloading model {model_name}")
-            blob_url, registry_token = cls.model_url(
+            blob_url, registry_token = self.model_url(
                 model_name=model_name, cache_dir=cache_dir
             )
             if blob_url is not None:
-                cls.download_blob(blob_url, registry_token, model_path)
+                self.download_blob(blob_url, registry_token, model_path)
 
             logger.info(f"Downloaded model {model_name}")
             return model_path
 
-    @classmethod
-    def model_url(cls, model_name: str, cache_dir: Optional[str] = None) -> str:
+    def model_url(self, model_name: str, cache_dir: Optional[str] = None) -> str:
         if ":" in model_name:
             model, tag = model_name.split(":")
         else:
             model, tag = model_name, "latest"
 
-        manifest_url = f"{cls._registry_url}/v2/library/{model}/manifests/{tag}"
+        manifest_url = f"{self._registry_url}/v2/library/{model}/manifests/{tag}"
 
         headers = {
-            _header_user_agent: cls._user_agent,
+            _header_user_agent: self._user_agent,
             _header_accept: "application/vnd.docker.distribution.manifest.v2+json",
         }
 
@@ -232,7 +234,7 @@ class OllamaLibraryDownloader:
             elif response.status_code == 401:
                 logger.debug("ollama registry requires authorization")
 
-                token = cls.get_request_auth_token(manifest_url, cache_dir)
+                token = self.get_request_auth_token(manifest_url, cache_dir)
                 if token:
                     headers[_header_authorization] = token
                 else:
@@ -248,7 +250,7 @@ class OllamaLibraryDownloader:
         for blob in blobs:
             if blob["mediaType"] == "application/vnd.ollama.image.model":
                 return (
-                    f"{cls._registry_url}/v2/library/{model}/blobs/{blob['digest']}",
+                    f"{self._registry_url}/v2/library/{model}/blobs/{blob['digest']}",
                     token,
                 )
 

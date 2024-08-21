@@ -105,11 +105,9 @@ class ServeManager:
                 target=ServeManager.serve_model_instance,
                 args=(
                     mi,
-                    self._config.server_url,
                     self._clientset.headers,
                     log_file_path,
-                    self._cache_dir,
-                    self._config.debug,
+                    self._config,
                 ),
             )
             process.daemon = False
@@ -134,22 +132,21 @@ class ServeManager:
     @staticmethod
     def serve_model_instance(
         mi: ModelInstance,
-        server_url: str,
         client_headers: dict,
         log_file_path: str,
-        cache_dir: str,
-        debug: bool = False,
+        cfg: Config,
     ):
+
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
         signal.signal(signal.SIGTERM, signal_handler)
 
         clientset = ClientSet(
-            base_url=server_url,
+            base_url=cfg.server_url,
             headers=client_headers,
         )
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                InferenceServer(clientset, mi, cache_dir, debug).start()
+                InferenceServer(clientset, mi, cfg).start()
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)

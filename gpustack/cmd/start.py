@@ -101,6 +101,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "When set to True, all requests from localhost will require authentication.",
         default=get_env_or_default("FORCE_AUTH_LOCALHOST", False),
     )
+    group.add_argument(
+        "--ollama-library-base-url",
+        type=str,
+        help="Base URL of the Ollama library. Default is https://registry.ollama.ai.",
+        default=get_env_or_default(
+            "OLLAMA_LIBRARY_BASE_URL", "https://registry.ollama.ai"
+        ),
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -243,6 +251,7 @@ def set_server_options(args, config_data: dict):
         "ssl_keyfile",
         "ssl_certfile",
         "force_auth_localhost",
+        "ollama_library_base_url",
     ]
 
     for option in options:
