@@ -52,3 +52,24 @@ You can manage large language models in GPUStack by navigating to the `Models` p
 2. Click the `>` symbol to view the instance list of the model.
 3. Find the model instance you want to check.
 4. Click the `View Logs` button for the model instance in the `Operations` column.
+
+## Use Self-hosted Model
+
+You can deploy self-hosted Ollama models by configuring the `--ollama-library-base-url` option in the GPUStack server. The `Ollama Library` URL should point to the base URL of the Ollama model registry. For example, `https://registry.mycompany.com`.
+
+Here is an example workflow to set up a registry, publish a model, and use it in GPUStack:
+
+```bash
+# Run a self-hosted OCI registry
+docker run -d -p 5000:5000 --name registry registry:2
+
+# Push a model to the registry using Ollama
+ollama pull llama3
+ollama cp llama3 localhost:5000/library/llama3
+ollama push localhost:5000/library/llama3 --insecure
+
+# Start GPUStack server with the custom Ollama library URL
+curl -sfL https://get.gpustack.ai | sh -s - --ollama-library-base-url http://localhost:5000
+```
+
+That's it! You can now deploy the model `llama3` from `Ollama Library` source in GPUStack as usual, but the model will now be fetched from the self-hosted registry.
