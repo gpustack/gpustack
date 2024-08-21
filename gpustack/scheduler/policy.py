@@ -133,7 +133,7 @@ class ResourceFitPolicy:
                 ) + (model_instance.computed_resource_claim.gpu_memory or 0)
 
         allocatable = Allocatable(memory=0, gpu_memory={})
-        for gpu_index, gpu in enumerate(worker.status.gpu_devices):
+        for gpu_index, gpu in enumerate(worker.status.gpu_devices or []):
             if gpu.memory is None or gpu.memory.total is None:
                 continue
 
