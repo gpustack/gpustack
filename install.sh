@@ -152,6 +152,15 @@ install_dependencies() {
       fatal "$dep is required but missing. Please install $dep."
     fi
   done
+
+  # check SeLinux dependency
+  if command -v getenforce > /dev/null 2>&1; then
+      if [ "Disabled" != "$(getenforce)" ]; then
+          if ! command -v semanage > /dev/null 2>&1; then
+              fatal "semanage is required while SeLinux enabled but missing. Please install the appropriate package for your OS (e.g., policycoreutils-python-utils for Rocky/RHEL/Ubuntu/Debian)."
+          fi
+      fi
+  fi
 }
 
 # Function to check CUDA for NVIDIA GPUs
@@ -177,17 +186,17 @@ setup_selinux_permissions() {
     BIN_PATH=$1
     BIN_REAL_PATH=""
 
-    if ! $SUDO semanage fcontext -l | grep -q "${BIN_PATH}"; then
+    if ! $SUDO semanage fcontext -l | grep "${BIN_PATH}" > /dev/null 2>&1; then
         $SUDO semanage fcontext -a -t bin_t "${BIN_PATH}"
     fi
-    $SUDO restorecon -v "${BIN_PATH}" > /dev/null
+    $SUDO restorecon -v "${BIN_PATH}" > /dev/null 2>&1
 
     if [ -L "$BIN_PATH" ]; then
         BIN_REAL_PATH=$(readlink -f "$BIN_PATH")
-        if ! $SUDO semanage fcontext -l | grep -q "${BIN_REAL_PATH}"; then
+        if ! $SUDO semanage fcontext -l | grep "${BIN_REAL_PATH}" > /dev/null 2>&1; then
             $SUDO semanage fcontext -a -t bin_t "${BIN_REAL_PATH}"
         fi
-        $SUDO restorecon -v "${BIN_REAL_PATH}" > /dev/null
+        $SUDO restorecon -v "${BIN_REAL_PATH}" > /dev/null 2>&1
     fi
 }
 
