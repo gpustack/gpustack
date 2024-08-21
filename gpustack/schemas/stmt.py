@@ -1,4 +1,5 @@
-worker_after_create_stmt = """
+worker_after_drop_view_stmt = "DROP VIEW IF EXISTS gpu_devices_view"
+worker_after_create_view_stmt = """
 CREATE VIEW IF NOT EXISTS gpu_devices_view AS
 SELECT
     w.name || '-' || json_extract(value, '$.name') || '-' || json_extract(value, '$.index') AS id,
@@ -18,4 +19,6 @@ SELECT
 FROM
     workers w,
     json_each(w.status, '$.gpu_devices')
+WHERE
+    json_array_length(w.status, '$.gpu_devices') > 0
 """

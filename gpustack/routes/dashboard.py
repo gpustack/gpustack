@@ -51,7 +51,7 @@ async def get_resource_counts(session: AsyncSession) -> ResourceCounts:
     worker_count = len(workers)
     gpu_count = 0
     for worker in workers:
-        gpu_count += len(worker.status.gpu_devices)
+        gpu_count += len(worker.status.gpu_devices or [])
     model_count = await Model.count(session)
     model_instance_count = await ModelInstance.count(session)
     return ResourceCounts(
