@@ -61,15 +61,15 @@ Here is an example workflow to set up a registry, publish a model, and use it in
 
 ```bash
 # Run a self-hosted OCI registry
-docker run -d -p 5000:5000 --name registry registry:2
+docker run -d -p 5001:5000 --name registry registry:2
 
 # Push a model to the registry using Ollama
 ollama pull llama3
-ollama cp llama3 localhost:5000/library/llama3
-ollama push localhost:5000/library/llama3 --insecure
+ollama cp llama3 localhost:5001/library/llama3
+ollama push localhost:5001/library/llama3 --insecure
 
 # Start GPUStack server with the custom Ollama library URL
-curl -sfL https://get.gpustack.ai | sh -s - --ollama-library-base-url http://localhost:5000
+curl -sfL https://get.gpustack.ai | sh -s - --ollama-library-base-url http://localhost:5001
 ```
 
 That's it! You can now deploy the model `llama3` from `Ollama Library` source in GPUStack as usual, but the model will now be fetched from the self-hosted registry.
