@@ -31,7 +31,7 @@ class Config(BaseSettings):
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
-        enable_metrics: Enable metrics.
+        disable_metrics: Disable metrics.
         metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
         log_dir: Directory to store logs.
@@ -43,7 +43,7 @@ class Config(BaseSettings):
     token: Optional[str] = None
 
     # Server options
-    host: Optional[str] = None
+    host: Optional[str] = "0.0.0.0"
     port: Optional[int] = None
     database_url: Optional[str] = None
     disable_worker: bool = False
@@ -53,13 +53,13 @@ class Config(BaseSettings):
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
-    ollama_library_base_url: Optional[str] = None
+    ollama_library_base_url: Optional[str] = "https://registry.ollama.ai"
 
     # Worker options
     server_url: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
-    enable_metrics: bool = True
+    disable_metrics: bool = False
     worker_port: int = 10150
     metrics_port: int = 10151
     log_dir: Optional[str] = None
@@ -82,6 +82,9 @@ class Config(BaseSettings):
 
         # server options
         self.init_database_url()
+
+        if self.system_reserved is None:
+            self.system_reserved = {"memory": 1, "gpu_memory": 1}
 
     @model_validator(mode="after")
     def check_all(self):
