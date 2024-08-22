@@ -56,8 +56,18 @@ jobs:
           path: dist/*.whl
           retention-days: 5
 
-      - name: Publish to PyPI
+      - name: Release GitHub Assets
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
+        with:
+          # Draft for official releases to prepare and review release notes before publishing
+          draft: ${{ !contains(github.ref, 'rc') }}
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref, 'rc') }}
+          files: dist/*.whl
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11' && !contains(github.ref, 'rc')
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.CI_PYPI_API_TOKEN }}
@@ -94,15 +104,25 @@ jobs:
           path: dist/*.whl
           retention-days: 5
 
-      - name: Publish to PyPI
+      - name: Release GitHub Assets
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
+        with:
+          # Draft for official releases to prepare and review release notes before publishing
+          draft: ${{ !contains(github.ref, 'rc') }}
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref, 'rc') }}
+          files: dist/*.whl
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11' && !contains(github.ref, 'rc')
         shell: powershell
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.CI_PYPI_API_TOKEN }}
         run: |
           make publish-pypi
-  
+
   publish-docker:
     needs:
       - linux-macos
@@ -113,7 +133,7 @@ jobs:
     timeout-minutes: 60
     runs-on: ubuntu-22.04
     env:
-      PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}} 
+      PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}}
       PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
     steps:
       - name: Checkout
