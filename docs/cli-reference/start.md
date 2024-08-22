@@ -37,7 +37,7 @@ gpustack start [OPTIONS]
 | -------------------------------- | ------- | ------------------------------------------------------------------- |
 | `-s` value, `--server-url` value |         | Server to connect to.                                               |
 | `--worker-ip` value              |         | IP address of the worker node. Auto-detected by default.            |
-| `--enable-metrics`               | `True`  | Enable metrics.                                                     |
+| `--disable-metrics`              | `False` | Disable metrics.                                                    |
 | `--metrics-port` value           | `10151` | Port to expose metrics.                                             |
 | `--worker-port` value            | `10150` | Port to bind the worker to. Use a consistent value for all workers. |
 | `--log-dir` value                |         | Directory to store logs.                                            |
@@ -68,7 +68,7 @@ ollama_library_base_url: https://registry.mycompany.com
 # Worker Options
 server_url: http://myserver
 worker_ip: 192.168.1.101
-enable_metrics: true
+disable_metrics: false
 metrics_port: 10151
 worker_port: 10150
 log_dir: /path/to/dir

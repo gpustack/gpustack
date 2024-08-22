@@ -168,12 +168,12 @@ function Get-Arg {
                 $envList += "GPUSTACK_WORKER_PORT=$value"
                 $i++
             }
-            "--enable-metrics" {
+            "--disable-metrics" {
                 if ($value -eq "False" -or $value -eq "false") {
-                    $envList += "GPUSTACK_ENABLE_METRICS=False"
+                    $envList += "GPUSTACK_DISABLE_METRICS=False"
                 }
                 else {
-                    $envList += "GPUSTACK_ENABLE_METRICS=True"
+                    $envList += "GPUSTACK_DISABLE_METRICS=True"
                 }
             }
             "--metrics-port" {

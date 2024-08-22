@@ -30,7 +30,7 @@ class Worker:
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
         self._port = cfg.worker_port
-        self._exporter_enabled = cfg.enable_metrics
+        self._exporter_enabled = not cfg.disable_metrics
         self._enable_worker_ip_monitor = False
         self._system_reserved = SystemReserved(memory=0, gpu_memory=0)
 
