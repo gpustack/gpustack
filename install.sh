@@ -219,6 +219,8 @@ setup_systemd() {
   $SUDO tee /etc/systemd/system/gpustack.service > /dev/null <<EOF
 [Unit]
 Description=GPUStack Service
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 ExecStart=$(which gpustack) start $@
