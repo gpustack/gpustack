@@ -17,6 +17,19 @@ from gpustack.server.server import Server
 logger = logging.getLogger(__name__)
 
 
+class OptionalBoolAction(argparse.Action):
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        if nargs is not None:
+            raise ValueError("nargs not allowed")
+        super(OptionalBoolAction, self).__init__(
+            option_strings, dest, nargs=0, **kwargs
+        )
+        self.default = None
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, True)
+
+
 def setup_start_cmd(subparsers: argparse._SubParsersAction):
     parser_server: argparse.ArgumentParser = subparsers.add_parser(
         "start",
@@ -33,7 +46,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "-d",
         "--debug",
-        action="store_true",
+        action=OptionalBoolAction,
         help="Enable debug mode.",
         default=get_gpustack_env_bool("DEBUG"),
     )
@@ -72,7 +85,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     )
     group.add_argument(
         "--disable-worker",
-        action="store_true",
+        action=OptionalBoolAction,
         help="Disable embedded worker.",
         default=get_gpustack_env_bool("DISABLE_WORKER"),
     )
@@ -96,7 +109,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     )
     group.add_argument(
         "--force-auth-localhost",
-        action="store_true",
+        action=OptionalBoolAction,
         help="Force authentication for requests originating from localhost (127.0.0.1)."
         "When set to True, all requests from localhost will require authentication.",
         default=get_gpustack_env_bool("FORCE_AUTH_LOCALHOST"),
@@ -130,7 +143,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     )
     group.add_argument(
         "--disable-metrics",
-        action="store_true",
+        action=OptionalBoolAction,
         help="Disable metrics.",
         default=get_gpustack_env_bool(
             "DISABLE_METRICS",
@@ -277,9 +290,9 @@ def get_gpustack_env(env_var: str) -> Optional[str]:
     return os.getenv(env_name)
 
 
-def get_gpustack_env_bool(env_var: str) -> bool:
+def get_gpustack_env_bool(env_var: str) -> Optional[bool]:
     env_name = "GPUSTACK_" + env_var
     env_value = os.getenv(env_name)
     if env_value is not None:
         return env_value.lower() in ["true", "True"]
-    return False
+    return None
