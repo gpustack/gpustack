@@ -2,6 +2,7 @@ ARG CUDA_VERSION=12.5.1
 
 FROM nvidia/cuda:$CUDA_VERSION-runtime-ubuntu22.04
 
+ARG TARGETPLATFORM
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
@@ -10,8 +11,17 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-ARG GPUSTACK_VERSION=0.1.0
+COPY dist/*.whl /tmp/
 
-RUN pip3 install gpustack==$GPUSTACK_VERSION
+RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
+    echo "Installing x86_64 wheel"; \
+    pip3 install /tmp/*_x86_64.whl; \
+    elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    echo "Installing aarch64 wheel"; \
+    pip3 install /tmp/*_aarch64.whl; \
+    else \
+    echo "Unsupported platform: $TARGETPLATFORM"; \
+    fi \
+    && rm /tmp/*.whl
 
 ENTRYPOINT [ "gpustack", "start" ]
