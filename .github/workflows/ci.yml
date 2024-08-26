@@ -124,8 +124,6 @@ jobs:
           make publish-pypi
 
   publish-docker:
-    needs:
-      - linux-macos
     permissions:
       contents: write
       actions: read
@@ -141,6 +139,9 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Run CI build
+        run: |
+          make ci
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -168,6 +169,5 @@ jobs:
           platforms: "linux/amd64,linux/arm64"
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
-          build-args: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && format('GPUSTACK_VERSION={0}', github.ref_name) || '' }}
           provenance: true
           sbom: true
