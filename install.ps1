@@ -196,13 +196,18 @@ function Get-Arg {
 }
 
 function Refresh-ChocolateyProfile {
-    $chocoInstallPath = [System.Environment]::GetEnvironmentVariable("ChocolateyInstall", [System.EnvironmentVariableTarget]::Machine)
+    $chocoInstallPath = [System.Environment]::GetEnvironmentVariable("ChocolateyInstall", [System.EnvironmentVariableTarget]::User)
 
     if (-not $chocoInstallPath) {
-        $chocoInstallPath = [System.Environment]::GetEnvironmentVariable("ChocolateyInstall", [System.EnvironmentVariableTarget]::User)
+        $chocoInstallPath = [System.Environment]::GetEnvironmentVariable("ChocolateyInstall", [System.EnvironmentVariableTarget]::Machine)
     }
 
-    if (-not $chocoInstallPath) {
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        $chocoPath = (Get-Command choco).Path
+        $chocoInstallPath = Split-Path -Path (Split-Path -Path $chocoPath -Parent) -Parent
+    }
+
+    if (-not (Test-Path -Path $chocoInstallPath)) {
         throw "Chocolatey installation path not found. Ensure Chocolatey is installed correctly."
     }
 
