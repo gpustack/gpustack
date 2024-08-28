@@ -111,30 +111,50 @@ check_python_tools() {
     fatal "Python version is less than 3.10. Please upgrade Python to at least version 3.10."
   fi
 
-  if ! python3 -c "import ensurepip" > /dev/null 2>&1; then
-    info "Python module ensurepip could not be found. Attempting to install the python3-venv package..."
-    if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
-      $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt install -y python3-venv
-    else
-      fatal "Unsupported OS for automatic ensurepip installation. Please install the ensurepip module manually."
+  PYTHON_STDLIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+  if [ -f "$PYTHON_STDLIB_PATH/EXTERNALLY-MANAGED" ]; then
+    # Current Python environment is externally manged by OS distros. Package installation by pip is restricted.
+    # Use package manager to install pipx in later step.
+    # Ref: https://packaging.python.org/en/latest/specifications/externally-managed-environments
+    PYTHON_EXTERNALLY_MANAGED=1
+  else
+    # Otherwise, install pipx using pip3 which has better compatibility than package manager provided one.
+    if ! python3 -c "import ensurepip" > /dev/null 2>&1; then
+      info "Python module ensurepip could not be found. Attempting to install the python3-venv package..."
+      if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+        $SUDO apt update && $SUDO sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv"
+      else
+        fatal "Unsupported OS for automatic ensurepip installation. Please install the ensurepip module manually."
+      fi
+    fi
+
+    if ! command -v pip3 > /dev/null 2>&1; then
+      info "Pip3 could not be found. Attempting to ensure pip..."
+      python3 -m ensurepip --upgrade
+    fi
+
+    PIP_PYTHON_VERSION=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}' | awk -F. '{print $1 * 10 + $2}')
+    if [ "$PIP_PYTHON_VERSION" -lt 40 ]; then
+      fatal "Python version for pip3 is less than 3.10. Please upgrade pip3 to be associated with at least Python 3.10."
     fi
   fi
 
-  if ! command -v pip3 > /dev/null 2>&1; then
-    info "Pip3 could not be found. Attempting to ensure pip..."
-    python3 -m ensurepip --upgrade
-  fi
-
-  PIP_PYTHON_VERSION=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}' | awk -F. '{print $1 * 10 + $2}')
-  if [ "$PIP_PYTHON_VERSION" -lt 40 ]; then
-    fatal "Python version for pip3 is less than 3.10. Please upgrade pip3 to be associated with at least Python 3.10."
-  fi
 
   PYTHONPATH=$(python3 -c 'import site, sys; print(":".join(sys.path + [site.getusersitepackages()]))')
 
   if ! command -v pipx > /dev/null 2>&1; then
     info "Pipx could not be found. Attempting to install..."
-    pip3 install pipx
+    if [ -z "$PYTHON_EXTERNALLY_MANAGED" ]; then
+      pip3 install pipx
+    elif [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+      $SUDO apt update && $SUDO sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y pipx"
+    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
+      $SUDO yum install -y pipx
+    elif [ "$OS" = "macos" ]; then
+      $SUDO brew install pipx
+    else
+      fatal "Unsupported OS for automatic pipx installation. Please install pipx manually."
+    fi
     USER_BASE_BIN=$(python3 -m site --user-base)/bin
     export PATH="$USER_BASE_BIN:$PATH"
     pipx ensurepath
