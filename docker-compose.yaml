@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   gpustack:
-    image: gpustack/gpustack:main
+    image: gpustack/gpustack
     # uncomment and update the following line for starting GPUStack worker
     # command: --server-url http://myserver --token mytoken
     ports:
