@@ -2,7 +2,7 @@
 
 The following diagram shows the architecture of GPUStack:
 
-![gpustack-architecture](assets/gpustack-architecture.png)
+![gpustack-architecture](../assets/gpustack-architecture.png)
 
 ### Server
 
@@ -27,3 +27,9 @@ The GPUStack server connects to a SQL database as the datastore. Currently, GPUS
 ### Inference Server
 
 Inference servers are the backends that performs the inference tasks. GPUStack uses [llama-box](https://github.com/gpustack/llama-box) as the inference server.
+
+### RPC Server
+
+Inference servers are the backends that performs the inference tasks. GPUStack uses [llama-box](https://github.com/gpustack/llama-box) as the inference server.
+
+The rpc-server allows running llama-box backend on a remote host. The Inference Server communicates with one or several instances of rpc-server and offloads computations to them. This can be used for distributed LLM inference across workers.
