@@ -1,12 +1,14 @@
 import logging
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.scheduler.policy import Allocated
+from gpustack.policies.policy import Allocated
 from gpustack.schemas.workers import (
     CPUInfo,
     GPUCoreInfo,
+    GPUDevicesInfo,
     MemoryInfo,
     OperatingSystemInfo,
     KernelInfo,
+    RPCServer,
     UptimeInfo,
     SwapInfo,
     GPUDeviceInfo,
@@ -28,11 +30,19 @@ logger = logging.getLogger(__name__)
 
 
 class WorkerStatusCollector:
-    def __init__(self, worker_ip: str, worker_name: str, clientset: ClientSet):
+
+    def __init__(
+        self,
+        worker_ip: str,
+        worker_name: str,
+        clientset: ClientSet = None,
+        worker_manager=None,
+    ):
         self._worker_name = worker_name
         self._hostname = socket.gethostname()
         self._worker_ip = worker_ip
         self._clientset = clientset
+        self._worker_manager = worker_manager
 
     """A class for collecting worker status information."""
 
@@ -90,92 +100,8 @@ class WorkerStatusCollector:
                 else:
                     status.cpu.utilization_rate = utilization_rate
             elif typ == "GPU":
-                device = []
-                list = sorted(r, key=lambda x: x["name"])
-                key_set = set()
-                for i, value in enumerate(list):
-                    # Metadatas.
-                    vender = self._get_value(value, "vendor")
-                    if vender is None or vender == "":
-                        continue
-
-                    name = self._get_value(value, "name")
-                    index = self._get_value(value, "index")
-
-                    if index is None:
-                        index = i
-
-                    key = f"{name}-{index}"
-                    if key in key_set:
-                        for offset in range(len(list)):
-                            key = f"{name}-{offset}"
-                            if key not in key_set:
-                                index = offset
-                                key_set.add(key)
-                                break
-                    else:
-                        key_set.add(key)
-
-                    is_unified_memory = False
-                    if (
-                        vender == VendorEnum.Apple
-                        and self._get_value(value, "type") == "Integrated"
-                    ):
-                        is_unified_memory = True
-
-                    is_integrated = self._get_value(value, "type") == "Integrated"
-
-                    # Memory.
-                    memory_total = 0
-                    memory_used = 0
-                    if is_integrated:
-                        memory_total = (
-                            self._get_value(value, "memory", "shared", "total") or 0
-                        )
-                        memory_used = (
-                            self._get_value(value, "memory", "shared", "used") or 0
-                        )
-                    else:
-                        memory_total = (
-                            self._get_value(value, "memory", "dedicated", "total") or 0
-                        )
-                        memory_used = (
-                            self._get_value(value, "memory", "dedicated", "used") or 0
-                        )
-                    memory_utilization_rate = (
-                        (memory_used / memory_total * 100) if memory_total > 0 else 0
-                    )
-                    memory = MemoryInfo(
-                        is_unified_memory=is_unified_memory,
-                        total=memory_total,
-                        used=memory_used,
-                        utilization_rate=memory_utilization_rate,
-                    )
-
-                    # Core.
-                    core_count = self._get_value(value, "coreCount") or 0
-                    core_utilization_rate = (
-                        self._get_value(value, "coreUtilizationRate") or 0
-                    )
-                    core = GPUCoreInfo(
-                        total=core_count, utilization_rate=core_utilization_rate
-                    )
-
-                    # Append.
-                    device.append(
-                        GPUDeviceInfo(
-                            name=name,
-                            uuid=self._get_value(value, "uuid"),
-                            vendor=self._get_value(value, "vendor"),
-                            index=index,
-                            core=core,
-                            memory=memory,
-                            temperature=self._get_value(value, "temperature"),
-                        )
-                    )
-
                 # Set to status.
-                status.gpu_devices = device
+                status.gpu_devices = self._decode_gpu_devices(r)
             elif typ == "Memory":
                 total = self._get_value(r, "total") or 0
                 used = self._get_value(r, "used") or 0
@@ -217,6 +143,15 @@ class WorkerStatusCollector:
         self._inject_computed_filesystem_usage(status)
         self._inject_allocated_resource(status)
 
+        if self._worker_manager is not None:
+            server_processes = self._worker_manager.get_rpc_servers()
+            rps_server = {}
+            for gpu_index, process in server_processes.items():
+                rps_server[gpu_index] = RPCServer(
+                    pid=process.process.pid, port=process.port, gpu_index=gpu_index
+                )
+            status.rpc_servers = rps_server
+
         return Worker(
             name=self._worker_name,
             hostname=self._hostname,
@@ -224,6 +159,97 @@ class WorkerStatusCollector:
             state=WorkerStateEnum.READY,
             status=status,
         )
+
+    def collect_gpu_devices(self) -> GPUDevicesInfo:
+        results = self._run_fastfetch_and_parse_result()
+        for result in results:
+            typ = result.get("type")
+            r = result.get("result")
+
+            if r is None:
+                continue
+
+            if typ == "GPU":
+                return self._decode_gpu_devices(r)
+
+        return []
+
+    def _decode_gpu_devices(self, result) -> GPUDevicesInfo:
+        devices = []
+        list = sorted(result, key=lambda x: x["name"])
+        key_set = set()
+        for i, value in enumerate(list):
+            # Metadatas.
+            vender = self._get_value(value, "vendor")
+            if vender is None or vender == "":
+                continue
+
+            name = self._get_value(value, "name")
+            index = self._get_value(value, "index")
+
+            if index is None:
+                index = i
+
+            key = f"{name}-{index}"
+            if key in key_set:
+                for offset in range(len(list)):
+                    key = f"{name}-{offset}"
+                    if key not in key_set:
+                        index = offset
+                        key_set.add(key)
+                        break
+            else:
+                key_set.add(key)
+
+            is_unified_memory = False
+            if (
+                vender == VendorEnum.Apple
+                and self._get_value(value, "type") == "Integrated"
+            ):
+                is_unified_memory = True
+
+            is_integrated = self._get_value(value, "type") == "Integrated"
+
+            # Memory.
+            memory_total = 0
+            memory_used = 0
+            if is_integrated:
+                memory_total = self._get_value(value, "memory", "shared", "total") or 0
+                memory_used = self._get_value(value, "memory", "shared", "used") or 0
+            else:
+                memory_total = (
+                    self._get_value(value, "memory", "dedicated", "total") or 0
+                )
+                memory_used = self._get_value(value, "memory", "dedicated", "used") or 0
+            memory_utilization_rate = (
+                (memory_used / memory_total * 100) if memory_total > 0 else 0
+            )
+            memory = MemoryInfo(
+                is_unified_memory=is_unified_memory,
+                total=memory_total,
+                used=memory_used,
+                utilization_rate=memory_utilization_rate,
+            )
+
+            # Core.
+            core_count = self._get_value(value, "coreCount") or 0
+            core_utilization_rate = self._get_value(value, "coreUtilizationRate") or 0
+            core = GPUCoreInfo(total=core_count, utilization_rate=core_utilization_rate)
+
+            # Append.
+            devices.append(
+                GPUDeviceInfo(
+                    name=name,
+                    uuid=self._get_value(value, "uuid"),
+                    vendor=self._get_value(value, "vendor"),
+                    index=index,
+                    core=core,
+                    memory=memory,
+                    temperature=self._get_value(value, "temperature"),
+                )
+            )
+
+        return devices
 
     def _inject_unified_memory(self, status: WorkerStatus):
         is_unified_memory = False
@@ -261,7 +287,7 @@ class WorkerStatusCollector:
             logger.error(f"Failed to inject filesystem usage: {e}")
 
     def _inject_allocated_resource(self, status: WorkerStatus) -> Allocated:
-        allocated = Allocated(memory=0, gpu_memory={})
+        allocated = Allocated(ram=0, vram={})
         try:
             model_instances = self._clientset.model_instances.list()
             for model_instance in model_instances.items:
@@ -271,18 +297,19 @@ class WorkerStatusCollector:
                 if model_instance.computed_resource_claim is None:
                     continue
 
-                memory = model_instance.computed_resource_claim.memory or 0
-                gpu_memory = model_instance.computed_resource_claim.gpu_memory or 0
+                ram = model_instance.computed_resource_claim.ram or 0
+                vram = model_instance.computed_resource_claim.vram or {}
 
-                allocated.memory += memory
-                if model_instance.gpu_index is not None:
-                    allocated.gpu_memory[model_instance.gpu_index] = (
-                        allocated.gpu_memory.get(model_instance.gpu_index) or 0
-                    ) + gpu_memory
+                allocated.ram += ram
+                if model_instance.gpu_indexes is not None:
+                    for gpu_index in model_instance.gpu_indexes:
+                        allocated.vram[gpu_index] = (
+                            allocated.vram.get(gpu_index) or 0
+                        ) + (vram.get(gpu_index) or 0)
 
             # inject allocated resources
-            status.memory.allocated = allocated.memory
-            for ag, agv in allocated.gpu_memory.items():
+            status.memory.allocated = allocated.ram
+            for ag, agv in allocated.vram.items():
                 status.gpu_devices[ag].memory.allocated = agv
         except Exception as e:
             logger.error(f"Failed to inject allocated resources: {e}")

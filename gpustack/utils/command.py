@@ -16,24 +16,22 @@ def is_command_available(command_name):
     return shutil.which(command_name) is not None
 
 
-def get_platform_command(command_map: dict) -> str:
+def get_platform_command(command_map: dict, *extra_keys) -> str:
     """
     Get the command for the current platform.
 
     Args:
-        command_map (dict): A mapping of platform to command, example:
-        {
-            ("Windows", "amd64"): "run-windows-amd64.exe",
-            ("Darwin", "amd64"): "run-darwin-amd64",
-            ("Linux", "amd64"): "run-linux-amd64",
-            ("Linux", "arm64"): "run-linux-arm64",
-        }
+        command_map (dict): A mapping of platform to command.
     """
 
     system = platform.system()
     arch = platform.machine().lower()
+    key = (system, arch)
 
-    command = command_map.get((system, arch), "")
+    if extra_keys:
+        key = key + extra_keys
+
+    command = command_map.get(key, "")
     if command:
         return command
 
@@ -46,4 +44,9 @@ def get_platform_command(command_map: dict) -> str:
     }
 
     arch = equal_arch.get(arch, "")
-    return command_map.get((system, arch), "")
+    key = (system, arch)
+    if extra_keys:
+        key = key + extra_keys
+
+    command = command_map.get(key, "")
+    return command

@@ -1,4 +1,5 @@
 import asyncio
+from enum import Enum
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -15,19 +16,27 @@ from gpustack.utils.compat_importlib import pkg_resources
 logger = logging.getLogger(__name__)
 
 
+class GPUOffloadEnum(str, Enum):
+    Full = "full"
+    Partial = "partial"
+    Disable = "disable"
+
+
 @dataclass_json
 @dataclass
-class memoryResource:
-    ram: int
-    vram: int
+class layerMemoryEstimate:
+    uma: int
+    nonuma: int
+    handleLayers: Optional[int]
 
 
 @dataclass_json
 @dataclass
 class memoryEstimate:
     offloadLayers: int
-    uma: memoryResource
-    nonUMA: memoryResource
+    fullOffloaded: bool
+    ram: layerMemoryEstimate
+    vrams: List[layerMemoryEstimate]
 
 
 @dataclass_json
@@ -37,6 +46,7 @@ class estimate:
     contextSize: int
     architecture: str
     embeddingOnly: bool
+    distributable: bool
 
 
 @dataclass_json
@@ -61,7 +71,9 @@ class ModelInstanceResourceClaim:
         return False
 
 
-def _gguf_parser_command(model: Model, **kwargs):
+def _gguf_parser_command(
+    model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
+):
     command_map = {
         ("Windows", "amd64"): "gguf-parser-windows-amd64.exe",
         ("Darwin", "amd64"): "gguf-parser-darwin-universal",
@@ -82,16 +94,43 @@ def _gguf_parser_command(model: Model, **kwargs):
     )
     execuable_command = [
         command_path,
-        "-ctx-size",
+        "--ctx-size",
         "8192",
-        "-in-max-ctx-size",
-        "-gpu-layers-step",
-        "1",
-        "-skip-tokenizer",
-        "-skip-architecture",
-        "-skip-model",
-        "-json",
+        "--in-max-ctx-size",
+        "--skip-tokenizer",
+        "--skip-architecture",
+        "--skip-metadata",
+        "--cache-expiration",
+        "168h0m0s",
+        "--json",
     ]
+
+    cache_dir = kwargs.get("cache_dir")
+    if cache_dir:
+        execuable_command.append("--cache-path")
+        execuable_command.append(cache_dir)
+
+    if offload == GPUOffloadEnum.Full:
+        execuable_command.append("--gpu-layers")
+        execuable_command.append("-1")
+    elif offload == GPUOffloadEnum.Partial:
+        execuable_command.append("--gpu-layers-step")
+        execuable_command.append("1")
+    elif offload == GPUOffloadEnum.Disable:
+        execuable_command.append("--gpu-layers")
+        execuable_command.append("0")
+
+    tensor_split = kwargs.get("tensor_split")
+    if tensor_split:
+        tensor_split_str = ",".join([str(i) for i in tensor_split])
+        execuable_command.append("--tensor-split")
+        execuable_command.append(tensor_split_str)
+
+    rpc = kwargs.get("rpc")
+    if rpc:
+        rpc_str = ",".join([v for v in rpc])
+        execuable_command.append("--rpc")
+        execuable_command.append(rpc_str)
 
     source_args = _gguf_parser_command_args_from_source(model, **kwargs)
     execuable_command.extend(source_args)
@@ -99,7 +138,10 @@ def _gguf_parser_command(model: Model, **kwargs):
 
 
 async def calculate_model_resource_claim(
-    model_instance: ModelInstance, model: Model, **kwargs
+    model_instance: ModelInstance,
+    model: Model,
+    offload: GPUOffloadEnum = GPUOffloadEnum.Full,
+    **kwargs,
 ) -> ModelInstanceResourceClaim:
     """
     Calculate the resource claim of the model instance.
@@ -110,7 +152,7 @@ async def calculate_model_resource_claim(
 
     logger.info(f"Calculating resource claim for model instance {model_instance.name}")
 
-    command = _gguf_parser_command(model, **kwargs)
+    command = _gguf_parser_command(model, offload, **kwargs)
     try:
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -126,11 +168,22 @@ async def calculate_model_resource_claim(
         cmd_output = stdout.decode()
         claim = modelResoruceClaim.from_json(cmd_output)
 
-        logger.info(
-            f"Calculated resource claim for model instance {model_instance.name}, "
-            f"least: {claim.estimate.memory[0]}, "
-            f"most: {claim.estimate.memory[len(claim.estimate.memory) - 1]}"
-        )
+        if offload == GPUOffloadEnum.Full:
+            logger.info(
+                f"Calculated resource claim for full offload model instance {model_instance.name}, "
+                f"claim: {claim.estimate.memory[0]}"
+            )
+        elif offload == GPUOffloadEnum.Partial:
+            logger.info(
+                f"Calculated resource claim for partial offloading model instance {model_instance.name}, "
+                f"least claim: {claim.estimate.memory[0]}, "
+                f"most claim: {claim.estimate.memory[len(claim.estimate.memory) - 2]}"
+            )
+        elif offload == GPUOffloadEnum.Disable:
+            logger.info(
+                f"Calculated resource claim for disabled offloading model instance {model_instance.name}, "
+                f"claim: {claim.estimate.memory[0]}"
+            )
 
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
 

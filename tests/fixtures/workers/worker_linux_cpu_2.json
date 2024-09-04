@@ -1,0 +1,25 @@
+{
+    "name": "host-cpu-2",
+    "hostname": "host-cpu-2",
+    "ip": "192.168.50.7",
+    "labels": {
+        "os": "Linux"
+    },
+    "system_reserved": {
+        "memory": 1073741824,
+        "gpu_memory": 1073741824
+    },
+    "state": "ready",
+    "status": {
+        "memory": {
+            "total": 137438953472,
+            "utilization_rate": 5.905919020930682,
+            "is_unified_memory": false,
+            "used": 3967795200,
+            "allocated": 0
+        }
+    },
+    "id": 7,
+    "created_at": "2024-07-05T02:17:42",
+    "updated_at": "2024-07-05T10:36:21"
+}

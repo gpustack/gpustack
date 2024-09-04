@@ -15,7 +15,11 @@ class MetricExporter(Collector):
     _provider = "gpustack"
 
     def __init__(
-        self, worker_ip: str, worker_name: str, port: int, clientset: ClientSet
+        self,
+        worker_ip: str,
+        worker_name: str,
+        port: int,
+        clientset: ClientSet,
     ):
         self._worker_ip = worker_ip
         self._worker_name = worker_name
