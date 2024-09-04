@@ -121,10 +121,10 @@ class Server:
         logger.debug("Scheduler started.")
 
     def _start_controllers(self):
-        model_controller = ModelController()
+        model_controller = ModelController(self._config)
         asyncio.create_task(model_controller.start())
 
-        model_instance_controller = ModelInstanceController()
+        model_instance_controller = ModelInstanceController(self._config)
         asyncio.create_task(model_instance_controller.start())
 
         worker_controller = WorkerController()
