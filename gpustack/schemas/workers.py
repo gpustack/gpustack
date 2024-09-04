@@ -97,6 +97,12 @@ class SystemReserved(BaseModel):
     gpu_memory: int = Field(default=None)
 
 
+class RPCServer(BaseModel):
+    pid: Optional[int] = None
+    port: Optional[int] = None
+    gpu_index: Optional[int] = None
+
+
 class WorkerStateEnum(str, Enum):
     NOT_READY = "not_ready"
     READY = "ready"
@@ -111,6 +117,10 @@ class WorkerStatus(BaseModel):
     os: Optional[OperatingSystemInfo] = Field(sa_column=Column(JSON), default=None)
     kernel: Optional[KernelInfo] = Field(sa_column=Column(JSON), default=None)
     uptime: Optional[UptimeInfo] = Field(sa_column=Column(JSON), default=None)
+
+    rpc_servers: Optional[Dict[int, RPCServer]] = Field(
+        sa_column=Column(JSON), default=None
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

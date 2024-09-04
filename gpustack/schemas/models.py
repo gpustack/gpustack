@@ -1,12 +1,13 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, model_validator
-from sqlalchemy import Column
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
 from gpustack.schemas.common import PaginatedList, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.workers import RPCServer
 
 # Models
 
@@ -14,6 +15,11 @@ from gpustack.mixins import BaseModelMixin
 class SourceEnum(str, Enum):
     HUGGING_FACE = "huggingface"
     OLLAMA_LIBRARY = "ollama_library"
+
+
+class PlacementStrategyEnum(str, Enum):
+    SPREAD = "spread"
+    BINPACK = "binpack"
 
 
 class ModelSource(BaseModel):
@@ -45,6 +51,12 @@ class ModelBase(SQLModel, ModelSource):
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
     embedding_only: bool = False
+    placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
+    partial_offload: bool = True
+    distributed_inference_across_workers: bool = True
+    worker_selector: Optional[Dict[str, str]] = Field(
+        sa_column=Column(JSON), default={}
+    )
 
 
 class Model(ModelBase, BaseModelMixin, table=True):
@@ -93,8 +105,23 @@ class ComputedResourceClaim(BaseModel):
     is_unified_memory: Optional[bool] = False
     offload_layers: Optional[int] = None
     total_layers: Optional[int] = None
-    memory: Optional[int] = Field(default=None)  # in bytes
-    gpu_memory: Optional[int] = Field(default=None)  # in bytes
+    ram: Optional[int] = Field(default=None)  # in bytes
+    vram: Optional[Dict[int, int]] = Field(default=None)  # in bytes
+
+
+class ModelInstanceRPCServer(RPCServer):
+    worker_id: Optional[int] = None
+    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
+        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
+    )
+
+
+class DistributedServers(BaseModel):
+    rpc_servers: Optional[List[ModelInstanceRPCServer]] = Field(
+        sa_column=Column(JSON), default=[]
+    )
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ModelInstanceBase(SQLModel, ModelSource):
@@ -110,11 +137,14 @@ class ModelInstanceBase(SQLModel, ModelSource):
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
     )
-    gpu_index: Optional[int] = None
+    gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
 
     model_id: int = Field(default=None, foreign_key="models.id")
     model_name: str
 
+    distributed_servers: Optional[DistributedServers] = Field(
+        sa_column=Column(pydantic_column_type(DistributedServers)), default=None
+    )
     # The "model_id" field conflicts with the protected namespace "model_" in Pydantic.
     # Disable it given that it's not a real issue for this particular field.
     model_config = ConfigDict(protected_namespaces=())
