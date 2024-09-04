@@ -66,7 +66,9 @@ nav:
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
-  - Architecture: architecture.md
+  - Architecture: 
+      - Components: architecture/components.md
+      - Scheduler: architecture/scheduler.md
   - Troubleshooting: troubleshooting.md
   - API Reference: api-reference.md
   - CLI Reference:
