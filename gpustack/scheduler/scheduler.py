@@ -1,27 +1,34 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
+import os
 import queue
+from typing import List
 from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from gpustack.policies.placement_policy import PlacementPolicy
 from gpustack.config.config import Config
-from gpustack.scheduler.policy import (
-    ResourceFitPolicy,
-)
+from gpustack.policies.policy import ModelInstanceScheduleCandidate
+from gpustack.policies.resource_fit_policy import ResourceFitPolicy
+from gpustack.policies.label_matching_policy import LabelMatchingPolicy
 from gpustack.scheduler.queue import AsyncUniqueQueue
+from gpustack.policies.status_policy import StatusPolicy
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.models import (
+    DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
-from gpustack.scheduler.calculator import (
+from gpustack.policies.calculator import (
+    GPUOffloadEnum,
     ModelInstanceResourceClaim,
     calculate_model_resource_claim,
+    estimate,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +45,13 @@ class Scheduler:
         self._check_interval = check_interval
         self._engine = get_engine()
         self._queue = AsyncUniqueQueue()
+        self._cache_dir = None
+
+        if self._config.data_dir is not None:
+            self._cache_dir = os.path.join(
+                self._config.data_dir, "cache", "gguf-parser"
+            )
+            os.makedirs(self._cache_dir, exist_ok=True)
 
     async def start(self):
         """
@@ -57,6 +71,7 @@ class Scheduler:
             max_instances=1,
         )
         scheduler.start()
+        logger.info("Scheduler started.")
 
         # scheduler job trigger by event.
         async for event in ModelInstance.subscribe(self._engine):
@@ -64,8 +79,6 @@ class Scheduler:
                 continue
 
             await self._enqueue_pending_instances()
-
-        logger.info("Scheduler started.")
 
     async def _enqueue_pending_instances(self):
         """
@@ -102,6 +115,8 @@ class Scheduler:
                 task_output = await calculate_model_resource_claim(
                     instance,
                     model,
+                    offload=GPUOffloadEnum.Full,
+                    cache_dir=self._cache_dir,
                     ollama_library_base_url=self._config.ollama_library_base_url,
                 )
 
@@ -181,6 +196,36 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"Failed to get item from schedule queue: {e}")
 
+    async def find_candidate(
+        self,
+        instance: ModelInstance,
+        model: Model,
+        workers: List[Worker],
+        estimate: estimate = None,
+    ) -> ModelInstanceScheduleCandidate:
+        try:
+            label_matching_policy = LabelMatchingPolicy(model, instance)
+            workers = await label_matching_policy.filter(workers)
+
+            status_policy = StatusPolicy(model, instance)
+            workers = await status_policy.filter(workers)
+
+            resource_fit_policy = ResourceFitPolicy(
+                model, instance, self._cache_dir, estimate
+            )
+            candidates = await resource_fit_policy.filter(workers)
+
+            placement_policy = PlacementPolicy(model, instance)
+            candidates = await placement_policy.score(candidates)
+
+            candidate = self.pick_highest_score_candidate(candidates)
+            return candidate
+        except Exception as e:
+            state_message = (
+                f"Failed to find candidate for model instance {instance.name}: {e}"
+            )
+            logger.error(state_message)
+
     async def _schedule_one(self, item: ModelInstanceResourceClaim):
         """
         Schedule a model instance by picking one candidate.
@@ -192,22 +237,23 @@ class Scheduler:
         state_message = ""
         instance = item.model_instance
         estimate = item.resource_claim_estimate
-        filterPolicies = [ResourceFitPolicy(estimate)]
 
         async with AsyncSession(self._engine) as session:
             workers = await Worker.all_by_field(session, "state", WorkerStateEnum.READY)
+            if len(workers) == 0:
+                state_message = "No ready workers"
 
-            candidates = []
-            if len(workers) != 0:
-                try:
-                    for policy in filterPolicies:
-                        candidates = await policy.filter(workers)
-                except Exception as e:
-                    state_message = f"Failed to filter workers with policies: {e}"
-                    logger.error(state_message)
+            model = await Model.one_by_id(session, instance.model_id)
+            if model is None:
+                state_message = "Model not found"
+
+            candidate = None
+            if workers and model:
+                candidate = await self.find_candidate(
+                    instance, model, workers, estimate
+                )
 
             model_instance = await ModelInstance.one_by_id(session, instance.id)
-            candidate = self.pick_most_offload_layers_candidate(candidates)
             if candidate is None:
                 # update model instance.
                 if model_instance.state in (
@@ -233,30 +279,35 @@ class Scheduler:
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim
                 )
-                model_instance.gpu_index = candidate.gpu_index
+                model_instance.gpu_indexes = candidate.gpu_indexes
+                model_instance.distributed_servers = DistributedServers(
+                    rpc_servers=candidate.rpc_servers
+                )
 
                 await model_instance.update(session, model_instance)
 
                 logger.debug(
                     f"Scheduled model instance {model_instance.name} to worker "
-                    f"{model_instance.worker_name} gpu {candidate.gpu_index}"
+                    f"{model_instance.worker_name} gpu {candidate.gpu_indexes}"
                 )
 
-    def pick_most_offload_layers_candidate(self, candidates):
+    def pick_highest_score_candidate(
+        self, candidates: List[ModelInstanceScheduleCandidate]
+    ):
         """
         Pick the most offload layers from candidates.
         Args:
             candidates: List of ModelInstanceScheduleCandidate.
         """
+
+        logger.debug(f"Pick highest score candidate from {len(candidates)} candidates")
+
         if len(candidates) == 0:
             return None
 
         candidate = candidates[0]
         for i in range(1, len(candidates)):
-            if (
-                candidates[i].computed_resource_claim.offload_layers
-                > candidate.computed_resource_claim.offload_layers
-            ):
+            if candidates[i].score > candidate.score:
                 candidate = candidates[i]
 
         return candidate

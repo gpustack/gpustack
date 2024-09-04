@@ -1,0 +1,45 @@
+{
+  "estimate": {
+    "memory": [
+      {
+        "offloadLayers": 81,
+        "fullOffloaded": true,
+        "ram": {
+          "handleLayers": 0,
+          "handleLastLayer": -1,
+          "handleOutputLayer": false,
+          "remote": false,
+          "uma": 297878712,
+          "nonuma": 455165112
+        },
+        "vrams": [
+          {
+            "handleLayers": 42,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1376277504,
+            "nonuma": 23427359744
+          },
+          {
+            "handleLayers": 38,
+            "handleLastLayer": 79,
+            "handleOutputLayer": true,
+            "remote": false,
+            "uma": 22134837248,
+            "nonuma": 22396981248
+          }
+        ]
+      }
+    ],
+    "type": "model",
+    "architecture": "llama",
+    "contextSize": 8192,
+    "flashAttention": false,
+    "noMMap": false,
+    "embeddingOnly": false,
+    "distributable": true,
+    "logicalBatchSize": 2048,
+    "physicalBatchSize": 512
+  }
+}

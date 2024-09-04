@@ -1,16 +1,18 @@
 {
-    "name": "host4090",
-    "hostname": "host4090",
+    "name": "host-2-4090",
+    "hostname": "host-2-4090",
     "ip": "192.168.50.3",
-    "labels": {},
+    "labels": {
+        "os": "Linux"
+    },
     "system_reserved": {
         "memory": 1073741824,
         "gpu_memory": 1073741824
     },
-    "state": "Unknown",
+    "state": "ready",
     "status": {
         "memory": {
-            "total": 67183366144,
+            "total": 134366732288,
             "utilization_rate": 5.905919020930682,
             "is_unified_memory": false,
             "used": 3967795200,
@@ -34,10 +36,28 @@
                     "allocated": null
                 },
                 "temperature": 36.0
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c264",
+                "name": "NVIDIA Device 2685 (VGA compatible)",
+                "vendor": "NVIDIA",
+                "index": 1,
+                "core": {
+                    "total": 14592,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 26015170560,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 650438837,
+                    "allocated": null
+                },
+                "temperature": 36.0
             }
         ]
     },
-    "id": 2,
+    "id": 4,
     "created_at": "2024-07-05T02:17:42",
     "updated_at": "2024-07-05T10:36:21"
 }

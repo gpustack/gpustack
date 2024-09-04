@@ -2,8 +2,10 @@
     "name": "host4080",
     "hostname": "host4080",
     "ip": "192.168.50.2",
-    "labels": {},
-    "state": "Unknown",
+    "labels": {
+        "os": "Linux"
+    },
+    "state": "ready",
     "system_reserved": {
         "memory": 1073741824,
         "gpu_memory": 1073741824
