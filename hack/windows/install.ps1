@@ -139,17 +139,17 @@ function Get-GGUFParser {
 }
 
 function Get-LlamaBox {
-    $version = "v0.0.40"
+    $version = "v0.0.42"
     $llamaBoxDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "llama-box"
     $llamaBoxTmpDir = Join-Path -Path $llamaBoxDir -ChildPath "tmp"
 
     # Include more platforms if needed
-    $platforms = @("windows-amd64-cuda-12.5-s", "windows-amd64-avx2", "windows-arm64-neon")
+    $platforms = @("windows-amd64-cuda-12.5-l", "windows-amd64-avx2", "windows-arm64-neon")
 
     foreach ($platform in $platforms) {
         $binFile = "llama-box.exe"
 
-        $modifiedFile = "llama-box-$platform.exe" -replace "-s\.exe$", ".exe"
+        $modifiedFile = "llama-box-$platform.exe" -replace "-l\.exe$", ".exe"
         $targetFile = Join-Path -Path $llamaBoxDir -ChildPath $modifiedFile
 
         if (Test-Path -Path $targetFile) {
@@ -211,7 +211,8 @@ try {
     Get-GGUFParser
     Get-LlamaBox
     Get-UI
-} catch {
+}
+catch {
     GPUStack.Log.Fatal "failed to download dependencies: $($_.Exception.Message)"
 }
 GPUStack.Log.Info "-- DEPENDENCIES ---"
