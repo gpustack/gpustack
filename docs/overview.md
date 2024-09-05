@@ -23,7 +23,7 @@ GPUStack is an open-source GPU cluster manager for running large language models
 ## Supported Accelerators
 
 - [x] Apple Metal
-- [x] NVIDIA CUDA
+- [x] NVIDIA CUDA([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
 
 We plan to support the following accelerators in future releases.
 
