@@ -102,6 +102,7 @@ def _gguf_parser_command(
         "--skip-metadata",
         "--cache-expiration",
         "168h0m0s",
+        "--no-mmap",
         "--json",
     ]
 
@@ -176,7 +177,7 @@ async def calculate_model_resource_claim(
         elif offload == GPUOffloadEnum.Partial:
             logger.info(
                 f"Calculated resource claim for partial offloading model instance {model_instance.name}, "
-                f"least claim: {claim.estimate.memory[0]}, "
+                f"least claim: {claim.estimate.memory[1]}, "
                 f"most claim: {claim.estimate.memory[len(claim.estimate.memory) - 2]}"
             )
         elif offload == GPUOffloadEnum.Disable:

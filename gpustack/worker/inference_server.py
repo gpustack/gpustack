@@ -161,6 +161,7 @@ class InferenceServer:
             str(self._model_instance.port),
             "--model",
             self._model_path,
+            "--no-mmap",
         ]
 
         if rpc_servers:
