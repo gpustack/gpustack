@@ -162,6 +162,12 @@ class PlacementPolicy:
         scored_instances = []
 
         for instance in instances:
+            if instance.worker_id is None:
+                scored_instances.append(
+                    ModelInstanceScore(model_instance=instance, score=0)
+                )
+                continue
+
             worker = worker_map.get(instance.worker_id)
 
             allocatable = await get_worker_allocatable_resource(self._engine, worker)
@@ -226,6 +232,12 @@ class PlacementPolicy:
 
         scored_instances = []
         for instance in instances:
+            if instance.worker_id is None:
+                scored_instances.append(
+                    ModelInstanceScore(model_instance=instance, score=0)
+                )
+                continue
+
             worker = worker_map.get(instance.worker_id)
             score = await self._score_spread_item(
                 instance.gpu_indexes, worker, worker_model_instances_count_map
