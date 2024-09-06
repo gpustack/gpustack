@@ -382,6 +382,8 @@ class WorkerStatusCollector:
                 "json",
                 "--config",
                 config_file_path,
+                "--gpu-detection-method",
+                "pci",
             ]
             return executable_command
 
