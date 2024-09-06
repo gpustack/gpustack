@@ -579,11 +579,6 @@ class ResourceFitPolicy:
         """
         candidates = []
         for worker in workers:
-            if worker.status.gpu_devices and len(worker.status.gpu_devices) > 0:
-                for device in worker.status.gpu_devices:
-                    if device.memory.total > 0:
-                        continue
-
             result = await self._find_single_worker_with_cpu_candidates(worker)
             if result:
                 candidates.extend(result)
