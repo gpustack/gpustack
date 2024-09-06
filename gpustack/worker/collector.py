@@ -231,6 +231,11 @@ class WorkerStatusCollector:
                 utilization_rate=memory_utilization_rate,
             )
 
+            if memory_total == 0:
+                # Ignore the device without memory.
+                logger.debug(f"Ignore the gpu {list[i]}")
+                continue
+
             # Core.
             core_count = self._get_value(value, "coreCount") or 0
             core_utilization_rate = self._get_value(value, "coreUtilizationRate") or 0
