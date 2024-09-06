@@ -1,6 +1,7 @@
 import asyncio
 from enum import Enum
 import logging
+from pathlib import Path
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
@@ -11,6 +12,7 @@ import platform
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
 from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
+from gpustack.utils.hugging_face import match_hf_files
 
 
 logger = logging.getLogger(__name__)
@@ -229,4 +231,9 @@ def hf_model_url(repo_id: str, filename: Optional[str] = None) -> str:
     if filename is None:
         return f"{_registry_url}/{repo_id}"
     else:
+        matching_files = match_hf_files(repo_id, filename)
+        if len(matching_files) == 0:
+            raise ValueError(f"File {filename} not found in {repo_id}")
+
+        filename = Path(matching_files[0]).name
         return f"{_registry_url}/{repo_id}/resolve/main/{filename}"

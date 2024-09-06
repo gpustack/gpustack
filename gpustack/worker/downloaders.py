@@ -1,17 +1,16 @@
 import platform
 import time
-import json
 import logging
 import os
 import re
 from filelock import FileLock
 import requests
-from typing import List, Literal, Optional, Union
-import fnmatch
+from typing import Literal, Optional, Union
 from pathlib import Path
 from tqdm import tqdm
-from huggingface_hub import hf_hub_download, HfFileSystem
-from huggingface_hub.utils import validate_repo_id
+from tqdm.contrib.concurrent import thread_map
+
+from huggingface_hub import hf_hub_download
 import base64
 import random
 import string
@@ -19,6 +18,8 @@ import hashlib
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
+
+from gpustack.utils.hugging_face import match_hf_files
 
 logger = logging.getLogger(__name__)
 
@@ -34,67 +35,64 @@ class HfDownloader:
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        max_workers: int = 8,
     ) -> str:
         """Download a model from the Hugging Face Hub.
 
         Args:
-            repo_id: The model repo id.
-            filename: A filename or glob pattern to match the model file in the repo.
-            local_dir: The local directory to save the model to.
-            local_dir_use_symlinks: Whether to use symlinks when downloading the model.
+            repo_id:
+                The model repo id.
+            filename:
+                A filename or glob pattern to match the model file in the repo.
+            local_dir:
+                The local directory to save the model to.
+            local_dir_use_symlinks:
+                Whether to use symlinks when downloading the model.
+            max_workers (`int`, *optional*):
+                Number of concurrent threads to download files (1 thread = 1 file download).
+                Defaults to 8.
 
         Returns:
             The path to the downloaded model.
         """
 
-        validate_repo_id(repo_id)
-
-        hffs = HfFileSystem()
-
-        files = [
-            file["name"] if isinstance(file, dict) else file
-            for file in hffs.ls(repo_id)
-        ]
-
-        # split each file into repo_id, subfolder, filename
-        file_list: List[str] = []
-        for file in files:
-            rel_path = Path(file).relative_to(repo_id)
-            file_list.append(str(rel_path))
-
-        matching_files = [file for file in file_list if fnmatch.fnmatch(file, filename)]  # type: ignore
+        matching_files = match_hf_files(repo_id, filename)
 
         if len(matching_files) == 0:
-            raise ValueError(
-                f"No file found in {repo_id} that match {filename}\n\n"
-                f"Available Files:\n{json.dumps(file_list)}"
-            )
-
-        if len(matching_files) > 1:
-            raise ValueError(
-                f"Multiple files found in {repo_id} matching {filename}\n\n"
-                f"Available Files:\n{json.dumps(files)}"
-            )
-
-        (matching_file,) = matching_files
-
-        subfolder = str(Path(matching_file).parent)
-        filename = Path(matching_file).name
+            raise ValueError(f"No file found in {repo_id} that match {filename}")
 
         logger.info(f"Downloading model {repo_id}/{filename}")
-        hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            subfolder=subfolder,
-            local_dir=local_dir,
-            local_dir_use_symlinks=local_dir_use_symlinks,
-            cache_dir=cache_dir,
+
+        subfolder, first_filename = (
+            str(Path(matching_files[0]).parent),
+            Path(matching_files[0]).name,
         )
 
+        unfolder_matching_files = [Path(file).name for file in matching_files]
+
+        def _inner_hf_hub_download(repo_file: str):
+            return hf_hub_download(
+                repo_id=repo_id,
+                filename=repo_file,
+                subfolder=subfolder,
+                local_dir=local_dir,
+                local_dir_use_symlinks=local_dir_use_symlinks,
+                cache_dir=cache_dir,
+            )
+
+        thread_map(
+            _inner_hf_hub_download,
+            unfolder_matching_files,
+            desc=f"Fetching {len(unfolder_matching_files)} files",
+            max_workers=max_workers,
+        )
+
+        # Get local path of the model file.
+        # For split files, get the first one. llama-box will handle the rest.
         if local_dir is None:
             model_path = hf_hub_download(
                 repo_id=repo_id,
-                filename=filename,
+                filename=first_filename,
                 subfolder=subfolder,
                 local_dir=local_dir,
                 local_dir_use_symlinks=local_dir_use_symlinks,
@@ -102,7 +100,7 @@ class HfDownloader:
                 local_files_only=True,
             )
         else:
-            model_path = os.path.join(local_dir, filename)
+            model_path = os.path.join(local_dir, first_filename)
 
         logger.info(f"Downloaded model {repo_id}/{filename}")
         return model_path

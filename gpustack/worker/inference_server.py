@@ -215,17 +215,29 @@ class InferenceServer:
         _original_init = tqdm.__init__
         _original_update = tqdm.update
 
+        # Record summary to work with multiple tracking progress.
+        # For cases:
+        # - Download split GGUF model files.
+        # - Download the entire Huggingface repo.
+        global model_total, model_n
+        model_total, model_n = 0, 0
+
         def _new_init(self: tqdm, *args, **kwargs):
+            global model_total
             kwargs["disable"] = False  # enable the progress bar anyway
             _original_init(self, *args, **kwargs)
 
+            model_total += self.total
+
         def _new_update(self: tqdm, n=1):
+            global model_total, model_n
             _original_update(self, n)
+            model_n += n
 
             try:
                 patch_dict = {
                     "download_progress": round(
-                        (float(self.n) / float(self.total)) * 100, 2
+                        (float(model_n) / float(model_total)) * 100, 2
                     )
                 }
                 server_self._update_model_instance_set(
