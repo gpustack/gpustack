@@ -1,4 +1,3 @@
-import copy
 import logging
 import random
 import string
@@ -123,7 +122,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
         scale_down_count = len(candidates) - model.replicas
         if scale_down_count > 0:
             for candidate in candidates[:scale_down_count]:
-                instance = candidate.instance
+                instance = candidate.model_instance
                 await instance.delete(session)
                 logger.debug(f"Deleted model instance {instance.name}")
 
@@ -131,7 +130,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
 async def policy_score_instances(
     policy, instances: List[ModelInstance]
 ) -> List[ModelInstanceScore]:
-    return await policy.score_instances(copy.deepcopy(instances))
+    return await policy.score_instances(instances)
 
 
 async def find_scale_down_candidates(
