@@ -269,12 +269,12 @@ class PlacementPolicy:
 
         if instance_gpu_indexes is not None and len(instance_gpu_indexes) > 0:
             return await self._score_spread_gpu(
-                instance_count_map.get("gpu", {}),
+                instance_count_map,
                 worker,
                 instance_gpu_indexes,
             )
         else:
-            return await self._score_spread_cpu(instance_count_map.get("cpu", {}))
+            return await self._score_spread_cpu(instance_count_map.get("total", {}))
 
     async def _score_binpack_item(  # noqa: C901
         self,
@@ -350,30 +350,35 @@ class PlacementPolicy:
         instance_gpu_indexes: List[int],
     ) -> int:
         score = 0
-        worker_current_model_instance_count = sum(
-            instance_count_map.get(gpu_index, {}).get("current", 0)
-            for gpu_index in instance_count_map.keys()
+        worker_current_model_instance_count = instance_count_map.get("total", {}).get(
+            "current", 0
         )
-
-        worker_other_model_instance_count = sum(
-            instance_count_map.get(gpu_index, {}).get("others", 0)
-            for gpu_index in instance_count_map.keys()
+        worker_other_model_instance_count = instance_count_map.get("total", {}).get(
+            "others", 0
         )
 
         worker_gpu_count = len(worker.status.gpu_devices)
         each_gpu_max_score = 10 / (worker_gpu_count + 1)
+        gpu_map = instance_count_map.get("gpu", {})
 
         if (
+            worker_current_model_instance_count == 0
+            and worker_other_model_instance_count == 0
+        ):
+            score = MaxScore
+
+        elif (
             worker_current_model_instance_count == 0
             and worker_other_model_instance_count > 0
         ):
             # level 2: 90 < score < 100, only have other model's instances
             score = 90
+
             for gpu_index in instance_gpu_indexes:
-                if gpu_index not in instance_count_map:
+                if gpu_index not in gpu_map:
                     score += each_gpu_max_score / 1
                     continue
-                count = instance_count_map.get(gpu_index, {}).get("others", 0)
+                count = gpu_map.get(gpu_index, {}).get("others", 0)
                 score += each_gpu_max_score / (count + 1)
 
         elif (
@@ -384,10 +389,10 @@ class PlacementPolicy:
             score = 80
 
             for gpu_index in instance_gpu_indexes:
-                if gpu_index not in instance_count_map:
+                if gpu_index not in gpu_map:
                     score += each_gpu_max_score / 1
                     continue
-                count = instance_count_map.get(gpu_index, {}).get("current", 0)
+                count = gpu_map.get(gpu_index, {}).get("current", 0)
                 score += each_gpu_max_score / (count + 1)
 
         else:
@@ -395,11 +400,11 @@ class PlacementPolicy:
             score = 70
 
             for gpu_index in instance_gpu_indexes:
-                if gpu_index not in instance_count_map:
+                if gpu_index not in gpu_map:
                     score += each_gpu_max_score / 1
                     continue
-                current_count = instance_count_map.get(gpu_index, {}).get("current", 0)
-                others_count = instance_count_map.get(gpu_index, {}).get("others", 0)
+                current_count = gpu_map.get(gpu_index, {}).get("current", 0)
+                others_count = gpu_map.get(gpu_index, {}).get("others", 0)
                 score += each_gpu_max_score / (
                     (current_count + 1) + (others_count + 1) * self._model_weight.others
                 )
@@ -413,6 +418,12 @@ class PlacementPolicy:
 
         score = 0
         if (
+            worker_current_model_instance_count == 0
+            and worker_others_model_instance_count == 0
+        ):
+            # level 1: max score, no model instances
+            score = MaxScore
+        elif (
             worker_current_model_instance_count == 0
             and worker_others_model_instance_count > 0
         ):
@@ -429,8 +440,8 @@ class PlacementPolicy:
         else:
             # level 4: 70 < score < 80, have both current model's instances and other model's instances
             score = 10 / (
-                worker_current_model_instance_count
-                + worker_others_model_instance_count * self._model_weight.others
+                (worker_current_model_instance_count + 1)
+                + (worker_others_model_instance_count + 1) * self._model_weight.others
             )
             score += 70
 
@@ -471,14 +482,14 @@ class PlacementPolicy:
         Example:
             {
                 "worker_1": {
-                    "cpu": {"current": 2, "others": 3},
+                    "total": {"current": 2, "others": 3},
                     "gpu": {
                         0: {"current": 1, "others": 2},
                         1: {"current": 0, "others": 1}
                     }
                 },
                 "worker_2": {
-                    "cpu": {"current": 1, "others": 1},
+                    "total": {"current": 1, "others": 1},
                     "gpu": {
                         0: {"current": 2, "others": 0}
                     }
@@ -491,7 +502,7 @@ class PlacementPolicy:
 
         worker_model_instances_count_map = defaultdict(
             lambda: {
-                "cpu": {"current": 0, "others": 0},
+                "total": {"current": 0, "others": 0},
                 "gpu": defaultdict(lambda: {"current": 0, "others": 0}),
             }
         )
@@ -500,9 +511,9 @@ class PlacementPolicy:
             if gpu_index is not None:
                 key = "current" if is_current_model else "others"
                 worker_model_instances_count_map[worker_id]["gpu"][gpu_index][key] += 1
-            else:
-                key = "current" if is_current_model else "others"
-                worker_model_instances_count_map[worker_id]["cpu"][key] += 1
+
+            key = "current" if is_current_model else "others"
+            worker_model_instances_count_map[worker_id]["total"][key] += 1
 
         for model_instance in model_instances:
             if self._model_instance and model_instance.id == self._model_instance.id:
