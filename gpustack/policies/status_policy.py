@@ -53,6 +53,12 @@ class StatusPolicy:
             worker_map = {worker.id: worker for worker in workers}
 
             for instance in instances:
+                if instance.worker_id is None:
+                    scored_instances.append(
+                        ModelInstanceScore(model_instance=instance, score=0)
+                    )
+                    continue
+
                 score = 0
                 worker = worker_map.get(instance.worker_id)
 
