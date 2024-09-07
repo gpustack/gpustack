@@ -22,6 +22,12 @@ class PlacementStrategyEnum(str, Enum):
     BINPACK = "binpack"
 
 
+class GPUSelector(BaseModel):
+    worker_name: str
+    gpu_index: int
+    gpu_name: Optional[str] = None
+
+
 class ModelSource(BaseModel):
     source: SourceEnum
     huggingface_repo_id: Optional[str] = None
@@ -56,6 +62,9 @@ class ModelBase(SQLModel, ModelSource):
     distributed_inference_across_workers: bool = True
     worker_selector: Optional[Dict[str, str]] = Field(
         sa_column=Column(JSON), default={}
+    )
+    gpu_selector: Optional[GPUSelector] = Field(
+        sa_column=Column(pydantic_column_type(GPUSelector)), default=None
     )
 
 

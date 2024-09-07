@@ -13,6 +13,7 @@ from gpustack.config.config import Config
 from gpustack.policies.policy import ModelInstanceScheduleCandidate
 from gpustack.policies.resource_fit_policy import ResourceFitPolicy
 from gpustack.policies.label_matching_policy import LabelMatchingPolicy
+from gpustack.policies.gpu_matching_policy import GPUMatchingPolicy
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.status_policy import StatusPolicy
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -204,6 +205,9 @@ class Scheduler:
         estimate: estimate = None,
     ) -> ModelInstanceScheduleCandidate:
         try:
+            gpu_matching_policy = GPUMatchingPolicy(model, instance)
+            workers = await gpu_matching_policy.filter(workers)
+
             label_matching_policy = LabelMatchingPolicy(model, instance)
             workers = await label_matching_policy.filter(workers)
 
