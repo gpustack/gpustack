@@ -320,7 +320,7 @@ def get_llama_box_command(extra_key):
         ("Darwin", "arm64", "gpu"): "llama-box-darwin-arm64-metal",
         ("Linux", "amd64", "gpu"): "llama-box-linux-amd64-cuda-12.5",
         ("Linux", "amd64", "cpu"): "llama-box-linux-amd64-avx2",
-        ("Linux", "arm64", "cpu"): "llama-box-linux-amd64-neon",
+        ("Linux", "arm64", "cpu"): "llama-box-linux-arm64-neon",
         ("Windows", "amd64", "cpu"): "llama-box-windows-amd64-avx2.exe",
         ("Windows", "arm64", "cpu"): "llama-box-windows-arm64-neon.exe",
     }
