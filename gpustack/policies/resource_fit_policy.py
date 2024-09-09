@@ -935,26 +935,24 @@ async def get_worker_allocatable_resource(  # noqa: C901
             allocatable_vram = (
                 gpu.memory.total
                 - allocated.vram.get(gpu_index, 0)
-                - worker.system_reserved.gpu_memory
+                - worker.system_reserved.vram
             )
             allocatable.vram[gpu_index] = allocatable_vram
 
     allocatable.ram = (
-        worker.status.memory.total - allocated.ram - worker.system_reserved.memory
+        worker.status.memory.total - allocated.ram - worker.system_reserved.ram
     )
 
     if is_unified_memory:
-        allocatable.ram -= worker.system_reserved.gpu_memory + sum(
-            allocated.vram.values()
-        )
+        allocatable.ram -= worker.system_reserved.vram + sum(allocated.vram.values())
         # For UMA, we need to set the gpu memory to the minimum of
         # the caculated with max allow gpu memory and the allocatable memory.
         if allocatable.vram:
             allocatable.vram[0] = min(allocatable.ram, allocatable.vram[0])
 
     logger.debug(
-        f"Worker {worker.name} reserved memory: {worker.system_reserved.memory}, "
-        f"reserved gpu memory: {worker.system_reserved.gpu_memory}, "
+        f"Worker {worker.name} reserved memory: {worker.system_reserved.ram}, "
+        f"reserved gpu memory: {worker.system_reserved.vram}, "
         f"allocatable memory: {allocatable.ram}, "
         f"allocatable gpu memory: {allocatable.vram}"
     )

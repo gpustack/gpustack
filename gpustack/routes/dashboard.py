@@ -75,9 +75,9 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
     system_loads = (await session.exec(statement)).all()
 
     cpu = []
-    memory = []
+    ram = []
     gpu = []
-    gpu_memory = []
+    vram = []
     for system_load in system_loads:
         cpu.append(
             TimeSeriesData(
@@ -85,10 +85,10 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
                 value=system_load.cpu,
             )
         )
-        memory.append(
+        ram.append(
             TimeSeriesData(
                 timestamp=system_load.timestamp,
-                value=system_load.memory,
+                value=system_load.ram,
             )
         )
         gpu.append(
@@ -97,25 +97,25 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
                 value=system_load.gpu,
             )
         )
-        gpu_memory.append(
+        vram.append(
             TimeSeriesData(
                 timestamp=system_load.timestamp,
-                value=system_load.gpu_memory,
+                value=system_load.vram,
             )
         )
 
     return SystemLoadSummary(
         current=CurrentSystemLoad(
             cpu=current_system_load.cpu,
-            memory=current_system_load.memory,
+            ram=current_system_load.ram,
             gpu=current_system_load.gpu,
-            gpu_memory=current_system_load.gpu_memory,
+            vram=current_system_load.vram,
         ),
         history=HistorySystemLoad(
             cpu=cpu,
-            memory=memory,
+            ram=ram,
             gpu=gpu,
-            gpu_memory=gpu_memory,
+            vram=vram,
         ),
     )
 
@@ -224,7 +224,7 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
         ModelInstance.computed_resource_claim, '$.vram'
     ).table_valued('value')
 
-    total_memory_claim_subquery = (
+    total_ram_claim_subquery = (
         select(
             ModelInstance.model_id,
             func.sum(
@@ -237,13 +237,13 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
                     ),
                     0,
                 )
-            ).label('total_memory_claim'),
+            ).label('total_ram_claim'),
         )
         .group_by(ModelInstance.model_id)
         .subquery()
     )
 
-    total_gpu_memory_claim_subquery = (
+    total_vram_claim_subquery = (
         select(
             ModelInstance.model_id,
             func.sum(
@@ -251,7 +251,7 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
                     func.cast(vram_values.c.value, Integer),
                     0,
                 )
-            ).label('total_gpu_memory_claim'),
+            ).label('total_vram_claim'),
         )
         .select_from(ModelInstance)
         .group_by(ModelInstance.model_id)
@@ -263,29 +263,29 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
             Model.id,
             Model.name,
             func.count(distinct(ModelInstance.id)).label('instance_count'),
-            func.coalesce(total_memory_claim_subquery.c.total_memory_claim, 0).label(
-                'total_memory_claim'
+            func.coalesce(total_ram_claim_subquery.c.total_ram_claim, 0).label(
+                'total_ram_claim'
             ),
-            func.coalesce(
-                total_gpu_memory_claim_subquery.c.total_gpu_memory_claim, 0
-            ).label('total_gpu_memory_claim'),
+            func.coalesce(total_vram_claim_subquery.c.total_vram_claim, 0).label(
+                'total_vram_claim'
+            ),
             usage_sum_query.c.total_token_count,
         )
         .join(ModelInstance, Model.id == ModelInstance.model_id)
         .outerjoin(
-            total_memory_claim_subquery,
-            Model.id == total_memory_claim_subquery.c.model_id,
+            total_ram_claim_subquery,
+            Model.id == total_ram_claim_subquery.c.model_id,
         )
         .outerjoin(
-            total_gpu_memory_claim_subquery,
-            Model.id == total_gpu_memory_claim_subquery.c.model_id,
+            total_vram_claim_subquery,
+            Model.id == total_vram_claim_subquery.c.model_id,
         )
         .outerjoin(usage_sum_query, Model.id == usage_sum_query.c.model_id)
         .group_by(
             Model.id,
             usage_sum_query.c.total_token_count,
-            total_memory_claim_subquery.c.total_memory_claim,
-            total_gpu_memory_claim_subquery.c.total_gpu_memory_claim,
+            total_ram_claim_subquery.c.total_ram_claim,
+            total_vram_claim_subquery.c.total_vram_claim,
         )
         .order_by(usage_sum_query.c.total_token_count.desc())
         .limit(10)
@@ -299,8 +299,8 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
                 id=result.id,
                 name=result.name,
                 resource_claim=ResourceClaim(
-                    memory=result.total_memory_claim,
-                    gpu_memory=result.total_gpu_memory_claim,
+                    ram=result.total_ram_claim,
+                    vram=result.total_vram_claim,
                 ),
                 instance_count=result.instance_count,
                 token_count=(

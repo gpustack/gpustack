@@ -43,14 +43,14 @@ def compute_avg_gpu_utilization_rate(workers: list[Worker]) -> Tuple[float, floa
 
 
 def compute_system_load(workers: list[Worker]) -> SystemLoad:
-    cpu, memory = compute_avg_cpu_memory_utilization_rate(workers)
-    gpu, gpu_memory = compute_avg_gpu_utilization_rate(workers)
+    cpu, ram = compute_avg_cpu_memory_utilization_rate(workers)
+    gpu, vram = compute_avg_gpu_utilization_rate(workers)
 
     load = SystemLoad()
     load.cpu = cpu
-    load.memory = memory
+    load.ram = ram
     load.gpu = gpu
-    load.gpu_memory = gpu_memory
+    load.vram = vram
     return load
 
 
