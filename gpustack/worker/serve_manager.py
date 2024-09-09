@@ -3,7 +3,6 @@ import psutil
 import setproctitle
 import os
 import signal
-import socket
 import time
 from typing import Dict
 import logging
@@ -30,10 +29,11 @@ logger = logging.getLogger(__name__)
 class ServeManager:
     def __init__(
         self,
+        worker_name: str,
         clientset: ClientSet,
         cfg: Config,
     ):
-        self._hostname = socket.gethostname()
+        self._worker_name = worker_name
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
@@ -50,7 +50,7 @@ class ServeManager:
                 logger.debug(f"Failed to get workers: {e}")
 
             for worker in workers.items:
-                if worker.hostname == self._hostname:
+                if worker.name == self._worker_name:
                     self._worker_id = worker.id
                     break
             time.sleep(1)
