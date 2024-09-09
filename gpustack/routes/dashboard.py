@@ -220,41 +220,77 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
         .group_by(Model.id)
     ).alias('usage_sum')
 
-    statement = (
+    vram_values = func.json_each(
+        ModelInstance.computed_resource_claim, '$.vram'
+    ).table_valued('value')
+
+    total_memory_claim_subquery = (
         select(
-            Model.id,
-            Model.name,
-            func.count(distinct(ModelInstance.id)).label('instance_count'),
+            ModelInstance.model_id,
             func.sum(
                 func.coalesce(
                     func.cast(
                         func.json_extract(
-                            ModelInstance.computed_resource_claim, '$.memory'
+                            ModelInstance.computed_resource_claim, '$.ram'
                         ),
                         Integer,
                     ),
                     0,
                 )
             ).label('total_memory_claim'),
+        )
+        .group_by(ModelInstance.model_id)
+        .subquery()
+    )
+
+    total_gpu_memory_claim_subquery = (
+        select(
+            ModelInstance.model_id,
             func.sum(
                 func.coalesce(
-                    func.cast(
-                        func.json_extract(
-                            ModelInstance.computed_resource_claim, '$.gpu_memory'
-                        ),
-                        Integer,
-                    ),
+                    func.cast(vram_values.c.value, Integer),
                     0,
                 )
+            ).label('total_gpu_memory_claim'),
+        )
+        .select_from(ModelInstance)
+        .group_by(ModelInstance.model_id)
+        .subquery()
+    )
+
+    statement = (
+        select(
+            Model.id,
+            Model.name,
+            func.count(distinct(ModelInstance.id)).label('instance_count'),
+            func.coalesce(total_memory_claim_subquery.c.total_memory_claim, 0).label(
+                'total_memory_claim'
+            ),
+            func.coalesce(
+                total_gpu_memory_claim_subquery.c.total_gpu_memory_claim, 0
             ).label('total_gpu_memory_claim'),
             usage_sum_query.c.total_token_count,
         )
         .join(ModelInstance, Model.id == ModelInstance.model_id)
+        .outerjoin(
+            total_memory_claim_subquery,
+            Model.id == total_memory_claim_subquery.c.model_id,
+        )
+        .outerjoin(
+            total_gpu_memory_claim_subquery,
+            Model.id == total_gpu_memory_claim_subquery.c.model_id,
+        )
         .outerjoin(usage_sum_query, Model.id == usage_sum_query.c.model_id)
-        .group_by(Model.id, usage_sum_query.c.total_token_count)
+        .group_by(
+            Model.id,
+            usage_sum_query.c.total_token_count,
+            total_memory_claim_subquery.c.total_memory_claim,
+            total_gpu_memory_claim_subquery.c.total_gpu_memory_claim,
+        )
         .order_by(usage_sum_query.c.total_token_count.desc())
         .limit(10)
     )
+
     results = (await session.exec(statement)).all()
     model_summary = []
     for result in results:
