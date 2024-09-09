@@ -46,7 +46,7 @@ Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseB
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url 'http://myserver' --token 'mytoken' --worker-ip '192.168.1.100'"
 
 # Run worker with customize reserved resource.
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url 'http://myserver' --token 'mytoken' --system-reserved '{""memory"":5, ""gpu_memory"":5}'"
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url 'http://myserver' --token 'mytoken' --system-reserved '{""ram"":5, ""vram"":5}'"
 
 # Install with a custom index URL.
 $env:INSTALL_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
