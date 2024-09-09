@@ -914,15 +914,18 @@ async def get_worker_allocatable_resource(  # noqa: C901
         for gpu_index, gpu in enumerate(worker.status.gpu_devices):
             if gpu.memory is None or gpu.memory.total is None:
                 continue
-            allocatable_vram = (
-                gpu.memory.total
-                - allocated.vram.get(gpu_index, 0)
-                - worker.system_reserved.vram
+            allocatable_vram = max(
+                (
+                    gpu.memory.total
+                    - allocated.vram.get(gpu_index, 0)
+                    - worker.system_reserved.vram
+                ),
+                0,
             )
             allocatable.vram[gpu_index] = allocatable_vram
 
-    allocatable.ram = (
-        worker.status.memory.total - allocated.ram - worker.system_reserved.ram
+    allocatable.ram = max(
+        (worker.status.memory.total - allocated.ram - worker.system_reserved.ram), 0
     )
 
     if is_unified_memory:
