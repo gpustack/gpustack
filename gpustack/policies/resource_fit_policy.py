@@ -299,12 +299,8 @@ class ResourceFitPolicy:
             if result:
                 single_gpu_partial_offloading_candidates.extend(result)
 
-        if not single_gpu_partial_offloading_candidates:
-            return []
-
-        single_gpu_partial_max_offload_layers = max(
-            candidate.computed_resource_claim.offload_layers
-            for candidate in single_gpu_partial_offloading_candidates
+        single_gpu_partial_max_offload_layers = _get_max_offload_layers(
+            single_gpu_partial_offloading_candidates
         )
 
         multi_gpu_partial_offloading_candidates = []
@@ -317,9 +313,8 @@ class ResourceFitPolicy:
             if result:
                 multi_gpu_partial_offloading_candidates.extend(result)
 
-        multi_gpu_partial_max_offload_layers = max(
-            candidate.computed_resource_claim.offload_layers
-            for candidate in multi_gpu_partial_offloading_candidates
+        multi_gpu_partial_max_offload_layers = _get_max_offload_layers(
+            multi_gpu_partial_offloading_candidates
         )
 
         final_candidates = []
@@ -327,19 +322,15 @@ class ResourceFitPolicy:
             single_gpu_partial_max_offload_layers
             >= multi_gpu_partial_max_offload_layers
         ):
-            final_candidates = [
-                candidate
-                for candidate in single_gpu_partial_offloading_candidates
-                if candidate.computed_resource_claim.offload_layers
-                == single_gpu_partial_max_offload_layers
-            ]
+            final_candidates = _filter_candidates_by_max_offload_layers(
+                single_gpu_partial_offloading_candidates,
+                single_gpu_partial_max_offload_layers,
+            )
         else:
-            final_candidates = [
-                candidate
-                for candidate in multi_gpu_partial_offloading_candidates
-                if candidate.computed_resource_claim.offload_layers
-                == multi_gpu_partial_max_offload_layers
-            ]
+            final_candidates = _filter_candidates_by_max_offload_layers(
+                multi_gpu_partial_offloading_candidates,
+                multi_gpu_partial_max_offload_layers,
+            )
         return final_candidates
 
     async def _find_single_worker_single_gpu_partial_offloading_candidates(
@@ -361,7 +352,7 @@ class ResourceFitPolicy:
             cache_dir=self._cache_dir,
         )
         estimate = result.resource_claim_estimate
-        total_layers = estimate.memory[0].offloadLayers
+        total_layers = estimate.memory[-1].offloadLayers
 
         arr = []
         estimate_arr = []
@@ -529,9 +520,9 @@ class ResourceFitPolicy:
         requires: worker.status.gpu_devices is not None
         """
 
-        total_gpu = len(worker.status.gpu_devices)
+        total_gpu = len(worker.status.gpu_devices) if worker.status.gpu_devices else 0
         if total_gpu < 2:
-            return None
+            return []
 
         allocatable = await get_worker_allocatable_resource(self._engine, worker)
         gpu_combinations = await self._generate_combinations_for_worker_gpu(
@@ -551,15 +542,10 @@ class ResourceFitPolicy:
         if not candidates:
             return None
 
-        max_offload_layers = max(
-            candidate.computed_resource_claim.offload_layers for candidate in candidates
+        max_offload_layers = _get_max_offload_layers(candidates)
+        max_offload_candidates = _filter_candidates_by_max_offload_layers(
+            candidates, max_offload_layers
         )
-
-        max_offload_candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.computed_resource_claim.offload_layers == max_offload_layers
-        ]
 
         min_gpu_count = min(
             len(candidate.gpu_indexes) for candidate in max_offload_candidates
@@ -661,19 +647,15 @@ class ResourceFitPolicy:
         if not candidates:
             return []
 
-        max_offload_layers = max(
-            candidate.computed_resource_claim.offload_layers for candidate in candidates
-        )
+        max_offload_layers = _get_max_offload_layers(candidates)
         total_layers = candidates[0].computed_resource_claim.total_layers
 
         if not self._model.partial_offload and max_offload_layers != total_layers:
             return []
 
-        final_candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.computed_resource_claim.offload_layers == max_offload_layers
-        ]
+        final_candidates = _filter_candidates_by_max_offload_layers(
+            candidates, max_offload_layers
+        )
         return final_candidates
 
     async def _generate_combinations_for_worker_gpu(
@@ -987,3 +969,21 @@ def binary_search(arr, target):
             high = mid - 1
 
     return high
+
+
+def _get_max_offload_layers(candidates: List[ModelInstanceScheduleCandidate]) -> int:
+    if not candidates:
+        return 0
+    return max(
+        candidate.computed_resource_claim.offload_layers for candidate in candidates
+    )
+
+
+def _filter_candidates_by_max_offload_layers(
+    candidates: List[ModelInstanceScheduleCandidate], max_offload_layers
+):
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.computed_resource_claim.offload_layers == max_offload_layers
+    ]
