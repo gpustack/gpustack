@@ -58,8 +58,8 @@ class ModelBase(SQLModel, ModelSource):
     ready_replicas: int = Field(default=0, ge=0)
     embedding_only: bool = False
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
-    partial_offload: bool = True
-    distributed_inference_across_workers: bool = True
+    partial_offload: bool = False
+    distributed_inference_across_workers: bool = False
     worker_selector: Optional[Dict[str, str]] = Field(
         sa_column=Column(JSON), default={}
     )
