@@ -66,6 +66,7 @@ class Worker:
         )
         self._serve_manager = ServeManager(
             clientset=self._clientset,
+            worker_name=self._worker_name,
             cfg=cfg,
         )
         self._exporter = MetricExporter(
