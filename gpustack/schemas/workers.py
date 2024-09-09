@@ -93,8 +93,8 @@ class UptimeInfo(BaseModel):
 
 
 class SystemReserved(BaseModel):
-    memory: int = Field(default=None)
-    gpu_memory: int = Field(default=None)
+    ram: Optional[int] = Field(default=None)
+    vram: Optional[int] = Field(default=None)
 
 
 class RPCServer(BaseModel):

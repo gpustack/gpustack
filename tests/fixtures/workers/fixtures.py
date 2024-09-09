@@ -62,7 +62,7 @@ def load_worker_from_file(file_name, reserved=False) -> Worker:
 
         worker = Worker(**worker_dict)
         worker.status = status
-        worker.system_reserved = SystemReserved(memory=0, gpu_memory=0)
+        worker.system_reserved = SystemReserved(ram=0, vram=0)
 
         if reserved:
             system_reserved_dict = worker_dict.get("system_reserved")

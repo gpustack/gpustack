@@ -171,9 +171,10 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--system-reserved",
         type=json.loads,
         help="The system reserves resources during scheduling, measured in GiB. \
-        Where memory is reserved per worker, and gpu_memory is reserved per GPU device. \
-        1 GiB of memory is reserved per worker and 1 GiB of GPU memory is reserved \
-        per GPU device. Example: '{\"memory\": 1, \"gpu_memory\": 1}'.",
+        Where RAM is reserved per worker, and VRAM is reserved per GPU device. \
+        2 GiB of RAM is reserved per worker and 2 GiB of VRAM is reserved \
+        per GPU device. Example: '{\"ram\": 2, \"vram\": 2}' or '{\"memory\": 2, \"gpu_memory\": 2}', \
+        Note: '{\"memory\": 2, \"gpu_memory\": 2}' is deprecated and will be removed in future releases.",
         default=get_gpustack_env("SYSTEM_RESERVED"),
     )
 

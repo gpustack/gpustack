@@ -14,11 +14,11 @@ class SystemLoad(SQLModel, ActiveRecordMixin, table=True):
     # average cpu utilization rate per worker
     cpu: Optional[float] = Field(default=None)
 
-    # average memory utilization rate per worker
-    memory: Optional[float] = Field(default=None)
+    # average ram utilization rate per worker
+    ram: Optional[float] = Field(default=None)
 
     # average gpu utilization rate per gpu device
     gpu: Optional[float] = Field(default=None)
 
-    # average gpu memory utilization rate per gpu device
-    gpu_memory: Optional[float] = Field(default=None)
+    # average vram utilization rate per gpu device
+    vram: Optional[float] = Field(default=None)

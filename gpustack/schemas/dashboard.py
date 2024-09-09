@@ -9,16 +9,16 @@ class TimeSeriesData(BaseModel):
 
 class CurrentSystemLoad(BaseModel):
     cpu: float
-    memory: float
+    ram: float
     gpu: float
-    gpu_memory: float
+    vram: float
 
 
 class HistorySystemLoad(BaseModel):
     cpu: List[TimeSeriesData]
-    memory: List[TimeSeriesData]
+    ram: List[TimeSeriesData]
     gpu: List[TimeSeriesData]
-    gpu_memory: List[TimeSeriesData]
+    vram: List[TimeSeriesData]
 
 
 class SystemLoadSummary(BaseModel):
@@ -41,8 +41,8 @@ class ModelUsageSummary(BaseModel):
 
 
 class ResourceClaim(BaseModel):
-    memory: int  # in bytes
-    gpu_memory: int  # in bytes
+    ram: int  # in bytes
+    vram: int  # in bytes
 
 
 class ModelSummary(BaseModel):

@@ -32,15 +32,24 @@ class Worker:
         self._port = cfg.worker_port
         self._exporter_enabled = not cfg.disable_metrics
         self._enable_worker_ip_monitor = False
-        self._system_reserved = SystemReserved(memory=0, gpu_memory=0)
+        self._system_reserved = SystemReserved(ram=0, vram=0)
 
         if cfg.system_reserved is not None:
             # GB to Bytes
-            self._system_reserved.memory = (
-                cfg.system_reserved.get("memory", 0) * 1024 * 1024 * 1024
+            self._system_reserved.ram = (
+                (cfg.system_reserved.get("ram") or cfg.system_reserved.get("memory", 2))
+                * 1024
+                * 1024
+                * 1024
             )
-            self._system_reserved.gpu_memory = (
-                cfg.system_reserved.get("gpu_memory", 0) * 1024 * 1024 * 1024
+            self._system_reserved.vram = (
+                (
+                    cfg.system_reserved.get("vram")
+                    or cfg.system_reserved.get("gpu_memory", 2)
+                )
+                * 1024
+                * 1024
+                * 1024
             )
 
         self._worker_ip = cfg.worker_ip
