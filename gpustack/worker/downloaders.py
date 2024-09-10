@@ -5,7 +5,7 @@ import os
 import re
 from filelock import FileLock
 import requests
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Tuple, Union
 from pathlib import Path
 from tqdm import tqdm
 from tqdm.contrib.concurrent import thread_map
@@ -211,12 +211,9 @@ class OllamaLibraryDownloader:
             return model_path
 
     def model_url(self, model_name: str, cache_dir: Optional[str] = None) -> str:
-        if ":" in model_name:
-            model, tag = model_name.split(":")
-        else:
-            model, tag = model_name, "latest"
+        repo, tag = self.parse_model_name(model_name)
 
-        manifest_url = f"{self._registry_url}/v2/library/{model}/manifests/{tag}"
+        manifest_url = f"{self._registry_url}/v2/{repo}/manifests/{tag}"
 
         headers = {
             _header_user_agent: self._user_agent,
@@ -248,11 +245,23 @@ class OllamaLibraryDownloader:
         for blob in blobs:
             if blob["mediaType"] == "application/vnd.ollama.image.model":
                 return (
-                    f"{self._registry_url}/v2/library/{model}/blobs/{blob['digest']}",
+                    f"{self._registry_url}/v2/{repo}/blobs/{blob['digest']}",
                     token,
                 )
 
         return None
+
+    @staticmethod
+    def parse_model_name(model_name: str) -> Tuple[str, str]:
+        if ":" in model_name:
+            repo, tag = model_name.split(":")
+        else:
+            repo, tag = model_name, "latest"
+
+        if "/" not in repo:
+            repo = "library/" + repo
+
+        return repo, tag
 
     @classmethod
     def get_request_auth_token(cls, request_url, cache_dir: Optional[str] = None):
