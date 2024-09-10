@@ -393,7 +393,7 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
         worker_linux_nvidia_2_4080_gpu(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b", partial_offload=True)
+    m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=True)
     mi_binpack = new_model_instance(1, "test_binpack", 1)
 
     resource_fit_policy_binpack = ResourceFitPolicy(m, mi_binpack)
@@ -448,7 +448,7 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         worker_linux_cpu_2(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b", partial_offload=True)
+    m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=True)
     mi_binpack = new_model_instance(4, "test_binpack", 1)
     mi_spread = new_model_instance(5, "test_spread", 1)
 
@@ -583,7 +583,7 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
         worker_linux_nvidia_2_4080_gpu(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b", partial_offload=False)
+    m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=False)
     mi_binpack = new_model_instance(1, "test_binpack", 1)
     es = mock_calculate_model_resource_claim(mi_binpack, m)
 
