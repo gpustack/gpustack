@@ -74,18 +74,44 @@ curl -sfL https://get.gpustack.ai | sh -s - --ollama-library-base-url http://loc
 
 That's it! You can now deploy the model `llama3` from `Ollama Library` source in GPUStack as usual, but the model will now be fetched from the self-hosted registry.
 
-## Custom Deployment Configuration
+## Advanced Deployment Configuration
 
 Our platform supports tailored configurations for model deployment.
 
-### Customizing Worker Selection for Model Deployment
+### Auto Schedule Type
+
+The system automatically schedules model instances to appropriate GPUs/Workers based on current resource availability.
+
+**Placement Strategy**
+
+    - Spread: Make the resources of the entire cluster relatively evenly distributed among all workers. It may produce more resource fragmentation on a single worker.
+
+    - Binpack: Prioritize the overall utilization of cluster resources, reducing resource fragmentation on Workers/GPUs.
+
+**Worker Selector**
+
+When configured, the scheduler will deploy the model instance to the worker containing specified labels.
 
 1. Navigate to the `Resources` page and edit the desired worker. Assign custom labels to the worker by adding them in the labels section.
 
 2. Go to the `Models` page and click on the `Deploy Model` button. Expand the `Advanced` section and input the previously assigned worker labels in the `Worker Selector` configuration. During deployment, the Model Instance will be allocated to the corresponding worker based on these labels.
 
-### Additional Deployment Configurations
+**Allow CPU Offloading**
 
-1. **Partial Offload**: Configure the deployment to allow partial offloading of model layers to the GPU if resources are insufficient to fully offload. GPUStack will offload as much as possible given the available resources.
+After enabling CPU offloading, GPUStack prioritizes loading as many layers as possible onto the GPU to maximize performance. If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
 
-2. **Distributed Inference Across Workers**: Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more others workers, offloading computation tasks to them.
+**Allow Distributed Inference Across Workers**
+
+Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more others workers, offloading computation tasks to them.
+
+### Manual Schedule Type
+
+This schedule type allows users to specify which GPU to deploy the model instance on.
+
+**GPU Selector**
+
+Select a GPU from the list. The model instance will attempt to deploy to this GPU if resources permit.
+
+**Allow CPU Offloading**
+
+Enabling CPU offloading prioritizes loading as many layers as possible onto the selected GPU to maximize performance, with some layers offloaded to the CPU when GPU resources are constrained.

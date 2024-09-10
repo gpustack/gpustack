@@ -68,10 +68,9 @@ class ResourceFitPolicy:
         ]
 
         for candidate_func in candidate_functions:
-            if (
-                (not self._model.partial_offload)
-                and candidate_func
-                == self.find_single_worker_partial_offloading_candidates
+            if (not self._model.cpu_offloading) and (
+                candidate_func == self.find_single_worker_partial_offloading_candidates
+                or candidate_func == self.find_single_worker_cpu_candidates
             ):
                 continue
 
@@ -650,7 +649,7 @@ class ResourceFitPolicy:
         max_offload_layers = _get_max_offload_layers(candidates)
         total_layers = candidates[0].computed_resource_claim.total_layers
 
-        if not self._model.partial_offload and max_offload_layers != total_layers:
+        if not self._model.cpu_offloading and max_offload_layers != total_layers:
             return []
 
         final_candidates = _filter_candidates_by_max_offload_layers(

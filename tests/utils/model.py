@@ -36,7 +36,7 @@ def new_model(
     **kargs,
 ) -> Model:
     worker_selector = kargs.get("worker_selector")
-    partial_offload = kargs.get("partial_offload", True)
+    cpu_offloading = kargs.get("cpu_offloading", True)
     distributed_inference_across_workers = kargs.get(
         "distributed_inference_across_workers", True
     )
@@ -48,6 +48,6 @@ def new_model(
         ollama_library_model_name=ollama_library_model_name,
         placement_strategy=placement_strategy,
         worker_selector=worker_selector,
-        partial_offload=partial_offload,
+        cpu_offloading=cpu_offloading,
         distributed_inference_across_workers=distributed_inference_across_workers,
     )
