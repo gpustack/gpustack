@@ -222,9 +222,9 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
 
     vram_values = func.json_each(
         ModelInstance.computed_resource_claim, '$.vram'
-    ).table_valued('value')
+    ).table_valued('value', joins_implicitly=True)
 
-    total_ram_claim_subquery = (
+    resource_claim_query = (
         select(
             ModelInstance.model_id,
             func.sum(
@@ -238,54 +238,39 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
                     0,
                 )
             ).label('total_ram_claim'),
-        )
-        .group_by(ModelInstance.model_id)
-        .subquery()
-    )
-
-    total_vram_claim_subquery = (
-        select(
-            ModelInstance.model_id,
             func.sum(
                 func.coalesce(
                     func.cast(vram_values.c.value, Integer),
                     0,
                 )
             ).label('total_vram_claim'),
-        )
-        .select_from(ModelInstance)
-        .group_by(ModelInstance.model_id)
-        .subquery()
-    )
+        ).group_by(ModelInstance.model_id)
+    ).alias('resource_claim')
 
     statement = (
         select(
             Model.id,
             Model.name,
             func.count(distinct(ModelInstance.id)).label('instance_count'),
-            func.coalesce(total_ram_claim_subquery.c.total_ram_claim, 0).label(
+            func.coalesce(resource_claim_query.c.total_ram_claim, 0).label(
                 'total_ram_claim'
             ),
-            func.coalesce(total_vram_claim_subquery.c.total_vram_claim, 0).label(
+            func.coalesce(resource_claim_query.c.total_vram_claim, 0).label(
                 'total_vram_claim'
             ),
             usage_sum_query.c.total_token_count,
         )
         .join(ModelInstance, Model.id == ModelInstance.model_id)
         .outerjoin(
-            total_ram_claim_subquery,
-            Model.id == total_ram_claim_subquery.c.model_id,
-        )
-        .outerjoin(
-            total_vram_claim_subquery,
-            Model.id == total_vram_claim_subquery.c.model_id,
+            resource_claim_query,
+            Model.id == resource_claim_query.c.model_id,
         )
         .outerjoin(usage_sum_query, Model.id == usage_sum_query.c.model_id)
         .group_by(
             Model.id,
             usage_sum_query.c.total_token_count,
-            total_ram_claim_subquery.c.total_ram_claim,
-            total_vram_claim_subquery.c.total_vram_claim,
+            resource_claim_query.c.total_ram_claim,
+            resource_claim_query.c.total_vram_claim,
         )
         .order_by(usage_sum_query.c.total_token_count.desc())
         .limit(10)
