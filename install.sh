@@ -235,6 +235,18 @@ setup_systemd() {
       fi
   fi
 
+  # Process the arguments and handle spaces and single quotes
+  _args=""
+  for x in "$@"; do
+      case "$x" in
+          *\ *)
+              x=$(echo "$x" | sed "s/'/'\\\\''/g")
+              x="'$x'"
+              ;;
+      esac
+      _args="$_args $x"
+  done
+
   info "Setting up GPUStack as a service using systemd."
   $SUDO tee /etc/systemd/system/gpustack.service > /dev/null <<EOF
 [Unit]
@@ -243,7 +255,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=$(which gpustack) start $@
+ExecStart=$(which gpustack) start $_args
 Restart=always
 StandardOutput=append:/var/log/gpustack.log
 StandardError=append:/var/log/gpustack.log
