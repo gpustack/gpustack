@@ -224,10 +224,11 @@ class InferenceServer:
         model_total, model_n = 0, 0
 
         def _new_init(self: tqdm, *args, **kwargs):
-            global model_total
+            global model_total, model_n
             kwargs["disable"] = False  # enable the progress bar anyway
             _original_init(self, *args, **kwargs)
 
+            model_n += self.n
             model_total += self.total
 
         def _new_update(self: tqdm, n=1):
