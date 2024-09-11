@@ -176,8 +176,8 @@ class OllamaLibraryDownloader:
                     str(e),
                 )
                 time.sleep(1)
-                return OllamaLibraryDownloader.download_blob(
-                    url, filename, _nb_retries - 1
+                return self.download_blob(
+                    url, registry_token, filename, _nb_retries - 1
                 )
         os.rename(temp_filename, filename)
 
