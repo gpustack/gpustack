@@ -1,6 +1,6 @@
 {
   "estimate": {
-    "memory": [
+    "items": [
       {
         "offloadLayers": 0,
         "fullOffloaded": false,
@@ -17,25 +17,25 @@
             "handleLayers": 0,
             "handleLastLayer": -1,
             "handleOutputLayer": false,
+            "remote": true,
+            "uma": 0,
+            "nonuma": 262144000
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": true,
+            "uma": 0,
+            "nonuma": 262144000
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
             "remote": false,
             "uma": 0,
             "nonuma": 1419771904
-          },
-          {
-            "handleLayers": 0,
-            "handleLastLayer": -1,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 0,
-            "nonuma": 262144000
-          },
-          {
-            "handleLayers": 0,
-            "handleLastLayer": -1,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 0,
-            "nonuma": 262144000
           }
         ]
       },
@@ -52,28 +52,28 @@
         },
         "vrams": [
           {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": true,
+            "uma": 0,
+            "nonuma": 262144000
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": true,
+            "uma": 0,
+            "nonuma": 262144000
+          },
+          {
             "handleLayers": 1,
             "handleLastLayer": 79,
             "handleOutputLayer": false,
             "remote": false,
             "uma": 33554432,
             "nonuma": 1968246784
-          },
-          {
-            "handleLayers": 0,
-            "handleLastLayer": -1,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 0,
-            "nonuma": 262144000
-          },
-          {
-            "handleLayers": 0,
-            "handleLastLayer": -1,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 0,
-            "nonuma": 262144000
           }
         ]
       },
@@ -91,14 +91,6 @@
         "vrams": [
           {
             "handleLayers": 1,
-            "handleLastLayer": 78,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 33554432,
-            "nonuma": 1968246784
-          },
-          {
-            "handleLayers": 1,
             "handleLastLayer": 79,
             "handleOutputLayer": false,
             "remote": true,
@@ -109,9 +101,17 @@
             "handleLayers": 0,
             "handleLastLayer": -1,
             "handleOutputLayer": false,
-            "remote": false,
+            "remote": true,
             "uma": 0,
             "nonuma": 262144000
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 78,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 33554432,
+            "nonuma": 1968246784
           }
         ]
       },
@@ -128,14 +128,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 2,
-            "handleLastLayer": 78,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 67108864,
-            "nonuma": 2483163136
-          },
-          {
             "handleLayers": 1,
             "handleLastLayer": 79,
             "handleOutputLayer": false,
@@ -147,9 +139,17 @@
             "handleLayers": 0,
             "handleLastLayer": -1,
             "handleOutputLayer": false,
-            "remote": false,
+            "remote": true,
             "uma": 0,
             "nonuma": 262144000
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 78,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 67108864,
+            "nonuma": 2483163136
           }
         ]
       },
@@ -166,14 +166,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 2,
-            "handleLastLayer": 77,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 67108864,
-            "nonuma": 2483163136
-          },
-          {
             "handleLayers": 1,
             "handleLastLayer": 78,
             "handleOutputLayer": false,
@@ -188,6 +180,14 @@
             "remote": true,
             "uma": 514916352,
             "nonuma": 1968246784
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 77,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 67108864,
+            "nonuma": 2483163136
           }
         ]
       },
@@ -204,14 +204,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 3,
-            "handleLastLayer": 77,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 100663296,
-            "nonuma": 2998079488
-          },
-          {
             "handleLayers": 1,
             "handleLastLayer": 78,
             "handleOutputLayer": false,
@@ -226,6 +218,14 @@
             "remote": true,
             "uma": 514916352,
             "nonuma": 1968246784
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 77,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 100663296,
+            "nonuma": 2998079488
           }
         ]
       },
@@ -242,14 +242,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 3,
-            "handleLastLayer": 76,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 100663296,
-            "nonuma": 2998079488
-          },
-          {
             "handleLayers": 2,
             "handleLastLayer": 78,
             "handleOutputLayer": false,
@@ -264,6 +256,14 @@
             "remote": true,
             "uma": 514916352,
             "nonuma": 1968246784
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 76,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 100663296,
+            "nonuma": 2998079488
           }
         ]
       },
@@ -280,14 +280,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 4,
-            "handleLastLayer": 76,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 134217728,
-            "nonuma": 3512995840
-          },
-          {
             "handleLayers": 2,
             "handleLastLayer": 78,
             "handleOutputLayer": false,
@@ -302,6 +294,14 @@
             "remote": true,
             "uma": 514916352,
             "nonuma": 1968246784
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 76,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 134217728,
+            "nonuma": 3512995840
           }
         ]
       },
@@ -318,14 +318,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 4,
-            "handleLastLayer": 75,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 134217728,
-            "nonuma": 3512995840
-          },
-          {
             "handleLayers": 2,
             "handleLastLayer": 77,
             "handleOutputLayer": false,
@@ -340,6 +332,14 @@
             "remote": true,
             "uma": 1029832704,
             "nonuma": 2483163136
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 75,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 134217728,
+            "nonuma": 3512995840
           }
         ]
       },
@@ -356,14 +356,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 4,
-            "handleLastLayer": 74,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 134217728,
-            "nonuma": 3512995840
-          },
-          {
             "handleLayers": 3,
             "handleLastLayer": 77,
             "handleOutputLayer": false,
@@ -378,6 +370,14 @@
             "remote": true,
             "uma": 1029832704,
             "nonuma": 2483163136
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 74,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 134217728,
+            "nonuma": 3512995840
           }
         ]
       },
@@ -394,14 +394,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 5,
-            "handleLastLayer": 74,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 167772160,
-            "nonuma": 4027912192
-          },
-          {
             "handleLayers": 3,
             "handleLastLayer": 77,
             "handleOutputLayer": false,
@@ -416,6 +408,14 @@
             "remote": true,
             "uma": 1029832704,
             "nonuma": 2483163136
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 74,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 167772160,
+            "nonuma": 4027912192
           }
         ]
       },
@@ -431,14 +431,7 @@
           "nonuma": 2737412280
         },
         "vrams": [
-          {
-            "handleLayers": 5,
-            "handleLastLayer": 73,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 167772160,
-            "nonuma": 4027912192
-          },
+
           {
             "handleLayers": 3,
             "handleLastLayer": 76,
@@ -454,6 +447,14 @@
             "remote": true,
             "uma": 1544749056,
             "nonuma": 2998079488
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 73,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 167772160,
+            "nonuma": 4027912192
           }
         ]
       },
@@ -470,14 +471,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 6,
-            "handleLastLayer": 73,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 201326592,
-            "nonuma": 4542828544
-          },
-          {
             "handleLayers": 3,
             "handleLastLayer": 76,
             "handleOutputLayer": false,
@@ -492,6 +485,14 @@
             "remote": true,
             "uma": 1544749056,
             "nonuma": 2998079488
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 73,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 201326592,
+            "nonuma": 4542828544
           }
         ]
       },
@@ -508,14 +509,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 6,
-            "handleLastLayer": 72,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 201326592,
-            "nonuma": 4542828544
-          },
-          {
             "handleLayers": 4,
             "handleLastLayer": 76,
             "handleOutputLayer": false,
@@ -530,6 +523,14 @@
             "remote": true,
             "uma": 1544749056,
             "nonuma": 2998079488
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 72,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 201326592,
+            "nonuma": 4542828544
           }
         ]
       },
@@ -546,14 +547,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 7,
-            "handleLastLayer": 72,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 234881024,
-            "nonuma": 5057744896
-          },
-          {
             "handleLayers": 4,
             "handleLastLayer": 76,
             "handleOutputLayer": false,
@@ -568,6 +561,14 @@
             "remote": true,
             "uma": 1544749056,
             "nonuma": 2998079488
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 72,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 234881024,
+            "nonuma": 5057744896
           }
         ]
       },
@@ -584,14 +585,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 7,
-            "handleLastLayer": 71,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 234881024,
-            "nonuma": 5057744896
-          },
-          {
             "handleLayers": 4,
             "handleLastLayer": 75,
             "handleOutputLayer": false,
@@ -606,6 +599,14 @@
             "remote": true,
             "uma": 2059665408,
             "nonuma": 3512995840
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 71,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 234881024,
+            "nonuma": 5057744896
           }
         ]
       },
@@ -622,14 +623,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 7,
-            "handleLastLayer": 70,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 234881024,
-            "nonuma": 5057744896
-          },
-          {
             "handleLayers": 5,
             "handleLastLayer": 75,
             "handleOutputLayer": false,
@@ -644,6 +637,14 @@
             "remote": true,
             "uma": 2059665408,
             "nonuma": 3512995840
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 70,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 234881024,
+            "nonuma": 5057744896
           }
         ]
       },
@@ -660,14 +661,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 8,
-            "handleLastLayer": 70,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 268435456,
-            "nonuma": 5572661248
-          },
-          {
             "handleLayers": 5,
             "handleLastLayer": 75,
             "handleOutputLayer": false,
@@ -682,6 +675,14 @@
             "remote": true,
             "uma": 2059665408,
             "nonuma": 3512995840
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 70,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 268435456,
+            "nonuma": 5572661248
           }
         ]
       },
@@ -698,14 +699,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 8,
-            "handleLastLayer": 69,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 268435456,
-            "nonuma": 5572661248
-          },
-          {
             "handleLayers": 5,
             "handleLastLayer": 74,
             "handleOutputLayer": false,
@@ -720,6 +713,14 @@
             "remote": true,
             "uma": 2574581760,
             "nonuma": 4027912192
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 69,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 268435456,
+            "nonuma": 5572661248
           }
         ]
       },
@@ -736,14 +737,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 9,
-            "handleLastLayer": 69,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 301989888,
-            "nonuma": 6087577600
-          },
-          {
             "handleLayers": 5,
             "handleLastLayer": 74,
             "handleOutputLayer": false,
@@ -758,6 +751,14 @@
             "remote": true,
             "uma": 2574581760,
             "nonuma": 4027912192
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 69,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 301989888,
+            "nonuma": 6087577600
           }
         ]
       },
@@ -774,14 +775,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 9,
-            "handleLastLayer": 68,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 301989888,
-            "nonuma": 6087577600
-          },
-          {
             "handleLayers": 6,
             "handleLastLayer": 74,
             "handleOutputLayer": false,
@@ -796,6 +789,14 @@
             "remote": true,
             "uma": 2574581760,
             "nonuma": 4027912192
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 68,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 301989888,
+            "nonuma": 6087577600
           }
         ]
       },
@@ -812,14 +813,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 10,
-            "handleLastLayer": 68,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 335544320,
-            "nonuma": 6602493952
-          },
-          {
             "handleLayers": 6,
             "handleLastLayer": 74,
             "handleOutputLayer": false,
@@ -834,6 +827,14 @@
             "remote": true,
             "uma": 2574581760,
             "nonuma": 4027912192
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 68,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 335544320,
+            "nonuma": 6602493952
           }
         ]
       },
@@ -850,14 +851,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 10,
-            "handleLastLayer": 67,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 335544320,
-            "nonuma": 6602493952
-          },
-          {
             "handleLayers": 6,
             "handleLastLayer": 73,
             "handleOutputLayer": false,
@@ -872,6 +865,14 @@
             "remote": true,
             "uma": 3089498112,
             "nonuma": 4542828544
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 67,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 335544320,
+            "nonuma": 6602493952
           }
         ]
       },
@@ -888,14 +889,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 10,
-            "handleLastLayer": 66,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 335544320,
-            "nonuma": 6602493952
-          },
-          {
             "handleLayers": 7,
             "handleLastLayer": 73,
             "handleOutputLayer": false,
@@ -910,6 +903,14 @@
             "remote": true,
             "uma": 3089498112,
             "nonuma": 4542828544
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 66,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 335544320,
+            "nonuma": 6602493952
           }
         ]
       },
@@ -926,14 +927,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 11,
-            "handleLastLayer": 66,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 369098752,
-            "nonuma": 7117410304
-          },
-          {
             "handleLayers": 7,
             "handleLastLayer": 73,
             "handleOutputLayer": false,
@@ -948,6 +941,14 @@
             "remote": true,
             "uma": 3089498112,
             "nonuma": 4542828544
+          },
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 66,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 369098752,
+            "nonuma": 7117410304
           }
         ]
       },
@@ -964,14 +965,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 11,
-            "handleLastLayer": 65,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 369098752,
-            "nonuma": 7117410304
-          },
-          {
             "handleLayers": 7,
             "handleLastLayer": 72,
             "handleOutputLayer": false,
@@ -986,6 +979,14 @@
             "remote": true,
             "uma": 3604414464,
             "nonuma": 5057744896
+          },
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 65,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 369098752,
+            "nonuma": 7117410304
           }
         ]
       },
@@ -1002,14 +1003,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 12,
-            "handleLastLayer": 65,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 402653184,
-            "nonuma": 7632326656
-          },
-          {
             "handleLayers": 7,
             "handleLastLayer": 72,
             "handleOutputLayer": false,
@@ -1024,6 +1017,14 @@
             "remote": true,
             "uma": 3604414464,
             "nonuma": 5057744896
+          },
+          {
+            "handleLayers": 12,
+            "handleLastLayer": 65,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 402653184,
+            "nonuma": 7632326656
           }
         ]
       },
@@ -1040,14 +1041,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 12,
-            "handleLastLayer": 64,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 402653184,
-            "nonuma": 7632326656
-          },
-          {
             "handleLayers": 8,
             "handleLastLayer": 72,
             "handleOutputLayer": false,
@@ -1062,6 +1055,14 @@
             "remote": true,
             "uma": 3604414464,
             "nonuma": 5057744896
+          },
+          {
+            "handleLayers": 12,
+            "handleLastLayer": 64,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 402653184,
+            "nonuma": 7632326656
           }
         ]
       },
@@ -1078,14 +1079,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 13,
-            "handleLastLayer": 64,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 436207616,
-            "nonuma": 8147243008
-          },
-          {
             "handleLayers": 8,
             "handleLastLayer": 72,
             "handleOutputLayer": false,
@@ -1100,6 +1093,14 @@
             "remote": true,
             "uma": 3604414464,
             "nonuma": 5057744896
+          },
+          {
+            "handleLayers": 13,
+            "handleLastLayer": 64,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 436207616,
+            "nonuma": 8147243008
           }
         ]
       },
@@ -1116,14 +1117,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 13,
-            "handleLastLayer": 63,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 436207616,
-            "nonuma": 8147243008
-          },
-          {
             "handleLayers": 8,
             "handleLastLayer": 71,
             "handleOutputLayer": false,
@@ -1138,6 +1131,14 @@
             "remote": true,
             "uma": 4119330816,
             "nonuma": 5572661248
+          },
+          {
+            "handleLayers": 13,
+            "handleLastLayer": 63,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 436207616,
+            "nonuma": 8147243008
           }
         ]
       },
@@ -1154,14 +1155,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 13,
-            "handleLastLayer": 62,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 436207616,
-            "nonuma": 8147243008
-          },
-          {
             "handleLayers": 9,
             "handleLastLayer": 71,
             "handleOutputLayer": false,
@@ -1176,6 +1169,14 @@
             "remote": true,
             "uma": 4119330816,
             "nonuma": 5572661248
+          },
+          {
+            "handleLayers": 13,
+            "handleLastLayer": 62,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 436207616,
+            "nonuma": 8147243008
           }
         ]
       },
@@ -1192,14 +1193,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 14,
-            "handleLastLayer": 62,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 469762048,
-            "nonuma": 8662159360
-          },
-          {
             "handleLayers": 9,
             "handleLastLayer": 71,
             "handleOutputLayer": false,
@@ -1214,6 +1207,14 @@
             "remote": true,
             "uma": 4119330816,
             "nonuma": 5572661248
+          },
+          {
+            "handleLayers": 14,
+            "handleLastLayer": 62,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 469762048,
+            "nonuma": 8662159360
           }
         ]
       },
@@ -1230,14 +1231,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 14,
-            "handleLastLayer": 61,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 469762048,
-            "nonuma": 8662159360
-          },
-          {
             "handleLayers": 9,
             "handleLastLayer": 70,
             "handleOutputLayer": false,
@@ -1252,6 +1245,14 @@
             "remote": true,
             "uma": 4634247168,
             "nonuma": 6087577600
+          },
+          {
+            "handleLayers": 14,
+            "handleLastLayer": 61,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 469762048,
+            "nonuma": 8662159360
           }
         ]
       },
@@ -1268,14 +1269,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 15,
-            "handleLastLayer": 61,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 503316480,
-            "nonuma": 9177075712
-          },
-          {
             "handleLayers": 9,
             "handleLastLayer": 70,
             "handleOutputLayer": false,
@@ -1290,6 +1283,14 @@
             "remote": true,
             "uma": 4634247168,
             "nonuma": 6087577600
+          },
+          {
+            "handleLayers": 15,
+            "handleLastLayer": 61,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 503316480,
+            "nonuma": 9177075712
           }
         ]
       },
@@ -1306,14 +1307,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 15,
-            "handleLastLayer": 60,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 503316480,
-            "nonuma": 9177075712
-          },
-          {
             "handleLayers": 10,
             "handleLastLayer": 70,
             "handleOutputLayer": false,
@@ -1328,6 +1321,14 @@
             "remote": true,
             "uma": 4634247168,
             "nonuma": 6087577600
+          },
+          {
+            "handleLayers": 15,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 503316480,
+            "nonuma": 9177075712
           }
         ]
       },
@@ -1344,14 +1345,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 16,
-            "handleLastLayer": 60,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 536870912,
-            "nonuma": 9691992064
-          },
-          {
             "handleLayers": 10,
             "handleLastLayer": 70,
             "handleOutputLayer": false,
@@ -1366,6 +1359,14 @@
             "remote": true,
             "uma": 4634247168,
             "nonuma": 6087577600
+          },
+          {
+            "handleLayers": 16,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 536870912,
+            "nonuma": 9691992064
           }
         ]
       },
@@ -1382,14 +1383,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 16,
-            "handleLastLayer": 59,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 536870912,
-            "nonuma": 9691992064
-          },
-          {
             "handleLayers": 10,
             "handleLastLayer": 69,
             "handleOutputLayer": false,
@@ -1404,6 +1397,14 @@
             "remote": true,
             "uma": 5149163520,
             "nonuma": 6602493952
+          },
+          {
+            "handleLayers": 16,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 536870912,
+            "nonuma": 9691992064
           }
         ]
       },
@@ -1420,14 +1421,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 16,
-            "handleLastLayer": 58,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 536870912,
-            "nonuma": 9691992064
-          },
-          {
             "handleLayers": 11,
             "handleLastLayer": 69,
             "handleOutputLayer": false,
@@ -1442,6 +1435,14 @@
             "remote": true,
             "uma": 5149163520,
             "nonuma": 6602493952
+          },
+          {
+            "handleLayers": 16,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 536870912,
+            "nonuma": 9691992064
           }
         ]
       },
@@ -1458,14 +1459,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 17,
-            "handleLastLayer": 58,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 570425344,
-            "nonuma": 10206908416
-          },
-          {
             "handleLayers": 11,
             "handleLastLayer": 69,
             "handleOutputLayer": false,
@@ -1480,6 +1473,14 @@
             "remote": true,
             "uma": 5149163520,
             "nonuma": 6602493952
+          },
+          {
+            "handleLayers": 17,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 570425344,
+            "nonuma": 10206908416
           }
         ]
       },
@@ -1496,14 +1497,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 17,
-            "handleLastLayer": 57,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 570425344,
-            "nonuma": 10206908416
-          },
-          {
             "handleLayers": 11,
             "handleLastLayer": 68,
             "handleOutputLayer": false,
@@ -1518,6 +1511,14 @@
             "remote": true,
             "uma": 5664079872,
             "nonuma": 7117410304
+          },
+          {
+            "handleLayers": 17,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 570425344,
+            "nonuma": 10206908416
           }
         ]
       },
@@ -1534,14 +1535,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 18,
-            "handleLastLayer": 57,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 603979776,
-            "nonuma": 10721824768
-          },
-          {
             "handleLayers": 11,
             "handleLastLayer": 68,
             "handleOutputLayer": false,
@@ -1556,6 +1549,14 @@
             "remote": true,
             "uma": 5664079872,
             "nonuma": 7117410304
+          },
+          {
+            "handleLayers": 18,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 603979776,
+            "nonuma": 10721824768
           }
         ]
       },
@@ -1572,14 +1573,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 18,
-            "handleLastLayer": 56,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 603979776,
-            "nonuma": 10721824768
-          },
-          {
             "handleLayers": 12,
             "handleLastLayer": 68,
             "handleOutputLayer": false,
@@ -1594,6 +1587,14 @@
             "remote": true,
             "uma": 5664079872,
             "nonuma": 7117410304
+          },
+          {
+            "handleLayers": 18,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 603979776,
+            "nonuma": 10721824768
           }
         ]
       },
@@ -1610,14 +1611,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 19,
-            "handleLastLayer": 56,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 637534208,
-            "nonuma": 11236741120
-          },
-          {
             "handleLayers": 12,
             "handleLastLayer": 68,
             "handleOutputLayer": false,
@@ -1632,6 +1625,14 @@
             "remote": true,
             "uma": 5664079872,
             "nonuma": 7117410304
+          },
+          {
+            "handleLayers": 19,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 637534208,
+            "nonuma": 11236741120
           }
         ]
       },
@@ -1648,14 +1649,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 19,
-            "handleLastLayer": 55,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 637534208,
-            "nonuma": 11236741120
-          },
-          {
             "handleLayers": 12,
             "handleLastLayer": 67,
             "handleOutputLayer": false,
@@ -1670,6 +1663,14 @@
             "remote": true,
             "uma": 6178996224,
             "nonuma": 7632326656
+          },
+          {
+            "handleLayers": 19,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 637534208,
+            "nonuma": 11236741120
           }
         ]
       },
@@ -1686,14 +1687,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 19,
-            "handleLastLayer": 54,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 637534208,
-            "nonuma": 11236741120
-          },
-          {
             "handleLayers": 13,
             "handleLastLayer": 67,
             "handleOutputLayer": false,
@@ -1708,6 +1701,14 @@
             "remote": true,
             "uma": 6178996224,
             "nonuma": 7632326656
+          },
+          {
+            "handleLayers": 19,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 637534208,
+            "nonuma": 11236741120
           }
         ]
       },
@@ -1724,14 +1725,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 20,
-            "handleLastLayer": 54,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 671088640,
-            "nonuma": 11751657472
-          },
-          {
             "handleLayers": 13,
             "handleLastLayer": 67,
             "handleOutputLayer": false,
@@ -1746,6 +1739,14 @@
             "remote": true,
             "uma": 6178996224,
             "nonuma": 7632326656
+          },
+          {
+            "handleLayers": 20,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 671088640,
+            "nonuma": 11751657472
           }
         ]
       },
@@ -1762,14 +1763,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 20,
-            "handleLastLayer": 53,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 671088640,
-            "nonuma": 11751657472
-          },
-          {
             "handleLayers": 13,
             "handleLastLayer": 66,
             "handleOutputLayer": false,
@@ -1784,6 +1777,14 @@
             "remote": true,
             "uma": 6693912576,
             "nonuma": 8147243008
+          },
+          {
+            "handleLayers": 20,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 671088640,
+            "nonuma": 11751657472
           }
         ]
       },
@@ -1800,14 +1801,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 21,
-            "handleLastLayer": 53,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 704643072,
-            "nonuma": 12266573824
-          },
-          {
             "handleLayers": 13,
             "handleLastLayer": 66,
             "handleOutputLayer": false,
@@ -1822,6 +1815,14 @@
             "remote": true,
             "uma": 6693912576,
             "nonuma": 8147243008
+          },
+          {
+            "handleLayers": 21,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 704643072,
+            "nonuma": 12266573824
           }
         ]
       },
@@ -1838,14 +1839,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 21,
-            "handleLastLayer": 52,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 704643072,
-            "nonuma": 12266573824
-          },
-          {
             "handleLayers": 14,
             "handleLastLayer": 66,
             "handleOutputLayer": false,
@@ -1860,6 +1853,14 @@
             "remote": true,
             "uma": 6693912576,
             "nonuma": 8147243008
+          },
+          {
+            "handleLayers": 21,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 704643072,
+            "nonuma": 12266573824
           }
         ]
       },
@@ -1914,14 +1915,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 22,
-            "handleLastLayer": 51,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 738197504,
-            "nonuma": 12781490176
-          },
-          {
             "handleLayers": 14,
             "handleLastLayer": 65,
             "handleOutputLayer": false,
@@ -1936,6 +1929,14 @@
             "remote": true,
             "uma": 7208828928,
             "nonuma": 8662159360
+          },
+          {
+            "handleLayers": 22,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 738197504,
+            "nonuma": 12781490176
           }
         ]
       },
@@ -1952,14 +1953,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 22,
-            "handleLastLayer": 50,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 738197504,
-            "nonuma": 12781490176
-          },
-          {
             "handleLayers": 15,
             "handleLastLayer": 65,
             "handleOutputLayer": false,
@@ -1974,6 +1967,14 @@
             "remote": true,
             "uma": 7208828928,
             "nonuma": 8662159360
+          },
+          {
+            "handleLayers": 22,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 738197504,
+            "nonuma": 12781490176
           }
         ]
       },
@@ -1990,14 +1991,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 23,
-            "handleLastLayer": 50,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 771751936,
-            "nonuma": 13296406528
-          },
-          {
             "handleLayers": 15,
             "handleLastLayer": 65,
             "handleOutputLayer": false,
@@ -2012,6 +2005,14 @@
             "remote": true,
             "uma": 7208828928,
             "nonuma": 8662159360
+          },
+          {
+            "handleLayers": 23,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 771751936,
+            "nonuma": 13296406528
           }
         ]
       },
@@ -2028,14 +2029,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 23,
-            "handleLastLayer": 49,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 771751936,
-            "nonuma": 13296406528
-          },
-          {
             "handleLayers": 15,
             "handleLastLayer": 64,
             "handleOutputLayer": false,
@@ -2050,6 +2043,14 @@
             "remote": true,
             "uma": 7723745280,
             "nonuma": 9177075712
+          },
+          {
+            "handleLayers": 23,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 771751936,
+            "nonuma": 13296406528
           }
         ]
       },
@@ -2066,14 +2067,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 24,
-            "handleLastLayer": 49,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 805306368,
-            "nonuma": 13811322880
-          },
-          {
             "handleLayers": 15,
             "handleLastLayer": 64,
             "handleOutputLayer": false,
@@ -2088,6 +2081,14 @@
             "remote": true,
             "uma": 7723745280,
             "nonuma": 9177075712
+          },
+          {
+            "handleLayers": 24,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 805306368,
+            "nonuma": 13811322880
           }
         ]
       },
@@ -2104,14 +2105,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 24,
-            "handleLastLayer": 48,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 805306368,
-            "nonuma": 13811322880
-          },
-          {
             "handleLayers": 16,
             "handleLastLayer": 64,
             "handleOutputLayer": false,
@@ -2126,6 +2119,14 @@
             "remote": true,
             "uma": 7723745280,
             "nonuma": 9177075712
+          },
+          {
+            "handleLayers": 24,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 805306368,
+            "nonuma": 13811322880
           }
         ]
       },
@@ -2142,14 +2143,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 25,
-            "handleLastLayer": 48,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 838860800,
-            "nonuma": 14326239232
-          },
-          {
             "handleLayers": 16,
             "handleLastLayer": 64,
             "handleOutputLayer": false,
@@ -2164,6 +2157,14 @@
             "remote": true,
             "uma": 7723745280,
             "nonuma": 9177075712
+          },
+          {
+            "handleLayers": 25,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 838860800,
+            "nonuma": 14326239232
           }
         ]
       },
@@ -2180,14 +2181,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 25,
-            "handleLastLayer": 47,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 838860800,
-            "nonuma": 14326239232
-          },
-          {
             "handleLayers": 16,
             "handleLastLayer": 63,
             "handleOutputLayer": false,
@@ -2202,6 +2195,14 @@
             "remote": true,
             "uma": 8238661632,
             "nonuma": 9691992064
+          },
+          {
+            "handleLayers": 25,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 838860800,
+            "nonuma": 14326239232
           }
         ]
       },
@@ -2218,14 +2219,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 25,
-            "handleLastLayer": 46,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 838860800,
-            "nonuma": 14326239232
-          },
-          {
             "handleLayers": 17,
             "handleLastLayer": 63,
             "handleOutputLayer": false,
@@ -2240,6 +2233,14 @@
             "remote": true,
             "uma": 8238661632,
             "nonuma": 9691992064
+          },
+          {
+            "handleLayers": 25,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 838860800,
+            "nonuma": 14326239232
           }
         ]
       },
@@ -2256,14 +2257,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 26,
-            "handleLastLayer": 46,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 872415232,
-            "nonuma": 14841155584
-          },
-          {
             "handleLayers": 17,
             "handleLastLayer": 63,
             "handleOutputLayer": false,
@@ -2278,6 +2271,14 @@
             "remote": true,
             "uma": 8238661632,
             "nonuma": 9691992064
+          },
+          {
+            "handleLayers": 26,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 872415232,
+            "nonuma": 14841155584
           }
         ]
       },
@@ -2294,14 +2295,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 26,
-            "handleLastLayer": 45,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 872415232,
-            "nonuma": 14841155584
-          },
-          {
             "handleLayers": 17,
             "handleLastLayer": 62,
             "handleOutputLayer": false,
@@ -2316,6 +2309,14 @@
             "remote": true,
             "uma": 8753577984,
             "nonuma": 10206908416
+          },
+          {
+            "handleLayers": 26,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 872415232,
+            "nonuma": 14841155584
           }
         ]
       },
@@ -2332,14 +2333,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 27,
-            "handleLastLayer": 45,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 905969664,
-            "nonuma": 15356071936
-          },
-          {
             "handleLayers": 17,
             "handleLastLayer": 62,
             "handleOutputLayer": false,
@@ -2354,6 +2347,14 @@
             "remote": true,
             "uma": 8753577984,
             "nonuma": 10206908416
+          },
+          {
+            "handleLayers": 27,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 905969664,
+            "nonuma": 15356071936
           }
         ]
       },
@@ -2370,14 +2371,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 27,
-            "handleLastLayer": 44,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 905969664,
-            "nonuma": 15356071936
-          },
-          {
             "handleLayers": 18,
             "handleLastLayer": 62,
             "handleOutputLayer": false,
@@ -2392,6 +2385,14 @@
             "remote": true,
             "uma": 8753577984,
             "nonuma": 10206908416
+          },
+          {
+            "handleLayers": 27,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 905969664,
+            "nonuma": 15356071936
           }
         ]
       },
@@ -2408,14 +2409,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 28,
-            "handleLastLayer": 44,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 939524096,
-            "nonuma": 15870988288
-          },
-          {
             "handleLayers": 18,
             "handleLastLayer": 62,
             "handleOutputLayer": false,
@@ -2430,6 +2423,14 @@
             "remote": true,
             "uma": 8753577984,
             "nonuma": 10206908416
+          },
+          {
+            "handleLayers": 28,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 939524096,
+            "nonuma": 15870988288
           }
         ]
       },
@@ -2446,14 +2447,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 28,
-            "handleLastLayer": 43,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 939524096,
-            "nonuma": 15870988288
-          },
-          {
             "handleLayers": 18,
             "handleLastLayer": 61,
             "handleOutputLayer": false,
@@ -2468,6 +2461,14 @@
             "remote": true,
             "uma": 9268494336,
             "nonuma": 10721824768
+          },
+          {
+            "handleLayers": 28,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 939524096,
+            "nonuma": 15870988288
           }
         ]
       },
@@ -2484,14 +2485,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 29,
-            "handleLastLayer": 43,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 973078528,
-            "nonuma": 16385904640
-          },
-          {
             "handleLayers": 18,
             "handleLastLayer": 61,
             "handleOutputLayer": false,
@@ -2506,6 +2499,14 @@
             "remote": true,
             "uma": 9268494336,
             "nonuma": 10721824768
+          },
+          {
+            "handleLayers": 29,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 973078528,
+            "nonuma": 16385904640
           }
         ]
       },
@@ -2522,14 +2523,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 29,
-            "handleLastLayer": 42,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 973078528,
-            "nonuma": 16385904640
-          },
-          {
             "handleLayers": 19,
             "handleLastLayer": 61,
             "handleOutputLayer": false,
@@ -2544,6 +2537,14 @@
             "remote": true,
             "uma": 9268494336,
             "nonuma": 10721824768
+          },
+          {
+            "handleLayers": 29,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 973078528,
+            "nonuma": 16385904640
           }
         ]
       },
@@ -2560,14 +2561,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 29,
-            "handleLastLayer": 41,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 973078528,
-            "nonuma": 16385904640
-          },
-          {
             "handleLayers": 19,
             "handleLastLayer": 60,
             "handleOutputLayer": false,
@@ -2582,6 +2575,14 @@
             "remote": true,
             "uma": 9783410688,
             "nonuma": 11236741120
+          },
+          {
+            "handleLayers": 29,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 973078528,
+            "nonuma": 16385904640
           }
         ]
       },
@@ -2598,14 +2599,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 30,
-            "handleLastLayer": 41,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1006632960,
-            "nonuma": 16900820992
-          },
-          {
             "handleLayers": 19,
             "handleLastLayer": 60,
             "handleOutputLayer": false,
@@ -2620,6 +2613,14 @@
             "remote": true,
             "uma": 9783410688,
             "nonuma": 11236741120
+          },
+          {
+            "handleLayers": 30,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1006632960,
+            "nonuma": 16900820992
           }
         ]
       },
@@ -2636,14 +2637,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 30,
-            "handleLastLayer": 40,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1006632960,
-            "nonuma": 16900820992
-          },
-          {
             "handleLayers": 20,
             "handleLastLayer": 60,
             "handleOutputLayer": false,
@@ -2658,6 +2651,14 @@
             "remote": true,
             "uma": 9783410688,
             "nonuma": 11236741120
+          },
+          {
+            "handleLayers": 30,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1006632960,
+            "nonuma": 16900820992
           }
         ]
       },
@@ -2674,14 +2675,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 31,
-            "handleLastLayer": 40,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1040187392,
-            "nonuma": 17415737344
-          },
-          {
             "handleLayers": 20,
             "handleLastLayer": 60,
             "handleOutputLayer": false,
@@ -2696,6 +2689,14 @@
             "remote": true,
             "uma": 9783410688,
             "nonuma": 11236741120
+          },
+          {
+            "handleLayers": 31,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1040187392,
+            "nonuma": 17415737344
           }
         ]
       },
@@ -2712,14 +2713,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 31,
-            "handleLastLayer": 39,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1040187392,
-            "nonuma": 17415737344
-          },
-          {
             "handleLayers": 20,
             "handleLastLayer": 59,
             "handleOutputLayer": false,
@@ -2734,6 +2727,14 @@
             "remote": true,
             "uma": 10298327040,
             "nonuma": 11751657472
+          },
+          {
+            "handleLayers": 31,
+            "handleLastLayer": 39,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1040187392,
+            "nonuma": 17415737344
           }
         ]
       },
@@ -2750,14 +2751,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 32,
-            "handleLastLayer": 39,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1073741824,
-            "nonuma": 17930653696
-          },
-          {
             "handleLayers": 20,
             "handleLastLayer": 59,
             "handleOutputLayer": false,
@@ -2772,6 +2765,14 @@
             "remote": true,
             "uma": 10298327040,
             "nonuma": 11751657472
+          },
+          {
+            "handleLayers": 32,
+            "handleLastLayer": 39,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1073741824,
+            "nonuma": 17930653696
           }
         ]
       },
@@ -2788,14 +2789,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 32,
-            "handleLastLayer": 38,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1073741824,
-            "nonuma": 17930653696
-          },
-          {
             "handleLayers": 21,
             "handleLastLayer": 59,
             "handleOutputLayer": false,
@@ -2810,6 +2803,14 @@
             "remote": true,
             "uma": 10298327040,
             "nonuma": 11751657472
+          },
+          {
+            "handleLayers": 32,
+            "handleLastLayer": 38,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1073741824,
+            "nonuma": 17930653696
           }
         ]
       },
@@ -2826,14 +2827,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 32,
-            "handleLastLayer": 37,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1073741824,
-            "nonuma": 17930653696
-          },
-          {
             "handleLayers": 21,
             "handleLastLayer": 58,
             "handleOutputLayer": false,
@@ -2848,6 +2841,14 @@
             "remote": true,
             "uma": 10813243392,
             "nonuma": 12266573824
+          },
+          {
+            "handleLayers": 32,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1073741824,
+            "nonuma": 17930653696
           }
         ]
       },
@@ -2864,14 +2865,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 33,
-            "handleLastLayer": 37,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1107296256,
-            "nonuma": 18445570048
-          },
-          {
             "handleLayers": 21,
             "handleLastLayer": 58,
             "handleOutputLayer": false,
@@ -2886,6 +2879,14 @@
             "remote": true,
             "uma": 10813243392,
             "nonuma": 12266573824
+          },
+          {
+            "handleLayers": 33,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1107296256,
+            "nonuma": 18445570048
           }
         ]
       },
@@ -2902,14 +2903,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 33,
-            "handleLastLayer": 36,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1107296256,
-            "nonuma": 18445570048
-          },
-          {
             "handleLayers": 22,
             "handleLastLayer": 58,
             "handleOutputLayer": false,
@@ -2924,6 +2917,14 @@
             "remote": true,
             "uma": 10813243392,
             "nonuma": 12266573824
+          },
+          {
+            "handleLayers": 33,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1107296256,
+            "nonuma": 18445570048
           }
         ]
       },
@@ -2940,14 +2941,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 34,
-            "handleLastLayer": 36,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1140850688,
-            "nonuma": 18960486400
-          },
-          {
             "handleLayers": 22,
             "handleLastLayer": 58,
             "handleOutputLayer": false,
@@ -2962,6 +2955,14 @@
             "remote": true,
             "uma": 10813243392,
             "nonuma": 12266573824
+          },
+          {
+            "handleLayers": 34,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1140850688,
+            "nonuma": 18960486400
           }
         ]
       },
@@ -2978,14 +2979,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 34,
-            "handleLastLayer": 35,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1140850688,
-            "nonuma": 18960486400
-          },
-          {
             "handleLayers": 22,
             "handleLastLayer": 57,
             "handleOutputLayer": false,
@@ -3000,6 +2993,14 @@
             "remote": true,
             "uma": 11328159744,
             "nonuma": 12781490176
+          },
+          {
+            "handleLayers": 34,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1140850688,
+            "nonuma": 18960486400
           }
         ]
       },
@@ -3016,14 +3017,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 35,
-            "handleLastLayer": 35,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1174405120,
-            "nonuma": 19475402752
-          },
-          {
             "handleLayers": 22,
             "handleLastLayer": 57,
             "handleOutputLayer": false,
@@ -3038,6 +3031,14 @@
             "remote": true,
             "uma": 11328159744,
             "nonuma": 12781490176
+          },
+          {
+            "handleLayers": 35,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1174405120,
+            "nonuma": 19475402752
           }
         ]
       },
@@ -3054,14 +3055,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 35,
-            "handleLastLayer": 34,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1174405120,
-            "nonuma": 19475402752
-          },
-          {
             "handleLayers": 23,
             "handleLastLayer": 57,
             "handleOutputLayer": false,
@@ -3076,6 +3069,14 @@
             "remote": true,
             "uma": 11328159744,
             "nonuma": 12781490176
+          },
+          {
+            "handleLayers": 35,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1174405120,
+            "nonuma": 19475402752
           }
         ]
       },
@@ -3092,14 +3093,6 @@
         },
         "vrams": [
           {
-            "handleLayers": 35,
-            "handleLastLayer": 34,
-            "handleOutputLayer": false,
-            "remote": false,
-            "uma": 1174405120,
-            "nonuma": 19475402752
-          },
-          {
             "handleLayers": 23,
             "handleLastLayer": 57,
             "handleOutputLayer": false,
@@ -3114,6 +3107,14 @@
             "remote": true,
             "uma": 12190618624,
             "nonuma": 13643949056
+          },
+          {
+            "handleLayers": 35,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "uma": 1174405120,
+            "nonuma": 19475402752
           }
         ]
       }

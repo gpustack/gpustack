@@ -192,7 +192,7 @@ def llama3_70b_partial_offload_split_2_4080_4090_estimate_claim():
     '''
     gguf-parser --ol-model llama3:70b \
     --gpu-layers=-1 --gpu-layers-step=1 --ctx-size 8192 \
-    --tensor-split=26015170560,17171480576 \
+    --tensor-split=17171480576,26015170560 --rpc=host:50020 \
     --skip-tokenizer --skip-architecture --skip-metadata --json >> llama3_70b_partial_offload_split_2_4080_4090_estimate_claim.json
     '''
     return load_model_estimate_claim_from_file(
@@ -200,11 +200,12 @@ def llama3_70b_partial_offload_split_2_4080_4090_estimate_claim():
     )
 
 
+# TODO(michelia)
 def llama3_70b_partial_offload_split_3_4080_4090_estimate_claim():
     '''
     gguf-parser --ol-model llama3:70b \
     --gpu-layers=-1 --gpu-layers-step=1 --ctx-size 8192 \
-    --tensor-split=17171480576,17171480576,26015170560 --rpc=host:50020 \
+    --tensor-split=26015170560,17171480576,17171480576 --rpc=host:50020 \
     --skip-tokenizer --skip-architecture --skip-metadata --json >> llama3_70b_partial_offload_split_3_4080_4090_estimate_claim.json
     '''
     return load_model_estimate_claim_from_file(
@@ -216,7 +217,7 @@ def llama3_70b_partial_offload_split_3_4080_4090_estimate_claim_2():
     '''
     gguf-parser --ol-model llama3:70b \
     --gpu-layers=-1 --gpu-layers-step=1 --ctx-size 8192 \
-    --tensor-split=26015170560,17171480576,17171480576 --rpc=host:50020,host:50021 \
+    --tensor-split=17171480576,17171480576,26015170560 --rpc=host:50020,host:50021 \
     --skip-tokenizer --skip-architecture --skip-metadata --json >> llama3_70b_partial_offload_split_3_4080_4090_estimate_claim_2.json
     '''
     return load_model_estimate_claim_from_file(

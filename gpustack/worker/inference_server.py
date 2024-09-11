@@ -133,13 +133,13 @@ class InferenceServer:
         if claim is not None and claim.get("offload_layers") is not None:
             layers = claim.get("offload_layers")
 
-        tensor_split = []
+        main_worker_tensor_split = []
         if (
             self._model_instance.gpu_indexes
             and len(self._model_instance.gpu_indexes) > 1
         ):
             vram_claims = claim.get("vram").values()
-            tensor_split = vram_claims
+            main_worker_tensor_split = vram_claims
 
         workers = self._clientset.workers.list()
         worker_map = {worker.id: worker for worker in workers.items}
@@ -169,16 +169,17 @@ class InferenceServer:
             arguments.extend(["--rpc", rpc_servers_argument])
 
         final_tensor_split = []
-        if tensor_split:
-            final_tensor_split.extend(tensor_split)
-
         if rpc_server_tensor_split:
             final_tensor_split.extend(rpc_server_tensor_split)
 
-        if rpc_server_tensor_split:
+        if main_worker_tensor_split:
+            final_tensor_split.extend(main_worker_tensor_split)
+
+        if final_tensor_split:
             tensor_split_argument = ",".join(
-                [str(tensor) for tensor in final_tensor_split]
-            )
+                [str(int(tensor / (1024 * 1024))) for tensor in final_tensor_split]
+            )  # convert to MiB to prevent overflow
+
             arguments.extend(["--tensor-split", tensor_split_argument])
 
         env = get_cuda_env(self._model_instance.gpu_indexes)

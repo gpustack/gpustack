@@ -129,15 +129,15 @@ class ResourceFitPolicy:
             cache_dir=self._cache_dir,
         )
         estimate = result.resource_claim_estimate
-        total_layers = estimate.memory[0].offloadLayers
+        total_layers = estimate.items[0].offloadLayers
 
         for gpu_index in allocatable.vram:
-            vram_claim = estimate.memory[0].vrams[0].nonuma
-            ram_claim = estimate.memory[0].ram.nonuma
+            vram_claim = estimate.items[0].vrams[0].nonuma
+            ram_claim = estimate.items[0].ram.nonuma
 
             if is_unified_memory:
-                vram_claim = estimate.memory[0].vrams[0].uma
-                ram_claim = estimate.memory[0].ram.uma
+                vram_claim = estimate.items[0].vrams[0].uma
+                ram_claim = estimate.items[0].ram.uma
 
                 # For UMA, we need to remove the claim of gpu memory before check the memory.
                 if (vram_claim > allocatable.vram[gpu_index]) or (
@@ -223,12 +223,12 @@ class ResourceFitPolicy:
                     tensor_split=tensor_splitting,
                 )
                 estimate = result.resource_claim_estimate
-                total_layers = estimate.memory[0].offloadLayers
+                total_layers = estimate.items[0].offloadLayers
 
                 # ram
-                ram_claim = estimate.memory[0].ram.nonuma
+                ram_claim = estimate.items[0].ram.nonuma
                 if is_unified_memory:
-                    ram_claim = estimate.memory[0].ram.uma
+                    ram_claim = estimate.items[0].ram.uma
 
                 if ram_claim > allocatable.ram:
                     continue
@@ -242,11 +242,11 @@ class ResourceFitPolicy:
                     gpu_allocatable = gpu_combination[gci][1]
 
                     single_gpu_vram_claim = (
-                        estimate.memory[0].vrams[estimate_gpu_index].nonuma
+                        estimate.items[0].vrams[estimate_gpu_index].nonuma
                     )
                     if is_unified_memory:
                         single_gpu_vram_claim = (
-                            estimate.memory[0].vrams[estimate_gpu_index].uma
+                            estimate.items[0].vrams[estimate_gpu_index].uma
                         )
 
                     if single_gpu_vram_claim > gpu_allocatable:
@@ -351,11 +351,11 @@ class ResourceFitPolicy:
             cache_dir=self._cache_dir,
         )
         estimate = result.resource_claim_estimate
-        total_layers = estimate.memory[-1].offloadLayers
+        total_layers = estimate.items[-1].offloadLayers
 
         arr = []
         estimate_arr = []
-        for memory in estimate.memory:
+        for memory in estimate.items:
             if memory.fullOffloaded:
                 continue
 
@@ -427,7 +427,7 @@ class ResourceFitPolicy:
             tensor_split=tensor_splitting,
         )
         estimate = result.resource_claim_estimate
-        total_layers = estimate.memory[-1].offloadLayers
+        total_layers = estimate.items[-1].offloadLayers
 
         gpu_indexes_mapping = [value[0] for value in gpu_combination]
         gpu_offload_layers = {}
@@ -438,7 +438,7 @@ class ResourceFitPolicy:
                     if is_unified_memory
                     else memory.vrams[estimate_gpu_index].nonuma
                 )
-                for memory in estimate.memory
+                for memory in estimate.items
                 if not memory.fullOffloaded
             ]
 
@@ -447,18 +447,18 @@ class ResourceFitPolicy:
             if index <= 0:
                 continue
 
-            memory_estimate = estimate.memory[index]
+            memory_estimate = estimate.items[index]
             if (
                 is_unified_memory
                 and memory_estimate.ram.uma
                 > allocatable.ram
-                - sum(vram.uma for vram in estimate.memory[index].vrams)
+                - sum(vram.uma for vram in estimate.items[index].vrams)
             ) or (memory_estimate.ram.nonuma > allocatable.ram):
                 continue
 
             actual_gpu_index = gpu_indexes_mapping[estimate_gpu_index]
             gpu_offload_layers[actual_gpu_index] = {
-                "offload_layers": estimate.memory[index].offloadLayers,
+                "offload_layers": estimate.items[index].offloadLayers,
             }
 
         if len(gpu_offload_layers) != gpu_count:
@@ -473,7 +473,7 @@ class ResourceFitPolicy:
         final_gpu_claims = {}
         final_ram_claim = -1
         final_gpu_indexes = []
-        for item in estimate.memory[try_offload_layers::-1]:
+        for item in estimate.items[try_offload_layers::-1]:
             if (
                 is_unified_memory
                 and (item.ram.uma > allocatable.ram - sum(g.uma for g in item.vrams))
@@ -593,13 +593,13 @@ class ResourceFitPolicy:
             GPUOffloadEnum.Full,
             cache_dir=self._cache_dir,
         )
-        total_layers = full_offload_result.resource_claim_estimate.memory[
+        total_layers = full_offload_result.resource_claim_estimate.items[
             0
         ].offloadLayers
 
-        ram_claim = estimate.memory[0].ram.nonuma
+        ram_claim = estimate.items[0].ram.nonuma
         if is_unified_memory:
-            ram_claim = estimate.memory[0].ram.uma
+            ram_claim = estimate.items[0].ram.uma
 
         if ram_claim > allocatable.ram:
             return []
@@ -732,6 +732,7 @@ class ResourceFitPolicy:
         """
 
         rpc_servers: List[ModelInstanceRPCServer] = []
+
         for i in range(1, len(combination)):
             r_worker_id = combination[i][0]
             r_gpu_index = combination[i][1]
@@ -740,9 +741,10 @@ class ResourceFitPolicy:
                 r_worker_id
             ).status.memory.is_unified_memory
 
-            r_vram_claim = e.vrams[len(main_worker_gpu_indexes) + i - 1].nonuma
+            position = i - 1
+            r_vram_claim = e.vrams[position].nonuma
             if r_is_unified_memory:
-                r_vram_claim = e.vrams[len(main_worker_gpu_indexes) + i - 1].uma
+                r_vram_claim = e.vrams[position].uma
 
             if r_vram_claim > r_allocatable:
                 break
@@ -753,9 +755,7 @@ class ResourceFitPolicy:
                     gpu_index=r_gpu_index,
                     computed_resource_claim=ComputedResourceClaim(
                         is_unified_memory=r_is_unified_memory,
-                        offload_layers=e.vrams[
-                            len(main_worker_gpu_indexes) + i - 1
-                        ].handleLayers,
+                        offload_layers=e.vrams[position].handleLayers,
                         vram={r_gpu_index: r_vram_claim},
                         ram=0,
                         total_layers=e.offloadLayers,
@@ -790,13 +790,15 @@ class ResourceFitPolicy:
         ]
         main_worker_gpu_indexes = [value[0] for value in main_worker_gpus]
 
-        flag_tensor_spliting = [value[1] for value in main_worker_gpus]
+        flag_tensor_spliting = []
         flag_rpc_servers = []
         for i in range(1, len(combination)):
             c_worker_id = combination[i][0]
 
             flag_rpc_servers.append(f"{worker_map.get(c_worker_id).name}:{50052 + i}")
             flag_tensor_spliting.append(combination[i][2])
+
+        flag_tensor_spliting.extend([value[1] for value in main_worker_gpus])
 
         result = await calculate_model_resource_claim(
             self._model_instance,
@@ -809,7 +811,7 @@ class ResourceFitPolicy:
 
         estimate_satisfied_candidate = None
         estimate = sorted(
-            result.resource_claim_estimate.memory,
+            result.resource_claim_estimate.items,
             key=lambda x: x.offloadLayers,
             reverse=True,
         )
@@ -830,7 +832,11 @@ class ResourceFitPolicy:
                 main_worker_gpu_index,
                 main_worker_gpu_allocatable,
             ) in workers_allocatable.get(main_worker_id).vram.items():
-                position = main_worker_gpu_indexes.index(main_worker_gpu_index)
+                # vrams: [rpc_server1, rpc_server2, ..., main_worker]
+                position = len(flag_rpc_servers) + main_worker_gpu_indexes.index(
+                    main_worker_gpu_index
+                )
+
                 claim = e.vrams[position].nonuma
                 if main_worker_is_unified_memory:
                     claim = e.vrams[position].uma

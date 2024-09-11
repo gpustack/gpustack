@@ -44,7 +44,7 @@ class memoryEstimate:
 @dataclass_json
 @dataclass
 class estimate:
-    memory: List[memoryEstimate]
+    items: List[memoryEstimate]
     contextSize: int
     architecture: str
     embeddingOnly: bool
@@ -125,7 +125,9 @@ def _gguf_parser_command(
 
     tensor_split = kwargs.get("tensor_split")
     if tensor_split:
-        tensor_split_str = ",".join([str(i) for i in tensor_split])
+        tensor_split_str = ",".join(
+            [str(int(i / (1024 * 1024))) for i in tensor_split]
+        )  # convert to MiB to prevent overflow
         execuable_command.append("--tensor-split")
         execuable_command.append(tensor_split_str)
 
@@ -174,18 +176,18 @@ async def calculate_model_resource_claim(
         if offload == GPUOffloadEnum.Full:
             logger.info(
                 f"Calculated resource claim for full offload model instance {model_instance.name}, "
-                f"claim: {claim.estimate.memory[0]}"
+                f"claim: {claim.estimate.items[0]}"
             )
         elif offload == GPUOffloadEnum.Partial:
             logger.info(
                 f"Calculated resource claim for partial offloading model instance {model_instance.name}, "
-                f"least claim: {claim.estimate.memory[1]}, "
-                f"most claim: {claim.estimate.memory[len(claim.estimate.memory) - 2]}"
+                f"least claim: {claim.estimate.items[1]}, "
+                f"most claim: {claim.estimate.items[len(claim.estimate.items) - 2]}"
             )
         elif offload == GPUOffloadEnum.Disable:
             logger.info(
                 f"Calculated resource claim for disabled offloading model instance {model_instance.name}, "
-                f"claim: {claim.estimate.memory[0]}"
+                f"claim: {claim.estimate.items[0]}"
             )
 
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
