@@ -1,6 +1,6 @@
 {
   "estimate": {
-    "memory": [
+    "items": [
       {
         "offloadLayers": 0,
         "fullOffloaded": false,

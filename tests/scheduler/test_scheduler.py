@@ -763,18 +763,18 @@ def mock_calculate_model_resource_claim(
                     17171480576,
                 ): llama3_70b_partial_offload_split_2_4080_estimate_claim,
                 (
-                    26015170560,
                     17171480576,
+                    26015170560,
                 ): llama3_70b_partial_offload_split_2_4080_4090_estimate_claim,
                 (
-                    17171480576,
-                    17171480576,
                     26015170560,
+                    17171480576,
+                    17171480576,
                 ): llama3_70b_partial_offload_split_3_4080_4090_estimate_claim,
                 (
+                    17171480576,
+                    17171480576,
                     26015170560,
-                    17171480576,
-                    17171480576,
                 ): llama3_70b_partial_offload_split_3_4080_4090_estimate_claim_2,
             }
             mock_estimate = mapping[tuple(tensor_split)]()
