@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 import setproctitle
 import uvicorn
+from pathlib import Path
 
 from gpustack.config import Config
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
@@ -143,7 +144,7 @@ class Worker:
 
         @app.get("/serveLogs/{id}")
         async def get_serve_logs(id: int, log_options: LogOptionsDep):
-            path = f"{self._log_dir}/serve/{id}.log"
+            path = Path(self._log_dir) / "serve" / f"{id}.log"
             if not os.path.exists(path):
                 raise HTTPException(status_code=404, detail="Logs not found")
 
