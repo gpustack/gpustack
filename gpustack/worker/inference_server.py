@@ -136,7 +136,7 @@ class InferenceServer:
         main_worker_tensor_split = []
         if (
             self._model_instance.gpu_indexes
-            and len(self._model_instance.gpu_indexes) > 1
+            and len(self._model_instance.gpu_indexes) > 0
         ):
             vram_claims = claim.get("vram").values()
             main_worker_tensor_split = vram_claims
@@ -171,8 +171,8 @@ class InferenceServer:
         final_tensor_split = []
         if rpc_server_tensor_split:
             final_tensor_split.extend(rpc_server_tensor_split)
-
-        if main_worker_tensor_split:
+            final_tensor_split.extend(main_worker_tensor_split)
+        elif len(main_worker_tensor_split) > 1:
             final_tensor_split.extend(main_worker_tensor_split)
 
         if final_tensor_split:
