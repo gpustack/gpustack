@@ -3,7 +3,9 @@ name: Docker CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "v*-dev"
     tags: ["*.*.*"]
     paths-ignore:
       - "mkdocs.yml"
