@@ -182,7 +182,7 @@ class InferenceServer:
 
             arguments.extend(["--tensor-split", tensor_split_argument])
 
-        env = get_cuda_env(self._model_instance.gpu_indexes)
+        env = get_inference_running_env(self._model_instance.gpu_indexes)
         try:
             logger.info("Starting llama-box server")
             logger.debug(
@@ -303,13 +303,15 @@ def cuda_driver_installed() -> bool:
         return False
 
 
-def get_cuda_env(gpu_indexes: List[int] = None):
+def get_inference_running_env(gpu_indexes: List[int] = None):
+    env = os.environ.copy()
     system = platform.system()
 
     if system == "Darwin":
         return None
     elif (system == "Linux" or system == "Windows") and gpu_indexes:
-        return {"CUDA_VISIBLE_DEVICES": ",".join([str(i) for i in gpu_indexes])}
+        env["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in gpu_indexes])
+        return env
     else:
         # TODO: support more.
         return None

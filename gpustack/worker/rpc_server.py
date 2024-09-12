@@ -1,6 +1,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 import logging
 import multiprocessing
+import os
 import signal
 import subprocess
 import sys
@@ -49,6 +50,7 @@ class RPCServer:
             "--rpc-server-main-gpu",
             str(gpu_index),
         ]
+        env = os.environ.copy()
 
         try:
             logger.info("Starting llama-box rpc server")
@@ -59,6 +61,7 @@ class RPCServer:
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
+                env=env,
             )
         except Exception as e:
             error_message = f"Failed to run the llama-box rpc server: {e}"
