@@ -14,6 +14,7 @@ from gpustack.client import ClientSet
 from gpustack.config.config import Config
 from gpustack.schemas.workers import SystemReserved, Worker, WorkerStateEnum
 from gpustack.utils import network
+from gpustack.utils.process import terminate_process_tree
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.rpc_server import RPCServer, RPCServerProcessInfo
 
@@ -165,7 +166,7 @@ class WorkerManager:
                     f"RPC server for GPU {gpu_device.index} is not running, pid {pid}, restarting."
                 )
                 try:
-                    self._terminate_process_tree(pid)
+                    terminate_process_tree(pid)
                 except psutil.NoSuchProcess:
                     pass
                 except Exception as e:

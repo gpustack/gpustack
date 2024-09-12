@@ -12,6 +12,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.utils import network
+from gpustack.utils.process import terminate_process_tree
 from gpustack.utils.signal import signal_handler
 from gpustack.worker.inference_server import InferenceServer
 from gpustack.client import ClientSet
@@ -158,33 +159,13 @@ class ServeManager:
         else:
             pid = self._serving_model_instances[id].pid
             try:
-                self._terminate_process_tree(pid)
+                terminate_process_tree(pid)
             except psutil.NoSuchProcess:
                 pass
             except Exception as e:
                 logger.error(f"Failed to terminate process {pid}: {e}")
 
             self._serving_model_instances.pop(id)
-
-    def _terminate_process_tree(self, pid: int):
-        process = psutil.Process(pid)
-        children = process.children(recursive=True)
-        for child in children:
-            try:
-                child.terminate()
-            except psutil.NoSuchProcess:
-                pass
-        _, alive = psutil.wait_procs(children, timeout=3)
-        for p in alive:
-            try:
-                p.kill()
-            except psutil.NoSuchProcess:
-                pass
-        try:
-            process.terminate()
-            process.wait(timeout=3)
-        except psutil.TimeoutExpired:
-            process.kill()
 
     def monitor_processes(self):
         for id in list(self._serving_model_instances.keys()):
