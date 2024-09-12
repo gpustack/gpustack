@@ -31,10 +31,14 @@ function Get-UI {
     $tmpUIPath = Join-Path -Path $tmpPath -ChildPath "ui"
     $tag = "latest"
 
+    if ($GIT_VERSION -ne "v0.0.0") {
+        $tag = $GIT_VERSION
+    }
+
     $null = Remove-Item -Recurse -Force $uiPath -ErrorAction Ignore
     $null = New-Item -ItemType Directory -Path $tmpUIPath
 
-    GPUStack.Log.Info "downloading UI assets"
+    GPUStack.Log.Info "downloading '$tag' UI assets"
 
     try {
         $tmpFile = "$tmpPath/ui.tar.gz"
