@@ -916,7 +916,9 @@ async def get_worker_allocatable_resource(  # noqa: C901
 
     allocatable = Allocatable(ram=0, vram={})
     if worker.status.gpu_devices:
-        for gpu_index, gpu in enumerate(worker.status.gpu_devices):
+        for _, gpu in enumerate(worker.status.gpu_devices):
+            gpu_index = gpu.index
+
             if gpu.memory is None or gpu.memory.total is None:
                 continue
             allocatable_vram = max(
