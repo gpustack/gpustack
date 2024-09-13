@@ -188,7 +188,7 @@ function DownloadWithRetries {
     for ($i = 1; $i -le $maxRetries; $i++) {
         try {
             GPUStack.Log.Info "Attempting to download from $url (Attempt $i of $maxRetries)"
-            Start-BitsTransfer -Source $url -Destination $outFile
+            Invoke-WebRequest -Uri $url -OutFile $outFile -ErrorAction Stop
             return
         }
         catch {
