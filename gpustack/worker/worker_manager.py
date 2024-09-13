@@ -122,8 +122,8 @@ class WorkerManager:
 
             worker.system_reserved = self._system_reserved
             worker.labels = {
-                "os": os_info.system,
-                "arch": arch_info,
+                "os": os_info.system.lower(),
+                "arch": arch_info.lower(),
             }
 
             return worker
