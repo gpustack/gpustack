@@ -44,6 +44,7 @@ class ChatConfig(BaseSettings):
             raise Exception("API key is required. Please set GPUSTACK_API_KEY env var.")
         elif parsed_url.hostname in ["127.0.0.1", "localhost"] and not self.api_key:
             self.api_key = "local"
+        return self
 
 
 def parse_arguments(args) -> ChatConfig:
