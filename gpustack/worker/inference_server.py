@@ -319,10 +319,10 @@ def get_inference_running_env(gpu_indexes: List[int] = None):
 
 def get_llama_box_command(extra_key):
     command_map = {
-        ("Windows", "amd64", "gpu"): "llama-box-windows-amd64-cuda-12.5.exe",
+        ("Windows", "amd64", "gpu"): "llama-box-windows-amd64-cuda-12.6.exe",
         ("Darwin", "amd64", "gpu"): "llama-box-darwin-amd64-metal",
         ("Darwin", "arm64", "gpu"): "llama-box-darwin-arm64-metal",
-        ("Linux", "amd64", "gpu"): "llama-box-linux-amd64-cuda-12.5",
+        ("Linux", "amd64", "gpu"): "llama-box-linux-amd64-cuda-12.6",
         ("Linux", "amd64", "cpu"): "llama-box-linux-amd64-avx2",
         ("Linux", "arm64", "cpu"): "llama-box-linux-arm64-neon",
         ("Windows", "amd64", "cpu"): "llama-box-windows-amd64-avx2.exe",
