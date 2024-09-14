@@ -4,15 +4,33 @@ You can manage large language models in GPUStack by navigating to the `Models` p
 
 ## Deploy Model
 
-1. To deploy a model, click the `Deploy Model` button.
+Currently, models from [Hugging Face](https://huggingface.co) and [Ollama](https://ollama.com/library) in [GGUF format](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) are supported.
+
+### Deploying a Hugging Face Model
+
+1. Click the `Deploy Model` button, then select `Hugging Face` in the dropdown.
+
+2. Search the model by name from Hugging Face using the search bar in the top left. For example, `microsoft/Phi-3-mini-4k-instruct-gguf`.
+
+3. Select a file with the desired quantization format from `Available Files`.
+
+4. Adjust the `Name` and `Replicas` as needed.
+
+5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
+
+6. Click the `Save` button.
+
+### Deploying an Ollama Model
+
+1. Click the `Deploy Model` button, then select `Ollama Library` in the dropdown.
 
 2. Fill in the `Name` of the model.
 
-3. Select the `Source` of the model. Currently, models from `Hugging Face` and the `Ollama Library` in [GGUF format](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) are supported.
+3. Select an `Ollama Model` from the dropdown list, or input any Ollama model you need. For example, `llama3`, `llama3:70b` or `youraccount/llama3:70b`.
 
-4. For `Hugging Face` models, search and fill in the Hugging Face repo ID, e.g., `microsoft/Phi-3-mini-4k-instruct-gguf`, then select the `File Name`, e.g., `phi-3-mini-4k-instruct-q4.gguf`. For `Ollama Library` models, select an `Ollama Model` from the dropdown list, or input any Ollama model you need, e.g., `llama3:70b`.
+4. Adjust the `Replicas` as needed.
 
-5. Adjust the `Replicas` as needed.
+5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
 
 6. Click the `Save` button.
 
@@ -74,13 +92,13 @@ curl -sfL https://get.gpustack.ai | sh -s - --ollama-library-base-url http://loc
 
 That's it! You can now deploy the model `llama3` from `Ollama Library` source in GPUStack as usual, but the model will now be fetched from the self-hosted registry.
 
-## Advanced Deployment Configuration
+## Advanced Model Configuration
 
-Our platform supports tailored configurations for model deployment.
+GPUStack supports tailored configurations for model deployment.
 
 ### Auto Schedule Type
 
-The system automatically schedules model instances to appropriate GPUs/Workers based on current resource availability.
+GPUStack automatically schedules model instances to appropriate GPUs/Workers based on current resource availability.
 
 **Placement Strategy**
 

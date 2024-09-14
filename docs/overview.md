@@ -8,6 +8,7 @@ GPUStack is an open-source GPU cluster manager for running large language models
 
 - **Supports a Wide Variety of Hardware:** Run with different brands of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
 - **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.
+- **Distributed Inference**: Supports both single-node multi-GPU and multi-node inference and serving.
 - **Lightweight Python Package:** Minimal dependencies and operational overhead.
 - **OpenAI-compatible APIs:** Serve APIs that are compatible with OpenAI standards.
 - **User and API key management:** Simplified management of users and API keys.
