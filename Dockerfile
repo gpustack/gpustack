@@ -1,4 +1,4 @@
-ARG CUDA_VERSION=12.5.1
+ARG CUDA_VERSION=12.6.1
 
 FROM nvidia/cuda:$CUDA_VERSION-runtime-ubuntu22.04
 

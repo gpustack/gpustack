@@ -116,7 +116,7 @@ function download_gguf_parser() {
 
 
 function download_llama_box() {
-    local version="v0.0.43"
+    local version="v0.0.47"
 
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"
@@ -124,7 +124,7 @@ function download_llama_box() {
     if gpustack::util::is_darwin; then
       platforms=("darwin-amd64-metal" "darwin-arm64-metal" "darwin-amd64-avx2")
     elif gpustack::util::is_linux; then
-      platforms=("linux-amd64-cuda-12.5-l" "linux-amd64-avx2" "linux-arm64-neon")
+      platforms=("linux-amd64-cuda-12.6-l" "linux-amd64-avx2" "linux-arm64-neon")
     fi
 
     for platform in "${platforms[@]}"; do
