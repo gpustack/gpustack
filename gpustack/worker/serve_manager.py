@@ -79,12 +79,19 @@ class ServeManager:
         if mi.state == ModelInstanceStateEnum.ERROR:
             return
 
-        if (
+        if mi.id in self._serving_model_instances and event.type == EventType.DELETED:
+            self._stop_model_instance(mi)
+        elif (
+            mi.id in self._serving_model_instances
+            and mi.state == ModelInstanceStateEnum.SCHEDULED
+        ):
+            # In case when the worker is offline and reconnected, the model instance state
+            # is out of sync with existing serving process. Restart it.
+            self._restart_serve_process(mi)
+        elif (
             event.type in {EventType.CREATED, EventType.UPDATED}
         ) and not self._serving_model_instances.get(mi.id):
             self._start_serve_process(mi)
-        elif event.type == EventType.DELETED and mi.id in self._serving_model_instances:
-            self._stop_model_instance(mi)
 
     def _start_serve_process(self, mi: ModelInstance):
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
@@ -122,6 +129,11 @@ class ServeManager:
             }
             self._update_model_instance(mi.id, **patch_dict)
             logger.error(f"Failed to serve model instance: {e}")
+
+    def _restart_serve_process(self, mi: ModelInstance):
+        logger.debug(f"Restart serving model instance {mi.name}")
+        self._stop_model_instance(mi)
+        self._start_serve_process(mi)
 
     @staticmethod
     def serve_model_instance(
