@@ -231,7 +231,17 @@ class WorkerStatusCollector:
                 utilization_rate=memory_utilization_rate,
             )
 
-            if memory_total == 0:
+            if memory_total == 0 or (
+                vender.lower()
+                not in [
+                    vendor.name.lower()
+                    for vendor in [
+                        VendorEnum.NVIDIA,
+                        VendorEnum.Apple,
+                        VendorEnum.MTHREADS,
+                    ]
+                ]
+            ):
                 # Ignore the device without memory.
                 logger.debug(f"Ignore the gpu {list[i]}")
                 continue
