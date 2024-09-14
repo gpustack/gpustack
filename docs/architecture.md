@@ -30,6 +30,4 @@ Inference servers are the backends that performs the inference tasks. GPUStack u
 
 ### RPC Server
 
-Inference servers are the backends that performs the inference tasks. GPUStack uses [llama-box](https://github.com/gpustack/llama-box) as the inference server.
-
-The rpc-server allows running llama-box backend on a remote host. The Inference Server communicates with one or several instances of rpc-server and offloads computations to them. This can be used for distributed LLM inference across workers.
+The RPC server enables running llama-box backend on a remote host. The Inference Server communicates with one or several instances of RPC server, offloading computations to these remote hosts. This setup allows for distributed LLM inference across multiple workers, enabling the system to load larger models even when individual resources are limited.

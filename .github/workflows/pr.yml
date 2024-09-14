@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths-ignore:
+      - "mkdocs.yml"
       - "docs/**"
       - "**.md"
       - "**.mdx"
@@ -43,7 +44,7 @@ jobs:
       - name: Run CI build
         run: |
           make ci
-  
+
   windows:
     timeout-minutes: 20
     runs-on: windows-latest
