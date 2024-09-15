@@ -2,7 +2,7 @@
 
 The following diagram shows the architecture of GPUStack:
 
-![gpustack-architecture](../assets/gpustack-architecture.png)
+![gpustack-architecture](assets/gpustack-architecture.png)
 
 ### Server
 
