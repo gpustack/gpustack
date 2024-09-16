@@ -139,18 +139,17 @@ function Get-GGUFParser {
 }
 
 function Get-LlamaBox {
-    $version = "v0.0.47"
+    $version = "v0.0.50"
     $llamaBoxDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "llama-box"
     $llamaBoxTmpDir = Join-Path -Path $llamaBoxDir -ChildPath "tmp"
 
     # Include more platforms if needed
-    $platforms = @("windows-amd64-cuda-12.6-l", "windows-amd64-avx2", "windows-arm64-neon")
+    $platforms = @("windows-amd64-cuda-12.6", "windows-amd64-avx2", "windows-arm64-neon")
 
     foreach ($platform in $platforms) {
         $binFile = "llama-box.exe"
 
-        $modifiedFile = "llama-box-$platform.exe" -replace "-l\.exe$", ".exe"
-        $targetFile = Join-Path -Path $llamaBoxDir -ChildPath $modifiedFile
+        $targetFile = Join-Path -Path $llamaBoxDir -ChildPath "llama-box-$platform.exe"
 
         if (Test-Path -Path $targetFile) {
             GPUStack.Log.Info "llama-box-$platform already exists, skipping download"
