@@ -116,7 +116,7 @@ function download_gguf_parser() {
 
 
 function download_llama_box() {
-    local version="v0.0.47"
+    local version="v0.0.50"
 
     local llama_box_dir="${THIRD_PARTY_DIR}/llama-box"
     local llama_box_tmp_dir="${llama_box_dir}/tmp"
@@ -124,11 +124,11 @@ function download_llama_box() {
     if gpustack::util::is_darwin; then
       platforms=("darwin-amd64-metal" "darwin-arm64-metal" "darwin-amd64-avx2")
     elif gpustack::util::is_linux; then
-      platforms=("linux-amd64-cuda-12.6-l" "linux-amd64-avx2" "linux-arm64-neon")
+      platforms=("linux-amd64-cuda-12.6" "linux-amd64-avx2" "linux-arm64-neon")
     fi
 
     for platform in "${platforms[@]}"; do
-      local target_file="${llama_box_dir}/llama-box-${platform%-l}" # cut off the suffix
+      local target_file="${llama_box_dir}/llama-box-${platform}"
       if [ -f "${target_file}" ]; then
           gpustack::log::info "llama-box-${platform} already exists, skipping download"
           continue
