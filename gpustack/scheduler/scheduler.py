@@ -59,19 +59,23 @@ class Scheduler:
         Start the scheduler.
         """
 
-        # scheduler queue.
-        asyncio.create_task(self._schedule_cycle())
+        try:
+            # scheduler queue.
+            asyncio.create_task(self._schedule_cycle())
 
-        # scheduler job trigger by time interval.
-        trigger = IntervalTrigger(seconds=self._check_interval)
-        scheduler = AsyncIOScheduler()
-        scheduler.add_job(
-            self._enqueue_pending_instances,
-            trigger=trigger,
-            id=self._id,
-            max_instances=1,
-        )
-        scheduler.start()
+            # scheduler job trigger by time interval.
+            trigger = IntervalTrigger(seconds=self._check_interval)
+            scheduler = AsyncIOScheduler()
+            scheduler.add_job(
+                self._enqueue_pending_instances,
+                trigger=trigger,
+                id=self._id,
+                max_instances=1,
+            )
+            scheduler.start()
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}")
+
         logger.info("Scheduler started.")
 
         # scheduler job trigger by event.
