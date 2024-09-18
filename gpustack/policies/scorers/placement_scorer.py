@@ -4,12 +4,16 @@ from enum import Enum
 import logging
 from typing import List, Optional
 
-from gpustack.policies.policy import (
+from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
     ModelInstanceScore,
+    ModelInstanceScorer,
+    ScheduleCandidatesScorer,
 )
-from gpustack.policies.resource_fit_policy import get_worker_allocatable_resource
+from gpustack.policies.utils import (
+    get_worker_allocatable_resource,
+)
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
@@ -50,7 +54,7 @@ class ScaleTypeEnum(str, Enum):
     SCALE_DOWN = "scale_down"
 
 
-class PlacementPolicy:
+class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
     def __init__(
         self,
         model: Model,

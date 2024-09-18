@@ -4,15 +4,17 @@ import string
 from typing import List
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.config.config import Config
-from gpustack.policies.offload_layer_policy import OffloadLayerPolicy
-from gpustack.policies.placement_policy import PlacementPolicy, ScaleTypeEnum
-from gpustack.policies.policy import ModelInstanceScore
-from gpustack.policies.status_policy import StatusPolicy
+from gpustack.policies.scorers.offload_layer_policy import OffloadLayerScorer
+from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
+from gpustack.policies.base import ModelInstanceScore
+from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.models import (
+    BackendEnum,
     Model,
     ModelInstance,
     ModelInstanceCreate,
     ModelInstanceStateEnum,
+    get_backend,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.bus import Event, EventType
@@ -45,6 +47,7 @@ class ModelController:
         model: Model = event.data
         try:
             async with AsyncSession(self._engine) as session:
+                await set_default_worker_selector(session, model)
                 await sync_replicas(session, model, self._config)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
@@ -89,6 +92,17 @@ class ModelInstanceController:
             )
 
 
+async def set_default_worker_selector(session: AsyncSession, model: Model):
+    if model.deleted_at is not None:
+        return
+
+    model = await Model.one_by_id(session, model.id)
+    if not model.worker_selector and get_backend(model) == BackendEnum.VLLM:
+        # vLLM models are only supported on Linux amd64
+        model.worker_selector = {"os": "linux", "arch": "amd64"}
+        await model.update(session)
+
+
 async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
     """
     Synchronize the replicas.
@@ -115,6 +129,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 model_scope_file_path=model.model_scope_file_path,
                 state=ModelInstanceStateEnum.PENDING,
             )
+
             await ModelInstance.create(session, instance)
             logger.debug(f"Created model instance for model {model.name}")
 
@@ -139,15 +154,15 @@ async def find_scale_down_candidates(
     instances: List[ModelInstance], model: Model
 ) -> List[ModelInstanceScore]:
     try:
-        placement_policy = PlacementPolicy(model, scale_type=ScaleTypeEnum.SCALE_DOWN)
+        placement_policy = PlacementScorer(model, scale_type=ScaleTypeEnum.SCALE_DOWN)
         placement_candidates = await policy_score_instances(placement_policy, instances)
 
-        offload_layer_policy = OffloadLayerPolicy(model)
+        offload_layer_policy = OffloadLayerScorer(model)
         offload_candidates = await policy_score_instances(
             offload_layer_policy, instances
         )
 
-        status_policy = StatusPolicy(model)
+        status_policy = StatusFilter(model)
         status_candidates = await policy_score_instances(status_policy, instances)
 
         offload_cand_map = {cand.model_instance.id: cand for cand in offload_candidates}

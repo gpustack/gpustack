@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
 
-from gpustack.policies.policy import ModelInstanceScore
+from gpustack.policies.base import ModelInstanceScore
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import get_engine
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 MaxScore = 100
 
 
-class StatusPolicy:
+class StatusFilter:
     def __init__(self, model: Model, model_instance: Optional[ModelInstance] = None):
         self._engine = get_engine()
         self._model = model

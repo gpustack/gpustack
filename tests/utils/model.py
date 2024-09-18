@@ -3,6 +3,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     PlacementStrategyEnum,
+    SourceEnum,
 )
 
 
@@ -33,6 +34,7 @@ def new_model(
     replicas=1,
     ollama_library_model_name="llama3:8b",
     placement_strategy=PlacementStrategyEnum.BINPACK,
+    distributable=True,
     **kargs,
 ) -> Model:
     worker_selector = kargs.get("worker_selector")
@@ -45,7 +47,9 @@ def new_model(
         name=name,
         replicas=replicas,
         ready_replicas=0,
+        source=SourceEnum.OLLAMA_LIBRARY,
         ollama_library_model_name=ollama_library_model_name,
+        distributable=distributable,
         placement_strategy=placement_strategy,
         worker_selector=worker_selector,
         cpu_offloading=cpu_offloading,

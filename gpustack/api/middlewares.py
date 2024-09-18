@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 import logging
 import time
@@ -22,6 +22,13 @@ from gpustack.server.db import get_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+class RequestTimeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request.state.start_time = datetime.now(timezone.utc)
+        response = await call_next(request)
+        return response
 
 
 class ModelUsageMiddleware(BaseHTTPMiddleware):
@@ -87,22 +94,52 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         async def streaming_generator():
             try:
                 async for chunk in response.body_iterator:
-                    data = chunk.decode("utf-8")
-                    yield chunk
-                    if '"completion_tokens":' in data:
-                        lines = data.split('\n')
-                        json_line = None
-                        for line in lines:
-                            if '"completion_tokens":' in line:
-                                json_line = line
-                                break
-                        if json_line:
-                            response_dict = json.loads(json_line.split('data: ')[-1])
-                            response_chunk = response_class(**response_dict)
+                    if not hasattr(request.state, 'first_token_time'):
+                        request.state.first_token_time = datetime.now(timezone.utc)
+                    data = chunk.decode("utf-8").split('data: ')[-1]
+                    if not data.startswith('[DONE]'):
+                        response_dict = json.loads(data.strip())
+                        response_chunk = response_class(**response_dict)
+                        is_usage_chunk = len(response_chunk.choices) == 0
+                        if is_usage_chunk:
                             await record_usage(request, response_chunk.usage)
-                        break
 
-                async for chunk in response.body_iterator:
+                            if 'tokens_per_second' not in response_dict['usage']:
+                                # Fill rate metrics. These are extended info not included in OAI APIs.
+                                # llama-box provides them out-of-the-box. Align with other backends here.
+                                now = datetime.now(timezone.utc)
+                                time_to_first_token_ms = (
+                                    request.state.first_token_time
+                                    - request.state.start_time
+                                ).total_seconds() * 1000
+                                time_per_output_token_ms = (
+                                    (
+                                        now - request.state.first_token_time
+                                    ).total_seconds()
+                                    * 1000
+                                    / max(response_chunk.usage.completion_tokens, 1)
+                                )
+                                tokens_per_second = (
+                                    1000 / time_per_output_token_ms
+                                    if time_per_output_token_ms > 0
+                                    else 0
+                                )
+
+                                response_dict['usage'][
+                                    "time_to_first_token_ms"
+                                ] = time_to_first_token_ms
+                                response_dict['usage'][
+                                    "time_per_output_token_ms"
+                                ] = time_per_output_token_ms
+                                response_dict['usage'][
+                                    "tokens_per_second"
+                                ] = tokens_per_second
+
+                                json_str = json.dumps(
+                                    response_dict, separators=(',', ':')
+                                )
+                                chunk = f"data: {json_str}\n\n".encode("utf-8")
+
                     yield chunk
             except Exception as e:
                 logger.error(f"Error processing streaming response: {e}")

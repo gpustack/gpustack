@@ -8,28 +8,36 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from gpustack.policies.placement_policy import PlacementPolicy
+from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.config.config import Config
-from gpustack.policies.policy import ModelInstanceScheduleCandidate
-from gpustack.policies.resource_fit_policy import ResourceFitPolicy
-from gpustack.policies.label_matching_policy import LabelMatchingPolicy
-from gpustack.policies.gpu_matching_policy import GPUMatchingPolicy
+from gpustack.policies.base import (
+    ModelInstanceScheduleCandidate,
+    ScheduleCandidatesSelector,
+    WorkerFilterChain,
+)
+from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
+    GGUFResourceFitSelector,
+)
+from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
+from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
+    VLLMResourceFitSelector,
+)
 from gpustack.scheduler.queue import AsyncUniqueQueue
-from gpustack.policies.status_policy import StatusPolicy
+from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.models import (
     DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    is_gguf_model,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
-from gpustack.policies.calculator import (
+from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
-    ModelInstanceResourceClaim,
     calculate_model_resource_claim,
-    estimate,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,44 +103,29 @@ class Scheduler:
                 tasks = []
                 for instance in instances:
                     if self._should_schedule(instance):
-                        task = asyncio.create_task(
-                            self._process_calculate_model_resource_claim(instance)
-                        )
+                        task = asyncio.create_task(self._evaluate(instance))
                         tasks.append(task)
 
                 await asyncio.gather(*tasks)
         except Exception as e:
             logger.error(f"Failed to enqueue pending model instances: {e}")
 
-    async def _process_calculate_model_resource_claim(self, instance: ModelInstance):
+    async def _evaluate(self, instance: ModelInstance):
+        """
+        Evaluate the model instance's metadata.
+        """
         async with AsyncSession(self._engine) as session:
             try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
-                if instance.state != ModelInstanceStateEnum.ANALYZING:
-                    instance.state = ModelInstanceStateEnum.ANALYZING
-                    instance.state_message = "Evaluating resource requirements"
-                    await instance.update(session)
 
                 model = await Model.one_by_id(session, instance.model_id)
                 if model is None:
                     raise Exception("Model not found.")
 
-                task_output = await calculate_model_resource_claim(
-                    instance,
-                    model,
-                    offload=GPUOffloadEnum.Full,
-                    cache_dir=self._cache_dir,
-                    ollama_library_base_url=self._config.ollama_library_base_url,
-                )
+                if is_gguf_model(model):
+                    self._evaluate_gguf_model(session, model, instance)
 
-                if (
-                    task_output.resource_claim_estimate.embeddingOnly
-                    and not model.embedding_only
-                ):
-                    await self.set_model_embedding_only(session, model)
-
-                await self._queue.put(task_output)
-
+                await self._queue.put(instance)
             except Exception as e:
                 try:
                     instance.state = ModelInstanceStateEnum.ERROR
@@ -145,15 +138,41 @@ class Scheduler:
                         f"Failed to update model instance: {ue}. Original error: {e}"
                     )
 
-    async def set_model_embedding_only(self, session: AsyncSession, model: Model):
-        """
-        Set the model to be embedding only.
-        Args:
-            session: AsyncSession to use.
-            model: Model to set.
-        """
-        model.embedding_only = True
-        await model.update(session)
+    async def _evaluate_gguf_model(
+        self,
+        session: AsyncSession,
+        model: Model,
+        instance: ModelInstance,
+    ):
+        if instance.state != ModelInstanceStateEnum.ANALYZING:
+            instance.state = ModelInstanceStateEnum.ANALYZING
+            instance.state_message = "Evaluating resource requirements"
+            await instance.update(session)
+        task_output = await calculate_model_resource_claim(
+            instance,
+            model,
+            offload=GPUOffloadEnum.Full,
+            cache_dir=self._cache_dir,
+            ollama_library_base_url=self._config.ollama_library_base_url,
+        )
+
+        should_update = False
+        if (
+            task_output.resource_claim_estimate.embeddingOnly
+            and not model.embedding_only
+        ):
+            should_update = True
+            model.embedding_only = True
+
+        if (
+            task_output.resource_claim_estimate.distributable
+            and not model.distributable
+        ):
+            should_update = True
+            model.distributable = True
+
+        if should_update:
+            await model.update(session)
 
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """
@@ -206,24 +225,28 @@ class Scheduler:
         instance: ModelInstance,
         model: Model,
         workers: List[Worker],
-        estimate: estimate = None,
     ) -> ModelInstanceScheduleCandidate:
         try:
-            gpu_matching_policy = GPUMatchingPolicy(model, instance)
-            workers = await gpu_matching_policy.filter(workers)
+            filters = [
+                GPUMatchingFilter(model, instance),
+                LabelMatchingFilter(model, instance),
+                StatusFilter(model, instance),
+            ]
 
-            label_matching_policy = LabelMatchingPolicy(model, instance)
-            workers = await label_matching_policy.filter(workers)
+            worker_filter_chain = WorkerFilterChain(filters)
+            workers = await worker_filter_chain.filter(workers)
 
-            status_policy = StatusPolicy(model, instance)
-            workers = await status_policy.filter(workers)
+            candidates_selector: ScheduleCandidatesSelector = None
+            if is_gguf_model(model):
+                candidates_selector = GGUFResourceFitSelector(
+                    model, instance, self._cache_dir
+                )
+            else:
+                candidates_selector = VLLMResourceFitSelector(model, instance)
 
-            resource_fit_policy = ResourceFitPolicy(
-                model, instance, self._cache_dir, estimate
-            )
-            candidates = await resource_fit_policy.filter(workers)
+            candidates = await candidates_selector.select_candidates(workers)
 
-            placement_policy = PlacementPolicy(model, instance)
+            placement_policy = PlacementScorer(model, instance)
             candidates = await placement_policy.score(candidates)
 
             candidate = self.pick_highest_score_candidate(candidates)
@@ -234,17 +257,15 @@ class Scheduler:
             )
             logger.error(state_message)
 
-    async def _schedule_one(self, item: ModelInstanceResourceClaim):
+    async def _schedule_one(self, instance: ModelInstance):
         """
         Schedule a model instance by picking one candidate.
         Args:
-            item: ModelInstanceResourceClaim to schedule.
+            item: Model instance to schedule.
         """
-        logger.debug(f"Scheduling model instance {item.model_instance.name}")
+        logger.debug(f"Scheduling model instance {instance.name}")
 
         state_message = ""
-        instance = item.model_instance
-        estimate = item.resource_claim_estimate
 
         async with AsyncSession(self._engine) as session:
             workers = await Worker.all_by_field(session, "state", WorkerStateEnum.READY)
@@ -257,9 +278,7 @@ class Scheduler:
 
             candidate = None
             if workers and model:
-                candidate = await self.find_candidate(
-                    instance, model, workers, estimate
-                )
+                candidate = await self.find_candidate(instance, model, workers)
 
             model_instance = await ModelInstance.one_by_id(session, instance.id)
             if candidate is None:

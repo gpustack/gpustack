@@ -14,12 +14,15 @@ from gpustack.config.config import Config
 from gpustack.utils import network
 from gpustack.utils.process import terminate_process_tree
 from gpustack.utils.signal import signal_handler
-from gpustack.worker.inference_server import InferenceServer
+from gpustack.worker.backends.llama_box import LlamaBoxServer
+from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
+    BackendEnum,
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
+    get_backend,
 )
 from gpustack.server.bus import Event, EventType
 
@@ -45,15 +48,17 @@ class ServeManager:
 
     def _get_current_worker_id(self):
         for _ in range(3):
+            workers = None
             try:
                 workers = self._clientset.workers.list()
             except Exception as e:
                 logger.debug(f"Failed to get workers: {e}")
 
-            for worker in workers.items:
-                if worker.name == self._worker_name:
-                    self._worker_id = worker.id
-                    break
+            if workers:
+                for worker in workers.items:
+                    if worker.name == self._worker_name:
+                        self._worker_id = worker.id
+                        break
             time.sleep(1)
 
         if not hasattr(self, "_worker_id"):
@@ -150,9 +155,16 @@ class ServeManager:
             base_url=cfg.server_url,
             headers=client_headers,
         )
+        model = clientset.models.get(mi.model_id)
+        backend = get_backend(model)
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                InferenceServer(clientset, mi, cfg).start()
+                if backend == BackendEnum.LLAMA_BOX:
+                    LlamaBoxServer(clientset, mi, cfg).start()
+                elif backend == BackendEnum.VLLM:
+                    VLLMServer(clientset, mi, cfg).start()
+                else:
+                    raise ValueError(f"Unsupported backend {backend}")
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)

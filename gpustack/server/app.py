@@ -15,6 +15,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GPUStack", lifespan=lifespan, response_model_exclude_unset=True)
+app.add_middleware(middlewares.RequestTimeMiddleware)
 app.add_middleware(middlewares.ModelUsageMiddleware)
 app.add_middleware(middlewares.RefreshTokenMiddleware)
 app.include_router(api_router)
