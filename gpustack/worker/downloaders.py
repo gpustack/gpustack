@@ -10,8 +10,11 @@ from pathlib import Path
 from tqdm import tqdm
 from tqdm.contrib.concurrent import thread_map
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from modelscope.hub.file_download import model_file_download
+from modelscope.hub.snapshot_download import (
+    snapshot_download as modelscope_snapshot_download,
+)
 import base64
 import random
 import string
@@ -54,6 +57,38 @@ class HfDownloader:
                 Number of concurrent threads to download files (1 thread = 1 file download).
                 Defaults to 8.
 
+        Returns:
+            The path to the downloaded model.
+        """
+
+        if filename is not None:
+            return cls.download_file(
+                repo_id, filename, local_dir, local_dir_use_symlinks, cache_dir
+            )
+
+        return snapshot_download(
+            repo_id=repo_id,
+            local_dir=local_dir,
+            local_dir_use_symlinks=local_dir_use_symlinks,
+            cache_dir=cache_dir,
+        )
+
+    @classmethod
+    def download_file(
+        cls,
+        repo_id: str,
+        filename: Optional[str],
+        local_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
+        cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        max_workers: int = 8,
+    ) -> str:
+        """Download a model from the Hugging Face Hub.
+        Args:
+            repo_id: The model repo id.
+            filename: A filename or glob pattern to match the model file in the repo.
+            local_dir: The local directory to save the model to.
+            local_dir_use_symlinks: Whether to use symlinks when downloading the model.
         Returns:
             The path to the downloaded model.
         """
@@ -391,6 +426,39 @@ class ModelScopeDownloader:
 
     @classmethod
     def download(
+        cls,
+        model_id: str,
+        file_path: Optional[str],
+        cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        max_workers: int = 8,
+    ) -> str:
+        """Download a model from Model Scope.
+
+        Args:
+            model_id:
+                The model id.
+            file_path:
+                A filename or glob pattern to match the model file in the repo.
+            cache_dir:
+                The cache directory to save the model to.
+            max_workers:
+                Number of concurrent threads to download files (1 thread = 1 file download).
+                Defaults to 8.
+
+        Returns:
+            The path to the downloaded model.
+        """
+
+        if file_path is not None:
+            return cls.download_file(model_id, file_path, cache_dir, max_workers)
+
+        return modelscope_snapshot_download(
+            model_id=model_id,
+            cache_dir=cache_dir,
+        )
+
+    @classmethod
+    def download_file(
         cls,
         model_id: str,
         file_path: Optional[str],

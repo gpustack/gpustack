@@ -1,6 +1,6 @@
 import logging
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.policies.policy import Allocated
+from gpustack.policies.base import Allocated
 from gpustack.schemas.workers import (
     CPUInfo,
     GPUCoreInfo,
@@ -243,7 +243,6 @@ class WorkerStatusCollector:
                 ]
             ):
                 # Ignore the device without memory.
-                logger.debug(f"Ignore the gpu {list[i]}")
                 continue
 
             # Core.

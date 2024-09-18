@@ -62,7 +62,9 @@ async def embeddings(session: SessionDep, request: Request):
     return await proxy_request_by_model(request, session, "embeddings")
 
 
-async def proxy_request_by_model(request: Request, session: SessionDep, endpoint: str):
+async def proxy_request_by_model(  # noqa: C901
+    request: Request, session: SessionDep, endpoint: str
+):
     """
     Proxy the request to the model instance that is running the model specified in the
     request body.
@@ -99,6 +101,10 @@ async def proxy_request_by_model(request: Request, session: SessionDep, endpoint
 
     try:
         if stream:
+            if "stream_options" not in body:
+                # Defaults to include usage.
+                # TODO Record usage without client awareness.
+                body["stream_options"] = {"include_usage": True}
 
             async def stream_generator():
                 async with httpx.AsyncClient() as client:

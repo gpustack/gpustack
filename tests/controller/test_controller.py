@@ -1,6 +1,6 @@
 from typing import List
 import pytest
-from gpustack.policies.policy import ModelInstanceScore
+from gpustack.policies.base import ModelInstanceScore
 
 from gpustack.schemas.models import (
     ComputedResourceClaim,

@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-from gpustack.policies.policy import ModelInstanceScore
+from gpustack.policies.base import ModelInstanceScore, ModelInstanceScorer
 from gpustack.schemas.models import Model, ModelInstance
 
 MaxScore = 100
@@ -9,7 +9,7 @@ MaxScore = 100
 logger = logging.getLogger(__name__)
 
 
-class OffloadLayerPolicy:
+class OffloadLayerScorer(ModelInstanceScorer):
     def __init__(self, model: Model):
         self._model = model
 

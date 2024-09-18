@@ -24,7 +24,7 @@ set -o noglob
 #   - INSTALL_INDEX_URL
 #     Base URL of the Python Package Index.
 
-INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-gpustack}"
+INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
 INSTALL_PRE_RELEASE="${INSTALL_PRE_RELEASE:-0}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 
@@ -382,6 +382,16 @@ install_gpustack() {
 
   if [ -n "$INSTALL_INDEX_URL" ]; then
     install_args="--index-url $INSTALL_INDEX_URL $install_args"
+  fi
+
+  default_package_spec="gpustack"
+  if [ "$OS" != "macos" ] && [ "$(uname -m)" = "x86_64" ]; then
+    # Install optional vLLM dependencies on amd64 Linux
+    default_package_spec="gpustack[vllm]"
+  fi
+
+  if [ -z "$INSTALL_PACKAGE_SPEC" ]; then
+    INSTALL_PACKAGE_SPEC="$default_package_spec"
   fi
 
   # shellcheck disable=SC2090,SC2086

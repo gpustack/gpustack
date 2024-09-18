@@ -1,6 +1,5 @@
 import multiprocessing
 import os
-import platform
 import logging
 from typing import Dict
 
@@ -14,6 +13,7 @@ from gpustack.client import ClientSet
 from gpustack.config.config import Config
 from gpustack.schemas.workers import SystemReserved, Worker, WorkerStateEnum
 from gpustack.utils import network
+from gpustack.utils import platform
 from gpustack.utils.process import terminate_process_tree
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.rpc_server import RPCServer, RPCServerProcessInfo
@@ -117,13 +117,10 @@ class WorkerManager:
             )
             worker = collector.collect()
 
-            os_info = platform.uname()
-            arch_info = platform.machine()
-
             worker.system_reserved = self._system_reserved
             worker.labels = {
-                "os": os_info.system.lower(),
-                "arch": arch_info.lower(),
+                "os": platform.system(),
+                "arch": platform.arch(),
             }
 
             return worker

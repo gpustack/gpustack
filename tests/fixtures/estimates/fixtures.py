@@ -1,5 +1,5 @@
 import os
-from gpustack.policies.calculator import modelResoruceClaim
+from gpustack.scheduler.calculator import modelResoruceClaim
 
 # The data structure is compatible with the gguf-parser-go (v0.9.2), data values are designed according to test needs
 

@@ -3,11 +3,13 @@ import shutil
 from typing import List
 import pytest
 from gpustack.config.config import Config
-from gpustack.policies.placement_policy import PlacementPolicy
-from gpustack.policies.policy import ModelInstanceScheduleCandidate
-from gpustack.policies.resource_fit_policy import ResourceFitPolicy
-from gpustack.policies.label_matching_policy import LabelMatchingPolicy
-from gpustack.policies.calculator import (
+from gpustack.policies.scorers.placement_scorer import PlacementScorer
+from gpustack.policies.base import ModelInstanceScheduleCandidate
+from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
+    GGUFResourceFitSelector,
+)
+from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
+from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     ModelInstanceResourceClaim,
 )
@@ -72,7 +74,7 @@ def config(temp_dir):
 
 
 @pytest.mark.asyncio
-async def test_label_matching_policy():
+async def test_label_matching_filter():
     workers = [
         worker_macos_metal(),
         worker_linux_nvidia_1_4090_gpu(),
@@ -83,8 +85,8 @@ async def test_label_matching_policy():
     m = new_model(1, "test", 1, worker_selector=labels)
     mi = new_model_instance(1, "test", 1)
 
-    policy = LabelMatchingPolicy(m, mi)
-    candidates = await policy.filter(workers)
+    filter = LabelMatchingFilter(m, mi)
+    candidates = await filter.filter(workers)
 
     assert len(candidates) == 1
     assert candidates[0].labels == labels
@@ -101,23 +103,23 @@ async def test_schedule_to_single_worker_single_gpu(config):
     m = new_model(1, "test", 1)
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_policy = ResourceFitPolicy(m, mi)
-    placement_policy = PlacementPolicy(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(m, mi)
+    placement_scorer = PlacementScorer(m, mi)
     scheduler = Scheduler(config)
 
     with (
         patch(
-            'gpustack.policies.resource_fit_policy.get_worker_model_instances',
+            'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
         patch(
-            'gpustack.policies.resource_fit_policy.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
     ):
 
-        candidates = await resource_fit_policy.filter(workers)
-        candidates = await placement_policy.score(candidates)
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
         candidate = await scheduler.find_candidate(mi, m, workers)
 
         expected_candidates = [
@@ -182,24 +184,24 @@ async def test_schedule_to_single_worker_multi_gpu(config):
     m = new_model(1, "test", 1, "llama3:70b")
     mi = new_model_instance(1, "test", 1)
 
-    resource_fit_policy = ResourceFitPolicy(m, mi)
-    placement_policy = PlacementPolicy(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(m, mi)
+    placement_scorer = PlacementScorer(m, mi)
     scheduler = Scheduler(config)
 
     with (
         patch(
-            'gpustack.policies.resource_fit_policy.get_worker_model_instances',
+            'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
         patch(
-            'gpustack.policies.resource_fit_policy.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
     ):
 
         # filter
-        candidates = await resource_fit_policy.filter(workers)
-        candidates = await placement_policy.score(candidates)
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
         candidate = await scheduler.find_candidate(mi, m, workers)
 
         expected_candidates = [
@@ -265,32 +267,34 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
         ),
     ]
 
-    resource_fit_policy_binpack = ResourceFitPolicy(m, mi_binpack)
-    placement_policy_binpack = PlacementPolicy(m, mi_binpack)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi_binpack)
+    placement_scorer_binpack = PlacementScorer(m, mi_binpack)
 
-    resource_fit_policy_spread = ResourceFitPolicy(m, mi_spread)
-    placement_policy_spread = PlacementPolicy(m, mi_spread)
+    resource_fit_selector_spread = GGUFResourceFitSelector(m, mi_spread)
+    placement_scorer_spread = PlacementScorer(m, mi_spread)
 
     scheduler = Scheduler(config)
 
     with (
         patch(
-            'gpustack.policies.resource_fit_policy.get_worker_model_instances',
+            'gpustack.policies.utils.get_worker_model_instances',
             return_value=mis,
         ),
         patch(
-            'gpustack.policies.resource_fit_policy.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
-            'gpustack.policies.placement_policy.get_model_instances',
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
             return_value=mis,
         ),
     ):
 
         # binpack
-        binpack_candidates = await resource_fit_policy_binpack.filter(workers)
-        binpack_candidates = await placement_policy_binpack.score(binpack_candidates)
+        binpack_candidates = await resource_fit_selector_binpack.select_candidates(
+            workers
+        )
+        binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
         binpack_candidate = await scheduler.find_candidate(mi_binpack, m, workers)
 
         expected_candidates = [
@@ -358,8 +362,10 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
 
         # spread
         m.placement_strategy = PlacementStrategyEnum.SPREAD
-        spread_candidates = await resource_fit_policy_spread.filter(workers)
-        spread_candidates = await placement_policy_spread.score(spread_candidates)
+        spread_candidates = await resource_fit_selector_spread.select_candidates(
+            workers
+        )
+        spread_candidates = await placement_scorer_spread.score(spread_candidates)
         spread_candidate = await scheduler.find_candidate(mi_spread, m, workers)
 
         expected_candidates = [
@@ -396,28 +402,30 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
     m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=True)
     mi_binpack = new_model_instance(1, "test_binpack", 1)
 
-    resource_fit_policy_binpack = ResourceFitPolicy(m, mi_binpack)
-    placement_policy_binpack = PlacementPolicy(m, mi_binpack)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi_binpack)
+    placement_scorer_binpack = PlacementScorer(m, mi_binpack)
     scheduler = Scheduler(config)
 
     with (
         patch(
-            'gpustack.policies.resource_fit_policy.get_worker_model_instances',
+            'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
         patch(
-            'gpustack.policies.resource_fit_policy.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
-            'gpustack.policies.placement_policy.get_model_instances',
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
             return_value=[],
         ),
     ):
 
         # binpack
-        binpack_candidates = await resource_fit_policy_binpack.filter(workers)
-        binpack_candidates = await placement_policy_binpack.score(binpack_candidates)
+        binpack_candidates = await resource_fit_selector_binpack.select_candidates(
+            workers
+        )
+        binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
         binpack_candidate = await scheduler.find_candidate(mi_binpack, m, workers)
 
         expected_candidates = [
@@ -496,36 +504,31 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
             ),
         ),
     ]
-    es = mock_calculate_model_resource_claim(
-        mi_binpack, m, offload=GPUOffloadEnum.Disable
-    )
-    resource_fit_policy_binpack = ResourceFitPolicy(
-        m, mi_binpack, estimate=es.resource_claim_estimate
-    )
-    placement_policy_binpack = PlacementPolicy(m, mi_binpack)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi_binpack)
+    placement_scorer_binpack = PlacementScorer(m, mi_binpack)
     scheduler = Scheduler(config)
 
     with (
         patch(
-            'gpustack.policies.resource_fit_policy.get_worker_model_instances',
+            'gpustack.policies.utils.get_worker_model_instances',
             return_value=mis,
         ),
         patch(
-            'gpustack.policies.resource_fit_policy.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
-            'gpustack.policies.placement_policy.get_model_instances',
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
             return_value=mis,
         ),
     ):
 
         # binpack
-        binpack_candidates = await resource_fit_policy_binpack.filter(workers)
-        binpack_candidates = await placement_policy_binpack.score(binpack_candidates)
-        binpack_candidate = await scheduler.find_candidate(
-            mi_binpack, m, workers, estimate=es.resource_claim_estimate
+        binpack_candidates = await resource_fit_selector_binpack.select_candidates(
+            workers
         )
+        binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
+        binpack_candidate = await scheduler.find_candidate(mi_binpack, m, workers)
 
         expected_candidates = [
             {
@@ -555,16 +558,14 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         # spread
         m.placement_strategy = PlacementStrategyEnum.SPREAD
 
-        resource_fit_policy_spread = ResourceFitPolicy(
-            m, mi_spread, estimate=es.resource_claim_estimate
-        )
-        placement_policy_spread = PlacementPolicy(m, mi_spread)
+        resource_fit_selector_spread = GGUFResourceFitSelector(m, mi_spread)
+        placement_policy_spread = PlacementScorer(m, mi_spread)
 
-        spread_candidates = await resource_fit_policy_spread.filter(workers)
-        spread_candidates = await placement_policy_spread.score(spread_candidates)
-        spread_candidate = await scheduler.find_candidate(
-            mi_spread, m, workers, estimate=es.resource_claim_estimate
+        spread_candidates = await resource_fit_selector_spread.select_candidates(
+            workers
         )
+        spread_candidates = await placement_policy_spread.score(spread_candidates)
+        spread_candidate = await scheduler.find_candidate(mi_spread, m, workers)
 
         expected_spread_candidates = [
             {"worker_id": 6, "score": 83.3333333333},
@@ -585,25 +586,22 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
 
     m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=False)
     mi_binpack = new_model_instance(1, "test_binpack", 1)
-    es = mock_calculate_model_resource_claim(mi_binpack, m)
 
-    resource_fit_policy_binpack = ResourceFitPolicy(
-        m, mi_binpack, estimate=es.resource_claim_estimate
-    )
-    placement_policy_binpack = PlacementPolicy(m, mi_binpack)
+    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi_binpack)
+    placement_scorer_binpack = PlacementScorer(m, mi_binpack)
     scheduler = Scheduler(config)
 
     with (
         patch(
-            'gpustack.policies.resource_fit_policy.get_worker_model_instances',
+            'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
         patch(
-            'gpustack.policies.resource_fit_policy.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
-            'gpustack.policies.placement_policy.get_model_instances',
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
             return_value=[],
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
@@ -614,11 +612,11 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
     ):
 
         # binpack
-        binpack_candidates = await resource_fit_policy_binpack.filter(workers)
-        binpack_candidates = await placement_policy_binpack.score(binpack_candidates)
-        binpack_candidate = await scheduler.find_candidate(
-            mi_binpack, m, workers, estimate=es.resource_claim_estimate
+        binpack_candidates = await resource_fit_selector_binpack.select_candidates(
+            workers
         )
+        binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
+        binpack_candidate = await scheduler.find_candidate(mi_binpack, m, workers)
 
         expected_candidates = [
             {

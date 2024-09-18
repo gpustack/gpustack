@@ -23,6 +23,11 @@ class PlacementStrategyEnum(str, Enum):
     BINPACK = "binpack"
 
 
+class BackendEnum(str, Enum):
+    LLAMA_BOX = "llama-box"
+    VLLM = "vllm"
+
+
 class GPUSelector(BaseModel):
     worker_name: str
     gpu_index: int
@@ -40,9 +45,9 @@ class ModelSource(BaseModel):
     @model_validator(mode="after")
     def check_huggingface_fields(self):
         if self.source == SourceEnum.HUGGING_FACE:
-            if not self.huggingface_repo_id or not self.huggingface_filename:
+            if not self.huggingface_repo_id:
                 raise ValueError(
-                    "huggingface_repo_id and huggingface_filename must be provided "
+                    "huggingface_repo_id must be provided "
                     "when source is 'huggingface'"
                 )
         if self.source == SourceEnum.OLLAMA_LIBRARY:
@@ -52,9 +57,9 @@ class ModelSource(BaseModel):
                 )
 
         if self.source == SourceEnum.MODEL_SCOPE:
-            if not self.model_scope_model_id or not self.model_scope_file_path:
+            if not self.model_scope_model_id:
                 raise ValueError(
-                    "model_scope_model_id and model_scope_file_path must be provided "
+                    "model_scope_model_id must be provided "
                     "when source is 'model_scope'"
                 )
         return self
@@ -79,11 +84,32 @@ class ModelBase(SQLModel, ModelSource):
         sa_column=Column(pydantic_column_type(GPUSelector)), default=None
     )
 
+    backend: Optional[str] = None
+    backend_parameters: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
+
+    @model_validator(mode="after")
+    def validate(self):
+        backend = get_backend(self)
+        if backend == BackendEnum.LLAMA_BOX:
+            if self.source == SourceEnum.HUGGING_FACE and not self.huggingface_filename:
+                raise ValueError(
+                    "huggingface_filename must be provided when source is 'huggingface'"
+                )
+        elif backend == BackendEnum.VLLM:
+            if self.cpu_offloading:
+                raise ValueError("CPU offloading is only supported for GGUF models")
+            if self.distributed_inference_across_workers:
+                raise ValueError(
+                    "Distributed inference accross workers is only supported for GGUF models"
+                )
+        return self
+
 
 class Model(ModelBase, BaseModelMixin, table=True):
     __tablename__ = 'models'
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    distributable: Optional[bool] = False
     instances: list["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
         back_populates="model",
@@ -180,6 +206,10 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "selectin"},
     )
 
+    # overwrite the hash to use in uniquequeue
+    def __hash__(self):
+        return self.id
+
 
 class ModelInstanceCreate(ModelInstanceBase):
     pass
@@ -198,3 +228,29 @@ class ModelInstancePublic(
 
 
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]
+
+
+def is_gguf_model(model: Model):
+    """
+    Check if the model is a GGUF model.
+    Args:
+        model: Model to check.
+    """
+    return (
+        model.source == SourceEnum.OLLAMA_LIBRARY
+        or (model.huggingface_filename and model.huggingface_filename.endswith(".gguf"))
+        or (
+            model.model_scope_file_path
+            and model.model_scope_file_path.endswith(".gguf")
+        )
+    )
+
+
+def get_backend(model: Model) -> str:
+    if model.backend:
+        return model.backend
+
+    if is_gguf_model(model):
+        return BackendEnum.LLAMA_BOX
+
+    return BackendEnum.VLLM

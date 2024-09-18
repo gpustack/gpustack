@@ -1,5 +1,6 @@
 import logging
 from typing import List
+from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
@@ -7,7 +8,7 @@ from gpustack.server.db import get_engine
 logger = logging.getLogger(__name__)
 
 
-class GPUMatchingPolicy:
+class GPUMatchingFilter(WorkerFilter):
     def __init__(self, model: Model, model_instance: ModelInstance):
         self._model = model
         self._model_instance = model_instance
