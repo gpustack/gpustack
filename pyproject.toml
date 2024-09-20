@@ -38,6 +38,7 @@ pytest-asyncio = "^0.23.7"
 truststore = "^0.9.1"
 cryptography = "^43.0.0"
 tzdata = "^2024.1"
+modelscope = "^1.18.0"
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"

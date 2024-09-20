@@ -11,6 +11,7 @@ from tqdm import tqdm
 from tqdm.contrib.concurrent import thread_map
 
 from huggingface_hub import hf_hub_download
+from modelscope.hub.file_download import model_file_download
 import base64
 import random
 import string
@@ -20,6 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
 from gpustack.utils.hugging_face import match_hf_files
+from gpustack.utils.model_scope import match_model_scope_file_paths
 
 logger = logging.getLogger(__name__)
 
@@ -383,3 +385,64 @@ class OllamaLibraryDownloader:
             )
 
         return pri_key
+
+
+class ModelScopeDownloader:
+
+    @classmethod
+    def download(
+        cls,
+        model_id: str,
+        file_path: Optional[str],
+        cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        max_workers: int = 8,
+    ) -> str:
+        """Download a model from the Model Scope Hub.
+
+        Args:
+            model_id:
+                The model id.
+            file_path:
+                A file or glob pattern to match the model file in the repo.
+            cache_dir:
+                The cache directory to save the model to.
+            max_workers (`int`, *optional*):
+                Number of concurrent threads to download files (1 thread = 1 file download).
+                Defaults to 8.
+
+        Returns:
+            The path to the downloaded model.
+        """
+
+        matching_files = match_model_scope_file_paths(model_id, file_path)
+
+        if len(matching_files) == 0:
+            raise ValueError(f"No file found in {model_id} that match {file_path}")
+
+        logger.info(f"Downloading model {model_id}/{file_path}")
+
+        def _inner_model_scope_download(model_path: str):
+            return model_file_download(
+                model_id=model_id,
+                file_path=model_path,
+                cache_dir=cache_dir,
+            )
+
+        thread_map(
+            _inner_model_scope_download,
+            matching_files,
+            desc=f"Fetching {len(matching_files)} files",
+            max_workers=max_workers,
+        )
+
+        # Get local path of the model file.
+        # For split files, get the first one. llama-box will handle the rest.
+        model_path = model_file_download(
+            model_id=model_id,
+            file_path=matching_files[0],
+            cache_dir=cache_dir,
+            local_files_only=True,
+        )
+
+        logger.info(f"Downloaded model {model_id}/{model_path}")
+        return model_path

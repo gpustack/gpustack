@@ -15,6 +15,7 @@ from gpustack.schemas.workers import RPCServer
 class SourceEnum(str, Enum):
     HUGGING_FACE = "huggingface"
     OLLAMA_LIBRARY = "ollama_library"
+    MODEL_SCOPE = "model_scope"
 
 
 class PlacementStrategyEnum(str, Enum):
@@ -33,6 +34,8 @@ class ModelSource(BaseModel):
     huggingface_repo_id: Optional[str] = None
     huggingface_filename: Optional[str] = None
     ollama_library_model_name: Optional[str] = None
+    model_scope_model_id: Optional[str] = None
+    model_scope_file_path: Optional[str] = None
 
     @model_validator(mode="after")
     def check_huggingface_fields(self):
@@ -47,7 +50,16 @@ class ModelSource(BaseModel):
                 raise ValueError(
                     "ollama_library_model_name must be provided when source is 'ollama_library'"
                 )
+
+        if self.source == SourceEnum.MODEL_SCOPE:
+            if not self.model_scope_model_id or not self.model_scope_file_path:
+                raise ValueError(
+                    "model_scope_model_id and model_scope_file_path must be provided "
+                    "when source is 'model_scope'"
+                )
         return self
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class ModelBase(SQLModel, ModelSource):

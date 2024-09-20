@@ -111,6 +111,8 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 huggingface_repo_id=model.huggingface_repo_id,
                 huggingface_filename=model.huggingface_filename,
                 ollama_library_model_name=model.ollama_library_model_name,
+                model_scope_model_id=model.model_scope_model_id,
+                model_scope_file_path=model.model_scope_file_path,
                 state=ModelInstanceStateEnum.PENDING,
             )
             await ModelInstance.create(session, instance)
