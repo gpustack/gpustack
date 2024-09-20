@@ -8,6 +8,7 @@ from gpustack.routes import (
     gpu_devices,
     model_instances,
     probes,
+    proxy,
     users,
     models,
     openai,
@@ -59,4 +60,11 @@ api_router.include_router(
     dependencies=[Depends(get_current_user)],
     prefix="/v1-openai",
     tags=["OpenAI Compatible APIs"],
+)
+api_router.include_router(
+    proxy.router,
+    dependencies=[Depends(get_current_user)],
+    prefix="/proxy",
+    tags=["Server-Side Proxy"],
+    include_in_schema=False,
 )
