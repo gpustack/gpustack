@@ -200,7 +200,6 @@ def llama3_70b_partial_offload_split_2_4080_4090_estimate_claim():
     )
 
 
-# TODO(michelia)
 def llama3_70b_partial_offload_split_3_4080_4090_estimate_claim():
     '''
     gguf-parser --ol-model llama3:70b \

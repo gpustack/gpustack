@@ -17,7 +17,11 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
 )
 from gpustack.utils.command import get_platform_command
-from gpustack.worker.downloaders import HfDownloader, OllamaLibraryDownloader
+from gpustack.worker.downloaders import (
+    HfDownloader,
+    ModelScopeDownloader,
+    OllamaLibraryDownloader,
+)
 from gpustack.utils.compat_importlib import pkg_resources
 
 logger = logging.getLogger(__name__)
@@ -72,6 +76,12 @@ def download_model(
         return ollama_downloader.download(
             model_name=mi.ollama_library_model_name,
             cache_dir=os.path.join(cache_dir, "ollama"),
+        )
+    elif mi.source == SourceEnum.MODEL_SCOPE:
+        return ModelScopeDownloader.download(
+            model_id=mi.model_scope_model_id,
+            file_path=mi.model_scope_file_path,
+            cache_dir=os.path.join(cache_dir, "model_scope"),
         )
 
 

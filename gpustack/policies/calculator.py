@@ -13,6 +13,7 @@ from gpustack.schemas.models import Model, ModelInstance, SourceEnum
 from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.hugging_face import match_hf_files
+from gpustack.utils.model_scope import match_model_scope_file_paths
 
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,12 @@ def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
         if ol_base_url:
             args.extend(["-ol-base-url", ol_base_url])
         return args
+    elif model.source == SourceEnum.MODEL_SCOPE:
+        file_path = model_scope_file_path(
+            model_id=model.model_scope_model_id,
+            file_path=model.model_scope_file_path,
+        )
+        return ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
     else:
         raise ValueError(f"Unsupported source: {model.source}")
 
@@ -239,3 +246,10 @@ def hf_model_url(repo_id: str, filename: Optional[str] = None) -> str:
 
         filename = Path(matching_files[0]).name
         return f"{_registry_url}/{repo_id}/resolve/main/{filename}"
+
+
+def model_scope_file_path(model_id: str, file_path: str) -> str:
+    file_paths = match_model_scope_file_paths(model_id, file_path)
+    if len(file_paths) == 0:
+        raise ValueError(f"File {file_path} not found in {model_id}")
+    return file_paths[0]
