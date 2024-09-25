@@ -84,7 +84,7 @@ class Config(BaseSettings):
         self.init_database_url()
 
         if self.system_reserved is None:
-            self.system_reserved = {"ram": 2, "vram": 2}
+            self.system_reserved = {"ram": 2, "vram": 0}
 
     @model_validator(mode="after")
     def check_all(self):
