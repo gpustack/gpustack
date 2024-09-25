@@ -46,7 +46,7 @@ class Worker:
             self._system_reserved.vram = (
                 (
                     cfg.system_reserved.get("vram")
-                    or cfg.system_reserved.get("gpu_memory", 2)
+                    or cfg.system_reserved.get("gpu_memory", 0)
                 )
                 * 1024
                 * 1024
