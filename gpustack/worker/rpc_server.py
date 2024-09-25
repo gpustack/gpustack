@@ -8,9 +8,9 @@ import sys
 
 import setproctitle
 
-from gpustack.worker.inference_server import get_llama_box_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.signal import signal_handler
+from gpustack.worker.backends.llama_box import get_llama_box_command
 
 logger = logging.getLogger(__name__)
 

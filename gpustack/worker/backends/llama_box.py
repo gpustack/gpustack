@@ -111,19 +111,6 @@ class LlamaBoxServer(InferenceServer):
                 logger.error(f"Failed to update model instance: {ue}")
 
 
-def cuda_driver_installed() -> bool:
-    try:
-        result = subprocess.run(
-            ['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        if result.returncode == 0:
-            return True
-        else:
-            return False
-    except FileNotFoundError:
-        return False
-
-
 def get_llama_box_command(extra_key):
     command_map = {
         ("Windows", "amd64", "gpu"): "llama-box-windows-amd64-cuda-12.6.exe",

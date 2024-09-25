@@ -246,8 +246,8 @@ class Scheduler:
 
             candidates = await candidates_selector.select_candidates(workers)
 
-            placement_policy = PlacementScorer(model, instance)
-            candidates = await placement_policy.score(candidates)
+            placement_scorer = PlacementScorer(model, instance)
+            candidates = await placement_scorer.score(candidates)
 
             candidate = self.pick_highest_score_candidate(candidates)
             return candidate
