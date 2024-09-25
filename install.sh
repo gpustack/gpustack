@@ -186,8 +186,8 @@ install_dependencies() {
 # Function to check CUDA for NVIDIA GPUs
 check_cuda() {
   if command -v nvidia-smi > /dev/null 2>&1; then
-    if ! command -v nvcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libcudart); then
-      fatal "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+    if ! command -v nvcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
+      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
     fi
   fi
 }
@@ -195,8 +195,8 @@ check_cuda() {
 # Function to check MUSA for MTHREADS GPUs
 check_musa() {
   if command -v mthreads-gmi > /dev/null 2>&1; then
-    if ! command -v mcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libmusart); then
-      fatal "MTHREADS GPU detected but MUSA is not installed. Please install MUSA."
+    if ! command -v mcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libmusart) && ! ls /usr/local/musa >/dev/null 2>&1; then
+      warn "MTHREADS GPU detected but MUSA is not installed. Please install MUSA."
     fi
   fi
 }
