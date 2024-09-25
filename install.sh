@@ -157,7 +157,7 @@ check_python_tools() {
     fi
     USER_BASE_BIN=$(python3 -m site --user-base)/bin
     export PATH="$USER_BASE_BIN:$PATH"
-    pipx ensurepath
+    pipx ensurepath --force
 
     PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
     export PATH="$PIPX_BIN_DIR:$PATH"
