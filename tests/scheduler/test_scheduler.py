@@ -823,9 +823,6 @@ def compare_candidates(  # noqa: C901
         if "score" in expected:
             assert str(candidate.score)[:5] == str(expected["score"])[:5]
 
-        if "instance_id" in expected:
-            assert candidate.instance.id == expected["instance_id"]
-
         if "rpc_servers" in expected:
             for i, rpc_server in enumerate(expected["rpc_servers"]):
                 assert rpc_server.worker_id == expected["rpc_servers"][i].worker_id

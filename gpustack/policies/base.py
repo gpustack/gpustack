@@ -25,9 +25,6 @@ class ModelInstanceScheduleCandidate:
     computed_resource_claim: ComputedResourceClaim
     score: Optional[float] = None
 
-    # for scale down
-    instance: Optional[ModelInstance] = None
-
     # for rpc server scheduling
     rpc_servers: Optional[List[ModelInstanceRPCServer]] = None
 

@@ -4,10 +4,10 @@ import string
 from typing import List
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.config.config import Config
-from gpustack.policies.scorers.offload_layer_policy import OffloadLayerScorer
+from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
-from gpustack.policies.worker_filters.status_filter import StatusFilter
+from gpustack.policies.scorers.status_scorer import StatusScorer
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
@@ -144,26 +144,18 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 logger.debug(f"Deleted model instance {instance.name}")
 
 
-async def policy_score_instances(
-    policy, instances: List[ModelInstance]
-) -> List[ModelInstanceScore]:
-    return await policy.score_instances(instances)
-
-
 async def find_scale_down_candidates(
     instances: List[ModelInstance], model: Model
 ) -> List[ModelInstanceScore]:
     try:
-        placement_policy = PlacementScorer(model, scale_type=ScaleTypeEnum.SCALE_DOWN)
-        placement_candidates = await policy_score_instances(placement_policy, instances)
+        placement_scorer = PlacementScorer(model, scale_type=ScaleTypeEnum.SCALE_DOWN)
+        placement_candidates = await placement_scorer.score_instances(instances)
 
-        offload_layer_policy = OffloadLayerScorer(model)
-        offload_candidates = await policy_score_instances(
-            offload_layer_policy, instances
-        )
+        offload_layer_scorer = OffloadLayerScorer(model)
+        offload_candidates = await offload_layer_scorer.score_instances(instances)
 
-        status_policy = StatusFilter(model)
-        status_candidates = await policy_score_instances(status_policy, instances)
+        status_scorer = StatusScorer(model)
+        status_candidates = await status_scorer.score_instances(instances)
 
         offload_cand_map = {cand.model_instance.id: cand for cand in offload_candidates}
         placement_cand_map = {
