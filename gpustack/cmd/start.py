@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from gpustack.config.config import set_global_config
 from gpustack.logging import setup_logging
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
@@ -62,6 +63,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="Shared secret used to add a worker.",
         default=get_gpustack_env("TOKEN"),
+    )
+    group.add_argument(
+        "--huggingface-token",
+        type=str,
+        help="User Access Token to authenticate to the Hugging Face Hub.",
+        default=os.getenv("HF_TOKEN"),
     )
 
     group = parser_server.add_argument_group("Server settings")
@@ -233,7 +240,9 @@ def parse_args(args: argparse.Namespace) -> Config:
     set_server_options(args, config_data)
     set_worker_options(args, config_data)
 
-    return Config(**config_data)
+    cfg = Config(**config_data)
+    set_global_config(cfg)
+    return cfg
 
 
 def set_config_option(args, config_data: dict, option_name: str):

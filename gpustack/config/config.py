@@ -5,6 +5,8 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
 
+_config = None
+
 
 class Config(BaseSettings):
     """A class used to define GPUStack configuration.
@@ -41,6 +43,7 @@ class Config(BaseSettings):
     debug: bool = False
     data_dir: Optional[str] = None
     token: Optional[str] = None
+    huggingface_token: Optional[str] = None
 
     # Server options
     host: Optional[str] = "0.0.0.0"
@@ -168,3 +171,13 @@ class Config(BaseSettings):
 
     def _is_server(self):
         return self.server_url is None
+
+
+def get_global_config() -> Config:
+    return _config
+
+
+def set_global_config(cfg: Config):
+    global _config
+    _config = cfg
+    return cfg
