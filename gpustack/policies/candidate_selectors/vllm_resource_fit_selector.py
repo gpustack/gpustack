@@ -145,6 +145,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         if not self._gpu_count:
             self._vram_claim = estimate_model_vram(model)
+            logger.info(
+                f"Calculated resource claim for model instance {self._model_instance.name}, "
+                f"claim: {self._vram_claim}"
+            )
 
         self._gpu_memory_utilization = 0.9
         gmu = find_parameter(model.backend_parameters, ["gpu-memory-utilization"])
@@ -164,6 +168,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         ]
 
         for candidate_func in candidate_functions:
+            logger.debug(
+                f"model {self._model.name}, filter candidates with resource fit selector: {candidate_func.__name__}, instance {self._model_instance.name}"
+            )
+
             candidates = await candidate_func(workers)
             if candidates:
                 return candidates
