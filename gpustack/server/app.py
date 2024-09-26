@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi_cdn_host import monkey_patch_for_docs_ui
 import httpx
 
 from gpustack.api import exceptions, middlewares
@@ -15,6 +16,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GPUStack", lifespan=lifespan, response_model_exclude_unset=True)
+monkey_patch_for_docs_ui(app)
 app.add_middleware(middlewares.RequestTimeMiddleware)
 app.add_middleware(middlewares.ModelUsageMiddleware)
 app.add_middleware(middlewares.RefreshTokenMiddleware)
