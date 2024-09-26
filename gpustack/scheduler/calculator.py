@@ -9,6 +9,7 @@ from dataclasses_json import dataclass_json
 import platform
 
 
+from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
 from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
@@ -214,11 +215,18 @@ def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
         model: Model to get the url for.
     """
     if model.source == SourceEnum.HUGGING_FACE:
-        model_url = hf_model_url(
-            repo_id=model.huggingface_repo_id, filename=model.huggingface_filename
-        )
+        args = ["-hf-repo", model.huggingface_repo_id]
+        if model.huggingface_filename:
+            model_filename = hf_model_filename(
+                repo_id=model.huggingface_repo_id, filename=model.huggingface_filename
+            )
+            args.extend(["-hf-file", model_filename])
 
-        return ["-url", model_url]
+        global_config = get_global_config()
+        if global_config.huggingface_token:
+            args.extend(["-hf-token", global_config.huggingface_token])
+
+        return args
     elif model.source == SourceEnum.OLLAMA_LIBRARY:
         args = ["-ol-model", model.ollama_library_model_name]
         ol_base_url = kwargs.get("ollama_library_base_url")
@@ -235,17 +243,16 @@ def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
         raise ValueError(f"Unsupported source: {model.source}")
 
 
-def hf_model_url(repo_id: str, filename: Optional[str] = None) -> str:
-    _registry_url = "https://huggingface.co"
+def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> str | None:
     if filename is None:
-        return f"{_registry_url}/{repo_id}"
+        return None
     else:
         matching_files = match_hf_files(repo_id, filename)
         if len(matching_files) == 0:
             raise ValueError(f"File {filename} not found in {repo_id}")
 
         filename = Path(matching_files[0]).name
-        return f"{_registry_url}/{repo_id}/resolve/main/{filename}"
+        return filename
 
 
 def model_scope_file_path(model_id: str, file_path: str) -> str:

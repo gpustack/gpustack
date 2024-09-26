@@ -37,6 +37,7 @@ class HfDownloader:
         cls,
         repo_id: str,
         filename: Optional[str],
+        token: Optional[str] = None,
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
@@ -49,6 +50,8 @@ class HfDownloader:
                 The model repo id.
             filename:
                 A filename or glob pattern to match the model file in the repo.
+            token:
+                The Hugging Face API token.
             local_dir:
                 The local directory to save the model to.
             local_dir_use_symlinks:
@@ -63,11 +66,12 @@ class HfDownloader:
 
         if filename is not None:
             return cls.download_file(
-                repo_id, filename, local_dir, local_dir_use_symlinks, cache_dir
+                repo_id, filename, token, local_dir, local_dir_use_symlinks, cache_dir
             )
 
         return snapshot_download(
             repo_id=repo_id,
+            token=token,
             local_dir=local_dir,
             local_dir_use_symlinks=local_dir_use_symlinks,
             cache_dir=cache_dir,
@@ -78,6 +82,7 @@ class HfDownloader:
         cls,
         repo_id: str,
         filename: Optional[str],
+        token: Optional[str] = None,
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
@@ -87,6 +92,7 @@ class HfDownloader:
         Args:
             repo_id: The model repo id.
             filename: A filename or glob pattern to match the model file in the repo.
+            token: The Hugging Face API token.
             local_dir: The local directory to save the model to.
             local_dir_use_symlinks: Whether to use symlinks when downloading the model.
         Returns:
@@ -111,6 +117,7 @@ class HfDownloader:
             return hf_hub_download(
                 repo_id=repo_id,
                 filename=repo_file,
+                token=token,
                 subfolder=subfolder,
                 local_dir=local_dir,
                 local_dir_use_symlinks=local_dir_use_symlinks,
@@ -130,6 +137,7 @@ class HfDownloader:
             model_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=first_filename,
+                token=token,
                 subfolder=subfolder,
                 local_dir=local_dir,
                 local_dir_use_symlinks=local_dir_use_symlinks,

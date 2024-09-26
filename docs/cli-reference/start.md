@@ -16,6 +16,7 @@ gpustack start [OPTIONS]
 | `-d` value, `--debug` value | `False`         | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters. |
 | `--data-dir` value          |                 | Directory to store data. Default is OS specific.                                                                                      |
 | `-t` value, `--token` value | Auto-generated. | Shared secret used to add a worker.                                                                                                   |
+| `--huggingface-token` value |                 | User Access Token to authenticate to the Hugging Face Hub.                                                                            |
 
 ### Server Options
 

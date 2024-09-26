@@ -60,11 +60,13 @@ def download_model(
     mi: ModelInstance,
     cache_dir: Optional[str] = None,
     ollama_library_base_url: Optional[str] = None,
+    huggingface_token: Optional[str] = None,
 ) -> str:
     if mi.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.download(
             repo_id=mi.huggingface_repo_id,
             filename=mi.huggingface_filename,
+            token=huggingface_token,
             cache_dir=os.path.join(cache_dir, "huggingface"),
         )
     elif mi.source == SourceEnum.OLLAMA_LIBRARY:
@@ -107,7 +109,10 @@ class InferenceServer(ABC):
 
             cache_dir = os.path.join(cfg.data_dir, "cache")
             self._model_path = download_model(
-                mi, cache_dir, ollama_library_base_url=cfg.ollama_library_base_url
+                mi,
+                cache_dir,
+                ollama_library_base_url=cfg.ollama_library_base_url,
+                huggingface_token=cfg.huggingface_token,
             )
 
             patch_dict = {"state": ModelInstanceStateEnum.RUNNING, "state_message": ""}
