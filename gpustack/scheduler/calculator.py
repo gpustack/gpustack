@@ -79,6 +79,7 @@ def _gguf_parser_command(
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
     command_map = {
+        ("Windows", "arm64"): "gguf-parser-windows-arm64.exe",
         ("Windows", "amd64"): "gguf-parser-windows-amd64.exe",
         ("Darwin", "amd64"): "gguf-parser-darwin-universal",
         ("Darwin", "arm64"): "gguf-parser-darwin-universal",

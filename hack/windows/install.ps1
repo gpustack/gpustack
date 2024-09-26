@@ -116,7 +116,7 @@ function Get-GGUFParser {
     New-Item -ItemType Directory -Path $ggufParserDir -ErrorAction Ignore | Out-Null
 
     # Include more platforms if needed
-    $platforms = @("windows-amd64")
+    $platforms = @("windows-amd64","windows-arm64")
 
     foreach ($platform in $platforms) {
         $targetBinFile = "gguf-parser-$platform.exe"

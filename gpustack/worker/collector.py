@@ -358,6 +358,8 @@ class WorkerStatusCollector:
 
     def _fastfetch_command(self):
         command_map = {
+            # Emulation on Windows 11 for Arm supports both x86 and x64 apps, while Windows 10 on Arm supports only x86 apps.
+            ("Windows", "arm64"): "fastfetch-windows-amd64.exe",
             ("Windows", "amd64"): "fastfetch-windows-amd64.exe",
             ("Darwin", "amd64"): "fastfetch-macos-universal",
             ("Darwin", "arm64"): "fastfetch-macos-universal",
