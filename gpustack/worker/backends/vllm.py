@@ -26,8 +26,6 @@ class VLLMServer(InferenceServer):
             "0.0.0.0",
             "--port",
             str(self._model_instance.port),
-            "--max-model-len",
-            "8192",
             "--served-model-name",
             self._model_instance.model_name,
             "--trust-remote-code",
