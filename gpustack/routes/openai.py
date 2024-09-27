@@ -3,7 +3,6 @@ import httpx
 import logging
 
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import StreamingResponse
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 from sqlmodel import select
@@ -15,6 +14,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
+from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.server.deps import SessionDep
@@ -116,9 +116,11 @@ async def proxy_request_by_model(  # noqa: C901
                         timeout=timeout,
                     ) as resp:
                         async for chunk in resp.aiter_text():
-                            yield chunk
+                            yield chunk, resp.status_code
 
-            return StreamingResponse(stream_generator(), media_type="text/event-stream")
+            return StreamingResponseWithStatusCode(
+                stream_generator(), media_type="text/event-stream"
+            )
         else:
             async with httpx.AsyncClient() as client:
                 resp = await client.request(
@@ -128,7 +130,11 @@ async def proxy_request_by_model(  # noqa: C901
                     json=body,
                     timeout=timeout,
                 )
-                return Response(content=resp.content, headers=dict(resp.headers))
+                return Response(
+                    status_code=resp.status_code,
+                    headers=dict(resp.headers),
+                    content=resp.content,
+                )
     except Exception as e:
         raise ServiceUnavailableException(message=f"An unexpected error occurred: {e}")
 
