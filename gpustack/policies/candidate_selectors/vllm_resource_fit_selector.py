@@ -140,6 +140,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         pp = find_parameter(model.backend_parameters, ["pipeline-parallel-size", "pp"])
         if tp:
             self._gpu_count = int(tp)
+            self._vram_claim = 0
             if pp:
                 self._gpu_count *= int(pp)
 
