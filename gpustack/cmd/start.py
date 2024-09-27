@@ -256,6 +256,7 @@ def set_common_options(args, config_data: dict):
         "debug",
         "data_dir",
         "token",
+        "huggingface_token",
     ]
 
     for option in options:

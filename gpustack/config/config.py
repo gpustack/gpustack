@@ -15,6 +15,7 @@ class Config(BaseSettings):
         debug: Enable debug mode.
         data_dir: Directory to store data. Default is OS specific.
         token: Shared secret used to add a worker.
+        huggingface_token: User Access Token to authenticate to the Hugging Face Hub.
 
         host: Host to bind the server to.
         port: Port to bind the server to.
