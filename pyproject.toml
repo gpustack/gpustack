@@ -41,6 +41,7 @@ tzdata = "^2024.1"
 modelscope = "^1.18.0"
 vllm = {version = "^0.6.1", optional = true}
 torch = {version = "^2.4.0", optional = true}
+mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.30.6"
 transformers = "^4.44.2"
 fastapi-cdn-host = "^0.8.0"
@@ -73,7 +74,7 @@ force-exclude = '''
 '''
 
 [tool.poetry.extras]
-vllm = ["vllm","torch"]
+vllm = ["vllm","torch","mistral_common"]
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
