@@ -18,8 +18,23 @@ GPUStack is an open-source GPU cluster manager for running large language models
 ## Supported Platforms
 
 - [x] MacOS
-- [x] Linux
 - [x] Windows
+- [x] Linux
+
+| Distributions | Versions        | 
+|---------------|-----------------| 
+| Ubuntu        | \>= 20.04       |
+| Debian        | \>= 11          |
+| RHEL          | \>= 9           |
+| Rocky         | \>= 9           |
+| Fedora        | \>= 36          |
+| OpenSUSE      | \>= 15.3 (leap) |
+| OpenEuler     | \>= 22.03       |
+
+!!! note
+
+    The installation of GPUStack worker on a Linux system requires that the GLIBC version be 2.29 or higher.
+
 
 ## Supported Accelerators
 
