@@ -56,6 +56,8 @@ async def estimate_model_vram(model: Model) -> int:
                 timeout=timeout_in_seconds,
             )
         elif model.source == SourceEnum.MODEL_SCOPE:
+            # it may download a few files to get config, so set a longer timeout
+            timeout_in_seconds = 15
             weight_size = await asyncio.wait_for(
                 asyncio.to_thread(get_ms_model_weight_size, model.model_scope_model_id),
                 timeout=timeout_in_seconds,
@@ -107,7 +109,15 @@ def get_ms_model_weight_size(model_id: str) -> int:
 
     # ModelScope does not provide the info in the API. Infer from the model name.
     total_params = parse_model_size_by_name(model_id)
-    config = AutoConfig.from_pretrained(model_id)
+
+    # It may download weight files unneccessary by default.
+    # Ref: https://github.com/modelscope/modelscope/issues/1004
+    ignore_file_pattern = ['\\w+\\.bin', '\\w+\\.safetensors', '\\w+\\.pth']
+    config = AutoConfig.from_pretrained(
+        model_id,
+        ignore_file_pattern=ignore_file_pattern,
+        trust_remote_code=True,
+    )
     torch_dtype = getattr(config, 'torch_dtype', "float16")
     dtype_to_bytes = {
         "float32": 4,

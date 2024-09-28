@@ -98,6 +98,7 @@ class InferenceServer(ABC):
 
         self._clientset = clientset
         self._model_instance = mi
+        self._config = cfg
         try:
             self._model = self._clientset.models.get(id=mi.model_id)
             self._until_model_instance_initializing()
