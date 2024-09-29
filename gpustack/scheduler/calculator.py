@@ -18,6 +18,7 @@ from gpustack.utils.model_scope import match_model_scope_file_paths
 
 
 logger = logging.getLogger(__name__)
+fetch_file_timeout_in_seconds = 5
 
 
 class GPUOffloadEnum(str, Enum):
@@ -75,7 +76,7 @@ class ModelInstanceResourceClaim:
         return False
 
 
-def _gguf_parser_command(
+async def _gguf_parser_command(
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
     command_map = {
@@ -140,7 +141,7 @@ def _gguf_parser_command(
         execuable_command.append("--rpc")
         execuable_command.append(rpc_str)
 
-    source_args = _gguf_parser_command_args_from_source(model, **kwargs)
+    source_args = await _gguf_parser_command_args_from_source(model, **kwargs)
     execuable_command.extend(source_args)
     return execuable_command
 
@@ -160,7 +161,7 @@ async def calculate_model_resource_claim(
 
     logger.info(f"Calculating resource claim for model instance {model_instance.name}")
 
-    command = _gguf_parser_command(model, offload, **kwargs)
+    command = await _gguf_parser_command(model, offload, **kwargs)
     try:
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -209,39 +210,61 @@ async def calculate_model_resource_claim(
         )
 
 
-def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
+async def _gguf_parser_command_args_from_source(  # noqa: C901
+    model: Model, **kwargs
+) -> List[str]:
     """
     Get the model url based on the model source.
     Args:
         model: Model to get the url for.
     """
-    if model.source == SourceEnum.HUGGING_FACE:
-        args = ["-hf-repo", model.huggingface_repo_id]
-        if model.huggingface_filename:
-            model_filename = hf_model_filename(
-                repo_id=model.huggingface_repo_id, filename=model.huggingface_filename
-            )
-            args.extend(["-hf-file", model_filename])
 
-        global_config = get_global_config()
-        if global_config.huggingface_token:
-            args.extend(["-hf-token", global_config.huggingface_token])
-
-        return args
-    elif model.source == SourceEnum.OLLAMA_LIBRARY:
-        args = ["-ol-model", model.ollama_library_model_name]
-        ol_base_url = kwargs.get("ollama_library_base_url")
-        if ol_base_url:
-            args.extend(["-ol-base-url", ol_base_url])
-        return args
-    elif model.source == SourceEnum.MODEL_SCOPE:
-        file_path = model_scope_file_path(
-            model_id=model.model_scope_model_id,
-            file_path=model.model_scope_file_path,
-        )
-        return ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
-    else:
+    if model.source not in [
+        SourceEnum.OLLAMA_LIBRARY,
+        SourceEnum.HUGGING_FACE,
+        SourceEnum.MODEL_SCOPE,
+    ]:
         raise ValueError(f"Unsupported source: {model.source}")
+
+    try:
+        if model.source == SourceEnum.OLLAMA_LIBRARY:
+            args = ["-ol-model", model.ollama_library_model_name]
+            ol_base_url = kwargs.get("ollama_library_base_url")
+            if ol_base_url:
+                args.extend(["-ol-base-url", ol_base_url])
+            return args
+        elif model.source == SourceEnum.HUGGING_FACE:
+            args = ["-hf-repo", model.huggingface_repo_id]
+            if model.huggingface_filename:
+                model_filename = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        hf_model_filename,
+                        model.huggingface_repo_id,
+                        model.huggingface_filename,
+                    ),
+                    timeout=fetch_file_timeout_in_seconds,
+                )
+                args.extend(["-hf-file", model_filename])
+
+            global_config = get_global_config()
+            if global_config.huggingface_token:
+                args.extend(["-hf-token", global_config.huggingface_token])
+
+            return args
+        elif model.source == SourceEnum.MODEL_SCOPE:
+            file_path = await asyncio.wait_for(
+                asyncio.to_thread(
+                    model_scope_file_path,
+                    model.model_scope_model_id,
+                    model.model_scope_file_path,
+                ),
+                timeout=fetch_file_timeout_in_seconds,
+            )
+        return ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
+    except asyncio.TimeoutError:
+        raise Exception(f"Timeout when getting the file for model {model.name}")
+    except Exception as e:
+        raise Exception(f"Failed to get the file for model {model.name}, error: {e}")
 
 
 def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> str | None:
