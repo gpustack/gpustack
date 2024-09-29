@@ -116,7 +116,7 @@ function Get-GGUFParser {
     New-Item -ItemType Directory -Path $ggufParserDir -ErrorAction Ignore | Out-Null
 
     # Include more platforms if needed
-    $platforms = @("windows-amd64","windows-arm64")
+    $platforms = @("windows-amd64", "windows-arm64")
 
     foreach ($platform in $platforms) {
         $targetBinFile = "gguf-parser-$platform.exe"
@@ -139,12 +139,12 @@ function Get-GGUFParser {
 }
 
 function Get-LlamaBox {
-    $version = "v0.0.50"
+    $version = "v0.0.58"
     $llamaBoxDir = Join-Path -Path $THIRD_PARTY_DIR -ChildPath "llama-box"
     $llamaBoxTmpDir = Join-Path -Path $llamaBoxDir -ChildPath "tmp"
 
     # Include more platforms if needed
-    $platforms = @("windows-amd64-cuda-12.6", "windows-amd64-avx2", "windows-arm64-neon")
+    $platforms = @("windows-amd64-cuda-12.4", "windows-amd64-avx2", "windows-arm64-neon")
 
     foreach ($platform in $platforms) {
         $binFile = "llama-box.exe"
