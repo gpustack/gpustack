@@ -18,7 +18,19 @@ logger = logging.getLogger(__name__)
 ALLOWED_SITES = ["https://modelscope.cn", "https://www.modelscope.cn"]
 
 HEADER_FORWARDED_PREFIX = "x-forwarded-"
-HEADER_SKIPPED = ["host", "content-length", "transfer-encoding", "cookie"]
+HEADER_SKIPPED = [
+    "host",
+    "port",
+    "proto",
+    "server",
+    "content-length",
+    "transfer-encoding",
+    "cookie",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-forwarded-proto",
+    "x-forwarded-server",
+]
 
 
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
