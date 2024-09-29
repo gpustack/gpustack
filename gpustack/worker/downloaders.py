@@ -1,3 +1,4 @@
+import fnmatch
 import platform
 import time
 import logging
@@ -10,7 +11,8 @@ from pathlib import Path
 from tqdm import tqdm
 from tqdm.contrib.concurrent import thread_map
 
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from modelscope.hub.api import HubApi
 from modelscope.hub.file_download import model_file_download
 from modelscope.hub.snapshot_download import (
     snapshot_download as modelscope_snapshot_download,
@@ -23,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
+from gpustack.schemas.models import ModelInstance
 from gpustack.utils.hugging_face import match_hf_files
 from gpustack.utils.model_scope import match_model_scope_file_paths
 
@@ -31,6 +34,28 @@ logger = logging.getLogger(__name__)
 
 class HfDownloader:
     _registry_url = "https://huggingface.co"
+
+    @classmethod
+    def get_model_file_size(
+        cls, model_instance: ModelInstance, token: Optional[str]
+    ) -> int:
+        api = HfApi(token=token)
+        repo_info = api.repo_info(
+            model_instance.huggingface_repo_id, files_metadata=True
+        )
+        total_size = sum(
+            sibling.size
+            for sibling in repo_info.siblings
+            if (
+                not model_instance.huggingface_filename
+                or fnmatch.fnmatch(
+                    sibling.rfilename, model_instance.huggingface_filename
+                )
+            )
+            and sibling.size is not None
+        )
+
+        return total_size
 
     @classmethod
     def download(
@@ -431,6 +456,24 @@ class OllamaLibraryDownloader:
 
 
 class ModelScopeDownloader:
+
+    @classmethod
+    def get_model_file_size(cls, model_instance: ModelInstance) -> int:
+        api = HubApi()
+        repo_files = api.get_model_files(model_instance.model_scope_model_id)
+        total_size = sum(
+            sibling.get('Size')
+            for sibling in repo_files
+            if (
+                not model_instance.model_scope_file_path
+                or fnmatch.fnmatch(
+                    sibling.get('Path', ''), model_instance.model_scope_file_path
+                )
+            )
+            and 'Size' in sibling
+        )
+
+        return total_size
 
     @classmethod
     def download(
