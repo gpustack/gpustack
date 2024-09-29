@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from typing import Dict, List
@@ -24,7 +25,7 @@ from gpustack.utils.command import find_parameter
 logger = logging.getLogger(__name__)
 
 
-def estimate_model_vram(model: Model) -> int:
+async def estimate_model_vram(model: Model) -> int:
     """
     Estimate the vram requirement in bytes heuristically.
     This is the minimum requirement to help us decide how many GPUs are needed for the model.
@@ -47,11 +48,20 @@ def estimate_model_vram(model: Model) -> int:
     # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
     cuda_graph_size = 2 * 1024**3
     weight_size = 0
+    timeout_in_seconds = 5
     try:
         if model.source == SourceEnum.HUGGING_FACE:
-            weight_size = get_hf_model_weight_size(model.huggingface_repo_id)
+            weight_size = await asyncio.wait_for(
+                asyncio.to_thread(get_hf_model_weight_size, model.huggingface_repo_id),
+                timeout=timeout_in_seconds,
+            )
         elif model.source == SourceEnum.MODEL_SCOPE:
-            weight_size = get_ms_model_weight_size(model.model_scope_model_id)
+            weight_size = await asyncio.wait_for(
+                asyncio.to_thread(get_ms_model_weight_size, model.model_scope_model_id),
+                timeout=timeout_in_seconds,
+            )
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
         logger.warning(f"Cannot get weight size for model {model.name}: {e}")
 
@@ -144,13 +154,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if pp:
                 self._gpu_count *= int(pp)
 
-        if not self._gpu_count:
-            self._vram_claim = estimate_model_vram(model)
-            logger.info(
-                f"Calculated resource claim for model instance {self._model_instance.name}, "
-                f"claim: {self._vram_claim}"
-            )
-
         self._gpu_memory_utilization = 0.9
         gmu = find_parameter(model.backend_parameters, ["gpu-memory-utilization"])
         if gmu:
@@ -162,6 +165,13 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement.
         """
+
+        if not self._gpu_count:
+            self._vram_claim = await estimate_model_vram(self._model)
+            logger.info(
+                f"Calculated resource claim for model instance {self._model_instance.name}, "
+                f"claim: {self._vram_claim}"
+            )
 
         candidate_functions = [
             self.find_single_worker_single_gpu_full_offloading_candidates,
