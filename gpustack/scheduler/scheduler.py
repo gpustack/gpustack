@@ -123,7 +123,7 @@ class Scheduler:
                     raise Exception("Model not found.")
 
                 if is_gguf_model(model):
-                    self._evaluate_gguf_model(session, model, instance)
+                    await self._evaluate_gguf_model(session, model, instance)
 
                 await self._queue.put(instance)
             except Exception as e:
