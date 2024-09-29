@@ -175,6 +175,10 @@ class InferenceServer(ABC):
             kwargs["disable"] = False  # enable the progress bar anyway
             _original_init(self, *args, **kwargs)
 
+            if hasattr(server_self, '_model_file_size'):
+                # Resume downloading
+                server_self._model_downloaded_size += self.n
+
         def _new_update(self: tqdm, n=1):
             _original_update(self, n)
 

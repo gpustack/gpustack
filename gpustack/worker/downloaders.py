@@ -460,7 +460,9 @@ class ModelScopeDownloader:
     @classmethod
     def get_model_file_size(cls, model_instance: ModelInstance) -> int:
         api = HubApi()
-        repo_files = api.get_model_files(model_instance.model_scope_model_id)
+        repo_files = api.get_model_files(
+            model_instance.model_scope_model_id, recursive=True
+        )
         total_size = sum(
             sibling.get('Size')
             for sibling in repo_files
