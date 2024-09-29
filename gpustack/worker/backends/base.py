@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 import time
 from typing import List, Optional
 from abc import ABC, abstractmethod
@@ -23,6 +24,7 @@ from gpustack.worker.downloaders import (
 )
 
 logger = logging.getLogger(__name__)
+lock = threading.Lock()
 
 
 def time_decorator(func):
@@ -85,6 +87,20 @@ def download_model(
         )
 
 
+def get_model_file_size(mi: ModelInstance, cfg: Config) -> Optional[int]:
+    if mi.source == SourceEnum.HUGGING_FACE:
+        return HfDownloader.get_model_file_size(
+            model_instance=mi,
+            token=cfg.huggingface_token,
+        )
+    elif mi.source == SourceEnum.MODEL_SCOPE:
+        return ModelScopeDownloader.get_model_file_size(
+            model_instance=mi,
+        )
+
+    return None
+
+
 class InferenceServer(ABC):
     @time_decorator
     def __init__(
@@ -94,6 +110,13 @@ class InferenceServer(ABC):
         cfg: Config,
     ):
         setup_logging(cfg.debug)
+        model_file_size = get_model_file_size(mi, cfg)
+        if model_file_size:
+            logger.debug(f"Model file size: {model_file_size}")
+            self._model_file_size = model_file_size
+            self._model_downloaded_size = 0
+        # for download progress update frequency control
+        self._last_download_update_time = time.time()
         self.hijack_tqdm_progress()
 
         self._clientset = clientset
@@ -116,7 +139,10 @@ class InferenceServer(ABC):
                 huggingface_token=cfg.huggingface_token,
             )
 
-            patch_dict = {"state": ModelInstanceStateEnum.RUNNING, "state_message": ""}
+            patch_dict = {
+                "state": ModelInstanceStateEnum.RUNNING,
+                "state_message": "",
+            }
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
             error_message = f"Failed to download model: {e}"
@@ -145,37 +171,43 @@ class InferenceServer(ABC):
         _original_init = tqdm.__init__
         _original_update = tqdm.update
 
-        # Record summary to work with multiple tracking progress.
-        # For cases:
-        # - Download split GGUF model files.
-        # - Download the entire Huggingface repo.
-        global model_total, model_n
-        model_total, model_n = 0, 0
-
         def _new_init(self: tqdm, *args, **kwargs):
-            global model_total, model_n
             kwargs["disable"] = False  # enable the progress bar anyway
             _original_init(self, *args, **kwargs)
 
-            model_n += self.n
-            model_total += self.total
-
         def _new_update(self: tqdm, n=1):
-            global model_total, model_n
             _original_update(self, n)
-            model_n += n
 
-            try:
-                patch_dict = {
-                    "download_progress": round(
-                        (float(model_n) / float(model_total)) * 100, 2
+            # This is the default for single tqdm downloader like ollama
+            # TODO we may want to unify to always get the size before downloading.
+            total_size = self.total
+            downloaded_size = self.n
+            if hasattr(server_self, '_model_file_size'):
+                # This is summary for group downloading
+                total_size = server_self._model_file_size
+                server_self._model_downloaded_size += n
+                downloaded_size = server_self._model_downloaded_size
+
+            with lock:
+                try:
+                    if (
+                        time.time() - server_self._last_download_update_time < 2
+                        and downloaded_size != total_size
+                    ):
+                        # Only update after 2-second interval or download is completed.
+                        return
+
+                    patch_dict = {
+                        "download_progress": round(
+                            (float(downloaded_size) / float(total_size)) * 100, 2
+                        )
+                    }
+                    server_self._update_model_instance_set(
+                        server_self._model_instance, **patch_dict
                     )
-                }
-                server_self._update_model_instance_set(
-                    server_self._model_instance, **patch_dict
-                )
-            except Exception as e:
-                logger.error(f"Failed to update model instance: {e}")
+                    server_self._last_download_update_time = time.time()
+                except Exception as e:
+                    logger.error(f"Failed to update model instance: {e}")
 
         tqdm.__init__ = _new_init
         tqdm.update = _new_update
