@@ -58,8 +58,18 @@ async def estimate_model_vram(model: Model) -> int:
         elif model.source == SourceEnum.MODEL_SCOPE:
             # it may download a few files to get config, so set a longer timeout
             timeout_in_seconds = 15
+            trust_remote_code = False
+            if (
+                model.backend_parameters
+                and "--trust-remote-code" in model.backend_parameters
+            ):
+                trust_remote_code = True
             weight_size = await asyncio.wait_for(
-                asyncio.to_thread(get_ms_model_weight_size, model.model_scope_model_id),
+                asyncio.to_thread(
+                    get_ms_model_weight_size,
+                    model.model_scope_model_id,
+                    trust_remote_code=trust_remote_code,
+                ),
                 timeout=timeout_in_seconds,
             )
     except asyncio.TimeoutError:
@@ -101,7 +111,7 @@ def get_hf_model_weight_size(repo_id: str) -> int:
     return int(total_weight_size)
 
 
-def get_ms_model_weight_size(model_id: str) -> int:
+def get_ms_model_weight_size(model_id: str, trust_remote_code: bool = False) -> int:
     """
     Get the modelscope model weight size in bytes.
     """
@@ -116,7 +126,7 @@ def get_ms_model_weight_size(model_id: str) -> int:
     config = AutoConfig.from_pretrained(
         model_id,
         ignore_file_pattern=ignore_file_pattern,
-        trust_remote_code=True,
+        trust_remote_code=trust_remote_code,
     )
     torch_dtype = getattr(config, 'torch_dtype', "float16")
     dtype_to_bytes = {
