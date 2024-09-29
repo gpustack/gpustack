@@ -13,49 +13,51 @@ logger = logging.getLogger(__name__)
 
 class VLLMServer(InferenceServer):
     def start(self):
-        command_path = os.path.join(sysconfig.get_path("scripts"), "vllm")
-        arguments = [
-            "serve",
-            self._model_path,
-        ]
+        try:
+            command_path = os.path.join(sysconfig.get_path("scripts"), "vllm")
+            arguments = [
+                "serve",
+                self._model_path,
+            ]
 
-        derived_max_model_len = self._derive_max_model_len()
-        if derived_max_model_len and derived_max_model_len > 8192:
-            arguments.extend(["--max-model-len", "8192"])
+            derived_max_model_len = self._derive_max_model_len()
+            if derived_max_model_len and derived_max_model_len > 8192:
+                arguments.extend(["--max-model-len", "8192"])
 
-        if self._model.backend_parameters:
-            arguments.extend(self._model.backend_parameters)
+            if self._model.backend_parameters:
+                arguments.extend(self._model.backend_parameters)
 
-        built_in_arguments = [
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(self._model_instance.port),
-            "--served-model-name",
-            self._model_instance.model_name,
-            "--trust-remote-code",
-        ]
+            built_in_arguments = [
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(self._model_instance.port),
+                "--served-model-name",
+                self._model_instance.model_name,
+            ]
 
-        parallelism = find_parameter(
-            self._model.backend_parameters,
-            ["tensor-parallel-size", "tp", "pipeline-parallel-size", "pp"],
-        )
-
-        if (
-            self._model_instance.gpu_indexes is not None
-            and len(self._model_instance.gpu_indexes) > 1
-            and parallelism is None
-        ):
-            built_in_arguments.extend(
-                ["--tensor-parallel-size", str(len(self._model_instance.gpu_indexes))]
+            parallelism = find_parameter(
+                self._model.backend_parameters,
+                ["tensor-parallel-size", "tp", "pipeline-parallel-size", "pp"],
             )
 
-        # Extend the built-in arguments at the end so that
-        # they cannot be overridden by the user-defined arguments
-        arguments.extend(built_in_arguments)
+            if (
+                self._model_instance.gpu_indexes is not None
+                and len(self._model_instance.gpu_indexes) > 1
+                and parallelism is None
+            ):
+                built_in_arguments.extend(
+                    [
+                        "--tensor-parallel-size",
+                        str(len(self._model_instance.gpu_indexes)),
+                    ]
+                )
 
-        env = self.get_inference_running_env(self._model_instance.gpu_indexes)
-        try:
+            # Extend the built-in arguments at the end so that
+            # they cannot be overridden by the user-defined arguments
+            arguments.extend(built_in_arguments)
+
+            env = self.get_inference_running_env(self._model_instance.gpu_indexes)
             logger.info("Starting vllm server")
             logger.debug(f"Run vllm with arguments: {' '.join(arguments)}")
             subprocess.run(
@@ -81,6 +83,13 @@ class VLLMServer(InferenceServer):
         Derive max model length from model config.
         Returns None if unavailable.
         """
+        trust_remote_code = False
+        if (
+            self._model.backend_parameters
+            and "--trust-remote-code" in self._model.backend_parameters
+        ):
+            trust_remote_code = True
+
         pretrained_config = None
         if self._model.source == SourceEnum.HUGGING_FACE:
             from transformers import AutoConfig
@@ -88,7 +97,7 @@ class VLLMServer(InferenceServer):
             pretrained_config = AutoConfig.from_pretrained(
                 self._model.huggingface_repo_id,
                 token=self._config.huggingface_token,
-                trust_remote_code=True,
+                trust_remote_code=trust_remote_code,
             )
         elif self._model.source == SourceEnum.MODEL_SCOPE:
             from modelscope import AutoConfig
@@ -99,7 +108,7 @@ class VLLMServer(InferenceServer):
             pretrained_config = AutoConfig.from_pretrained(
                 self._model.model_scope_model_id,
                 ignore_file_pattern=ignore_file_pattern,
-                trust_remote_code=True,
+                trust_remote_code=trust_remote_code,
             )
         else:
             # Should not reach here.
