@@ -31,6 +31,7 @@ HEADER_SKIPPED = [
     "x-forwarded-proto",
     "x-forwarded-server",
 ]
+proxy_timeout_in_seconds = 60
 
 
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
@@ -50,7 +51,10 @@ async def proxy(session: SessionDep, request: Request, url: str):
         try:
             if request.method == "GET":
                 response = await client.request(
-                    request.method, url, headers=forwarded_headers
+                    request.method,
+                    url,
+                    headers=forwarded_headers,
+                    timeout=proxy_timeout_in_seconds,
                 )
             else:
                 data = (
@@ -59,7 +63,11 @@ async def proxy(session: SessionDep, request: Request, url: str):
                     else None
                 )
                 response = await client.request(
-                    request.method, url, headers=forwarded_headers, data=data
+                    request.method,
+                    url,
+                    headers=forwarded_headers,
+                    timeout=proxy_timeout_in_seconds,
+                    data=data,
                 )
 
             return Response(
@@ -68,6 +76,8 @@ async def proxy(session: SessionDep, request: Request, url: str):
                 media_type=response.headers.get("Content-Type"),
             )
         except Exception as e:
+            logger.error(f"Failed to proxy request to {url}: {str(e)}")
+
             return JSONResponse(
                 status_code=500,
                 content={"detail": str(e)},
