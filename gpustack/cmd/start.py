@@ -179,9 +179,9 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=json.loads,
         help="The system reserves resources during scheduling, measured in GiB. \
         Where RAM is reserved per worker, and VRAM is reserved per GPU device. \
-        2 GiB of RAM is reserved per worker and 2 GiB of VRAM is reserved \
-        per GPU device. Example: '{\"ram\": 2, \"vram\": 2}' or '{\"memory\": 2, \"gpu_memory\": 2}', \
-        Note: '{\"memory\": 2, \"gpu_memory\": 2}' is deprecated and will be removed in future releases.",
+        By default, 2 GiB of RAM is reserved. \
+        Example: '{\"ram\": 2, \"vram\": 0}' or '{\"memory\": 2, \"gpu_memory\": 0}', \
+        Note: The 'memory' and 'gpu_memory' keys are deprecated and will be removed in future releases.",
         default=get_gpustack_env("SYSTEM_RESERVED"),
     )
 
