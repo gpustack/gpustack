@@ -9,6 +9,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
+from gpustack.utils.platform import get_native_arch
 from gpustack.worker.backends.base import InferenceServer
 
 logger = logging.getLogger(__name__)
@@ -127,9 +128,9 @@ def get_llama_box_command(extra_key):
 
     command = get_platform_command(command_map, extra_key)
     if command == "":
+        arch = get_native_arch()
         raise Exception(
-            f"No supported llama-box command found "
-            f"for {platform.system()} {platform.machine()}."
+            f"No supported llama-box command found " f"for {platform.system()} {arch}."
         )
     return command
 
