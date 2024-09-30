@@ -69,6 +69,7 @@ nav:
       - Model Management: user-guide/model-management.md
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md
+      - Inference Backends: user-guide/inference-backends.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
