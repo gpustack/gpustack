@@ -84,7 +84,9 @@ class LlamaBoxServer(InferenceServer):
         if self._model.backend_parameters:
             # A make-it-work solution for now.
             # TODO Fine-grained control of llama-box parameters.
-            arguments.extend(self._model.backend_parameters)
+            for param in self._model.backend_parameters:
+                key, value = param.split('=', 1)
+                arguments.extend([key, value])
 
         env = self.get_inference_running_env(self._model_instance.gpu_indexes)
         try:
