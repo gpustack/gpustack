@@ -14,6 +14,7 @@ from tqdm import tqdm
 from gpustack.api.exceptions import HTTPException
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.schemas.models import (
+    BackendEnum,
     ModelCreate,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -128,6 +129,9 @@ class ChatManager:
             name=self._model_name,
             source=SourceEnum.OLLAMA_LIBRARY,
             ollama_library_model_name=self._model_name,
+            cpu_offloading=True,
+            distributed_inference_across_workers=True,
+            backend=BackendEnum.LLAMA_BOX,
         )
         created = self._clientset.models.create(model_create=model_create)
         self._model = created
