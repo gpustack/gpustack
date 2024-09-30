@@ -4,13 +4,27 @@ You can manage large language models in GPUStack by navigating to the `Models` p
 
 ## Deploy Model
 
-Currently, models from [Hugging Face](https://huggingface.co) and [Ollama](https://ollama.com/library) in [GGUF format](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) are supported.
+Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](https://modelscope.cn) and [Ollama](https://ollama.com/library) are supported.
 
 ### Deploying a Hugging Face Model
 
 1. Click the `Deploy Model` button, then select `Hugging Face` in the dropdown.
 
 2. Search the model by name from Hugging Face using the search bar in the top left. For example, `microsoft/Phi-3-mini-4k-instruct-gguf`. If you only want to search for GGUF models, check the "GGUF" checkbox.
+
+3. Select a file with the desired quantization format from `Available Files`.
+
+4. Adjust the `Name` and `Replicas` as needed.
+
+5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
+
+6. Click the `Save` button.
+
+### Deploying an ModelScope Model
+
+1. Click the `Deploy Model` button, then select `ModelScope` in the dropdown.
+
+2. Search the model by name from ModelScope using the search bar in the top left. For example, `Qwen/Qwen2-0.5B-Instruct`. If you only want to search for GGUF models, check the "GGUF" checkbox.
 
 3. Select a file with the desired quantization format from `Available Files`.
 
@@ -34,26 +48,16 @@ Currently, models from [Hugging Face](https://huggingface.co) and [Ollama](https
 
 6. Click the `Save` button.
 
-### Deploying an ModelScope Model
-
-1. Click the `Deploy Model` button, then select `ModelScope` in the dropdown.
-
-2. Search the model by name from ModelScope using the search bar in the top left. For example, `Qwen/Qwen2-0.5B-Instruct`. If you only want to search for GGUF models, check the "GGUF" checkbox.
-
-3. Select a file with the desired quantization format from `Available Files`.
-
-4. Adjust the `Name` and `Replicas` as needed.
-
-5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
-
-6. Click the `Save` button.
-
 ## Edit Model
 
 1. Find the model you want to edit on the model list page.
 2. Click the `Edit` button in the `Operations` column.
 3. Update the attributes as needed. For example, change the `Replicas` to scale up or down.
 4. Click the `Save` button.
+
+!!! note
+
+    After editing the model, the configuration will not be applied to existing model instances. You need to delete the existing model instances. GPUStack will recreate new instances based on the updated model configuration.
 
 ## Delete Model
 
@@ -118,17 +122,17 @@ GPUStack automatically schedules model instances to appropriate GPUs/Workers bas
 
 - Placement Strategy
 
-    - Spread: Make the resources of the entire cluster relatively evenly distributed among all workers. It may produce more resource fragmentation on a single worker.
+  - Spread: Make the resources of the entire cluster relatively evenly distributed among all workers. It may produce more resource fragmentation on a single worker.
 
-    - Binpack: Prioritize the overall utilization of cluster resources, reducing resource fragmentation on Workers/GPUs.
+  - Binpack: Prioritize the overall utilization of cluster resources, reducing resource fragmentation on Workers/GPUs.
 
 - Worker Selector
 
-    When configured, the scheduler will deploy the model instance to the worker containing specified labels.
+  When configured, the scheduler will deploy the model instance to the worker containing specified labels.
 
-    1. Navigate to the `Resources` page and edit the desired worker. Assign custom labels to the worker by adding them in the labels section.
+  1. Navigate to the `Resources` page and edit the desired worker. Assign custom labels to the worker by adding them in the labels section.
 
-    2. Go to the `Models` page and click on the `Deploy Model` button. Expand the `Advanced` section and input the previously assigned worker labels in the `Worker Selector` configuration. During deployment, the Model Instance will be allocated to the corresponding worker based on these labels.
+  2. Go to the `Models` page and click on the `Deploy Model` button. Expand the `Advanced` section and input the previously assigned worker labels in the `Worker Selector` configuration. During deployment, the Model Instance will be allocated to the corresponding worker based on these labels.
 
 #### Manual
 
@@ -136,30 +140,33 @@ This schedule type allows users to specify which GPU to deploy the model instanc
 
 - GPU Selector
 
-    Select a GPU from the list. The model instance will attempt to deploy to this GPU if resources permit.
+  Select a GPU from the list. The model instance will attempt to deploy to this GPU if resources permit.
 
 ### Backend
 
-#### llama-box
+The inference backend. Currently, GPUStack supports two backends: llama-box and vLLM. GPUStack automatically selects the backend based on the model's information.
 
-[llama-box](https://github.com/gpustack/llama-box) is a LLM inference engine implementation based on llama.cpp. This backend supports deploying GGUF model files, CPU offloading and distributed inference across workers.
+For more details, please refer to the [Inference Backends](./inference-backends.md) section.
 
-- Backend Parameters
+### Backend Parameters
 
-    Input the paramters for llama-box you want to customize while running llama-box backend, for example `--ctx-size=8192`. You can see the list of supported parameters [here](https://github.com/gpustack/llama-box).
+Input the parameters for the backend you want to customize while running the model instance. Should be in the format `--parameter=value`, `--bool-parameter` or separate `--parameter` and `value` in two fields.
+For example, `--ctx-size=8192` for llama-box.
 
-- Allow CPU Offloading
+For full list of supported parameters, please refer to the [Inference Backends](./inference-backends.md) section.
 
-    After enabling CPU offloading, GPUStack prioritizes loading as many layers as possible onto the GPU to maximize performance. If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
+### Allow CPU Offloading
 
-- Allow Distributed Inference Across Workers
+!!! note
 
-    Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more others workers, offloading computation tasks to them.
+    Available for llama-box backend only.
 
-#### vLLM
+After enabling CPU offloading, GPUStack prioritizes loading as many layers as possible onto the GPU to optimize performance. If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
 
-[vLLM](https://github.com/vllm-project/vllm) is a high-throughput and memory-efficient LLMs inference engine. vLLM seamlessly supports most popular open-source models, including: Transformer-like LLMs (e.g., Llama), Mixture-of-Expert LLMs (e.g., Mixtral), Embedding Models (e.g. E5-Mistral), Multi-modal LLMs (e.g., LLaVA)
+### Allow Distributed Inference Across Workers
 
-- Backend Parameters
+!!! note
 
-    Input the paramters for llama-box you want to customize while running vLLM backend, for example `--max-model-len=8192`. You can see the list of supported parameters [here](https://docs.vllm.ai/en/latest/models/engine_args.html).
+    Available for llama-box backend only.
+
+Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more other workers, offloading computation tasks to them.

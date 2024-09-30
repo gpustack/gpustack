@@ -42,8 +42,8 @@ The scoring phase evaluates the filtered candidates, scoring them to select the 
 
 - Binpack
 
-  This strategy aims to "pack" as many model instances as possible into the fewest number of "bins" (e.g., Workers/GPUs) to maximize resource utilization. The goal is to minimize the number of bins used while maximizing resource efficiency, ensuring each bin is filled as efficiently as possible without exceeding its capacity. Model instances are placed in the bin with the least remaining space to minimize leftover capacity in each bin.
+  This strategy aims to "pack" as many model instances as possible into the fewest number of "bins" (e.g., Workers/GPUs) to optimize resource utilization. The goal is to minimize the number of bins used while maximizing resource efficiency, ensuring each bin is filled as efficiently as possible without exceeding its capacity. Model instances are placed in the bin with the least remaining space to minimize leftover capacity in each bin.
 
 - Spread
-  
+
   This strategy seeks to distribute multiple model instances across different worker nodes as evenly as possible, improving system fault tolerance and load balancing.
