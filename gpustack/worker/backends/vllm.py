@@ -124,7 +124,7 @@ class VLLMServer(InferenceServer):
 # Keep in our codebase to avoid dependency on vllm's internal
 # APIs which may change unexpectedly.
 # https://github.com/vllm-project/vllm/blob/v0.6.2/vllm/config.py#L1668
-def get_max_model_len(hf_config) -> int:
+def get_max_model_len(hf_config) -> int:  # noqa: C901
     """Get the model's maximum length."""
     derived_max_model_len = float("inf")
     possible_keys = [
@@ -176,8 +176,10 @@ def get_max_model_len(hf_config) -> int:
         # The correct one should be "longrope", kept "su" here
         # to be backward compatible
         if rope_type not in ("su", "longrope", "llama3"):
-            assert "factor" in rope_scaling
-            scaling_factor = rope_scaling["factor"]
+            if rope_type == "mrope":
+                scaling_factor = 1
+            elif "factor" in rope_scaling:
+                scaling_factor = rope_scaling["factor"]
             if rope_type == "yarn":
                 derived_max_model_len = rope_scaling["original_max_position_embeddings"]
             derived_max_model_len *= scaling_factor
