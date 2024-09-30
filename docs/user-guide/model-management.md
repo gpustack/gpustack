@@ -144,14 +144,14 @@ This schedule type allows users to specify which GPU to deploy the model instanc
 
 ### Backend
 
-The inference backend. Currently, GPUStack supports two backends: llama-box and vLLM. GPUStack automatically selects the backend based on the model's information.
+The inference backend. Currently, GPUStack supports two backends: llama-box and vLLM. GPUStack automatically selects the backend based on the model's configuration.
 
 For more details, please refer to the [Inference Backends](./inference-backends.md) section.
 
 ### Backend Parameters
 
-Input the parameters for the backend you want to customize while running the model instance. Should be in the format `--parameter=value`, `--bool-parameter` or separate `--parameter` and `value` in two fields.
-For example, `--ctx-size=8192` for llama-box.
+Input the parameters for the backend you want to customize when running the model. The parameter should be in the format `--parameter=value`, `--bool-parameter` or as separate fields for `--parameter` and `value`.
+For example, use `--ctx-size=8192` for llama-box.
 
 For full list of supported parameters, please refer to the [Inference Backends](./inference-backends.md) section.
 
