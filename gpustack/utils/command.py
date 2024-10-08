@@ -2,6 +2,8 @@ import platform
 import shutil
 from typing import List, Optional
 
+from gpustack.utils.platform import get_native_arch
+
 
 def is_command_available(command_name):
     """
@@ -26,7 +28,7 @@ def get_platform_command(command_map: dict, *extra_keys) -> str:
     """
 
     system = platform.system()
-    arch = platform.machine().lower()
+    arch = get_native_arch()
     key = (system, arch)
 
     if extra_keys:

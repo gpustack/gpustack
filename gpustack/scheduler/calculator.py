@@ -15,6 +15,7 @@ from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.hugging_face import match_hf_files
 from gpustack.utils.model_scope import match_model_scope_file_paths
+from gpustack.utils.platform import get_native_arch
 
 
 logger = logging.getLogger(__name__)
@@ -90,9 +91,10 @@ async def _gguf_parser_command(
 
     command = get_platform_command(command_map)
     if command == "":
+        arch = get_native_arch()
         raise Exception(
             f"No supported gguf-parser command found for "
-            f"{platform.system()} {platform.machine()}."
+            f"{platform.system()} {arch}."
         )
 
     command_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(
