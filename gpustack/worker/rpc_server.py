@@ -40,7 +40,7 @@ class RPCServer:
     def _start(port: int, gpu_index: int):
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
-        ).joinpath(get_llama_box_command("gpu"))
+        ).joinpath(get_llama_box_command())
 
         arguments = [
             "--rpc-server-host",

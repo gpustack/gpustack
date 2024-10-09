@@ -1,4 +1,5 @@
 import platform
+import torch
 
 
 def system() -> str:
@@ -19,3 +20,11 @@ def arch() -> str:
         "s390x": "s390x",
     }
     return arch_map.get(platform.machine().lower(), "unknown")
+
+
+def device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        return "mps"
+    return ""
