@@ -18,13 +18,10 @@ from gpustack.schemas.workers import (
 )
 import socket
 import json
-import os
-import platform
 import subprocess
 from gpustack.schemas.workers import WorkerStatus, Worker
-from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
-
+from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
 
@@ -357,22 +354,9 @@ class WorkerStatusCollector:
             )
 
     def _fastfetch_command(self):
-        command_map = {
-            # Emulation on Windows 11 for Arm supports both x86 and x64 apps, while Windows 10 on Arm supports only x86 apps.
-            ("Windows", "arm64"): "fastfetch-windows-amd64.exe",
-            ("Windows", "amd64"): "fastfetch-windows-amd64.exe",
-            ("Darwin", "amd64"): "fastfetch-macos-universal",
-            ("Darwin", "arm64"): "fastfetch-macos-universal",
-            ("Linux", "amd64"): "fastfetch-linux-amd64",
-            ("Linux", "arm64"): "fastfetch-linux-aarch64",
-        }
-
-        command = get_platform_command(command_map)
-        if command == "":
-            raise Exception(
-                f"No supported fastfetch command found "
-                f"for {platform.system()} {platform.machine()}."
-            )
+        command = "fastfetch"
+        if platform.system() == "windows":
+            command += ".exe"
 
         with pkg_resources.path(
             "gpustack.third_party.config.fastfetch", "config.jsonc"
@@ -382,10 +366,6 @@ class WorkerStatusCollector:
         with pkg_resources.path(
             "gpustack.third_party.bin.fastfetch", command
         ) as executable_path:
-
-            if platform.system() not in ["Windows"]:
-                os.chmod(executable_path, 0o755)
-
             # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true \
             # --format json --config ${path}/config.jsonc
             executable_command = [

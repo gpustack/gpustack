@@ -19,6 +19,7 @@ from gpustack.worker.logs import LogOptionsDep
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.logs import log_generator
+from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
 
 
@@ -105,6 +106,9 @@ class Worker:
         setup_logging(self._config.debug)
         if is_multiprocessing:
             setproctitle.setproctitle("gpustack_worker")
+
+        tools_manager = ToolsManager()
+        tools_manager.prepare_tools()
 
         asyncio.run(self.start_async())
 

@@ -6,16 +6,14 @@ import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
 from dataclasses_json import dataclass_json
-import platform
 
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
-from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.hugging_face import match_hf_files
 from gpustack.utils.model_scope import match_model_scope_file_paths
-
+from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
 fetch_file_timeout_in_seconds = 5
@@ -79,21 +77,9 @@ class ModelInstanceResourceClaim:
 async def _gguf_parser_command(
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
-    command_map = {
-        ("Windows", "arm64"): "gguf-parser-windows-arm64.exe",
-        ("Windows", "amd64"): "gguf-parser-windows-amd64.exe",
-        ("Darwin", "amd64"): "gguf-parser-darwin-universal",
-        ("Darwin", "arm64"): "gguf-parser-darwin-universal",
-        ("Linux", "amd64"): "gguf-parser-linux-amd64",
-        ("Linux", "arm64"): "gguf-parser-linux-arm64",
-    }
-
-    command = get_platform_command(command_map)
-    if command == "":
-        raise Exception(
-            f"No supported gguf-parser command found for "
-            f"{platform.system()} {platform.machine()}."
-        )
+    command = "gguf-parser"
+    if platform.system() == "windows":
+        command += ".exe"
 
     command_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(
         command
