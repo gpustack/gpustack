@@ -7,7 +7,6 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
 )
-from gpustack.utils.command import get_platform_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.worker.backends.base import InferenceServer
 
@@ -16,16 +15,9 @@ logger = logging.getLogger(__name__)
 
 class LlamaBoxServer(InferenceServer):
     def start(self):  # noqa: C901
-        cmd_extra_key = (
-            "gpu"
-            if self._model_instance.gpu_indexes
-            and len(self._model_instance.gpu_indexes) > 0
-            else "cpu"
-        )
-
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
-        ).joinpath(get_llama_box_command(cmd_extra_key))
+        ).joinpath(get_llama_box_command())
 
         layers = -1
         claim = self._model_instance.computed_resource_claim
@@ -119,24 +111,10 @@ class LlamaBoxServer(InferenceServer):
                 logger.error(f"Failed to update model instance: {ue}")
 
 
-def get_llama_box_command(extra_key):
-    command_map = {
-        ("Windows", "amd64", "gpu"): "llama-box-windows-amd64-cuda-12.4.exe",
-        ("Darwin", "amd64", "gpu"): "llama-box-darwin-amd64-metal",
-        ("Darwin", "arm64", "gpu"): "llama-box-darwin-arm64-metal",
-        ("Linux", "amd64", "gpu"): "llama-box-linux-amd64-cuda-12.4",
-        ("Linux", "amd64", "cpu"): "llama-box-linux-amd64-avx2",
-        ("Linux", "arm64", "cpu"): "llama-box-linux-arm64-neon",
-        ("Windows", "amd64", "cpu"): "llama-box-windows-amd64-avx2.exe",
-        ("Windows", "arm64", "cpu"): "llama-box-windows-arm64-neon.exe",
-    }
-
-    command = get_platform_command(command_map, extra_key)
-    if command == "":
-        raise Exception(
-            f"No supported llama-box command found "
-            f"for {platform.system()} {platform.machine()}."
-        )
+def get_llama_box_command():
+    command = "llama-box"
+    if platform.system() == "windows":
+        command += ".exe"
     return command
 
 
