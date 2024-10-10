@@ -1,4 +1,21 @@
-# GPUStack
+<br>
+<p align="center">
+    <img alt="GPUStack" src="./docs/assets/gpustack-logo.png" width="300px"/>
+</p>
+<br>
+<p align="center">
+    <a href="https://docs.gpustack.ai" target="_blank">
+        <img alt="Documentation" src="https://img.shields.io/badge/Docs-GPUStack-blue?logo=readthedocs&logoColor=white"></a>
+    <a href="./LICENSE" target="_blank">
+        <img alt="License" src="https://img.shields.io/github/license/gpustack/gpustack?logo=github&logoColor=white&label=License&color=blue"></a>
+    <a href="./docs/assets/wechat-assistant.png" target="_blank">
+        <img alt="WeChat" src="https://img.shields.io/badge/Wechat-GPUStack-blue?logo=wechat&logoColor=white"></a>
+    <a href="https://discord.gg/VXYJzuaqwD" target="_blank">
+        <img alt="Discord" src="https://img.shields.io/badge/Discord-GPUStack-blue?logo=discord&logoColor=white"></a>
+    <a href="https://twitter.com/intent/follow?screen_name=gpustack_ai" target="_blank">
+        <img alt="Follow on X(Twitter)" src="https://img.shields.io/twitter/follow/gpustack_ai?logo=X"></a>
+</p>
+<br>
 
 ![demo](docs/assets/gpustack-demo.gif)
 
