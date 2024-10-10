@@ -63,6 +63,9 @@ class LlamaBoxServer(InferenceServer):
             "--no-mmap",
         ]
 
+        if self._model.reranker:
+            arguments.append("--rerank")
+
         if rpc_servers:
             rpc_servers_argument = ",".join(rpc_servers)
             arguments.extend(["--rpc", rpc_servers_argument])
