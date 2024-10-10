@@ -74,6 +74,7 @@ class ModelBase(SQLModel, ModelSource):
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
     embedding_only: bool = False
+    reranker: bool = False
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: bool = False
     distributed_inference_across_workers: bool = False
@@ -244,6 +245,22 @@ def is_gguf_model(model: Model):
             and model.model_scope_file_path.endswith(".gguf")
         )
     )
+
+
+def is_reranker_model(model: Model) -> bool:
+    """
+    Check if the model is a reranker model. It's inferred from the name.
+    Args:
+        model: Model to check.
+    """
+    KEYWORD = "rerank"
+    if model.source == SourceEnum.OLLAMA_LIBRARY:
+        return KEYWORD in model.ollama_library_model_name.lower()
+    elif model.source == SourceEnum.HUGGING_FACE:
+        return KEYWORD in model.huggingface_repo_id.lower()
+    elif model.source == SourceEnum.MODEL_SCOPE:
+        return KEYWORD in model.model_scope_model_id.lower()
+    return False
 
 
 def get_backend(model: Model) -> str:

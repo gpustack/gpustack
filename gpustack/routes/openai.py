@@ -27,11 +27,18 @@ load_balancer = LoadBalancer()
 
 
 @router.get("/models")
-async def list_models(session: SessionDep, embedding_only: Optional[bool] = None):
+async def list_models(
+    session: SessionDep,
+    embedding_only: Optional[bool] = None,
+    reranker: Optional[bool] = None,
+):
     statement = select(Model).where(Model.ready_replicas > 0)
 
     if embedding_only is not None:
         statement = statement.where(Model.embedding_only == embedding_only)
+
+    if reranker is not None:
+        statement = statement.where(Model.reranker == reranker)
 
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")
