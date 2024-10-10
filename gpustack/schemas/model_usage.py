@@ -11,6 +11,7 @@ class OperationEnum(str, Enum):
     COMPLETION = "completion"
     CHAT_COMPLETION = "chat_completion"
     EMBEDDING = "embedding"
+    RERANK = "rerank"
 
 
 class ModelUsage(SQLModel, ActiveRecordMixin, table=True):

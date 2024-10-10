@@ -13,6 +13,7 @@ from openai.types.create_embedding_response import (
     CreateEmbeddingResponse,
     Usage as EmbeddingUsage,
 )
+from gpustack.routes.rerank import RerankResponse, RerankUsage
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
@@ -53,6 +54,13 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                     self.record_embeddings_model_usage,
                     CreateEmbeddingResponse,
                 )
+            elif request.url.path == "/v1/rerank":
+                return await self.process_request(
+                    request,
+                    response,
+                    self.record_rerank_model_usage,
+                    RerankResponse,
+                )
 
         return response
 
@@ -62,7 +70,7 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         response: StreamingResponse,
         record_usage,
         response_class: Type[
-            Union[ChatCompletion, Completion, CreateEmbeddingResponse]
+            Union[ChatCompletion, Completion, CreateEmbeddingResponse, RerankResponse]
         ],
     ):
         stream: bool = getattr(request.state, "stream", False)
@@ -149,11 +157,14 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
     async def record_model_usage(
         self,
         request: Request,
-        usage: Union[CompletionUsage, EmbeddingUsage],
+        usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage],
         operation: OperationEnum,
     ):
         prompt_tokens = usage.prompt_tokens
-        completion_tokens = getattr(usage, 'completion_tokens', 0)
+        total_tokens = usage.total_tokens
+        completion_tokens = getattr(
+            usage, 'completion_tokens', total_tokens - prompt_tokens
+        )
         user: User = request.state.user
         model: Model = request.state.model
         fields = {
@@ -192,6 +203,9 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         self, request: Request, usage: EmbeddingUsage
     ):
         await self.record_model_usage(request, usage, OperationEnum.EMBEDDING)
+
+    async def record_rerank_model_usage(self, request: Request, usage: RerankUsage):
+        await self.record_model_usage(request, usage, OperationEnum.RERANK)
 
 
 class RefreshTokenMiddleware(BaseHTTPMiddleware):
