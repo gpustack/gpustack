@@ -71,6 +71,7 @@ nav:
       - User Management: user-guide/user-management.md
       - Inference Backends: user-guide/inference-backends.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
+      - Rerank API: user-guide/rerank-api.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
