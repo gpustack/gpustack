@@ -78,3 +78,9 @@ nav:
   - CLI Reference:
       - Start: cli-reference/start.md
       - Chat: cli-reference/chat.md
+  - Tutorials:
+      - Deploying Vision Model: tutorials/vision-model.md
+      - Enabling CPU Inference: tutorials/cpu-inference.md
+      - Multiple Node Cluster: tutorials/multiple-node-cluster.md
+      - Integration With Others: tutorials/integration-with-others.md
+
