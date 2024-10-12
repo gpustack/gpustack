@@ -13,7 +13,6 @@ from tqdm.contrib.concurrent import thread_map
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 from modelscope.hub.api import HubApi
-from modelscope.hub.file_download import model_file_download
 from modelscope.hub.snapshot_download import (
     snapshot_download as modelscope_snapshot_download,
 )
@@ -483,7 +482,6 @@ class ModelScopeDownloader:
         model_id: str,
         file_path: Optional[str],
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
-        max_workers: int = 8,
     ) -> str:
         """Download a model from Model Scope.
 
@@ -494,76 +492,24 @@ class ModelScopeDownloader:
                 A filename or glob pattern to match the model file in the repo.
             cache_dir:
                 The cache directory to save the model to.
-            max_workers:
-                Number of concurrent threads to download files (1 thread = 1 file download).
-                Defaults to 8.
 
         Returns:
             The path to the downloaded model.
         """
 
         if file_path is not None:
-            return cls.download_file(model_id, file_path, cache_dir, max_workers)
+            matching_files = match_model_scope_file_paths(model_id, file_path)
+            if len(matching_files) == 0:
+                raise ValueError(f"No file found in {model_id} that match {file_path}")
+
+            model_path = modelscope_snapshot_download(
+                model_id=model_id,
+                cache_dir=cache_dir,
+                allow_patterns=file_path,
+            )
+            return os.path.join(model_path, matching_files[0])
 
         return modelscope_snapshot_download(
             model_id=model_id,
             cache_dir=cache_dir,
         )
-
-    @classmethod
-    def download_file(
-        cls,
-        model_id: str,
-        file_path: Optional[str],
-        cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
-        max_workers: int = 8,
-    ) -> str:
-        """Download a model from the Model Scope Hub.
-
-        Args:
-            model_id:
-                The model id.
-            file_path:
-                A file or glob pattern to match the model file in the repo.
-            cache_dir:
-                The cache directory to save the model to.
-            max_workers (`int`, *optional*):
-                Number of concurrent threads to download files (1 thread = 1 file download).
-                Defaults to 8.
-
-        Returns:
-            The path to the downloaded model.
-        """
-
-        matching_files = match_model_scope_file_paths(model_id, file_path)
-
-        if len(matching_files) == 0:
-            raise ValueError(f"No file found in {model_id} that match {file_path}")
-
-        logger.info(f"Downloading model {model_id}/{file_path}")
-
-        def _inner_model_scope_download(model_path: str):
-            return model_file_download(
-                model_id=model_id,
-                file_path=model_path,
-                cache_dir=cache_dir,
-            )
-
-        thread_map(
-            _inner_model_scope_download,
-            matching_files,
-            desc=f"Fetching {len(matching_files)} files",
-            max_workers=max_workers,
-        )
-
-        # Get local path of the model file.
-        # For split files, get the first one. llama-box will handle the rest.
-        model_path = model_file_download(
-            model_id=model_id,
-            file_path=matching_files[0],
-            cache_dir=cache_dir,
-            local_files_only=True,
-        )
-
-        logger.info(f"Downloaded model {model_id}/{model_path}")
-        return model_path
