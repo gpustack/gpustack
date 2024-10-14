@@ -100,7 +100,7 @@ check_python_tools() {
     elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
       $SUDO yum install -y python3
     elif [ "$OS" = "macos" ]; then
-      $SUDO brew install python
+      brew install python
     else
       fatal "Unsupported OS for automatic Python installation. Please install Python3 manually."
     fi
@@ -151,7 +151,7 @@ check_python_tools() {
     elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
       $SUDO yum install -y pipx
     elif [ "$OS" = "macos" ]; then
-      $SUDO brew install pipx
+      brew install pipx
     else
       fatal "Unsupported OS for automatic pipx installation. Please install pipx manually."
     fi

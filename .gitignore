@@ -152,3 +152,6 @@ __pycache__/
 # GPUStack related
 */third_party/bin
 */ui/
+
+# macOS
+.DS_Store
