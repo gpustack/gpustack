@@ -142,6 +142,11 @@ jobs:
       - name: Run CI build
         run: |
           make ci
+      - name: Free Space
+        run: |
+          # Get more space for docker build.
+          poetry cache clear _default_cache --all
+          rm -rf $(poetry env info --path)
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
         with:
