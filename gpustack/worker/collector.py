@@ -231,7 +231,7 @@ class WorkerStatusCollector:
             if memory_total == 0 or (
                 vender.lower()
                 not in [
-                    vendor.name.lower()
+                    vendor.lower()
                     for vendor in [
                         VendorEnum.NVIDIA,
                         VendorEnum.Apple,
