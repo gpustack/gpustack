@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel
@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 class RerankRequest(BaseModel):
     model: str
     query: str
-    top_n: int
     documents: List[str]
+    top_n: Optional[int] = None
+    return_documents: Optional[bool] = True
 
 
 class RerankUsage(BaseModel):
