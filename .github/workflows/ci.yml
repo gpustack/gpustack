@@ -143,10 +143,7 @@ jobs:
         run: |
           make ci
       - name: Free Space
-        run: |
-          # Get more space for docker build.
-          poetry cache clear _default_cache --all
-          rm -rf $(poetry env info --path)
+        uses: jlumbroso/free-disk-space@v1.3.1
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
         with:
