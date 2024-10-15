@@ -16,7 +16,7 @@ COPY dist/*.whl /tmp/
 
 RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
     echo "Installing x86_64 wheel"; \
-    pip3 install /tmp/*_x86_64.whl; \
+    pip3 install /tmp/*_x86_64.whl vllm; \
     elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
     echo "Installing aarch64 wheel"; \
     pip3 install /tmp/*_aarch64.whl; \
