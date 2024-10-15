@@ -176,9 +176,8 @@ def get_max_model_len(hf_config) -> int:  # noqa: C901
         # The correct one should be "longrope", kept "su" here
         # to be backward compatible
         if rope_type not in ("su", "longrope", "llama3"):
-            if rope_type == "mrope":
-                scaling_factor = 1
-            elif "factor" in rope_scaling:
+            scaling_factor = 1
+            if "factor" in rope_scaling:
                 scaling_factor = rope_scaling["factor"]
             if rope_type == "yarn":
                 derived_max_model_len = rope_scaling["original_max_position_embeddings"]
