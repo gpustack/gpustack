@@ -16,6 +16,7 @@ from modelscope.hub.api import HubApi
 from modelscope.hub.snapshot_download import (
     snapshot_download as modelscope_snapshot_download,
 )
+from modelscope.hub.utils.utils import model_id_to_group_owner_name
 import base64
 import random
 import string
@@ -497,19 +498,27 @@ class ModelScopeDownloader:
             The path to the downloaded model.
         """
 
-        if file_path is not None:
-            matching_files = match_model_scope_file_paths(model_id, file_path)
-            if len(matching_files) == 0:
-                raise ValueError(f"No file found in {model_id} that match {file_path}")
+        group_or_owner, name = model_id_to_group_owner_name(model_id)
+        name = name.replace('.', '___')
+        lock_filename = os.path.join(cache_dir, group_or_owner, f"{name}.lock")
 
-            model_path = modelscope_snapshot_download(
+        logger.info("Retriving file lock")
+        with FileLock(lock_filename):
+            if file_path is not None:
+                matching_files = match_model_scope_file_paths(model_id, file_path)
+                if len(matching_files) == 0:
+                    raise ValueError(
+                        f"No file found in {model_id} that match {file_path}"
+                    )
+
+                model_path = modelscope_snapshot_download(
+                    model_id=model_id,
+                    cache_dir=cache_dir,
+                    allow_patterns=file_path,
+                )
+                return os.path.join(model_path, matching_files[0])
+
+            return modelscope_snapshot_download(
                 model_id=model_id,
                 cache_dir=cache_dir,
-                allow_patterns=file_path,
             )
-            return os.path.join(model_path, matching_files[0])
-
-        return modelscope_snapshot_download(
-            model_id=model_id,
-            cache_dir=cache_dir,
-        )
