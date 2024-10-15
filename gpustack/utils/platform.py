@@ -1,5 +1,5 @@
+import os
 import platform
-import torch
 
 
 def system() -> str:
@@ -23,8 +23,12 @@ def arch() -> str:
 
 
 def device() -> str:
-    if torch.cuda.is_available():
+    if os.system("nvidia-smi > /dev/null 2>&1") == 0 or os.path.exists(
+        "/usr/local/cuda"
+    ):
         return "cuda"
-    elif torch.backends.mps.is_available():
+
+    if system() == "darwin" and arch() == "arm64":
         return "mps"
+
     return ""
