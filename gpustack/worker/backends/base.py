@@ -16,6 +16,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     ModelInstanceStateEnum,
 )
+from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo
 from gpustack.utils import platform
 from gpustack.worker.downloaders import (
     HfDownloader,
@@ -25,6 +26,11 @@ from gpustack.worker.downloaders import (
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
+
+ACCELERATOR_VENDOR_TO_ENV_NAME = {
+    VendorEnum.NVIDIA: "CUDA_VISIBLE_DEVICES",
+    VendorEnum.Huawei: "ASCEND_RT_VISIBLE_DEVICES",
+}
 
 
 def time_decorator(func):
@@ -255,14 +261,39 @@ class InferenceServer(ABC):
         self._clientset.model_instances.update(id=id, model_update=mi)
 
     @staticmethod
-    def get_inference_running_env(gpu_indexes: List[int] = None):
+    def _get_env_name_by_vendor(vendor: str) -> str:
+        env_name = next(
+            (
+                v
+                for k, v in ACCELERATOR_VENDOR_TO_ENV_NAME.items()
+                if k.value.lower() in vendor.lower()
+            ),
+            "CUDA_VISIBLE_DEVICES",
+        )
+
+        return env_name
+
+    @staticmethod
+    def get_inference_running_env(
+        gpu_indexes: List[int] = None, gpu_devices: GPUDevicesInfo = None
+    ):
         env = os.environ.copy()
         system = platform.system()
 
         if system == "darwin":
             return None
         elif (system == "linux" or system == "windows") and gpu_indexes:
-            env["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in gpu_indexes])
+            vendor = None
+            if gpu_devices:
+                # Now use the first GPU index to get the vendor
+                first_index = gpu_indexes[0]
+                gpu_device = next(
+                    (d for d in gpu_devices if d.index == first_index), None
+                )
+                vendor = gpu_device.vendor if gpu_device else None
+
+            env_name = InferenceServer._get_env_name_by_vendor(vendor)
+            env[env_name] = ",".join([str(i) for i in gpu_indexes])
             return env
         else:
             # TODO: support more.
