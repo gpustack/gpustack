@@ -16,13 +16,15 @@ COPY dist/*.whl /tmp/
 
 RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
     echo "Installing x86_64 wheel"; \
-    pip3 install /tmp/*_x86_64.whl vllm; \
+    WHEEL_PACKAGE="$(ls /tmp/*_x86_64.whl)[vllm]"; \
     elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
     echo "Installing aarch64 wheel"; \
-    pip3 install /tmp/*_aarch64.whl; \
+    WHEEL_PACKAGE="$(ls /tmp/*_aarch64.whl)"; \
     else \
-    echo "Unsupported platform: $TARGETPLATFORM"; \
-    fi \
-    && rm /tmp/*.whl
+    echo "Unsupported platform: $TARGETPLATFORM" && exit 1; \
+    fi && \
+    pip3 install $WHEEL_PACKAGE &&\
+    rm /tmp/*.whl && \
+    pip3 cache purge
 
 ENTRYPOINT [ "gpustack", "start" ]
