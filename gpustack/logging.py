@@ -21,8 +21,9 @@ def setup_logging(debug: bool = False):
     # Disable third-party loggers
     third_party_logger_names = [
         "httpcore.connection",
-        "httpx",
         "httpcore.http11",
+        "httpcore.proxy",
+        "httpx",
         "asyncio",
         "aiosqlite",
         "urllib3.connectionpool",

@@ -19,6 +19,7 @@ from gpustack.server.controllers import (
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
+from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_syncer import WorkerSyncer
 
 
@@ -53,6 +54,7 @@ class Server:
         self._start_controllers()
         self._start_system_load_collector()
         self._start_worker_syncer()
+        self._start_update_checker()
 
         port = 80
         if self._config.port:
@@ -143,6 +145,15 @@ class Server:
         asyncio.create_task(worker_syncer.start())
 
         logger.debug("Worker syncer started.")
+
+    def _start_update_checker(self):
+        if self._config.disable_update_check:
+            return
+
+        update_checker = UpdateChecker(update_check_url=self._config.update_check_url)
+        asyncio.create_task(update_checker.start())
+
+        logger.debug("Update checker started.")
 
     def _start_sub_processes(self):
         for process in self._sub_processes:

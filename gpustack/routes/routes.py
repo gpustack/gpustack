@@ -9,6 +9,7 @@ from gpustack.routes import (
     model_instances,
     probes,
     proxy,
+    update,
     users,
     models,
     openai,
@@ -54,6 +55,12 @@ api_router.include_router(
     debug.router,
     dependencies=[Depends(get_admin_user)],
     prefix="/debug",
+    include_in_schema=False,
+)
+api_router.include_router(
+    update.router,
+    dependencies=[Depends(get_admin_user)],
+    prefix="/update",
     include_in_schema=False,
 )
 api_router.include_router(
