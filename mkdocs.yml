@@ -83,5 +83,3 @@ nav:
       - Deploying Vision Model: tutorials/vision-model.md
       - Enabling CPU Inference: tutorials/cpu-inference.md
       - Multiple Node Cluster: tutorials/multiple-node-cluster.md
-      - Integration With Others: tutorials/integration-with-others.md
-
