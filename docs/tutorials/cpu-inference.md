@@ -1,17 +1,17 @@
 # CPU Inference
 
-If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
+When GPU resources are limited, some model layers can be offloaded to the CPU, and full CPU inference will be used if no GPU is available.
 
 ![VRAM Lack](../assets/tutorials/vram-lack.png)
 
-Deploy a model and enable `Allow CPU Offloading`.
+To deploy the model with CPU offloading, enable the `Allow CPU Offloading` option during deployment.
 
 ![Allow CPU Offload](../assets/tutorials/allow-cpu-offload.png)
 
-After the deployment is successful, you will be able to see the number of layers offloaded to the CPU.
+Once the deployment is complete, you can see how many layers have been offloaded to the CPU.
 
 ![CPU Offload](../assets/tutorials/cpu-offload.png)
 
-Then you can test its inference metrics in the `Playground`.
+Next, you can test the model's inference performance in the `Playground`.
 
 ![CPU Inference](../assets/tutorials/cpu-inference.png)

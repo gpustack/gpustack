@@ -1,17 +1,22 @@
 # Deploy Vision Model
 
-For example: Phi-3.5-vision-instruct
+Instructions for Deploying and Testing the `Phi-3.5-vision-instruct` Model on Hugging Face.
 
-1. Select the deployment source as Hugging Face, search for the model `Phi-3.5-vision-instruct`.
+1. In the model list, choose **Hugging Face** as the source for your model.
+
+![Hugging Face](../assets/tutorials/select-source.png)
+
+2. Use the search bar to look for the model`Phi-3.5-vision-instruct`.
+3. From the search results, locate and select the model `microsoft/Phi-3.5-vision-instruct`.
 
 ![Search Model](../assets/tutorials/deploy-vision-model.png)
 
-2. Choose the model `microsoft/Phi-3.5-vision-instruct`.
-3. Click `Save`.
-4. In the model list, verify that the instance of `Phi-3.5-vision-instruct` is in the `Running` state, then click `Open in Playground`.
+4. After selecting the model, click the `Save` button to finalize your selection.
+5. In the model list, confirm that `Phi-3.5-vision-instruct` appears and its status is `Running`.
+6. Once the model is running, click `Open in Playground` to interact with the model.
 
 ![Model Running](../assets/tutorials/vision-running.png)
 
-5. Send a message to test.
+7. In the Playground, send a message to test.
 
 ![Send Message](../assets/tutorials/vision-model.png)
