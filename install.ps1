@@ -376,7 +376,7 @@ function Install-GPUStack {
             }
         }
 
-        Log-Info "$action GPUStack with pipx and pythin $pythonPath..."
+        Log-Info "$action GPUStack with pipx and python $pythonPath..."
         if ($action -ieq "Upgrade") {
             Log-Info "Uninstall existing gpustack..."
 
