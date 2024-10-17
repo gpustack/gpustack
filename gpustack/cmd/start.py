@@ -127,6 +127,18 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Base URL of the Ollama library. Default is https://registry.ollama.ai.",
         default=get_gpustack_env("OLLAMA_LIBRARY_BASE_URL"),
     )
+    group.add_argument(
+        "--disable-update-check",
+        action=OptionalBoolAction,
+        help="Disable update check.",
+        default=get_gpustack_env_bool("DISABLE_UPDATE_CHECK"),
+    )
+    group.add_argument(
+        "--update-check-url",
+        type=str,
+        help=argparse.SUPPRESS,
+        default=get_gpustack_env("UPDATE_CHECK_URL"),
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -275,6 +287,8 @@ def set_server_options(args, config_data: dict):
         "ssl_certfile",
         "force_auth_localhost",
         "ollama_library_base_url",
+        "disable_update_check",
+        "update_check_url",
     ]
 
     for option in options:
