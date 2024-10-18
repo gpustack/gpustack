@@ -1,3 +1,5 @@
+import asyncio
+from functools import partial
 import logging
 import threading
 import time
@@ -71,3 +73,12 @@ def run_periodically_in_thread(
     )
     thread.start()
     return thread
+
+
+async def run_in_thread(sync_func, timeout: Optional[float] = None, *args, **kwargs):
+    task = asyncio.to_thread(partial(sync_func, *args, **kwargs))
+
+    if timeout is None:
+        return await task
+
+    return await asyncio.wait_for(task, timeout=timeout)
