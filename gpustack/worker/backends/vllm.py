@@ -109,12 +109,8 @@ class VLLMServer(InferenceServer):
         elif self._model.source == SourceEnum.MODEL_SCOPE:
             from modelscope import AutoConfig
 
-            # It may download weight files unneccessary by default.
-            # Ref: https://github.com/modelscope/modelscope/issues/1004
-            ignore_file_pattern = ['\\w+\\.bin', '\\w+\\.safetensors', '\\w+\\.pth']
             pretrained_config = AutoConfig.from_pretrained(
                 self._model.model_scope_model_id,
-                ignore_file_pattern=ignore_file_pattern,
                 trust_remote_code=trust_remote_code,
             )
         else:

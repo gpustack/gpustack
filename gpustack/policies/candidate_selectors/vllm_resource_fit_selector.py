@@ -120,12 +120,8 @@ def get_ms_model_weight_size(model_id: str, trust_remote_code: bool = False) -> 
     # ModelScope does not provide the info in the API. Infer from the model name.
     total_params = parse_model_size_by_name(model_id)
 
-    # It may download weight files unneccessary by default.
-    # Ref: https://github.com/modelscope/modelscope/issues/1004
-    ignore_file_pattern = ['\\w+\\.bin', '\\w+\\.safetensors', '\\w+\\.pth']
     config = AutoConfig.from_pretrained(
         model_id,
-        ignore_file_pattern=ignore_file_pattern,
         trust_remote_code=trust_remote_code,
     )
     torch_dtype = getattr(config, 'torch_dtype', "float16")
