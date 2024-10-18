@@ -1,3 +1,8 @@
+---
+hide:
+  - toc
+---
+
 # gpustack chat
 
 Chat with a large language model.
