@@ -21,16 +21,17 @@ class ToolsManager:
 
     """
 
-    def __init__(self):
+    def __init__(self, tools_download_base_url: str = None):
         with pkg_resources.path("gpustack.third_party", "bin") as bin_path:
             self.bin_path: Path = bin_path
 
         self._os = platform.system()
         self._arch = platform.arch()
         self._device = platform.device()
-        self._download_base_url = None
+        self._download_base_url = tools_download_base_url
 
-        self._check_and_set_download_base_url()
+        if not self._download_base_url:
+            self._check_and_set_download_base_url()
 
     def _check_and_set_download_base_url(self):
         urls = [
