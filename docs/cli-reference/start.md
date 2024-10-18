@@ -48,6 +48,7 @@ gpustack start [OPTIONS]
 | `--worker-port` value               | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                                                                               |
 | `--log-dir` value                   |                                        | Directory to store logs.                                                                                                                                                                                                                          |
 | `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 0}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 0}' is also supported, but it is deprecated and will be removed in future releases. |
+| `--tools-download-base-url`         |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                        |
 
 ## Config File
 
@@ -67,9 +68,6 @@ ssl_keyfile: /path/to/keyfile
 ssl_certfile: /path/to/certfile
 force_auth_localhost: false
 bootstrap_password: myadminpassword
-system_reserved:
-  ram: 2
-  vram: 0
 ollama_library_base_url: https://registry.mycompany.com
 disable_update_check: false
 
@@ -80,4 +78,8 @@ disable_metrics: false
 metrics_port: 10151
 worker_port: 10150
 log_dir: /path/to/dir
+system_reserved:
+  ram: 2
+  vram: 0
+tools_download_base_url: https://mirror.mycompany.com
 ```

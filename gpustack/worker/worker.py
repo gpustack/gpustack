@@ -107,7 +107,9 @@ class Worker:
         if is_multiprocessing:
             setproctitle.setproctitle("gpustack_worker")
 
-        tools_manager = ToolsManager()
+        tools_manager = ToolsManager(
+            tools_download_base_url=self._config.tools_download_base_url
+        )
         tools_manager.prepare_tools()
 
         asyncio.run(self.start_async())

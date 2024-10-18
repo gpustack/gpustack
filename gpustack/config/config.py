@@ -32,6 +32,7 @@ class Config(BaseSettings):
         ollama_library_base_url: Base URL of the Ollama library. Default is https://registry.ollama.ai.
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
+        tools_download_base_url: Base URL to download dependency tools.
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
@@ -62,6 +63,7 @@ class Config(BaseSettings):
     ollama_library_base_url: Optional[str] = "https://registry.ollama.ai"
     disable_update_check: bool = False
     update_check_url: Optional[str] = None
+    tools_download_base_url: Optional[str] = None
 
     # Worker options
     server_url: Optional[str] = None

@@ -196,6 +196,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         Note: The 'memory' and 'gpu_memory' keys are deprecated and will be removed in future releases.",
         default=get_gpustack_env("SYSTEM_RESERVED"),
     )
+    group.add_argument(
+        "--tools-download-base-url",
+        type=str,
+        help="Base URL to download dependency tools.",
+        default=get_gpustack_env("TOOLS_DOWNLOAD_BASE_URL"),
+    )
 
     parser_server.set_defaults(func=run)
 
@@ -282,7 +288,6 @@ def set_server_options(args, config_data: dict):
         "database_url",
         "disable_worker",
         "bootstrap_password",
-        "system_reserved",
         "ssl_keyfile",
         "ssl_certfile",
         "force_auth_localhost",
@@ -304,6 +309,8 @@ def set_worker_options(args, config_data: dict):
         "disable_metrics",
         "metrics_port",
         "log_dir",
+        "system_reserved",
+        "tools_download_base_url",
     ]
 
     for option in options:
