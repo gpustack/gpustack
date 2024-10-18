@@ -8,7 +8,7 @@ set -o noglob
 #   ENV_VAR=... ./install.sh [args]
 #
 # Example:
-#   Installing a server with bootstrap passowrd:
+#   Installing a server with bootstrap password:
 #     curl ... | sh -s - --bootstrap-password mypassword
 #   Installing a worker to point at a server:
 #     curl ... | sh -s - --server-url http://myserver --token mytoken
