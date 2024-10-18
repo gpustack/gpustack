@@ -28,6 +28,9 @@ def device() -> str:
     ):
         return "cuda"
 
+    if os.system("npu-smi -v > /dev/null 2>&1") == 0:
+        return "npu"
+
     if system() == "darwin" and arch() == "arm64":
         return "mps"
 

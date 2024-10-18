@@ -1,27 +1,14 @@
 import logging
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.policies.base import Allocated
 from gpustack.schemas.workers import (
-    CPUInfo,
-    GPUCoreInfo,
-    GPUDevicesInfo,
-    MemoryInfo,
-    OperatingSystemInfo,
-    KernelInfo,
     RPCServer,
-    UptimeInfo,
-    SwapInfo,
-    GPUDeviceInfo,
     MountPoint,
-    VendorEnum,
     WorkerStateEnum,
 )
 import socket
-import json
-import subprocess
 from gpustack.schemas.workers import WorkerStatus, Worker
-from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
 
@@ -40,101 +27,26 @@ class WorkerStatusCollector:
         self._worker_ip = worker_ip
         self._clientset = clientset
         self._worker_manager = worker_manager
+        self._detector_factory = DetectorFactory()
 
     """A class for collecting worker status information."""
 
     def collect(self) -> Worker:  # noqa: C901
         """Collect worker status information."""
-        status = WorkerStatus()
 
-        results = self._run_fastfetch_and_parse_result()
-        for result in results:
-            typ = result.get("type")
-            r = result.get("result")
+        system_info = self._detector_factory.detect_system_info()
+        gpu_devices = self._detector_factory.detect_gpus()
 
-            if r is None:
-                continue
-
-            if typ == "OS":
-                status.os = OperatingSystemInfo(
-                    name=self._get_value(r, "name"),
-                    version=self._get_value(r, "version"),
-                )
-            elif typ == "Kernel":
-                k = KernelInfo(
-                    name=self._get_value(r, "name"),
-                    release=self._get_value(r, "release"),
-                    version=self._get_value(r, "version"),
-                    architecure=self._get_value(r, "architecure"),
-                )
-
-                status.kernel = k
-            elif typ == "Uptime":
-                status.uptime = UptimeInfo(
-                    uptime=self._get_value(r, "uptime"),
-                    boot_time=self._get_value(r, "bootTime"),
-                )
-            elif typ == "CPU":
-                total = self._get_value(r, "cores", "online")
-                if status.cpu is None:
-                    status.cpu = CPUInfo(
-                        total=total,
-                    )
-                else:
-                    status.cpu.total = total
-            elif typ == "CPUUsage":
-                core_count = len(r)
-                sum = 0
-                for usage_per_core in r:
-                    sum += usage_per_core
-
-                utilization_rate = sum / core_count if core_count > 0 else 0
-
-                if status.cpu is None:
-                    status.cpu = CPUInfo(
-                        utilization_rate=utilization_rate,
-                    )
-                else:
-                    status.cpu.utilization_rate = utilization_rate
-            elif typ == "GPU":
-                # Set to status.
-                status.gpu_devices = self._decode_gpu_devices(r)
-            elif typ == "Memory":
-                total = self._get_value(r, "total") or 0
-                used = self._get_value(r, "used") or 0
-                utilization_rate = used / total * 100 if total > 0 else 0
-
-                status.memory = MemoryInfo(
-                    total=total,
-                    used=used,
-                    utilization_rate=utilization_rate,
-                )
-            elif typ == "Swap":
-                total = self._get_value(r, "total") or 0
-                used = self._get_value(r, "used") or 0
-                utilization_rate = used / total * 100 if total > 0 else 0
-
-                status.swap = SwapInfo(
-                    total=total,
-                    used=used,
-                    utilization_rate=utilization_rate,
-                )
-            elif typ == "Disk":
-                mountpoints = []
-                for disk in r:
-                    mountpoints.append(
-                        MountPoint(
-                            name=self._get_value(disk, "name"),
-                            mount_point=self._get_value(disk, "mountpoint"),
-                            mount_from=self._get_value(disk, "mountFrom"),
-                            total=self._get_value(disk, "bytes", "total") or 0,
-                            used=self._get_value(disk, "bytes", "used") or 0,
-                            free=self._get_value(disk, "bytes", "free") or 0,
-                            available=self._get_value(disk, "bytes", "available") or 0,
-                        )
-                    )
-
-                status.filesystem = mountpoints
+        status = WorkerStatus(
+            gpu_devices=gpu_devices,
+            cpu=system_info.cpu,
+            memory=system_info.memory,
+            swap=system_info.swap,
+            filesystem=system_info.filesystem,
+            os=system_info.os,
+            kernel=system_info.kernel,
+            uptime=system_info.uptime,
+        )
 
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
@@ -156,111 +68,6 @@ class WorkerStatusCollector:
             state=WorkerStateEnum.READY,
             status=status,
         )
-
-    def collect_gpu_devices(self) -> GPUDevicesInfo:
-        results = self._run_fastfetch_and_parse_result()
-        for result in results:
-            typ = result.get("type")
-            r = result.get("result")
-
-            if r is None:
-                continue
-
-            if typ == "GPU":
-                return self._decode_gpu_devices(r)
-
-        return []
-
-    def _decode_gpu_devices(self, result) -> GPUDevicesInfo:
-        devices = []
-        list = sorted(result, key=lambda x: x["name"])
-        key_set = set()
-        for i, value in enumerate(list):
-            # Metadatas.
-            vender = self._get_value(value, "vendor")
-            if vender is None or vender == "":
-                continue
-
-            name = self._get_value(value, "name")
-            index = self._get_value(value, "index")
-
-            if index is None:
-                index = i
-
-            key = f"{name}-{index}"
-            if key in key_set:
-                for offset in range(len(list)):
-                    key = f"{name}-{offset}"
-                    if key not in key_set:
-                        index = offset
-                        key_set.add(key)
-                        break
-            else:
-                key_set.add(key)
-
-            is_unified_memory = False
-            if (
-                vender == VendorEnum.Apple
-                and self._get_value(value, "type") == "Integrated"
-            ):
-                is_unified_memory = True
-
-            is_integrated = self._get_value(value, "type") == "Integrated"
-
-            # Memory.
-            memory_total = 0
-            memory_used = 0
-            if is_integrated:
-                memory_total = self._get_value(value, "memory", "shared", "total") or 0
-                memory_used = self._get_value(value, "memory", "shared", "used") or 0
-            else:
-                memory_total = (
-                    self._get_value(value, "memory", "dedicated", "total") or 0
-                )
-                memory_used = self._get_value(value, "memory", "dedicated", "used") or 0
-            memory_utilization_rate = (
-                (memory_used / memory_total * 100) if memory_total > 0 else 0
-            )
-            memory = MemoryInfo(
-                is_unified_memory=is_unified_memory,
-                total=memory_total,
-                used=memory_used,
-                utilization_rate=memory_utilization_rate,
-            )
-
-            if memory_total == 0 or (
-                vender.lower()
-                not in [
-                    vendor.lower()
-                    for vendor in [
-                        VendorEnum.NVIDIA,
-                        VendorEnum.Apple,
-                        VendorEnum.MTHREADS,
-                    ]
-                ]
-            ):
-                # Ignore the device without memory.
-                continue
-
-            # Core.
-            core_count = self._get_value(value, "coreCount") or 0
-            core_utilization_rate = self._get_value(value, "coreUtilizationRate") or 0
-            core = GPUCoreInfo(total=core_count, utilization_rate=core_utilization_rate)
-
-            # Append.
-            devices.append(
-                GPUDeviceInfo(
-                    name=name,
-                    uuid=self._get_value(value, "uuid"),
-                    vendor=self._get_value(value, "vendor"),
-                    index=index,
-                    core=core,
-                    memory=memory,
-                    temperature=self._get_value(value, "temperature"),
-                )
-            )
-
-        return devices
 
     def _inject_unified_memory(self, status: WorkerStatus):
         is_unified_memory = False
@@ -324,70 +131,3 @@ class WorkerStatusCollector:
                 status.gpu_devices[ag].memory.allocated = agv
         except Exception as e:
             logger.error(f"Failed to inject allocated resources: {e}")
-
-    def _run_fastfetch_and_parse_result(self):
-        command = self._fastfetch_command()
-        try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, check=True, encoding="utf-8"
-            )
-            output = result.stdout
-
-            if result.returncode != 0:
-                raise Exception(f"Unexpected return code: {result.returncode}")
-
-            if output == "" or output is None:
-                raise Exception(f"Output is empty, return code: {result.returncode}")
-
-        except Exception as e:
-            raise Exception(
-                f"Failed to execute {command.__str__()}: {e},"
-                f" stdout: {result.stdout}, stderr: {result.stderr}"
-            )
-
-        try:
-            parsed_json = json.loads(output)
-            return parsed_json
-        except Exception as e:
-            raise Exception(
-                f"Failed to parse the output of {command.__str__()}: {e}, output: {output}"
-            )
-
-    def _fastfetch_command(self):
-        command = "fastfetch"
-        if platform.system() == "windows":
-            command += ".exe"
-
-        with pkg_resources.path(
-            "gpustack.third_party.config.fastfetch", "config.jsonc"
-        ) as config_path:
-            config_file_path = str(config_path)
-
-        with pkg_resources.path(
-            "gpustack.third_party.bin.fastfetch", command
-        ) as executable_path:
-            # ${path}/fastfetch --gpu-temp true --gpu-driver-specific true \
-            # --format json --config ${path}/config.jsonc
-            executable_command = [
-                str(executable_path),
-                "--gpu-driver-specific",
-                "true",
-                "--gpu-temp",
-                "true",
-                "--format",
-                "json",
-                "--config",
-                config_file_path,
-                "--gpu-detection-method",
-                "pci",
-            ]
-            return executable_command
-
-    def _get_value(self, input: dict, *keys):
-        current_value = input
-        for key in keys:
-            if isinstance(current_value, dict) and key in current_value:
-                current_value = current_value[key]
-            else:
-                return None
-        return current_value

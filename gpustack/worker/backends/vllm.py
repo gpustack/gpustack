@@ -53,11 +53,18 @@ class VLLMServer(InferenceServer):
                     ]
                 )
 
+            worker_gpu_devices = None
+            worker = self._clientset.workers.get(self._model_instance.worker_id)
+            if worker and worker.status.gpu_devices:
+                worker_gpu_devices = worker.status.gpu_devices
+
             # Extend the built-in arguments at the end so that
             # they cannot be overridden by the user-defined arguments
             arguments.extend(built_in_arguments)
 
-            env = self.get_inference_running_env(self._model_instance.gpu_indexes)
+            env = self.get_inference_running_env(
+                self._model_instance.gpu_indexes, worker_gpu_devices
+            )
             logger.info("Starting vllm server")
             logger.debug(f"Run vllm with arguments: {' '.join(arguments)}")
             subprocess.run(

@@ -60,6 +60,7 @@ class VendorEnum(str, Enum):
     Intel = "Intel"
     MTHREADS = "Moore Threads"
     Apple = "Apple"
+    Huawei = "Huawei"
 
 
 class MountPoint(BaseModel):
@@ -108,16 +109,18 @@ class WorkerStateEnum(str, Enum):
     READY = "ready"
 
 
-class WorkerStatus(BaseModel):
+class SystemInfo(BaseModel):
     cpu: Optional[CPUInfo] = Field(sa_column=Column(JSON), default=None)
     memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
-    gpu_devices: Optional[GPUDevicesInfo] = Field(sa_column=Column(JSON), default=None)
     swap: Optional[SwapInfo] = Field(sa_column=Column(JSON), default=None)
     filesystem: Optional[FileSystemInfo] = Field(sa_column=Column(JSON), default=None)
     os: Optional[OperatingSystemInfo] = Field(sa_column=Column(JSON), default=None)
     kernel: Optional[KernelInfo] = Field(sa_column=Column(JSON), default=None)
     uptime: Optional[UptimeInfo] = Field(sa_column=Column(JSON), default=None)
 
+
+class WorkerStatus(SystemInfo):
+    gpu_devices: Optional[GPUDevicesInfo] = Field(sa_column=Column(JSON), default=None)
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )
