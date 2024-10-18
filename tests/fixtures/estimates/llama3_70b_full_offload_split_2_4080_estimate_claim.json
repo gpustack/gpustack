@@ -38,6 +38,7 @@
     "flashAttention": false,
     "noMMap": false,
     "embeddingOnly": false,
+    "reranking": false,
     "distributable": true,
     "logicalBatchSize": 2048,
     "physicalBatchSize": 512

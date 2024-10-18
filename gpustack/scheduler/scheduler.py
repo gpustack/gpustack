@@ -32,7 +32,6 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     is_gguf_model,
-    is_reranker_model,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
@@ -164,7 +163,10 @@ class Scheduler:
         ):
             should_update = True
             model.embedding_only = True
-            model.reranker = is_reranker_model(model)
+
+        if task_output.resource_claim_estimate.reranking and not model.reranker:
+            should_update = True
+            model.reranker = True
 
         if (
             task_output.resource_claim_estimate.distributable
