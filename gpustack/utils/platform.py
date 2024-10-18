@@ -7,6 +7,8 @@ from gpustack.utils.command import is_command_available
 
 logger = logging.getLogger(__name__)
 
+from gpustack.schemas.workers import VendorEnum
+
 
 def system() -> str:
     return platform.uname().system.lower()
@@ -89,3 +91,13 @@ def device() -> str:
         return "mps"
 
     return ""
+
+
+def device_from_vendor(vendor: VendorEnum) -> str:
+    mapping = {
+        VendorEnum.NVIDIA.value: "cuda",
+        VendorEnum.Huawei.value: "npu",
+        VendorEnum.Apple.value: "mps",
+    }
+
+    return mapping.get(vendor, "")

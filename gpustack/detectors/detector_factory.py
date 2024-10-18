@@ -15,23 +15,35 @@ logger = logging.getLogger(__name__)
 class DetectorFactory:
     def __init__(
         self,
-        gpu_detectors: Dict[str, GPUDetector] = None,
+        default_gpu_detector: GPUDetector = None,
+        gpu_detectors: Dict[VendorEnum, GPUDetector] = None,
     ):
         fastfetch = Fastfetch()
         self._check_detector_availability(fastfetch, "default detector")
 
-        self.default_gpu_detector = fastfetch
         self.system_info_detector = fastfetch
         self.gpu_vendor_detector = fastfetch
-        self.gpu_detectors = gpu_detectors or {VendorEnum.Huawei: NPUSMI()}
+        self.default_gpu_detector = default_gpu_detector or fastfetch
+        self.gpu_detectors = gpu_detectors
+
+        if self.gpu_detectors is None:
+            self.gpu_detectors = {
+                VendorEnum.Huawei: NPUSMI(),
+                VendorEnum.Apple: fastfetch,
+                VendorEnum.NVIDIA: fastfetch,
+                VendorEnum.MTHREADS: fastfetch,
+            }
 
     def detect_gpus(self) -> GPUDevicesInfo:
         gpu_devices = []
-        vendors = self.gpu_vendor_detector.gather_gpu_vendor_info()
-        for vendor in vendors:
-            detector = self._get_gpu_detector_by_vendor(vendor)
-            gpus = detector.gather_gpu_info()
-            gpu_devices.extend(self._filter_gpu_devices(gpus))
+        if len(self.gpu_detectors) == 0:
+            gpu_devices.extend(self.default_gpu_detector.gather_gpu_info())
+        else:
+            vendors = self.gpu_vendor_detector.gather_gpu_vendor_info()
+            for vendor in vendors:
+                detector = self._get_gpu_detector_by_vendor(vendor)
+                gpus = detector.gather_gpu_info()
+                gpu_devices.extend(self._filter_gpu_devices(gpus))
 
         return gpu_devices
 

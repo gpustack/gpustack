@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
 
 from gpustack.client import ClientSet
 from gpustack.config.config import Config
+from gpustack.detectors.custom.custom import Custom
 from gpustack.schemas.workers import SystemReserved, Worker, WorkerStateEnum
 from gpustack.utils import network
 from gpustack.utils import platform
@@ -39,6 +40,7 @@ class WorkerManager:
         self._system_reserved = system_reserved
         self._rpc_servers: Dict[int, RPCServerProcessInfo] = {}
         self._rpc_server_log_dir = f"{cfg.log_dir}/rpc_server"
+        self._gpu_devices = cfg.get_gpu_devices()
 
         os.makedirs(self._rpc_server_log_dir, exist_ok=True)
 
@@ -58,6 +60,7 @@ class WorkerManager:
             worker_name=self._worker_name,
             clientset=self._clientset,
             worker_manager=self,
+            gpu_devices=self._gpu_devices,
         )
 
         try:
@@ -116,6 +119,7 @@ class WorkerManager:
                 worker_name=self._worker_name,
                 clientset=self._clientset,
                 worker_manager=self,
+                gpu_devices=self._gpu_devices,
             )
             worker = collector.collect()
 
@@ -142,7 +146,11 @@ class WorkerManager:
 
     def _start_rpc_servers(self):
         try:
-            detector_factory = DetectorFactory()
+            detector = Custom(self._gpu_devices) if self._gpu_devices else None
+            detector_factory = (
+                DetectorFactory(detector, {}) if detector else DetectorFactory()
+            )
+
             gpu_devices = detector_factory.detect_gpus()
         except Exception as e:
             logger.error(f"Failed to get GPU devices while start rpc servers: {e}")
