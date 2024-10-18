@@ -26,8 +26,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
 from gpustack.schemas.models import ModelInstance
-from gpustack.utils.hugging_face import match_hf_files
-from gpustack.utils.model_scope import match_model_scope_file_paths
+from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +123,7 @@ class HfDownloader:
             The path to the downloaded model.
         """
 
-        matching_files = match_hf_files(repo_id, filename)
+        matching_files = match_hugging_face_files(repo_id, filename)
 
         if len(matching_files) == 0:
             raise ValueError(f"No file found in {repo_id} that match {filename}")
