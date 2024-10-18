@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import time
 import zipfile
 import requests
 from gpustack.utils.compat_importlib import pkg_resources
@@ -236,13 +237,25 @@ class ToolsManager:
 
     def _download_file(self, url, target_path):
         """Download a file from the specified URL and save it to the target path."""
-        try:
-            with requests.get(url, stream=True, timeout=30) as response:
-                response.raise_for_status()
-                with open(target_path, 'wb') as f:
-                    f.write(response.content)
-        except requests.RequestException as e:
-            raise Exception(f"error downloading from {url}: {e}")
+        max_retries = 5
+        retries = 0
+        while retries < max_retries:
+            try:
+                with requests.get(url, stream=True, timeout=30) as response:
+                    response.raise_for_status()
+                    with open(target_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                break
+            except Exception as e:
+                retries += 1
+                if retries >= max_retries:
+                    raise Exception(f"Error downloading from {url}: {e}")
+                else:
+                    logger.debug(
+                        f"Attempt {retries} failed: {e}. Retrying in 2 seconds..."
+                    )
+                    time.sleep(2)
 
     def _extract_file(self, file_path, target_dir):
         """Extract a file to the target directory."""
