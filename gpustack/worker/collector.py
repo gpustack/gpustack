@@ -1,5 +1,6 @@
 import logging
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.detectors.custom.custom import Custom
 from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.policies.base import Allocated
 from gpustack.schemas.workers import (
@@ -21,13 +22,18 @@ class WorkerStatusCollector:
         worker_name: str,
         clientset: ClientSet = None,
         worker_manager=None,
+        gpu_devices=None,
     ):
         self._worker_name = worker_name
         self._hostname = socket.gethostname()
         self._worker_ip = worker_ip
         self._clientset = clientset
         self._worker_manager = worker_manager
-        self._detector_factory = DetectorFactory()
+
+        detector = Custom(gpu_devices) if gpu_devices else None
+        self._detector_factory = (
+            DetectorFactory(detector, {}) if detector else DetectorFactory()
+        )
 
     """A class for collecting worker status information."""
 

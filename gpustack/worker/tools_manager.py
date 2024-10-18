@@ -6,6 +6,7 @@ import stat
 import time
 import zipfile
 import requests
+from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform
 
@@ -21,7 +22,9 @@ class ToolsManager:
 
     """
 
-    def __init__(self, tools_download_base_url: str = None):
+    def __init__(
+        self, tools_download_base_url: str = None, gpu_devices: GPUDevicesInfo = None
+    ):
         with pkg_resources.path("gpustack.third_party", "bin") as bin_path:
             self.bin_path: Path = bin_path
 
@@ -32,6 +35,10 @@ class ToolsManager:
 
         if not self._download_base_url:
             self._check_and_set_download_base_url()
+
+        if gpu_devices:
+            vendor = gpu_devices[0].vendor
+            self._device = platform.device_from_vendor(vendor)
 
     def _check_and_set_download_base_url(self):
         urls = [

@@ -85,6 +85,7 @@ class Worker:
             worker_name=self._worker_name,
             port=cfg.metrics_port,
             clientset=self._clientset,
+            cfg=cfg,
         )
 
     def _get_worker_name(self):
@@ -108,7 +109,8 @@ class Worker:
             setproctitle.setproctitle("gpustack_worker")
 
         tools_manager = ToolsManager(
-            tools_download_base_url=self._config.tools_download_base_url
+            tools_download_base_url=self._config.tools_download_base_url,
+            gpu_devices=self._config.get_gpu_devices(),
         )
         tools_manager.prepare_tools()
 
