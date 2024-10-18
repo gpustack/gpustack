@@ -144,6 +144,7 @@ curl http://myserver/v1-openai/chat/completions \
 
 - [x] Apple Metal
 - [x] NVIDIA CUDA
+- [x] Huawei Ascend NPU
 
 We plan to support the following accelerators in future releases.
 

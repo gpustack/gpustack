@@ -23,10 +23,8 @@ class MetricExporter(Collector):
     ):
         self._worker_ip = worker_ip
         self._worker_name = worker_name
-        self._collector = WorkerStatusCollector(
-            worker_ip, worker_name=worker_name, clientset=clientset
-        )
         self._port = port
+        self._clientset = clientset
 
     def collect(self):  # noqa: C901
         labels = ["instance", "provider"]
@@ -114,7 +112,10 @@ class MetricExporter(Collector):
         )
 
         try:
-            worker = self._collector.collect()
+            collector = WorkerStatusCollector(
+                self._worker_ip, self._worker_name, self._clientset
+            )
+            worker = collector.collect()
             status = worker.status
             if status is None:
                 logger.error("Empty worker node status from collector.")
