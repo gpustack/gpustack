@@ -7,7 +7,6 @@
     "uptime",
     "cpu",
     "cpuusage",
-    "gpu",
     "memory",
     "swap",
     "disk",

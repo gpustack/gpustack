@@ -65,7 +65,7 @@ class ToolsManager:
         self.download_fastfetch()
 
     def download_llama_box(self):
-        version = "v0.0.59-sp2"
+        version = "v0.0.65"
         llama_box_dir = self.bin_path.joinpath("llama-box")
         llama_box_tmp_dir = llama_box_dir.joinpath(llama_box_dir, "tmp")
 
@@ -102,7 +102,7 @@ class ToolsManager:
         if os.path.exists(llama_box_tmp_dir):
             shutil.rmtree(llama_box_tmp_dir)
 
-    def _get_llama_box_platform_name(self) -> str:
+    def _get_llama_box_platform_name(self) -> str:  # noqa C901
         platform_name = ""
         if self._os == "darwin" and self._arch == "arm64" and self._device == "mps":
             platform_name = "darwin-arm64-metal"
@@ -110,6 +110,10 @@ class ToolsManager:
             platform_name = "darwin-amd64-avx2"
         elif self._os == "linux" and self._arch == "amd64" and self._device == "cuda":
             platform_name = "linux-amd64-cuda-12.4"
+        elif self._os == "linux" and self._arch == "amd64" and self._device == "npu":
+            platform_name = "linux-amd64-cann-8.0"
+        elif self._os == "linux" and self._arch == "arm64" and self._device == "npu":
+            platform_name = "linux-arm64-cann-8.0"
         elif self._os == "linux" and self._arch == "amd64":
             platform_name = "linux-amd64-avx2"
         elif self._os == "linux" and self._arch == "arm64":

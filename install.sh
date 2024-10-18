@@ -90,6 +90,23 @@ detect_os() {
   fi
 }
 
+# Function to detect the OS and package manager
+detect_device() {
+  if command -v nvidia-smi > /dev/null 2>&1; then
+    if ! command -v nvcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
+      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+    fi
+    DEVICE="cuda"
+  fi
+
+  if command -v mthreads-gmi > /dev/null 2>&1; then
+    if ! command -v mcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libmusart) && ! ls /usr/local/musa >/dev/null 2>&1; then
+      warn "MTHREADS GPU detected but MUSA is not installed. Please install MUSA."
+    fi
+    DEVICE="musa"
+  fi
+}
+
 # Function to check and install Python tools
 PYTHONPATH=""
 check_python_tools() {
@@ -183,23 +200,6 @@ install_dependencies() {
   fi
 }
 
-# Function to check CUDA for NVIDIA GPUs
-check_cuda() {
-  if command -v nvidia-smi > /dev/null 2>&1; then
-    if ! command -v nvcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
-      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
-    fi
-  fi
-}
-
-# Function to check MUSA for MTHREADS GPUs
-check_musa() {
-  if command -v mthreads-gmi > /dev/null 2>&1; then
-    if ! command -v mcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libmusart) && ! ls /usr/local/musa >/dev/null 2>&1; then
-      warn "MTHREADS GPU detected but MUSA is not installed. Please install MUSA."
-    fi
-  fi
-}
 
 # Function to setup SeLinux permissions
 setup_selinux_permissions() {
@@ -385,7 +385,7 @@ install_gpustack() {
   fi
 
   default_package_spec="gpustack"
-  if [ "$OS" != "macos" ] && [ "$(uname -m)" = "x86_64" ]; then
+  if [ "$OS" != "macos" ] && [ "$(uname -m)" = "x86_64" ] && [ "$DEVICE" = "cuda" ]; then
     # Install optional vLLM dependencies on amd64 Linux
     default_package_spec="gpustack[vllm]"
   fi
@@ -402,11 +402,10 @@ install_gpustack() {
 {
   check_root
   detect_os
+  detect_device
   verify_system
   install_dependencies
   check_python_tools
-  check_cuda
-  check_musa
   install_gpustack
   create_uninstall_script
   disable_service

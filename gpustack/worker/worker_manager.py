@@ -17,6 +17,8 @@ from gpustack.utils import platform
 from gpustack.utils.process import terminate_process_tree
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.rpc_server import RPCServer, RPCServerProcessInfo
+from gpustack.detectors.detector_factory import DetectorFactory
+
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +142,8 @@ class WorkerManager:
 
     def _start_rpc_servers(self):
         try:
-            collector = WorkerStatusCollector(self._worker_ip, self._worker_name)
-            gpu_devices = collector.collect_gpu_devices()
+            detector_factory = DetectorFactory()
+            gpu_devices = detector_factory.detect_gpus()
         except Exception as e:
             logger.error(f"Failed to get GPU devices while start rpc servers: {e}")
             return
