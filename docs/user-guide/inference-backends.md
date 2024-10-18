@@ -16,7 +16,7 @@ When users deploy a model, the backend is selected automatically based on the fo
 
 ### Supported Platforms
 
-The llama-box backend works on a wide range of platforms, including Windows, MacOS, and Linux.
+The llama-box backend works on a wide range of platforms, including MacOS, Linux and Windows(with CPU offloading only on Windows ARM architecture).
 
 ### Supported Models
 

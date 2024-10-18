@@ -45,6 +45,8 @@ mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.30.6"
 transformers = "^4.44.2"
 fastapi-cdn-host = "^0.8.0"
+wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
+pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
