@@ -11,8 +11,7 @@ from dataclasses_json import dataclass_json
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils.hugging_face import match_hf_files
-from gpustack.utils.model_scope import match_model_scope_file_paths
+from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
@@ -258,7 +257,7 @@ def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> str | Non
     if filename is None:
         return None
     else:
-        matching_files = match_hf_files(repo_id, filename)
+        matching_files = match_hugging_face_files(repo_id, filename)
         if len(matching_files) == 0:
             raise ValueError(f"File {filename} not found in {repo_id}")
 

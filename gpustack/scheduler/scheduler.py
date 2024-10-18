@@ -178,6 +178,14 @@ class Scheduler:
         if should_update:
             await model.update(session)
 
+    async def _evaluate_model_config(
+        self,
+        session: AsyncSession,
+        model: Model,
+        instance: ModelInstance,
+    ):
+        pass
+
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """
         Check if the model instance should be scheduled.
