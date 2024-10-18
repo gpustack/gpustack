@@ -39,6 +39,8 @@ from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_model_resource_claim,
 )
+from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.task import run_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +126,8 @@ class Scheduler:
 
                 if is_gguf_model(model):
                     await self._evaluate_gguf_model(session, model, instance)
+                else:
+                    await self._evaluate_pretrained_config(session, model)
 
                 await self._queue.put(instance)
             except Exception as e:
@@ -178,13 +182,32 @@ class Scheduler:
         if should_update:
             await model.update(session)
 
-    async def _evaluate_model_config(
+    async def _evaluate_pretrained_config(
         self,
         session: AsyncSession,
         model: Model,
-        instance: ModelInstance,
     ):
-        pass
+        pretrained_config = await run_in_thread(
+            get_pretrained_config, timeout=15, model=model
+        )
+        architectures = getattr(pretrained_config, "architectures", [])
+
+        # https://docs.vllm.ai/en/latest/models/supported_models.html#text-embedding
+        supported_embedding_architectures = ["Gemma2Model", "MistralModel"]
+        is_embedding_model = False
+
+        for architecture in architectures:
+            if architecture in supported_embedding_architectures:
+                is_embedding_model = True
+                break
+
+        should_update = False
+        if is_embedding_model and not model.embedding_only:
+            should_update = True
+            model.embedding_only = True
+
+        if should_update:
+            await model.update(session)
 
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """
