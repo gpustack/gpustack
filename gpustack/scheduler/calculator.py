@@ -50,6 +50,7 @@ class estimate:
     architecture: str
     embeddingOnly: bool
     distributable: bool
+    reranking: bool
 
 
 @dataclass_json
