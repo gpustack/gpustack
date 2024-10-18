@@ -4,6 +4,12 @@ from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
+from gpustack.schemas.workers import (
+    GPUDeviceInfo,
+    MemoryInfo,
+    VendorEnum,
+    GPUDevicesInfo,
+)
 
 _config = None
 
@@ -73,6 +79,7 @@ class Config(BaseSettings):
     worker_port: int = 10150
     metrics_port: int = 10151
     log_dir: Optional[str] = None
+    resources: Optional[dict] = None
 
     def __init__(self, **values):
         super().__init__(**values)
@@ -115,7 +122,70 @@ class Config(BaseSettings):
             if validators.url(self.ollama_library_base_url) is not True:
                 raise Exception("Invalid Ollama library base URL.")
 
+        if self.resources:
+            self.get_gpu_devices()
+
         return self
+
+    def get_gpu_devices(self) -> GPUDevicesInfo:
+        """get gpu devices from resources
+        resource example:
+        ```yaml
+        resources:
+            gpu_devices:
+            - name: Apple M1 Pro
+              vendor: Apple
+              index: 0
+              memory:
+                  total: 22906503168
+                  is_unified_memory: true
+        ```
+        """
+        gpu_devices: GPUDevicesInfo = []
+        if not self.resources:
+            return None
+
+        gpu_device_dict = self.resources.get("gpu_devices")
+        if not gpu_device_dict:
+            return None
+
+        for gd in gpu_device_dict:
+            name = gd.get("name")
+            index = gd.get("index")
+            vendor = gd.get("vendor")
+            memory = gd.get("memory")
+
+            if not name:
+                raise Exception("GPU device name is required")
+
+            if index is None:
+                raise Exception("GPU device index is required")
+
+            if vendor not in VendorEnum.__members__.values():
+                raise Exception(
+                    "Unsupported GPU device vendor, supported vendors are: Apple, NVIDIA, 'Moore Threads', Huawei"
+                )
+
+            if not memory:
+                raise Exception("GPU device memory is required")
+
+            memory_total = memory.get("total")
+            memory_is_unified_memory = memory.get("is_unified_memory", False)
+            if memory_total is None:
+                raise Exception("GPU device memory total is required")
+
+            gpu_devices.append(
+                GPUDeviceInfo(
+                    name=name,
+                    index=index,
+                    vendor=vendor,
+                    memory=MemoryInfo(
+                        total=memory_total, is_unified_memory=memory_is_unified_memory
+                    ),
+                )
+            )
+
+        return gpu_devices
 
     def init_database_url(self):
         if self.database_url is None:

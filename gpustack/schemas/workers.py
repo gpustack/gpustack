@@ -56,8 +56,6 @@ GPUDevicesInfo = List[GPUDeviceInfo]
 
 class VendorEnum(str, Enum):
     NVIDIA = "NVIDIA"
-    AMD = "AMD"
-    Intel = "Intel"
     MTHREADS = "Moore Threads"
     Apple = "Apple"
     Huawei = "Huawei"

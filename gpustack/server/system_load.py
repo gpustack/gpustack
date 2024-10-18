@@ -24,22 +24,38 @@ def compute_avg_cpu_memory_utilization_rate(
 
 
 def compute_avg_gpu_utilization_rate(workers: list[Worker]) -> Tuple[float, float]:
-    count = sum(len(worker.status.gpu_devices or []) for worker in workers)
+    util_count = sum(
+        1
+        for worker in workers
+        for gpu in worker.status.gpu_devices or []
+        if gpu.core and gpu.core.utilization_rate is not None
+    )
+
+    memory_count = sum(
+        1
+        for worker in workers
+        for gpu in worker.status.gpu_devices or []
+        if gpu.memory and gpu.memory.utilization_rate is not None
+    )
+
     util_sum_value = sum(
         gpu.core.utilization_rate
         for worker in workers
         for gpu in worker.status.gpu_devices or []
+        if gpu.core and gpu.core.utilization_rate is not None
     )
+
     memory_sum_value = sum(
         gpu.memory.utilization_rate
         for worker in workers
         for gpu in worker.status.gpu_devices or []
+        if gpu.memory and gpu.memory.utilization_rate is not None
     )
 
-    if count == 0:
-        return 0, 0
+    util_rate = util_sum_value / util_count if util_count > 0 else 0
+    memory_rate = memory_sum_value / memory_count if memory_count > 0 else 0
 
-    return util_sum_value / count, memory_sum_value / count
+    return util_rate, memory_rate
 
 
 def compute_system_load(workers: list[Worker]) -> SystemLoad:

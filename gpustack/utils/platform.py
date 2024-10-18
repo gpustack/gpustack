@@ -4,6 +4,7 @@ import logging
 import threading
 
 from gpustack.utils.command import is_command_available
+from gpustack.schemas.workers import VendorEnum
 
 logger = logging.getLogger(__name__)
 
@@ -89,3 +90,13 @@ def device() -> str:
         return "mps"
 
     return ""
+
+
+def device_from_vendor(vendor: VendorEnum) -> str:
+    mapping = {
+        VendorEnum.NVIDIA.value: "cuda",
+        VendorEnum.Huawei.value: "npu",
+        VendorEnum.Apple.value: "mps",
+    }
+
+    return mapping.get(vendor, "")
