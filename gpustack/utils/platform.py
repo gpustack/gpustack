@@ -3,6 +3,7 @@ import platform
 import logging
 import threading
 
+from gpustack.utils.command import is_command_available
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +75,14 @@ def arch() -> str:
 
 
 def device() -> str:
-    if os.system("nvidia-smi > /dev/null 2>&1") == 0 or os.path.exists(
-        "/usr/local/cuda"
+    if (
+        is_command_available("nvidia-smi")
+        or os.path.exists("/usr/local/cuda")
+        or os.path.exists("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA")
     ):
         return "cuda"
 
-    if os.system("npu-smi -v > /dev/null 2>&1") == 0:
+    if is_command_available("npu-smi"):
         return "npu"
 
     if system() == "darwin" and arch() == "arm64":
