@@ -16,7 +16,7 @@ from gpustack.routes import (
     workers,
 )
 
-from gpustack.api.exceptions import error_responses
+from gpustack.api.exceptions import error_responses, openai_api_error_responses
 from gpustack.routes import rerank
 from gpustack.server.auth import get_admin_user, get_current_user
 
@@ -67,6 +67,7 @@ api_router.include_router(
     openai.router,
     dependencies=[Depends(get_current_user)],
     prefix="/v1-openai",
+    responses=openai_api_error_responses,
     tags=["OpenAI Compatible APIs"],
 )
 api_router.include_router(

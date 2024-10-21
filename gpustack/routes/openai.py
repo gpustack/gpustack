@@ -81,16 +81,23 @@ async def proxy_request_by_model(  # noqa: C901
         body = await request.json()
     except Exception as e:
         raise BadRequestException(
-            message=f"We could not parse the JSON body of your request: {e}"
+            message=f"We could not parse the JSON body of your request: {e}",
+            is_openai_exception=True,
         )
 
     model_name = body.get("model")
     if not model_name:
-        raise InvalidException(message="Missing 'model' field")
+        raise InvalidException(
+            message="Missing 'model' field",
+            is_openai_exception=True,
+        )
 
     model = await Model.one_by_field(session=session, field="name", value=model_name)
     if not model:
-        raise NotFoundException(message="Model not found")
+        raise NotFoundException(
+            message="Model not found",
+            is_openai_exception=True,
+        )
 
     stream = body.get("stream", False)
 
@@ -114,16 +121,21 @@ async def proxy_request_by_model(  # noqa: C901
                 body["stream_options"] = {"include_usage": True}
 
             async def stream_generator():
-                async with httpx.AsyncClient() as client:
-                    async with client.stream(
-                        method=request.method,
-                        url=url,
-                        headers=headers,
-                        json=body,
-                        timeout=timeout,
-                    ) as resp:
-                        async for chunk in resp.aiter_text():
-                            yield chunk, resp.status_code
+                try:
+                    async with httpx.AsyncClient() as client:
+                        async with client.stream(
+                            method=request.method,
+                            url=url,
+                            headers=headers,
+                            json=body,
+                            timeout=timeout,
+                        ) as resp:
+                            async for chunk in resp.aiter_text():
+                                yield chunk, resp.status_code
+                except httpx.RequestError as exc:
+                    yield f"Upstream connection failed: {str(exc)}", 503
+                except Exception as e:
+                    yield f"An unexpected error occurred: {e}", 500
 
             return StreamingResponseWithStatusCode(
                 stream_generator(), media_type="text/event-stream"
@@ -143,7 +155,10 @@ async def proxy_request_by_model(  # noqa: C901
                     content=resp.content,
                 )
     except Exception as e:
-        raise ServiceUnavailableException(message=f"An unexpected error occurred: {e}")
+        raise ServiceUnavailableException(
+            message=f"An unexpected error occurred: {e}",
+            is_openai_exception=True,
+        )
 
 
 def filter_headers(headers):
@@ -162,5 +177,8 @@ async def get_running_instance(session: AsyncSession, model_id: int):
         inst for inst in model_instances if inst.state == ModelInstanceStateEnum.RUNNING
     ]
     if not running_instances:
-        raise ServiceUnavailableException(message="No running instances available")
+        raise ServiceUnavailableException(
+            message="No running instances available",
+            is_openai_exception=True,
+        )
     return await load_balancer.get_instance(running_instances)

@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -12,16 +13,26 @@ class HTTPException(Exception):
         self.message = message
 
 
-def http_exception_factory(status_code: int, reason: str, default_message: str):
+class OpenAIAPIException(HTTPException):
+    pass
+
+
+def http_exception_factory(
+    status_code: int,
+    reason: str,
+    default_message: str,
+):
     class_name = reason + "Exception"
+
+    def init(self, message=default_message, is_openai_exception=False):
+        if is_openai_exception:
+            self.__class__.__bases__ = (OpenAIAPIException,)
+        super(self.__class__, self).__init__(status_code, reason, message)
+
     return type(
         class_name,
         (HTTPException,),
-        {
-            "__init__": lambda self, message=default_message: super(
-                self.__class__, self
-            ).__init__(status_code, reason, message)
-        },
+        {"__init__": init},
     )
 
 
@@ -110,6 +121,29 @@ error_responses = {
 }
 
 
+class OpenAIAPIError(BaseModel):
+    message: str
+    type: Optional[str] = None
+    code: Optional[int] = None
+    param: Optional[str] = None
+
+
+class OpenAIAPIErrorResponse(BaseModel):
+    error: OpenAIAPIError
+
+
+openai_api_error_responses = {
+    404: {"model": OpenAIAPIErrorResponse},
+    409: {"model": OpenAIAPIErrorResponse},
+    401: {"model": OpenAIAPIErrorResponse},
+    403: {"model": OpenAIAPIErrorResponse},
+    422: {"model": OpenAIAPIErrorResponse},
+    400: {"model": OpenAIAPIErrorResponse},
+    500: {"model": OpenAIAPIErrorResponse},
+    503: {"model": OpenAIAPIErrorResponse},
+}
+
+
 def register_handlers(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
@@ -118,6 +152,22 @@ def register_handlers(app: FastAPI):
             content=ErrorResponse(
                 code=exc.status_code, reason=exc.reason, message=exc.message
             ).model_dump(),
+        )
+
+    @app.exception_handler(OpenAIAPIException)
+    async def openai_api_exception_handler(request: Request, exc: OpenAIAPIException):
+        """
+        This handler is used to return error response in OpenAI API format.
+        """
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "message": exc.message,
+                    "code": exc.status_code,
+                    "type": exc.reason,
+                }
+            },
         )
 
     @app.exception_handler(RequestValidationError)
