@@ -45,9 +45,8 @@ async def do_get_update(
     try:
         os_name = platform.system()
         arch = platform.arch()
-        device = platform.device()
         headers = {"User-Agent": f"gpustack/{__version__} ({os_name}; {arch})"}
-        params = {"os": os_name, "arch": arch, "version": __version__, "device": device}
+        params = {"os": os_name, "arch": arch, "version": __version__}
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(
