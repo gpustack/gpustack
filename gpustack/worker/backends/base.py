@@ -266,7 +266,7 @@ class InferenceServer(ABC):
             (
                 v
                 for k, v in ACCELERATOR_VENDOR_TO_ENV_NAME.items()
-                if k.value.lower() in vendor.lower()
+                if vendor is not None and k.value.lower() in vendor.lower()
             ),
             "CUDA_VISIBLE_DEVICES",
         )
