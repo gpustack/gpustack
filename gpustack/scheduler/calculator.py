@@ -184,15 +184,13 @@ async def calculate_model_resource_claim(
 
     except subprocess.CalledProcessError as e:
         raise Exception(
-            f"Failed to execution {command.__str__()}, " f"error: {e}, ",
+            f"Failed to execution {command}, error: {e}, ",
             f"stderr: {e.stderr.decode()}, ",
             f"stdout: {e.stdout.decode()}",
         )
     except Exception as e:
         raise Exception(
-            f"Failed to parse the output of {command.__str__()}, " f"error: {e}, ",
-            f"stderr: {e.stderr.decode()}, ",
-            f"stdout: {e.stdout.decode()}",
+            f"Failed to parse the output of {command}, error: {e}",
         )
 
 
