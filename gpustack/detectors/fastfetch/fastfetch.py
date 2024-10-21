@@ -242,7 +242,7 @@ class Fastfetch(GPUDetector):
 
         except Exception as e:
             raise Exception(
-                f"Failed to execute {command.__str__()}: {e},"
+                f"Failed to execute {command}: {e},"
                 f" stdout: {result.stdout}, stderr: {result.stderr}"
             )
 
@@ -254,7 +254,7 @@ class Fastfetch(GPUDetector):
             return parsed_json
         except Exception as e:
             raise Exception(
-                f"Failed to parse the output of {command.__str__()}: {e}, output: {output}"
+                f"Failed to parse the output of {command}: {e}, output: {output}"
             )
 
     def _command_executable_path(self):

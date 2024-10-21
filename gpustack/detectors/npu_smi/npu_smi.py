@@ -200,7 +200,7 @@ class NPUSMI(GPUDetector):
             return output
         except Exception as e:
             raise Exception(
-                f"Failed to execute {command.__str__()}: {e},"
+                f"Failed to execute {command}: {e},"
                 f" stdout: {result.stdout}, stderr: {result.stderr}"
             )
 
