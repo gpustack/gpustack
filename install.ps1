@@ -78,121 +78,26 @@ function Get-Arg {
     Log-Info "Getting arguments from flags..."
 
     $envList = @()
-
+    $argList = @()
     for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
         $value = $RemainingArgs[$i + 1]
         switch ($RemainingArgs[$i]) {
-            "--debug" {
-                if ($value -eq "False" -or $value -eq "false") {
-                    $envList += "GPUSTACK_DEBUG=False"
-                }
-                else {
-                    $envList += "GPUSTACK_DEBUG=True"
-                }
-            }
-            "--config-file" {
-                $envList += "GPUSTACK_CONFIG_File=$value"
-                $i++
-            }
-            "--data-dir" {
-                $envList += "GPUSTACK_DATA_DIR=$value"
-                $i++
-            }
-            "--token" {
-                $envList += "GPUSTACK_TOKEN=$value"
-                $i++
-            }
-            "-t" {
-                $envList += "GPUSTACK_TOKEN=$value"
-                $i++
-            }
-            "--host" {
-                $envList += "GPUSTACK_HOST=$value"
-                $i++
-            }
-            "--port" {
-                $envList += "GPUSTACK_PORT=$value"
-                $i++
-            }
-            "--database-url" {
-                $envList += "GPUSTACK_DATABASE_URL=$value"
-                $i++
-            }
-            "--bootstrap-password" {
-                $envList += "GPUSTACK_BOOTSTRAP_PASSWORD=$value"
-                $i++
-            }
-            "--disable-worker" {
-                if ($value -eq "False" -or $value -eq "false") {
-                    $envList += "GPUSTACK_DISABLE_WORKER=False"
-                }
-                else {
-                    $envList += "GPUSTACK_DISABLE_WORKER=True"
-                }
-            }
             "--system-reserved" {
                 $escapedJsonString = $value -replace '"', '\`"'
                 $envList += "GPUSTACK_SYSTEM_RESERVED=`"$escapedJsonString`""
                 $i++
             }
-            "--ssl-keyfile" {
-                $envList += "GPUSTACK_SSL_KEY_FILE=$value"
-                $i++
-            }
-            "--ssl-certfile" {
-                $envList += "GPUSTACK_SSL_CERT_FILE=$value"
-                $i++
-            }
-            "--force-auth-localhost" {
-                if ($value -eq "False" -or $value -eq "false") {
-                    $envList += "GPUSTACK_FORCE_AUTH_LOCALHOST=False"
-                }
-                else {
-                    $envList += "GPUSTACK_FORCE_AUTH_LOCALHOST=True"
-                }
-                $i++
-            }
-            "--server-url" {
-                $envList += "GPUSTACK_SERVER_URL=$value"
-                $i++
-            }
-            "-s" {
-                $envList += "GPUSTACK_SERVER_URL=$value"
-                $i++
-            }
-            "--worker-ip" {
-                $envList += "GPUSTACK_WORKER_IP=$value"
-                $i++
-            }
-            "--worker-port" {
-                $envList += "GPUSTACK_WORKER_PORT=$value"
-                $i++
-            }
-            "--disable-metrics" {
-                if ($value -eq "False" -or $value -eq "false") {
-                    $envList += "GPUSTACK_DISABLE_METRICS=False"
-                }
-                else {
-                    $envList += "GPUSTACK_DISABLE_METRICS=True"
-                }
-            }
-            "--metrics-port" {
-                $envList += "GPUSTACK_METRICS_PORT=$value"
-                $i++
-            }
-            "--log-dir" {
-                $envList += "GPUSTACK_LOG_DIR=$value"
-                $i++
+            default {
+                $argList += $RemainingArgs[$i]
             }
         }
     }
 
-
     $envList += "APPDATA=$env:APPDATA"
-
     $envListString = $envList -join " "
+    $argListString = $argList -join " "
 
-    return $envListString
+    return $argListString, $envListString
 }
 
 function Refresh-ChocolateyProfile {
@@ -453,6 +358,7 @@ function Stop-GPUStackService {
 
 function Setup-GPUStackService {
     param (
+        [string]$argListString,
         [string]$envListString
     )
 
@@ -485,9 +391,11 @@ function Setup-GPUStackService {
             throw "Failed to install service $serviceName"
         }
 
+        $appParams = "start $argListString"
+
         $commands = @(
             "nssm set $serviceName AppDirectory $gpustackDirectoryPath",
-            "nssm set $serviceName AppParameters 'start'",
+            "nssm set $serviceName AppParameters $appParams",
             "nssm set $serviceName DisplayName $serviceDisplayName",
             "nssm set $serviceName Description 'GPUStack aims to get you started with managing GPU devices, running LLMs and performing inference in a simple yet scalable manner.'",
             "nssm set $serviceName Start SERVICE_AUTO_START",
@@ -701,8 +609,8 @@ try {
     Install-NSSM
     Install-GPUStack
     Create-UninstallScript
-    $envListString = Get-Arg @args
-    Setup-GPUStackService -envListString $envListString
+    $argResult = Get-Arg @args
+    Setup-GPUStackService -argListString $argResult[0] -envListString $argResult[1]
 }
 catch {
     Log-Fatal "Failed to install GPUStack: `"$($_.Exception.Message)`""
