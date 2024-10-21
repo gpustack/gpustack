@@ -22,6 +22,8 @@ $INSTALL_PACKAGE_SPEC = if ($env:INSTALL_PACKAGE_SPEC) { $env:INSTALL_PACKAGE_SP
 $INSTALL_PRE_RELEASE = if ($env:INSTALL_PRE_RELEASE) { $env:INSTALL_PRE_RELEASE } else { 0 }
 $INSTALL_INDEX_URL = if ($env:INSTALL_INDEX_URL) { $env:INSTALL_INDEX_URL } else { "" }
 
+$ACTION = "Install"
+
 function Log-Info {
     param (
         [Parameter(Position = 0)]
@@ -98,6 +100,79 @@ function Get-Arg {
     $argListString = $argList -join " "
 
     return $argListString, $envListString
+}
+
+# Get value of a script argument by name. Return "" if not found.
+function Get-Arg-Value {
+    param (
+        [string]$ArgName,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ScriptArgs
+    )
+
+    for ($i = 0; $i -lt $ScriptArgs.Length; $i++) {
+        $arg = $ScriptArgs[$i]
+
+        # Handle equal sign passed arguments
+        if ($arg -like "--$ArgName=*") {
+            return $arg.Split('=', 2)[1]
+        }
+
+        # Handle space passed arguments
+        if ($arg -eq "--$ArgName") {
+            if ($i + 1 -lt $ScriptArgs.Length) {
+                return $ScriptArgs[$i + 1]
+            }
+        }
+    }
+
+    return ""
+}
+
+# Function to print completion message.
+function Print-Complete-Message {
+    param (
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$SctiprArgs
+    )
+    $usageHint = ""
+    $pathHint = ""
+    if ($ACTION -eq "Install") {
+        $dataDir = Get-Arg-Value -ArgName "data-dir" $SctiprArgs
+        if ([string]::IsNullOrEmpty($dataDir)) {
+            $dataDir = "$env:APPDATA\gpustack"
+        }
+
+        $configFile = Get-Arg-Value -ArgName "config-file" $SctiprArgs
+        $serverUrl = Get-Arg-Value -ArgName "server-url" $SctiprArgs
+
+        # Skip printing the usage hint for workers and advanced users using config file.
+        if ([string]::IsNullOrEmpty($serverUrl) -and [string]::IsNullOrEmpty($configFile)) {
+            $serverUrl = "localhost"
+            $serverHost = Get-Arg-Value -ArgName "host" $SctiprArgs
+            if (-not [string]::IsNullOrEmpty($serverHost)) {
+                $serverUrl = "${serverHost}"
+            }
+            $serverPort = Get-Arg-Value -ArgName "port" $SctiprArgs
+            if (-not [string]::IsNullOrEmpty($serverPort)) {
+                $serverUrl = "${serverUrl}:${serverPort}"
+            }
+
+            $sslEnabled = Get-Arg-Value -ArgName "ssl-keyfile" $SctiprArgs
+            if (-not [string]::IsNullOrEmpty($sslEnabled)) {
+                $serverUrl = "https://${serverUrl}"
+            }
+            else {
+                $serverUrl = "http://${serverUrl}"
+            }
+
+            $usageHint = "`n`nGPUStack UI is available at ${serverUrl}.`nDefault username is 'admin'.`nTo get the default password, run 'cat ${dataDir}\initial_admin_password'.`n`n"
+        }
+        $pathHint = "CLI 'gpustack' is available from the command line."
+    }
+
+
+    Write-Host "$ACTION complete. ${usageHint}${pathHint}"
 }
 
 function Refresh-ChocolateyProfile {
@@ -234,14 +309,13 @@ function Install-NSSM {
 }
 
 function Install-GPUStack {
-    $action = "Install"
     if (Get-Command gpustack -ErrorAction SilentlyContinue) {
-        $action = "Upgrade"
+        $ACTION = "Upgrade"
         Log-Info "GPUStack already installed, Upgrading..."
     }
 
     try {
-        Log-Info "$action GPUStack..."
+        Log-Info "$ACTION GPUStack..."
         $installArgs = @()
         if ($INSTALL_PRE_RELEASE -eq 1) {
             $installArgs += "--pip-args=--pre"
@@ -251,7 +325,7 @@ function Install-GPUStack {
             $installArgs += "--index-url=$INSTALL_INDEX_URL"
         }
 
-        Log-Info "$action GPUStack with $($installArgs -join ' ') $INSTALL_PACKAGE_SPEC"
+        Log-Info "$ACTION GPUStack with $($installArgs -join ' ') $INSTALL_PACKAGE_SPEC"
 
         $pythonPath = Get-Command python | Select-Object -ExpandProperty Source
         $env:PIPX_DEFAULT_PYTHON = $pythonPath
@@ -281,8 +355,8 @@ function Install-GPUStack {
             }
         }
 
-        Log-Info "$action GPUStack with pipx and python $pythonPath..."
-        if ($action -ieq "Upgrade") {
+        Log-Info "$ACTION GPUStack with pipx and python $pythonPath..."
+        if ($ACTION -ieq "Upgrade") {
             Log-Info "Uninstall existing gpustack..."
 
             Stop-GPUStackService
@@ -320,10 +394,10 @@ function Install-GPUStack {
             Log-Info "Path already contains $pipEnv"
         }
 
-        Log-Info "$action GPUStack success."
+        Log-Info "$ACTION GPUStack success."
     }
     catch {
-        throw "Failed to $action GPUStack: `"$($_.Exception.Message)`""
+        throw "Failed to $ACTION GPUStack: `"$($_.Exception.Message)`""
     }
 }
 
@@ -611,6 +685,7 @@ try {
     Create-UninstallScript
     $argResult = Get-Arg @args
     Setup-GPUStackService -argListString $argResult[0] -envListString $argResult[1]
+    Print-Complete-Message @args
 }
 catch {
     Log-Fatal "Failed to install GPUStack: `"$($_.Exception.Message)`""

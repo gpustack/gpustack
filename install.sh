@@ -43,14 +43,69 @@ fatal()
     exit 1
 }
 
+# Get value of a script parameter. The first arg should be the param_name, then pass all script params.
+# Return value of the patameter, or "" if not found.
+get_param_value() {
+    param_name="$1"
+    shift
+    next_arg=""
+
+    for arg in "$@"; do
+        case $arg in
+            --"$param_name"=*) # Handle equal sign passed arguments
+                echo "${arg#*=}" # Return equal passed value
+                return 0
+                ;;
+            --"$param_name") # Handle space passed arguments
+                next_arg="true"
+                ;;
+            *)
+                if [ "$next_arg" = "true" ]; then
+                    echo "$arg"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    echo ""
+}
+
 ACTION="Install"
-install_complete()
+print_complete_message()
 {
+    usage_hint=""
     path_hint=""
     if [ "$ACTION" = "Install" ]; then
-        path_hint=" (You may need to open a new terminal or re-login for the PATH changes to take effect.)"
+        data_dir=$(get_param_value "data-dir" "$@")
+        if [ -z "$data_dir" ]; then
+            data_dir="/var/lib/gpustack"
+        fi
+        config_file=$(get_param_value "config-file" "$@")
+        server_url=$(get_param_value "server-url" "$@")
+        # Skip printing the usage hint for workers and advanced users using config file. We are lazy to parse the config file here.
+        if [ -z "$server_url" ] && [ -z "$config_file" ]; then
+            server_url="localhost"
+            server_host=$(get_param_value "host" "$@")
+            if [ -n "$server_host" ]; then
+                server_url="$server_host"
+            fi
+            server_port=$(get_param_value "port" "$@")
+            if [ -n "$server_port" ]; then
+                server_url="$server_url:$server_port"
+            fi
+            ssl_enabled=$(get_param_value "ssl-keyfile" "$@")
+            if [ -n "$ssl_enabled" ]; then
+                server_url="https://$server_url"
+            else
+                server_url="http://$server_url"
+            fi
+
+            usage_hint="\n\nGPUStack UI is available at $server_url.\nDefault username is 'admin'.\nTo get the default password, run 'cat $data_dir/initial_admin_password'.\n\n"
+        fi
+
+        path_hint="CLI \"gpustack\" is available from the command line. (You may need to open a new terminal or re-login for the PATH changes to take effect.)"
     fi
-    info "$ACTION complete. Run \"gpustack\" from the command line.$path_hint"
+    info "$ACTION complete. ${usage_hint}${path_hint}"
 }
 
 # --- fatal if no systemd or launchd ---
@@ -410,5 +465,5 @@ install_gpustack() {
   create_uninstall_script
   disable_service
   setup_and_start "$@"
-  install_complete
+  print_complete_message "$@"
 }
