@@ -40,32 +40,31 @@ class DetectorFactory:
             gpu_devices.extend(self.default_gpu_detector.gather_gpu_info())
         else:
             vendors = self.gpu_vendor_detector.gather_gpu_vendor_info()
-            for vendor in vendors:
+            filtered_vendors = [
+                v
+                for v in vendors
+                if v.lower() in {m.lower() for m in VendorEnum.__members__.values()}
+            ]
+            for vendor in filtered_vendors:
                 detector = self._get_gpu_detector_by_vendor(vendor)
                 gpus = detector.gather_gpu_info()
-                gpu_devices.extend(self._filter_gpu_devices(gpus))
+                gpu_devices.extend(self._filter_gpu_devices(gpus, vendor))
 
         return gpu_devices
 
     def detect_system_info(self) -> SystemInfo:
         return self.system_info_detector.gather_system_info()
 
-    def _filter_gpu_devices(self, gpu_devices: GPUDevicesInfo) -> GPUDevicesInfo:
+    def _filter_gpu_devices(
+        self, gpu_devices: GPUDevicesInfo, vendor: str
+    ) -> GPUDevicesInfo:
         filtered_gpu_devices = []
         for device in gpu_devices:
             # Ignore the device without memory.
             if device.memory.total == 0:
                 continue
 
-            if device.vendor.lower() not in [
-                vendor.lower()
-                for vendor in [
-                    VendorEnum.NVIDIA,
-                    VendorEnum.Apple,
-                    VendorEnum.MTHREADS,
-                    VendorEnum.Huawei,
-                ]
-            ]:
+            if device.vendor.lower() != vendor.lower():
                 continue
 
             filtered_gpu_devices.append(device)
