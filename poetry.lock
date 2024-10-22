@@ -6316,4 +6316,4 @@ vllm = ["mistral_common", "torch", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "1e8c088355fb01c10ff4c9cde3050da24653ef59fba6b14c189416b846417232"
+content-hash = "8ea02a72987c9907b9797a9ac26db27d3f4fd7adc114b46486ca8c75223db919"
