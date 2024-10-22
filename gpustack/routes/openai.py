@@ -2,7 +2,7 @@ from typing import Optional
 import httpx
 import logging
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, status
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 from sqlmodel import select
@@ -12,6 +12,8 @@ from gpustack.api.exceptions import (
     BadRequestException,
     InvalidException,
     NotFoundException,
+    OpenAIAPIError,
+    OpenAIAPIErrorResponse,
     ServiceUnavailableException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
@@ -132,10 +134,24 @@ async def proxy_request_by_model(  # noqa: C901
                         ) as resp:
                             async for chunk in resp.aiter_text():
                                 yield chunk, resp.status_code
-                except httpx.RequestError as exc:
-                    yield f"Upstream connection failed: {str(exc)}", 503
+                except httpx.RequestError:
+                    error_response = OpenAIAPIErrorResponse(
+                        error=OpenAIAPIError(
+                            message="Service unavailable. Please retry your requests after a brief wait.",
+                            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            type="ServiceUnavailable",
+                        ),
+                    )
+                    yield error_response.model_dump_json(), status.HTTP_503_SERVICE_UNAVAILABLE
                 except Exception as e:
-                    yield f"An unexpected error occurred: {e}", 500
+                    error_response = OpenAIAPIErrorResponse(
+                        error=OpenAIAPIError(
+                            message=f"Internal server error: {e}",
+                            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            type="InternalServerError",
+                        ),
+                    )
+                    yield error_response.model_dump_json(), status.HTTP_500_INTERNAL_SERVER_ERROR
 
             return StreamingResponseWithStatusCode(
                 stream_generator(), media_type="text/event-stream"
