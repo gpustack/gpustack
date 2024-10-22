@@ -42,6 +42,7 @@ The following Linux distributions are verified to work with GPUStack:
 
 - [x] Apple Metal
 - [x] NVIDIA CUDA([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
+- [x] Ascend CANN 
 
 We plan to support the following accelerators in future releases.
 
