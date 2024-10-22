@@ -72,6 +72,11 @@ nav:
       - Inference Backends: user-guide/inference-backends.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
       - Rerank API: user-guide/rerank-api.md
+  - Tutorials:
+      - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
+      - Running Distributed Inference Across Workers: tutorials/running-distributed-inference-across-workers.md
+      - Deploying Vision Model: tutorials/vision-model.md
+      - Enabling CPU Inference: tutorials/cpu-inference.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
@@ -79,7 +84,3 @@ nav:
   - CLI Reference:
       - Start: cli-reference/start.md
       - Chat: cli-reference/chat.md
-  - Tutorials:
-      - Deploying Vision Model: tutorials/vision-model.md
-      - Enabling CPU Inference: tutorials/cpu-inference.md
-      - Multiple Node Cluster: tutorials/multiple-node-cluster.md
