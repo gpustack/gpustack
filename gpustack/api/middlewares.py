@@ -100,8 +100,8 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         response_class: Type[Union[ChatCompletionChunk, Completion]],
     ):
         async def streaming_generator():
-            try:
-                async for chunk in response.body_iterator:
+            async for chunk in response.body_iterator:
+                try:
                     if not hasattr(request.state, 'first_token_time'):
                         request.state.first_token_time = datetime.now(timezone.utc)
                     data = chunk.decode("utf-8").split('data: ')[-1]
@@ -147,10 +147,10 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                                     response_dict, separators=(',', ':')
                                 )
                                 chunk = f"data: {json_str}\n\n".encode("utf-8")
+                except Exception as e:
+                    logger.error(f"Error processing streaming response: {e}")
 
-                    yield chunk
-            except Exception as e:
-                logger.error(f"Error processing streaming response: {e}")
+                yield chunk
 
         return StreamingResponse(streaming_generator(), headers=dict(response.headers))
 
