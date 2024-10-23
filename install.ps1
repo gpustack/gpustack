@@ -114,12 +114,12 @@ function Get-Arg-Value {
         $arg = $ScriptArgs[$i]
 
         # Handle equal sign passed arguments
-        if ($arg -like "--$ArgName=*") {
+        if ($arg -like "--$ArgName=*" -or $arg -like "-$ArgName=*") {
             return $arg.Split('=', 2)[1]
         }
 
         # Handle space passed arguments
-        if ($arg -eq "--$ArgName") {
+        if ($arg -eq "--$ArgName" -or $arg -eq "-$ArgName") {
             if ($i + 1 -lt $ScriptArgs.Length) {
                 return $ScriptArgs[$i + 1]
             }
@@ -133,32 +133,35 @@ function Get-Arg-Value {
 function Print-Complete-Message {
     param (
         [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$SctiprArgs
+        [string[]]$ScriptArgs
     )
     $usageHint = ""
     $pathHint = ""
     if ($ACTION -eq "Install") {
-        $dataDir = Get-Arg-Value -ArgName "data-dir" $SctiprArgs
+        $dataDir = Get-Arg-Value -ArgName "data-dir" @ScriptArgs
         if ([string]::IsNullOrEmpty($dataDir)) {
             $dataDir = "$env:APPDATA\gpustack"
         }
 
-        $configFile = Get-Arg-Value -ArgName "config-file" $SctiprArgs
-        $serverUrl = Get-Arg-Value -ArgName "server-url" $SctiprArgs
+        $configFile = Get-Arg-Value -ArgName "config-file" @ScriptArgs
+        $serverUrl = Get-Arg-Value -ArgName "server-url" @ScriptArgs
+        if ([string]::IsNullOrEmpty($serverUrl)) {
+            $serverUrl = Get-Arg-Value -ArgName "s" @ScriptArgs # try short form
+        }
 
         # Skip printing the usage hint for workers and advanced users using config file.
         if ([string]::IsNullOrEmpty($serverUrl) -and [string]::IsNullOrEmpty($configFile)) {
             $serverUrl = "localhost"
-            $serverHost = Get-Arg-Value -ArgName "host" $SctiprArgs
+            $serverHost = Get-Arg-Value -ArgName "host" @ScriptArgs
             if (-not [string]::IsNullOrEmpty($serverHost)) {
                 $serverUrl = "${serverHost}"
             }
-            $serverPort = Get-Arg-Value -ArgName "port" $SctiprArgs
+            $serverPort = Get-Arg-Value -ArgName "port" @ScriptArgs
             if (-not [string]::IsNullOrEmpty($serverPort)) {
                 $serverUrl = "${serverUrl}:${serverPort}"
             }
 
-            $sslEnabled = Get-Arg-Value -ArgName "ssl-keyfile" $SctiprArgs
+            $sslEnabled = Get-Arg-Value -ArgName "ssl-keyfile" @ScriptArgs
             if (-not [string]::IsNullOrEmpty($sslEnabled)) {
                 $serverUrl = "https://${serverUrl}"
             }
@@ -167,7 +170,7 @@ function Print-Complete-Message {
             }
 
             $passwordHint = ""
-            $bootstrapPassword = Get-Arg-Value -ArgName "bootstrap-password" $SctiprArgs
+            $bootstrapPassword = Get-Arg-Value -ArgName "bootstrap-password" @ScriptArgs
             if ([string]::IsNullOrEmpty($bootstrapPassword)) {
                 $passwordHint = "To get the default password, run 'Get-Content -Path `"${dataDir}\initial_admin_password`" -Raw'.`n"
             }
