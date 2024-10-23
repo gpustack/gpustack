@@ -108,13 +108,17 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                     if not data.startswith('[DONE]'):
                         response_dict = json.loads(data.strip())
                         response_chunk = response_class(**response_dict)
-                        is_usage_chunk = len(response_chunk.choices) == 0
-                        if is_usage_chunk:
+                        if is_usage_chunk(response_chunk):
                             await record_usage(request, response_chunk.usage)
 
+                        # Fill rate metrics. These are extended info not included in OAI APIs.
+                        # llama-box provides them out-of-the-box. Align with other backends here.
+                        # vLLM streams a chunk with empty choices between [DONE] and the one with finish_reason.
+                        if (
+                            is_usage_chunk(response_chunk)
+                            or len(response_chunk.choices) == 0
+                        ):
                             if 'tokens_per_second' not in response_dict['usage']:
-                                # Fill rate metrics. These are extended info not included in OAI APIs.
-                                # llama-box provides them out-of-the-box. Align with other backends here.
                                 now = datetime.now(timezone.utc)
                                 time_to_first_token_ms = (
                                     request.state.first_token_time
@@ -235,3 +239,16 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
                 pass
 
         return response
+
+
+def is_usage_chunk(chunk: Union[ChatCompletionChunk, Completion]) -> bool:
+    choices = chunk.choices
+
+    if not choices:
+        return False
+
+    for choice in choices:
+        if choice.finish_reason is not None:
+            return True
+
+    return False
