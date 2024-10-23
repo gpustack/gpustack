@@ -319,7 +319,7 @@ function Install-NSSM {
 
 function Install-GPUStack {
     if (Get-Command gpustack -ErrorAction SilentlyContinue) {
-        $ACTION = "Upgrade"
+        $global:ACTION = "Upgrade"
         Log-Info "GPUStack already installed, Upgrading..."
     }
 
