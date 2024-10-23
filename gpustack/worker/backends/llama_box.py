@@ -129,7 +129,7 @@ def set_priority(pid: int):
         return
 
     try:
-        priority_class = psutil.REALTIME_PRIORITY_CLASS
+        priority_class = psutil.ABOVE_NORMAL_PRIORITY_CLASS
         proc = psutil.Process(pid)
         proc.nice(priority_class)
         logger.debug(f"Set process {proc.pid} priority to {priority_class}")
