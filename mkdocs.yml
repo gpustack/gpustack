@@ -75,7 +75,7 @@ nav:
   - Tutorials:
       - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
       - Running Distributed Inference Across Workers: tutorials/running-distributed-inference-across-workers.md
-      - Deploying Vision Model: tutorials/vision-model.md
+      - Running Vision Language Models: tutorials/running-vision-language-models.md
       - Enabling CPU Inference: tutorials/cpu-inference.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
