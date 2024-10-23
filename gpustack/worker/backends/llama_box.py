@@ -1,8 +1,9 @@
 import logging
-import platform
 import subprocess
 import sys
+import psutil
 
+from gpustack.utils import platform
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
@@ -99,12 +100,17 @@ class LlamaBoxServer(InferenceServer):
             logger.debug(
                 f"Run llama-box: {command_path} with arguments: {' '.join(arguments)}"
             )
-            subprocess.run(
+
+            proc = subprocess.Popen(
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
             )
+
+            set_priority(proc.pid)
+            proc.wait()
+
         except Exception as e:
             error_message = f"Failed to run the llama-box server: {e}"
             logger.error(error_message)
@@ -116,6 +122,21 @@ class LlamaBoxServer(InferenceServer):
                 self._update_model_instance(self._model_instance.id, **patch_dict)
             except Exception as ue:
                 logger.error(f"Failed to update model instance: {ue}")
+
+
+def set_priority(pid: int):
+    if platform.system() != "windows":
+        return
+
+    try:
+        priority_class = psutil.REALTIME_PRIORITY_CLASS
+        proc = psutil.Process(pid)
+        proc.nice(priority_class)
+        logger.debug(f"Set process {proc.pid} priority to {priority_class}")
+    except psutil.NoSuchProcess:
+        pass
+    except Exception as e:
+        logger.error(f"Failed to set priority for process {pid}: {e}")
 
 
 def get_llama_box_command():
