@@ -100,8 +100,15 @@ print_complete_message()
                 server_url="http://$server_url"
             fi
 
-            usage_hint="\n\nGPUStack UI is available at $server_url.\nDefault username is 'admin'.\nTo get the default password, run 'cat $data_dir/initial_admin_password'.\n\n"
+            password_hint=""
+            bootstrap_password=$(get_param_value "bootstrap-password" "$@")
+            if [ -z "$bootstrap_password" ]; then
+                password_hint="To get the default password, run 'cat $data_dir/initial_admin_password'.\n"
+            fi
+
+            usage_hint="\n\nGPUStack UI is available at $server_url.\nDefault username is 'admin'.\n${password_hint}\n"
         fi
+
 
         path_hint="CLI \"gpustack\" is available from the command line. (You may need to open a new terminal or re-login for the PATH changes to take effect.)"
     fi
