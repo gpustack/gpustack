@@ -52,11 +52,11 @@ get_param_value() {
 
     for arg in "$@"; do
         case $arg in
-            --"$param_name"=*) # Handle equal sign passed arguments
+            --"$param_name"=*|-"$param_name"=*) # Handle equal sign passed arguments
                 echo "${arg#*=}" # Return equal passed value
                 return 0
                 ;;
-            --"$param_name") # Handle space passed arguments
+            --"$param_name"|-"$param_name") # Handle space passed arguments
                 next_arg="true"
                 ;;
             *)
@@ -82,6 +82,10 @@ print_complete_message()
         fi
         config_file=$(get_param_value "config-file" "$@")
         server_url=$(get_param_value "server-url" "$@")
+        if [ -z "$server_url" ]; then
+            server_url=$(get_param_value "s" "$@") # try short form
+        fi
+
         # Skip printing the usage hint for workers and advanced users using config file. We are lazy to parse the config file here.
         if [ -z "$server_url" ] && [ -z "$config_file" ]; then
             server_url="localhost"
