@@ -166,7 +166,13 @@ function Print-Complete-Message {
                 $serverUrl = "http://${serverUrl}"
             }
 
-            $usageHint = "`n`nGPUStack UI is available at ${serverUrl}.`nDefault username is 'admin'.`nTo get the default password, run 'cat ${dataDir}\initial_admin_password'.`n`n"
+            $passwordHint = ""
+            $bootstrapPassword = Get-Arg-Value -ArgName "bootstrap-password" $SctiprArgs
+            if ([string]::IsNullOrEmpty($bootstrapPassword)) {
+                $passwordHint = "To get the default password, run 'Get-Content -Path `"${dataDir}\initial_admin_password`" -Raw'.`n"
+            }
+
+            $usageHint = "`n`nGPUStack UI is available at ${serverUrl}.`nDefault username is 'admin'.`n${passwordHint}`n"
         }
         $pathHint = "CLI 'gpustack' is available from the command line."
     }
