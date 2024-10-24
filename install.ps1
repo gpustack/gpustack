@@ -22,7 +22,7 @@ $INSTALL_PACKAGE_SPEC = if ($env:INSTALL_PACKAGE_SPEC) { $env:INSTALL_PACKAGE_SP
 $INSTALL_PRE_RELEASE = if ($env:INSTALL_PRE_RELEASE) { $env:INSTALL_PRE_RELEASE } else { 0 }
 $INSTALL_INDEX_URL = if ($env:INSTALL_INDEX_URL) { $env:INSTALL_INDEX_URL } else { "" }
 
-$ACTION = "Install"
+$global:ACTION = "Install"
 
 function Log-Info {
     param (
