@@ -37,13 +37,7 @@ class StreamingResponseWithStatusCode(StreamingResponse):
                 }
             )
 
-            async for chunk_content, chunk_status in self.body_iterator:
-                if chunk_status // 100 != 2:
-                    self.status_code = chunk_status
-                    await send(
-                        {"type": "http.response.body", "body": b"", "more_body": False}
-                    )
-                    return
+            async for chunk_content, self.status_code in self.body_iterator:
                 if not isinstance(chunk_content, bytes):
                     chunk_content = chunk_content.encode(self.charset)
                 await send(
