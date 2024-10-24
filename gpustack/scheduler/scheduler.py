@@ -187,9 +187,16 @@ class Scheduler:
         session: AsyncSession,
         model: Model,
     ):
-        pretrained_config = await run_in_thread(
-            get_pretrained_config, timeout=15, model=model
-        )
+        try:
+            pretrained_config = await run_in_thread(
+                get_pretrained_config, timeout=15, model=model
+            )
+        except Exception as e:
+            # It's not always possible to get the pretrained config.
+            # For example, some models require additional parameters to be passed.
+            logger.debug(f"Cannot get pretrained config: {e}")
+            return
+
         architectures = getattr(pretrained_config, "architectures", [])
 
         # https://docs.vllm.ai/en/latest/models/supported_models.html#text-embedding
