@@ -197,7 +197,7 @@ class Scheduler:
             logger.debug(f"Cannot get pretrained config: {e}")
             return
 
-        architectures = getattr(pretrained_config, "architectures", [])
+        architectures = getattr(pretrained_config, "architectures", []) or []
 
         # https://docs.vllm.ai/en/latest/models/supported_models.html#text-embedding
         supported_embedding_architectures = ["Gemma2Model", "MistralModel"]
