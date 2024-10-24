@@ -20,7 +20,7 @@ docker run -d --gpus all -p 80:80 gpustack/gpustack
 You can set additional flags for the `gpustack start` command by appending them to the docker run command. For example, to start a GPUStack worker:
 
 ```shell
-docker run -d --gpus all -p 80:80 gpustack/gpustack start --server-url http://myserver --token mytoken
+docker run -d --gpus all --network=host gpustack/gpustack start --server-url http://myserver --token mytoken
 ```
 
 For more configurations, please refer to the [CLI Reference](../cli-reference/start.md).
