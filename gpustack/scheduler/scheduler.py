@@ -323,13 +323,13 @@ class Scheduler:
                     ModelInstanceStateEnum.ANALYZING,
                 ):
                     model_instance.state = ModelInstanceStateEnum.PENDING
-                model_instance.state_message = "No suitable workers"
+                    model_instance.state_message = "No suitable workers"
                 if state_message != "":
                     model_instance.state_message = state_message
 
                 await model_instance.update(session, model_instance)
                 logger.debug(
-                    f"No suitable workers for model instance {model_instance.name}"
+                    f"No suitable workers for model instance {model_instance.name}, state: {model_instance.state}"
                 )
             else:
                 # update model instance.
