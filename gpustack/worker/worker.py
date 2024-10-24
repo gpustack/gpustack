@@ -134,7 +134,7 @@ class Worker:
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
         # Start rpc server instances with restart.
-        run_periodically_in_thread(self._worker_manager.start_rpc_servers, 20)
+        run_periodically_in_thread(self._worker_manager.start_rpc_servers, 20, 3)
         # Monitor the processes of model instances every 60 seconds.
         run_periodically_in_thread(self._serve_manager.monitor_processes, 60)
         # Watch model instances with retry.
