@@ -13,9 +13,8 @@ function build() {
   elif gpustack::util::is_linux; then
     # This is a temporary workaround to make the wheel files different.
     echo >> "${ROOT_DIR}/README.md"
-    build_platform "manylinux2014_x86_64"
     echo >> "${ROOT_DIR}/README.md"
-    build_platform "manylinux2014_aarch64"
+    build_platform "manylinux2014_x86_64"
     # Remove the extra newline.
     # shellcheck disable=SC2016
     gpustack::util::sed '${/^$/d;}' "${ROOT_DIR}/README.md"
