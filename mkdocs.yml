@@ -35,6 +35,8 @@ theme:
   icon:
     repo: fontawesome/brands/github-alt
   language: en
+plugins:
+  - glightbox
 extra:
   generator: false
   version:
