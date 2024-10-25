@@ -5,6 +5,10 @@ GPUStack supports inference on CPUs, offering flexibility when GPU resources are
 - **CPU+GPU Hybrid Inference**: Enables partial acceleration by offloading portions of large models to the CPU when VRAM capacity is insufficient.
 - **Full CPU Inference**: Operates entirely on CPU when no GPU resources are available.
 
+!!! note
+
+    CPU inference is supported when using the llama-box (llama.cpp) backend.
+
 To deploy a model with CPU offloading, enable the `Allow CPU Offloading` option in the deployment configuration (this setting is enabled by default).
 
 ![Allow CPU Offload](../assets/tutorials/inference-on-cpus/allow-cpu-offload.png)

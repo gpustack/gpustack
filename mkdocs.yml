@@ -74,10 +74,11 @@ nav:
       - Rerank API: user-guide/rerank-api.md
   - Tutorials:
       - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
-      - Running Distributed Inference Across Workers: tutorials/running-distributed-inference-across-workers.md
-      - Running Vision Language Models: tutorials/running-vision-language-models.md
+      - Performing Distributed Inference Across Workers: tutorials/performing-distributed-inference-across-workers.md
+      - Using Vision Language Models: tutorials/using-vision-language-models.md
       - Inference on CPUs: tutorials/inference-on-cpus.md
-      - Running Inference with Ascend Device: tutorials/running-inference-with-ascend-device.md
+      - Running Inference with Ascend NPUs: tutorials/running-inference-with-ascend-npus.md
+      - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md

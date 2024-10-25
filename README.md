@@ -81,10 +81,10 @@ For manual installation or detailed configurations, refer to the [installation](
 
 ## Getting Started
 
-1. Run and chat with the llama3 model:
+1. Run and chat with the **llama3.2** model:
 
 ```bash
-gpustack chat llama3 "tell me a joke."
+gpustack chat llama3.2 "tell me a joke."
 ```
 
 2. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
@@ -101,11 +101,11 @@ cat /var/lib/gpustack/initial_admin_password
 Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 ```
 
-3. Click `Playground` in the navigation menus. Now you can chat with the LLM in the UI playground.
+3. Click `Playground` in the navigation menu. Now you can chat with the LLM in the UI playground.
 
 ![Playground Screenshot](docs/assets/playground-screenshot.png)
 
-4. Click `API Keys` in the navigation menus, then click the `New API Key` button.
+4. Click `API Keys` in the navigation menu, then click the `New API Key` button.
 
 5. Fill in the `Name` and click the `Save` button.
 
@@ -119,7 +119,7 @@ curl http://myserver/v1-openai/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "llama3",
+    "model": "llama3.2",
     "messages": [
       {
         "role": "system",
@@ -201,7 +201,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://myserver/v1-openai", api_key="myapikey")
 
 completion = client.chat.completions.create(
-  model="llama3",
+  model="llama3.2",
   messages=[
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello!"}

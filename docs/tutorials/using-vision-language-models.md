@@ -1,4 +1,4 @@
-# Running Vision Language Models
+# Using Vision Language Models
 
 **Vision Language Models** can process both visual (image) and language (text) data simultaneously, making them versatile tools for various applications, such as image captioning, visual question answering, and more. In this tutorial, you will learn how to deploy and interact with Vision Language Models (VLMs) in GPUStack.
 
@@ -59,7 +59,7 @@ Open your browser and navigate to `http://<your-server-ip>`. Replace `<your-serv
 
 6. Click the `Save` button.
 
-![llama3.2-vl](../assets/tutorials/running-vision-language-models/llama3.2-vl.png)
+![llama3.2-vl](../assets/tutorials/using-vision-language-models/llama3.2-vl.png)
 
 ### Deploy Qwen2-VL
 
@@ -101,7 +101,7 @@ Open your browser and navigate to `http://<your-server-ip>`. Replace `<your-serv
 4. Enter a prompt in the input text area. For example, "Describe the image."
 5. Click the `Submit` button to generate the output.
 
-![playground-vl](../assets/tutorials/running-vision-language-models/playground-vl.png)
+![playground-vl](../assets/tutorials/using-vision-language-models/playground-vl.png)
 
 ## Conclusion
 
