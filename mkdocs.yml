@@ -82,6 +82,7 @@ nav:
       - Running Inference with Ascend NPUs: tutorials/running-inference-with-ascend-npus.md
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
       - Creating Text Embeddings: tutorials/creating-text-embeddings.md
+      - Using Reranker Models: tutorials/using-reranker-models.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
