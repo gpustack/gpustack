@@ -188,7 +188,6 @@ class Worker:
             self._worker_ip = current_ip
             self._worker_manager._worker_ip = current_ip
             self._exporter._worker_ip = current_ip
-            self._exporter._collector._worker_ip = current_ip
 
             workers = self._clientset.workers.list(params={"name": self._worker_name})
 
