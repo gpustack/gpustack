@@ -50,6 +50,8 @@ class RPCServer:
             str(port),
             "--rpc-server-main-gpu",
             str(0),
+            # llama-box allows users to define custom flags, even if those flags are not currently supported by llama-box.
+            # We use origin-rpc-server-main-gpu to specify the GPU that the RPC server is actually running on.
             "--origin-rpc-server-main-gpu",
             str(gpu_index),
         ]
