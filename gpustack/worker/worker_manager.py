@@ -184,7 +184,7 @@ class WorkerManager:
             port = network.get_free_port(start=50000, end=51024)
             process = multiprocessing.Process(
                 target=RPCServer.start,
-                args=(port, gpu_device.index, log_file_path),
+                args=(port, gpu_device.index, gpu_device.vendor, log_file_path),
             )
 
             process.daemon = True

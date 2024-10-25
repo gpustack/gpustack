@@ -10,6 +10,7 @@ import setproctitle
 
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.signal import signal_handler
+from gpustack.worker.backends.base import get_env_name_by_vendor
 from gpustack.worker.backends.llama_box import get_llama_box_command
 
 logger = logging.getLogger(__name__)
@@ -29,15 +30,15 @@ class RPCServer:
         pass
 
     @staticmethod
-    def start(port: int, gpu_index: int, log_file_path: str):
+    def start(port: int, gpu_index: int, vendor: str, log_file_path: str):
         setproctitle.setproctitle(f"gpustack_rpc_server_process: gpu_{gpu_index}")
         signal.signal(signal.SIGTERM, signal_handler)
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                RPCServer._start(port, gpu_index)
+                RPCServer._start(port, gpu_index, vendor)
 
-    def _start(port: int, gpu_index: int):
+    def _start(port: int, gpu_index: int, vendor: str):
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
         ).joinpath(get_llama_box_command())
@@ -48,9 +49,14 @@ class RPCServer:
             "--rpc-server-port",
             str(port),
             "--rpc-server-main-gpu",
+            str(0),
+            "--origin-rpc-server-main-gpu",
             str(gpu_index),
         ]
+
+        env_name = get_env_name_by_vendor(vendor)
         env = os.environ.copy()
+        env[env_name] = str(gpu_index)
 
         try:
             logger.info("Starting llama-box rpc server")
