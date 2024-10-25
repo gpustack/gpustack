@@ -17,11 +17,18 @@ UPDATE_CHECK_INTERVAL = 12 * 60 * 60
 UPDATE_CHECK_URL = "https://update-service.gpustack.ai"
 
 
+def is_dev_version() -> bool:
+    return __version__ == "0.0.0"
+
+
 class UpdateResponse(BaseModel):
     latest_version: str
 
 
 async def get_update(update_check_url: Optional[str] = None) -> UpdateResponse:
+    if is_dev_version():
+        return UpdateResponse(latest_version=__version__)
+
     global cached_update, cache_timestamp
 
     if (
