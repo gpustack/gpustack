@@ -38,11 +38,18 @@ The following Linux distributions are verified to work with GPUStack:
 
     The installation of GPUStack worker on a Linux system requires that the GLIBC version be 2.29 or higher.
 
+### Supported Architectures
+
+GPUStack supports both **AMD64** and **ARM64** architectures, with the following notes:
+
+- On MacOS and Linux, if using Python versions below 3.12, ensure you install the Python distribution matching your architecture.
+- On Windows, please use the AMD64 distribution of Python, as wheel packages for certain dependencies are unavailable for ARM64. If you use tools like `conda`, this will be handled automatically, as conda installs the AMD64 distribution by default.
+
 ## Supported Accelerators
 
 - [x] Apple Metal
 - [x] NVIDIA CUDA([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
-- [x] Ascend CANN 
+- [x] Ascend CANN
 
 We plan to support the following accelerators in future releases.
 
