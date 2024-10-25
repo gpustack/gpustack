@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from pathlib import Path
@@ -27,6 +28,15 @@ class ToolsManager:
     ):
         with pkg_resources.path("gpustack.third_party", "bin") as bin_path:
             self.bin_path: Path = bin_path
+            self.versions_file = bin_path.joinpath("versions.json")
+
+            self._current_tools_version = {}
+            if os.path.exists(self.versions_file):
+                try:
+                    with open(self.versions_file, 'r', encoding='utf-8') as file:
+                        self._current_tools_version = json.load(file)
+                except Exception as e:
+                    logger.warning(f"Failed to load versions.json: {e}")
 
         self._os = platform.system()
         self._arch = platform.arch()
@@ -82,7 +92,10 @@ class ToolsManager:
             file_name += ".exe"
 
         target_file = llama_box_dir.joinpath(file_name)
-        if os.path.isfile(target_file):
+        if (
+            os.path.isfile(target_file)
+            and self._current_tools_version.get(file_name) == version
+        ):
             logger.debug(f"{file_name} already exists, skipping download")
             return
 
@@ -109,6 +122,9 @@ class ToolsManager:
         # Clean up.
         if os.path.exists(llama_box_tmp_dir):
             shutil.rmtree(llama_box_tmp_dir)
+
+        # Update versions.json
+        self._update_versions_file(file_name, version)
 
     def _get_llama_box_platform_name(self) -> str:  # noqa C901
         platform_name = ""
@@ -150,7 +166,10 @@ class ToolsManager:
             suffix = ".exe"
             file_name += suffix
         target_file = gguf_parser_dir.joinpath(file_name)
-        if os.path.isfile(target_file):
+        if (
+            os.path.isfile(target_file)
+            and self._current_tools_version.get(file_name) == version
+        ):
             logger.debug(f"{file_name} already exists, skipping download")
             return
 
@@ -163,6 +182,9 @@ class ToolsManager:
         if self._os != "windows":
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
+
+        # Update versions.json
+        self._update_versions_file(file_name, version)
 
     def _get_gguf_parser_platform_name(self) -> str:
         platform_name = ""
@@ -192,7 +214,10 @@ class ToolsManager:
         if self._os == "windows":
             file_name += ".exe"
         target_file = os.path.join(fastfetch_dir, file_name)
-        if os.path.isfile(target_file):
+        if (
+            os.path.isfile(target_file)
+            and self._current_tools_version.get(file_name) == version
+        ):
             logger.debug(f"{file_name} already exists, skipping download")
             return
 
@@ -231,6 +256,20 @@ class ToolsManager:
         # Clean up.
         if os.path.exists(fastfetch_tmp_dir):
             shutil.rmtree(fastfetch_tmp_dir)
+
+        # Update versions.json
+        self._update_versions_file(file_name, version)
+
+    def _update_versions_file(self, tool_name: str, version: str):
+        updated_versions = self._current_tools_version.copy()
+        updated_versions[tool_name] = version
+
+        try:
+            with open(self.versions_file, 'w', encoding='utf-8') as file:
+                json.dump(updated_versions, file, indent=4)
+                self._current_tools_version[tool_name] = version
+        except Exception as e:
+            logger.error(f"Failed to update versions.json: {e}")
 
     def _get_fastfetch_platform_name(self) -> str:
         platform_name = ""
