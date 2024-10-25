@@ -11,8 +11,9 @@ function build() {
   if gpustack::util::is_darwin; then
     build_platform "macosx_11_0_universal2"
   elif gpustack::util::is_linux; then
-    build_platform "manylinux2014_x86_64"
     # This is a temporary workaround to make the wheel files different.
+    echo >> "${ROOT_DIR}/README.md"
+    build_platform "manylinux2014_x86_64"
     echo >> "${ROOT_DIR}/README.md"
     build_platform "manylinux2014_aarch64"
     # Remove the extra newline.
