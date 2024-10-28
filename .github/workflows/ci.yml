@@ -67,7 +67,7 @@ jobs:
           files: dist/*.whl
 
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11' && !contains(github.ref, 'rc')
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.CI_PYPI_API_TOKEN }}
@@ -115,7 +115,7 @@ jobs:
           files: dist/*.whl
 
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11' && !contains(github.ref, 'rc')
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
         shell: powershell
         env:
           TWINE_USERNAME: __token__

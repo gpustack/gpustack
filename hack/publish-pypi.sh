@@ -12,4 +12,4 @@ fi
 # shellcheck disable=SC2086
 poetry run twine check $DIST
 # shellcheck disable=SC2086
-poetry run twine upload $DIST || true # proceed if upload fails, useful for github action rerun.
+poetry run twine upload $DIST
