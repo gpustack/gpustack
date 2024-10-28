@@ -11,7 +11,7 @@ function Publish-Pypi {
     poetry run twine check dist/*.whl
     poetry run twine upload dist/*.whl
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Warn "twine upload failed." # proceed if upload fails, useful for github action rerun.
+        GPUStack.Log.Fatal "twine upload failed."
     }
 }
 
