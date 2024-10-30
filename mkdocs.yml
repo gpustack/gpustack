@@ -37,6 +37,7 @@ theme:
   language: en
 plugins:
   - glightbox
+  - search
 extra:
   generator: false
   version:
