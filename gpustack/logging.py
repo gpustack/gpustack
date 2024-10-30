@@ -18,8 +18,8 @@ def setup_logging(debug: bool = False):
         .isoformat(timespec="seconds")
     )
 
-    # Disable third-party loggers
-    third_party_logger_names = [
+    # Third-party loggers to disable
+    disable_logger_names = [
         "httpcore.connection",
         "httpcore.http11",
         "httpcore.proxy",
@@ -35,6 +35,18 @@ def setup_logging(debug: bool = False):
         "filelock",
     ]
 
-    for logger_name in third_party_logger_names:
+    for logger_name in disable_logger_names:
         logger = logging.getLogger(logger_name)
         logger.disabled = True
+
+    # Third-party loggers to print on debug
+    debug_logger_names = [
+        "alembic.runtime.migration",
+    ]
+
+    for logger_name in debug_logger_names:
+        logger = logging.getLogger(logger_name)
+        if debug:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.disabled = True
