@@ -10,18 +10,6 @@ GPUStack provides a script to install it as a service on systemd or launchd base
 curl -sfL https://get.gpustack.ai | sh -s -
 ```
 
-Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes (replace `http://myserver` and `mytoken` with your actual server URL and token):
-
-```bash
-curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
-```
-
-In the default setup, you can run the following to get the token used for adding workers:
-
-```bash
-cat /var/lib/gpustack/token
-```
-
 ### Windows
 
 Run PowerShell as administrator (**avoid** using PowerShell ISE), then run the following command to install GPUStack:
@@ -30,21 +18,9 @@ Run PowerShell as administrator (**avoid** using PowerShell ISE), then run the f
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
 
-Optionally, you can add extra workers to form a GPUStack cluster by running the following command on other nodes (replace `http://myserver` and `mytoken` with your actual server URL and token):
+### Other Installation Methods
 
-```powershell
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url http://myserver --token mytoken"
-```
-
-In the default setup, you can run the following to get the token used for adding workers:
-
-```powershell
-Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
-```
-
-### Manual Installation
-
-For manual installation or detailed configurations, refer to the [installation](installation/manual-installation.md) docs.
+For manual installation, docker installation or detailed configuration options, please refer to the [Installation Documentation](installation/manual-installation.md).
 
 ## Getting Started
 
