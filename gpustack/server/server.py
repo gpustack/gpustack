@@ -199,7 +199,9 @@ class Server:
             await User.create(session, user)
 
     def at_exit(self):
-        logger.info("Stopping GPUStack server.")
+        logger.debug("GPUStack server exiting.")
         for process in self._sub_processes:
-            process.terminate()
-        logger.info("Stopped all processes.")
+            if process.is_alive():
+                process.terminate()
+                process.join()
+        logger.debug("Stopped all subprocesses.")
