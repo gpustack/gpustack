@@ -73,12 +73,36 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 The appended CLI flags of the installation script are passed directly as flags for the `gpustack start` command. You can refer to the [CLI Reference](../cli-reference/start.md) for details.
 
-## Run Server
+## Install Server
 
-To run a GPUStack server, install GPUStack without the `--server-url` flag. By default, the GPUStack server also runs a worker.
+To set up the GPUStack server (the management node), install GPUStack without the `--server-url` flag. By default, the GPUStack server includes an embedded worker. To disable this embedded worker on the server, use the `--disable-worker` flag.
 
-If you want to run the server without the embedded worker, use the `--disable-worker` flag.
+## Install Worker
 
-## Add Worker
+To form a cluster, you can add GPUStack workers on additional nodes. Install GPUStack with the `--server-url` flag to specify the server' address and the `--token` flag for worker authenticate.
 
-To add a GPUStack worker, install GPUStack with the `--server-url` flag to specify the server it should connect to.
+Examples are as follows:
+
+### Linux or MacOS:
+
+```shell
+curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
+```
+
+In the default setup, you can run the following on the server node to get the token used for adding workers:
+
+```shell
+cat /var/lib/gpustack/token
+```
+
+### Windows:
+
+```powershell
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url http://myserver --token mytoken"
+```
+
+In the default setup, you can run the following on the server node to get the token used for adding workers:
+
+```powershell
+Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
+```
