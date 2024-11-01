@@ -14,7 +14,8 @@ You can use the official Docker image to run GPUStack in a container. Installati
 Run the following command to start the GPUStack server:
 
 ```shell
-docker run -d --gpus all -p 80:80 --ipc=host gpustack/gpustack
+docker run -d --gpus all -p 80:80 --ipc=host \
+    -v gpustack-data:/var/lib/gpustack gpustack/gpustack
 ```
 
 !!! note
