@@ -20,7 +20,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 ### Other Installation Methods
 
-For manual installation, docker installation or detailed configuration options, please refer to the [Installation Documentation](installation/manual-installation.md).
+For manual installation, docker installation or detailed configuration options, please refer to the [Installation Documentation](installation/installation-script.md).
 
 ## Getting Started
 
