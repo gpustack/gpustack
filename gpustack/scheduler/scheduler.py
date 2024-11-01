@@ -58,10 +58,8 @@ class Scheduler:
         self._queue = AsyncUniqueQueue()
         self._cache_dir = None
 
-        if self._config.data_dir is not None:
-            self._cache_dir = os.path.join(
-                self._config.data_dir, "cache", "gguf-parser"
-            )
+        if self._config.cache_dir is not None:
+            self._cache_dir = os.path.join(self._config.cache_dir, "gguf-parser")
             os.makedirs(self._cache_dir, exist_ok=True)
 
     async def start(self):

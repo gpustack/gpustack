@@ -52,6 +52,7 @@ class Config(BaseSettings):
     # Common options
     debug: bool = False
     data_dir: Optional[str] = None
+    cache_dir: Optional[str] = None
     token: Optional[str] = None
     huggingface_token: Optional[str] = None
 
@@ -87,6 +88,9 @@ class Config(BaseSettings):
         # common options
         if self.data_dir is None:
             self.data_dir = self.get_data_dir()
+
+        if self.cache_dir is None:
+            self.cache_dir = os.path.join(self.data_dir, "cache")
 
         if self.log_dir is None:
             self.log_dir = os.path.join(self.data_dir, "log")
