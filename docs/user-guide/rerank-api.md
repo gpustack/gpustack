@@ -8,6 +8,17 @@ GPUStack serves [Jina compatible Rerank API](https://jina.ai/reranker/) using th
 
     The Rerank API is only available when using the llama-box [inference backend](./inference-backends.md).
 
+## Supported Models
+
+The following models are available for reranking:
+
+- [bce-reranker-base_v1](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF)
+- [jina-reranker-v1-turbo-en](https://huggingface.co/gpustack/jina-reranker-v1-turbo-en-GGUF)
+- [jina-reranker-v1-tiny-en](https://huggingface.co/gpustack/jina-reranker-v1-tiny-en-GGUF)
+- [bge-reranker-v2-m3](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF)
+- [gte-multilingual-reranker-base](https://huggingface.co/gpustack/gte-multilingual-reranker-base-GGUF) <span title="experimental">🧪</span>
+- [jina-reranker-v2-base-multilingual](https://huggingface.co/gpustack/jina-reranker-v2-base-multilingual-GGUF) <span title="experimental">🧪</span>
+
 ## Usage
 
 The following is an example using the Rerank API:
