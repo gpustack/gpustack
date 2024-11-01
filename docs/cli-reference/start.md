@@ -20,6 +20,7 @@ gpustack start [OPTIONS]
 | `--config-file` value               |                                        | Path to the YAML config file.                                                                                                         |
 | `-d` value, `--debug` value         | `False`                                | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters. |
 | `--data-dir` value                  |                                        | Directory to store data. Default is OS specific.                                                                                      |
+| `--cache-dir` value                 |                                        | Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.                                                           |
 | `-t` value, `--token` value         | Auto-generated.                        | Shared secret used to add a worker.                                                                                                   |
 | `--huggingface-token` value         |                                        | User Access Token to authenticate to the Hugging Face Hub.                                                                            |
 
@@ -57,7 +58,8 @@ You can configure start options using a YAML-format config file when starting GP
 ```yaml
 # Common Options
 debug: false
-data_dir: /path/to/dir
+data_dir: /path/to/data_dir
+cache_dir: /path/to/cache_dir
 token: mytoken
 
 # Server Options
@@ -77,7 +79,7 @@ worker_ip: 192.168.1.101
 disable_metrics: false
 metrics_port: 10151
 worker_port: 10150
-log_dir: /path/to/dir
+log_dir: /path/to/log_dir
 system_reserved:
   ram: 2
   vram: 0

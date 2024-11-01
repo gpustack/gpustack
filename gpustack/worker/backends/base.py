@@ -137,10 +137,9 @@ class InferenceServer(ABC):
             }
             self._update_model_instance(mi.id, **patch_dict)
 
-            cache_dir = os.path.join(cfg.data_dir, "cache")
             self._model_path = download_model(
                 mi,
-                cache_dir,
+                cfg.cache_dir,
                 ollama_library_base_url=cfg.ollama_library_base_url,
                 huggingface_token=cfg.huggingface_token,
             )

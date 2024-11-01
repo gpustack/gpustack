@@ -58,6 +58,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("DATA_DIR"),
     )
     group.add_argument(
+        "--cache-dir",
+        type=str,
+        help="Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.",
+        default=get_gpustack_env("CACHE_DIR"),
+    )
+    group.add_argument(
         "-t",
         "--token",
         type=str,
@@ -273,6 +279,7 @@ def set_common_options(args, config_data: dict):
     options = [
         "debug",
         "data_dir",
+        "cache_dir",
         "token",
         "huggingface_token",
     ]

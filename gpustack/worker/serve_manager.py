@@ -42,7 +42,7 @@ class ServeManager:
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
         self._clientset = clientset
-        self._cache_dir = os.path.join(cfg.data_dir, "cache")
+        self._cache_dir = cfg.cache_dir
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
