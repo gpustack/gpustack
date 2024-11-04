@@ -74,6 +74,13 @@ def get_pretrained_config(model: Model):
             model.model_scope_model_id,
             trust_remote_code=trust_remote_code,
         )
+    elif model.source == SourceEnum.LOCAL_PATH:
+        from transformers import AutoConfig
+
+        pretrained_config = AutoConfig.from_pretrained(
+            model.local_path,
+            trust_remote_code=trust_remote_code,
+        )
     else:
         raise ValueError(f"Unsupported model source: {model.source}")
 

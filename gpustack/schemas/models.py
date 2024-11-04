@@ -16,6 +16,7 @@ class SourceEnum(str, Enum):
     HUGGING_FACE = "huggingface"
     OLLAMA_LIBRARY = "ollama_library"
     MODEL_SCOPE = "model_scope"
+    LOCAL_PATH = "local_path"
 
 
 class PlacementStrategyEnum(str, Enum):
@@ -41,6 +42,7 @@ class ModelSource(BaseModel):
     ollama_library_model_name: Optional[str] = None
     model_scope_model_id: Optional[str] = None
     model_scope_file_path: Optional[str] = None
+    local_path: Optional[str] = None
 
     @model_validator(mode="after")
     def check_huggingface_fields(self):
@@ -59,8 +61,13 @@ class ModelSource(BaseModel):
         if self.source == SourceEnum.MODEL_SCOPE:
             if not self.model_scope_model_id:
                 raise ValueError(
-                    "model_scope_model_id must be provided "
-                    "when source is 'model_scope'"
+                    "model_scope_model_id must be provided when source is 'model_scope'"
+                )
+
+        if self.source == SourceEnum.LOCAL_PATH:
+            if not self.local_path:
+                raise ValueError(
+                    "local_path must be provided when source is 'local_path'"
                 )
         return self
 
@@ -239,10 +246,20 @@ def is_gguf_model(model: Model):
     """
     return (
         model.source == SourceEnum.OLLAMA_LIBRARY
-        or (model.huggingface_filename and model.huggingface_filename.endswith(".gguf"))
         or (
-            model.model_scope_file_path
+            model.source == SourceEnum.HUGGING_FACE
+            and model.huggingface_filename
+            and model.huggingface_filename.endswith(".gguf")
+        )
+        or (
+            model.source == SourceEnum.MODEL_SCOPE
+            and model.model_scope_file_path
             and model.model_scope_file_path.endswith(".gguf")
+        )
+        or (
+            model.source == SourceEnum.LOCAL_PATH
+            and model.local_path
+            and model.local_path.endswith(".gguf")
         )
     )
 
