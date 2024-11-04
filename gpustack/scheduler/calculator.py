@@ -207,6 +207,7 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
         SourceEnum.OLLAMA_LIBRARY,
         SourceEnum.HUGGING_FACE,
         SourceEnum.MODEL_SCOPE,
+        SourceEnum.LOCAL_PATH,
     ]:
         raise ValueError(f"Unsupported source: {model.source}")
 
@@ -244,7 +245,9 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                 ),
                 timeout=fetch_file_timeout_in_seconds,
             )
-        return ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
+            return ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
+        elif model.source == SourceEnum.LOCAL_PATH:
+            return ["--path", model.local_path]
     except asyncio.TimeoutError:
         raise Exception(f"Timeout when getting the file for model {model.name}")
     except Exception as e:

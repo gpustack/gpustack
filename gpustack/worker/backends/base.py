@@ -91,6 +91,8 @@ def download_model(
             file_path=mi.model_scope_file_path,
             cache_dir=os.path.join(cache_dir, "model_scope"),
         )
+    elif mi.source == SourceEnum.LOCAL_PATH:
+        return mi.local_path
 
 
 def get_model_file_size(mi: ModelInstance, cfg: Config) -> Optional[int]:
