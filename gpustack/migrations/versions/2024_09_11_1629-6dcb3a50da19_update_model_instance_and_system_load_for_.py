@@ -20,6 +20,7 @@ down_revision: Union[str, None] = '8277680cfcb7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+placement_strategy_enum = sa.Enum('SPREAD', 'BINPACK', name='placementstrategyenum')
 
 def upgrade() -> None:
     # system_loads
@@ -28,9 +29,11 @@ def upgrade() -> None:
         batch_op.alter_column('gpu_memory', new_column_name='vram')
 
     # models
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        placement_strategy_enum.create(bind,checkfirst=True)
     with op.batch_alter_table('models') as batch_op:
-        batch_op.add_column(sa.Column('placement_strategy', sa.Enum(
-            'SPREAD', 'BINPACK', name='placementstrategyenum'), nullable=False, server_default='SPREAD'))
+        batch_op.add_column(sa.Column('placement_strategy', placement_strategy_enum, nullable=False, server_default='SPREAD'))
         batch_op.add_column(sa.Column('cpu_offloading', sa.Boolean(), nullable=False, server_default="1"))
         batch_op.add_column(sa.Column(
             'distributed_inference_across_workers', sa.Boolean(), nullable=False, server_default="1"))

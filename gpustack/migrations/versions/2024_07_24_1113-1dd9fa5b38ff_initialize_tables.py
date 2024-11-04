@@ -126,8 +126,8 @@ def upgrade() -> None:
     sa.Column('completion_token_count', sa.Integer(), nullable=False),
     sa.Column('request_count', sa.Integer(), nullable=False),
     sa.Column('operation', sa.Enum('CHAT_COMPLETION', name='operationenum'), nullable=False),
-    sa.ForeignKeyConstraint(['model_id'], ['models.id'], ),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['model_id'], ['models.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
     # ### end Alembic commands ###
