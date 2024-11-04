@@ -16,6 +16,9 @@ curl -sfL https://get.gpustack.ai | sh -s - --disable-worker
 # Run server with TLS.
 curl -sfL https://get.gpustack.ai | sh -s - --ssl-keyfile /path/to/keyfile --ssl-certfile /path/to/certfile
 
+# Run server with external postgresql database.
+curl -sfL https://get.gpustack.ai | sh -s - --database-url "postgresql://username:password@host:port/database_name"
+
 # Run worker with specified IP.
 curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken --worker-ip 192.168.1.100
 
@@ -41,6 +44,10 @@ Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseB
 
 # Run server with TLS.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --ssl-keyfile 'C:\path\to\keyfile' --ssl-certfile 'C:\path\to\certfile'"
+
+
+# Run server with external postgresql database.
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --database-url 'postgresql://username:password@host:port/database_name'"
 
 # Run worker with specified IP.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url 'http://myserver' --token 'mytoken' --worker-ip '192.168.1.100'"

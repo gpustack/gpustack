@@ -258,7 +258,8 @@ class ActiveRecordMixin:
 
         if self._has_cascade_delete():
             if hasattr(self, "deleted_at"):
-                self.deleted_at = datetime.now(timezone.utc)
+                # timestamp is stored without timezone in db
+                self.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 await self.save(session)
             await self._handle_cascade_delete(session)
 

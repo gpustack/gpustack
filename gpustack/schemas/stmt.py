@@ -1,5 +1,5 @@
-worker_after_drop_view_stmt = "DROP VIEW IF EXISTS gpu_devices_view"
-worker_after_create_view_stmt = """
+worker_after_drop_view_stmt_sqlite = "DROP VIEW IF EXISTS gpu_devices_view"
+worker_after_create_view_stmt_sqlite = """
 CREATE VIEW IF NOT EXISTS gpu_devices_view AS
 SELECT
     w.name || '-' || json_extract(value, '$.name') || '-' || json_extract(value, '$.index') AS id,
@@ -21,4 +21,29 @@ FROM
     json_each(w.status, '$.gpu_devices')
 WHERE
     json_array_length(w.status, '$.gpu_devices') > 0
+"""
+
+worker_after_drop_view_stmt_postgres = "DROP VIEW IF EXISTS gpu_devices_view CASCADE"
+worker_after_create_view_stmt_postgres = """
+CREATE VIEW gpu_devices_view AS
+SELECT
+    w.name || '-' || (gpu_device::json->>'name') || '-' || (gpu_device::json->>'index') AS id,
+    w.id as worker_id,
+    w.name as worker_name,
+    w.ip as worker_ip,
+    w.created_at,
+    w.updated_at,
+    w.deleted_at,
+    (gpu_device::json->>'uuid') AS uuid,
+    (gpu_device::json->>'name') AS name,
+    (gpu_device::json->>'vendor') AS vendor,
+    (gpu_device::json->>'index')::INTEGER AS "index",
+    (gpu_device::json->>'core')::JSONB AS core,
+    (gpu_device::json->>'memory')::JSONB AS memory,
+    (gpu_device::json->>'temperature')::FLOAT AS temperature
+FROM
+    workers w,
+    LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device
+WHERE
+    json_array_length(w.status::json->'gpu_devices') > 0
 """

@@ -3,16 +3,11 @@ from enum import Enum
 from typing import Dict, Optional
 from pydantic import ConfigDict, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
-from sqlalchemy import DDL, event
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, pydantic_column_type
 from typing import List
 from sqlalchemy.orm import declarative_base
-from gpustack.schemas.stmt import (
-    worker_after_create_view_stmt,
-    worker_after_drop_view_stmt,
-)
 
 Base = declarative_base()
 
@@ -164,8 +159,3 @@ class WorkerPublic(
 
 
 WorkersPublic = PaginatedList[WorkerPublic]
-
-
-# add event listener
-event.listen(Worker.metadata, "after_create", DDL(worker_after_drop_view_stmt))
-event.listen(Worker.metadata, "after_create", DDL(worker_after_create_view_stmt))

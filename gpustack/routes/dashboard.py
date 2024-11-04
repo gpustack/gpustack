@@ -21,6 +21,7 @@ from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
+from gpustack.server.db import get_engine
 from gpustack.server.deps import SessionDep
 from gpustack.schemas import Worker
 from gpustack.server.system_load import compute_system_load
@@ -209,6 +210,53 @@ async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
 
 
 async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
+    statement = active_model_statement()
+
+    results = (await session.exec(statement)).all()
+    model_summary = []
+    for result in results:
+        model_summary.append(
+            ModelSummary(
+                id=result.id,
+                name=result.name,
+                resource_claim=ResourceClaim(
+                    ram=result.total_ram_claim,
+                    vram=result.total_vram_claim,
+                ),
+                instance_count=result.instance_count,
+                token_count=(
+                    result.total_token_count
+                    if result.total_token_count is not None
+                    else 0
+                ),
+            )
+        )
+
+    return model_summary
+
+
+def active_model_statement() -> select:
+    dialect = get_engine().dialect.name
+    if dialect == 'sqlite':
+        vram_values = func.json_each(
+            ModelInstance.computed_resource_claim, '$.vram'
+        ).table_valued('value', joins_implicitly=True)
+
+        ram_claim = func.cast(
+            func.json_extract(ModelInstance.computed_resource_claim, '$.ram'), Integer
+        )
+    elif dialect == 'postgresql':
+        vram_values = func.json_each_text(
+            ModelInstance.computed_resource_claim['vram']
+        ).table_valued('value')
+
+        ram_claim = func.cast(
+            func.json_extract_path_text(ModelInstance.computed_resource_claim, 'ram'),
+            Integer,
+        )
+    else:
+        raise NotImplementedError(f'Unsupported database {dialect}')
+
     usage_sum_query = (
         select(
             Model.id.label('model_id'),
@@ -220,30 +268,13 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
         .group_by(Model.id)
     ).alias('usage_sum')
 
-    vram_values = func.json_each(
-        ModelInstance.computed_resource_claim, '$.vram'
-    ).table_valued('value', joins_implicitly=True)
-
     resource_claim_query = (
         select(
             ModelInstance.model_id,
-            func.sum(
-                func.coalesce(
-                    func.cast(
-                        func.json_extract(
-                            ModelInstance.computed_resource_claim, '$.ram'
-                        ),
-                        Integer,
-                    ),
-                    0,
-                )
-            ).label('total_ram_claim'),
-            func.sum(
-                func.coalesce(
-                    func.cast(vram_values.c.value, Integer),
-                    0,
-                )
-            ).label('total_vram_claim'),
+            func.sum(func.coalesce(ram_claim, 0)).label('total_ram_claim'),
+            func.sum(func.coalesce(func.cast(vram_values.c.value, Integer), 0)).label(
+                'total_vram_claim'
+            ),
         ).group_by(ModelInstance.model_id)
     ).alias('resource_claim')
 
@@ -276,24 +307,4 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
         .limit(10)
     )
 
-    results = (await session.exec(statement)).all()
-    model_summary = []
-    for result in results:
-        model_summary.append(
-            ModelSummary(
-                id=result.id,
-                name=result.name,
-                resource_claim=ResourceClaim(
-                    ram=result.total_ram_claim,
-                    vram=result.total_vram_claim,
-                ),
-                instance_count=result.instance_count,
-                token_count=(
-                    result.total_token_count
-                    if result.total_token_count is not None
-                    else 0
-                ),
-            )
-        )
-
-    return model_summary
+    return statement

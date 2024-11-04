@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy import DDL, event
 
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_usage import ModelUsage
@@ -12,7 +13,12 @@ from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.schemas.workers import Worker
-
+from gpustack.schemas.stmt import (
+    worker_after_create_view_stmt_sqlite,
+    worker_after_drop_view_stmt_sqlite,
+    worker_after_create_view_stmt_postgres,
+    worker_after_drop_view_stmt_postgres,
+)
 
 _engine = None
 
@@ -40,6 +46,7 @@ async def init_db(db_url: str):
             raise Exception(f"Unsupported database URL: {db_url}")
 
         _engine = create_async_engine(db_url, echo=False, connect_args=connect_args)
+        listen_events(_engine)
     await create_db_and_tables(_engine)
 
 
@@ -57,3 +64,22 @@ async def create_db_and_tables(engine: AsyncEngine):
                 Worker.__table__,
             ],
         )
+
+
+def listen_events(engine: AsyncEngine):
+    if engine.dialect.name == "postgresql":
+        worker_after_drop_view_stmt = worker_after_drop_view_stmt_postgres
+        worker_after_create_view_stmt = worker_after_create_view_stmt_postgres
+    else:
+        worker_after_drop_view_stmt = worker_after_drop_view_stmt_sqlite
+        worker_after_create_view_stmt = worker_after_create_view_stmt_sqlite
+    event.listen(Worker.metadata, "after_create", DDL(worker_after_drop_view_stmt))
+    event.listen(Worker.metadata, "after_create", DDL(worker_after_create_view_stmt))
+
+    if engine.dialect.name == "sqlite":
+        event.listen(engine.sync_engine, "connect", enable_sqlite_foreign_keys)
+
+
+def enable_sqlite_foreign_keys(conn, record):
+    # Enable foreign keys for SQLite, since it's disabled by default
+    conn.execute("PRAGMA foreign_keys=ON")
