@@ -47,16 +47,15 @@ def log_generator(path: str, options: LogOptions):
             file.seek(0, os.SEEK_END)
             file_size = file.tell()
             buffer = []
-            while file_size > 0 and len(buffer) < options.tail:
-                file.seek(max(0, file_size - 1024), os.SEEK_SET)
-                lines = file.readlines()
-                buffer = lines[-options.tail :] + buffer
-                file_size -= 1024
+            BLOCK_SIZE = 2**16  # 64KB
+            while file_size > 0 and len(buffer) <= options.tail:
+                file.seek(max(0, file_size - BLOCK_SIZE), os.SEEK_SET)
+                buffer = file.readlines()
+                file_size -= BLOCK_SIZE
             for line in buffer[-options.tail :]:
                 yield line
         else:
-            lines = file.readlines()
-            for line in lines:
+            for line in file:
                 yield line
 
         if options.follow:
