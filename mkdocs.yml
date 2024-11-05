@@ -84,6 +84,7 @@ nav:
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
       - Creating Text Embeddings: tutorials/creating-text-embeddings.md
       - Using Reranker Models: tutorials/using-reranker-models.md
+      - Inference with Function Calling: tutorials/inference-with-function-calling.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
