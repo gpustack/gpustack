@@ -40,7 +40,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_api_keys_access_key'), 'api_keys', ['access_key'], unique=True)
     op.create_table('models',
     sa.Column('deleted_at', sa.DateTime(), nullable=True),
-    sa.Column('source', sa.Enum('HUGGING_FACE', 'OLLAMA_LIBRARY', name='sourceenum'), nullable=False),
+    sa.Column('source', sa.Enum('HUGGING_FACE', 'OLLAMA_LIBRARY', 'MODEL_SCOPE', 'LOCAL_PATH', name='sourceenum'), nullable=False),
     sa.Column('huggingface_repo_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('huggingface_filename', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('ollama_library_model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -93,7 +93,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_workers_name'), 'workers', ['name'], unique=True)
     op.create_table('model_instances',
     sa.Column('deleted_at', sa.DateTime(), nullable=True),
-    sa.Column('source', sa.Enum('HUGGING_FACE', 'OLLAMA_LIBRARY', name='sourceenum'), nullable=False),
+    sa.Column('source', sa.Enum('HUGGING_FACE', 'OLLAMA_LIBRARY', 'MODEL_SCOPE', 'LOCAL_PATH', name='sourceenum'), nullable=False),
     sa.Column('huggingface_repo_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('huggingface_filename', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('ollama_library_model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -125,7 +125,7 @@ def upgrade() -> None:
     sa.Column('prompt_token_count', sa.Integer(), nullable=False),
     sa.Column('completion_token_count', sa.Integer(), nullable=False),
     sa.Column('request_count', sa.Integer(), nullable=False),
-    sa.Column('operation', sa.Enum('CHAT_COMPLETION', name='operationenum'), nullable=False),
+    sa.Column('operation', sa.Enum('CHAT_COMPLETION', 'COMPLETION', 'EMBEDDING', 'RERANK', name='operationenum'), nullable=False),
     sa.ForeignKeyConstraint(['model_id'], ['models.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
