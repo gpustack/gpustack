@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import List
 from fastapi import APIRouter
-from sqlalchemy import Integer
+from sqlalchemy import BigInteger
 from sqlmodel import distinct, select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -243,7 +243,8 @@ def active_model_statement() -> select:
         ).table_valued('value', joins_implicitly=True)
 
         ram_claim = func.cast(
-            func.json_extract(ModelInstance.computed_resource_claim, '$.ram'), Integer
+            func.json_extract(ModelInstance.computed_resource_claim, '$.ram'),
+            BigInteger,
         )
     elif dialect == 'postgresql':
         vram_values = func.json_each_text(
@@ -252,7 +253,7 @@ def active_model_statement() -> select:
 
         ram_claim = func.cast(
             func.json_extract_path_text(ModelInstance.computed_resource_claim, 'ram'),
-            Integer,
+            BigInteger,
         )
     else:
         raise NotImplementedError(f'Unsupported database {dialect}')
@@ -272,9 +273,9 @@ def active_model_statement() -> select:
         select(
             ModelInstance.model_id,
             func.sum(func.coalesce(ram_claim, 0)).label('total_ram_claim'),
-            func.sum(func.coalesce(func.cast(vram_values.c.value, Integer), 0)).label(
-                'total_vram_claim'
-            ),
+            func.sum(
+                func.coalesce(func.cast(vram_values.c.value, BigInteger), 0)
+            ).label('total_vram_claim'),
         ).group_by(ModelInstance.model_id)
     ).alias('resource_claim')
 
