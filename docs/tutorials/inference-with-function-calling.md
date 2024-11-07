@@ -35,7 +35,7 @@ After deployment, you can monitor the model's status on the `Models` page.
 
 ## Step 2: Generate an API Key
 
-We will use the GPUStack API to generate text embeddings, and an API key is required:
+We will use the GPUStack API to interact with the model. To do this, you need to generate an API key:
 
 1. Navigate to the `API Keys` page in the GPUStack UI.
 2. Click the `New API Key` button.
