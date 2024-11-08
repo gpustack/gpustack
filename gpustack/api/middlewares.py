@@ -9,6 +9,7 @@ from jwt import DecodeError, ExpiredSignatureError
 from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types import Completion, CompletionUsage
+from openai.types.images_response import ImagesResponse
 from openai.types.create_embedding_response import (
     CreateEmbeddingResponse,
     Usage as EmbeddingUsage,
@@ -51,6 +52,13 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                     CreateEmbeddingResponse,
                     OperationEnum.EMBEDDING,
                 )
+            elif request.url.path == "/v1-openai/images/generations":
+                return await process_request(
+                    request,
+                    response,
+                    ImagesResponse,
+                    OperationEnum.IMAGE_GENERATION,
+                )
             elif request.url.path == "/v1/rerank":
                 return await process_request(
                     request,
@@ -66,7 +74,13 @@ async def process_request(
     request: Request,
     response: StreamingResponse,
     response_class: Type[
-        Union[ChatCompletion, Completion, CreateEmbeddingResponse, RerankResponse]
+        Union[
+            ChatCompletion,
+            Completion,
+            CreateEmbeddingResponse,
+            RerankResponse,
+            ImagesResponse,
+        ]
     ],
     operation: OperationEnum,
 ):
@@ -82,7 +96,11 @@ async def process_request(
         try:
             response_dict = json.loads(response_body)
             response_instance = response_class(**response_dict)
-            await record_model_usage(request, response_instance.usage, operation)
+            usage = None
+            if hasattr(response_instance, "usage"):
+                usage = response_instance.usage
+
+            await record_model_usage(request, usage, operation)
         except Exception as e:
             logger.error(f"Error processing model usage: {e}")
         response = Response(content=response_body, headers=dict(response.headers))
@@ -92,14 +110,17 @@ async def process_request(
 
 async def record_model_usage(
     request: Request,
-    usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage],
+    usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage, None],
     operation: OperationEnum,
 ):
-    prompt_tokens = usage.prompt_tokens
-    total_tokens = usage.total_tokens
-    completion_tokens = getattr(
-        usage, 'completion_tokens', total_tokens - prompt_tokens
-    )
+    prompt_tokens, total_tokens, completion_tokens = 0, 0, 0
+    if usage:
+        prompt_tokens = usage.prompt_tokens
+        total_tokens = usage.total_tokens
+        completion_tokens = getattr(
+            usage, 'completion_tokens', total_tokens - prompt_tokens
+        )
+
     user: User = request.state.user
     model: Model = request.state.model
     fields = {

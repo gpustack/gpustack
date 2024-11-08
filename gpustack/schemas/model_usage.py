@@ -12,6 +12,7 @@ class OperationEnum(str, Enum):
     CHAT_COMPLETION = "chat_completion"
     EMBEDDING = "embedding"
     RERANK = "rerank"
+    IMAGE_GENERATION = "image_generation"
 
 
 class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
