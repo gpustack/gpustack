@@ -71,6 +71,11 @@ async def embeddings(session: SessionDep, request: Request):
     return await proxy_request_by_model(request, session, "embeddings")
 
 
+@router.post("/images/generations")
+async def images_generations(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "images/generations")
+
+
 async def proxy_request_by_model(  # noqa: C901
     request: Request, session: SessionDep, endpoint: str
 ):
