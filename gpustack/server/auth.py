@@ -55,11 +55,7 @@ async def get_current_user(
     elif bearer_token:
         user = await get_user_from_bearer_token(session, bearer_token)
 
-    if (
-        user is None
-        and request.client.host == "127.0.0.1"
-        and 'users' not in request.url.path
-    ):
+    if user is None and request.client.host == "127.0.0.1":
         server_config: Config = request.app.state.server_config
         if not server_config.force_auth_localhost:
             user = await User.first_by_field(session, "is_admin", True)
