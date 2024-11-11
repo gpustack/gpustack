@@ -25,3 +25,11 @@ You can configure log level of GPUStack server at runtime by running the followi
 ```bash
 curl -X PUT http://localhost/debug/log_level -d "debug"
 ```
+
+## Reset Admin Password
+
+In case you forgot the admin password, you can reset it by running the following command on the **server** node:
+
+```bash
+gpustack reset-admin-password
+```
