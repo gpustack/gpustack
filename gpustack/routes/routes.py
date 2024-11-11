@@ -68,7 +68,14 @@ api_router.include_router(
     dependencies=[Depends(get_current_user)],
     prefix="/v1-openai",
     responses=openai_api_error_responses,
-    tags=["OpenAI Compatible APIs"],
+    tags=["OpenAI-Compatible APIs"],
+)
+api_router.include_router(
+    openai.aliasable_router,
+    dependencies=[Depends(get_current_user)],
+    prefix="/v1",
+    responses=openai_api_error_responses,
+    tags=["OpenAI-Compatible APIs using the /v1 alias"],
 )
 api_router.include_router(
     rerank.router,
