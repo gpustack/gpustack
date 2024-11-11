@@ -1,6 +1,6 @@
 # OpenAI Compatible APIs
 
-GPUStack serves [OpenAI compatible APIs](https://platform.openai.com/docs/api-reference) using the `/v1-openai` path.
+GPUStack serves [OpenAI-compatible APIs](https://platform.openai.com/docs/api-reference) using the `/v1-openai` path. Most of the APIs also work under the `/v1` path as an alias, except for the `models` endpoint, which is reserved for GPUStack management APIs.
 
 ## Supported Endpoints
 

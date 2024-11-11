@@ -21,11 +21,37 @@ from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.server.deps import SessionDep
 
-router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
 load_balancer = LoadBalancer()
+
+
+aliasable_router = APIRouter()
+
+
+@aliasable_router.post("/chat/completions")
+async def chat_completions(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "chat/completions")
+
+
+@aliasable_router.post("/completions")
+async def completions(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "completions")
+
+
+@aliasable_router.post("/embeddings")
+async def embeddings(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "embeddings")
+
+
+@aliasable_router.post("/images/generations")
+async def images_generations(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "images/generations")
+
+
+router = APIRouter()
+router.include_router(aliasable_router)
 
 
 @router.get("/models")
@@ -54,26 +80,6 @@ async def list_models(
             )
         )
     return result
-
-
-@router.post("/chat/completions")
-async def chat_completions(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "chat/completions")
-
-
-@router.post("/completions")
-async def completions(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "completions")
-
-
-@router.post("/embeddings")
-async def embeddings(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "embeddings")
-
-
-@router.post("/images/generations")
-async def images_generations(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "images/generations")
 
 
 async def proxy_request_by_model(  # noqa: C901
