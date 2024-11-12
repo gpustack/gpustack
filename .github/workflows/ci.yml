@@ -49,7 +49,7 @@ jobs:
           BUILD_OS: ${{ matrix.os }}
 
       - name: Upload wheel as artifact
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.11' && matrix.os == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-dist
@@ -58,7 +58,7 @@ jobs:
 
       - name: Release GitHub Assets
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11' && matrix.os == 'linux'
         with:
           # Draft for official releases to prepare and review release notes before publishing
           draft: ${{ !contains(github.ref, 'rc') }}
@@ -67,7 +67,7 @@ jobs:
           files: dist/*.whl
 
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11' && matrix.os == 'linux'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.CI_PYPI_API_TOKEN }}
@@ -95,81 +95,3 @@ jobs:
         shell: powershell
         run: |
           make ci
-
-      - name: Upload wheel as artifact
-        if: matrix.python-version == '3.11'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-dist
-          path: dist/*.whl
-          retention-days: 5
-
-      - name: Release GitHub Assets
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
-        with:
-          # Draft for official releases to prepare and review release notes before publishing
-          draft: ${{ !contains(github.ref, 'rc') }}
-          fail_on_unmatched_files: true
-          prerelease: ${{ contains(github.ref, 'rc') }}
-          files: dist/*.whl
-
-      - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && matrix.python-version == '3.11'
-        shell: powershell
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.CI_PYPI_API_TOKEN }}
-        run: |
-          make publish-pypi
-
-  publish-docker:
-    permissions:
-      contents: write
-      actions: read
-      id-token: write
-    timeout-minutes: 60
-    runs-on: ubuntu-22.04
-    env:
-      PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}}
-      PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Run CI build
-        run: |
-          make ci
-      - name: Free Space
-        uses: jlumbroso/free-disk-space@v1.3.1
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          image: tonistiigi/binfmt:qemu-v7.0.0
-          platforms: "arm64"
-      - name: Setup Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.CI_DOCKERHUB_USERNAME }}
-          password: ${{ secrets.CI_DOCKERHUB_PASSWORD }}
-      - name: Get Metadata
-        id: metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.PACKAGE_REGISTRY }}/${{ env.PACKAGE_IMAGE }}
-      - name: Package
-        uses: docker/build-push-action@v5
-        id: package
-        with:
-          push: ${{ github.event_name != 'pull_request' }}
-          file: ${{ github.workspace }}/Dockerfile
-          context: ${{ github.workspace }}
-          platforms: "linux/amd64,linux/arm64"
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          provenance: true
-          sbom: true

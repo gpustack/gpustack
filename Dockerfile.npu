@@ -1,0 +1,23 @@
+ARG CANN_VERSION=8.0.rc3.beta1
+
+FROM ascendai/cann:ubuntu-python3.10-cann$CANN_VERSION
+
+ARG TARGETPLATFORM
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    wget \
+    tzdata \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /workspace/gpustack
+RUN cd /workspace/gpustack && \
+    make build && \
+    pip install /workspace/gpustack/dist/*.whl &&\
+    pip3 cache purge && \
+    rm -rf /workspace/gpustack
+
+ENTRYPOINT [ "gpustack", "start" ]
