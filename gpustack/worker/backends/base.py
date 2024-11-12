@@ -15,6 +15,7 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     SourceEnum,
     ModelInstanceStateEnum,
+    get_backend,
 )
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo
 from gpustack.utils import platform
@@ -23,6 +24,7 @@ from gpustack.worker.downloaders import (
     ModelScopeDownloader,
     OllamaLibraryDownloader,
 )
+from gpustack.worker.tools_manager import ToolsManager
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
@@ -44,7 +46,7 @@ def time_decorator(func):
             start_time = time.time()
             result = await func(*args, **kwargs)
             end_time = time.time()
-            logger.info(
+            logger.debug(
                 f"{func.__name__} execution time: {end_time - start_time:.2f} seconds"
             )
             return result
@@ -117,7 +119,8 @@ class InferenceServer(ABC):
         mi: ModelInstance,
         cfg: Config,
     ):
-        setup_logging(cfg.debug)
+        setup_logging(debug=cfg.debug)
+
         model_file_size = get_model_file_size(mi, cfg)
         if model_file_size:
             logger.debug(f"Model file size: {model_file_size}")
@@ -133,6 +136,18 @@ class InferenceServer(ABC):
         try:
             self._model = self._clientset.models.get(id=mi.model_id)
             self._until_model_instance_initializing()
+
+            if self._model.backend_version:
+                tools_manager = ToolsManager(
+                    tools_download_base_url=cfg.tools_download_base_url,
+                    bin_dir=cfg.bin_dir,
+                    pipx_path=cfg.pipx_path,
+                )
+                backend = get_backend(self._model)
+                tools_manager.prepare_versioned_backend(
+                    backend, self._model.backend_version
+                )
+
             patch_dict = {
                 "download_progress": 0,
                 "state": ModelInstanceStateEnum.DOWNLOADING,
@@ -152,7 +167,7 @@ class InferenceServer(ABC):
             }
             self._update_model_instance(mi.id, **patch_dict)
         except Exception as e:
-            error_message = f"Failed to download model: {e}"
+            error_message = f"Failed to initilialze: {e}"
             logger.error(error_message)
             try:
                 patch_dict = {

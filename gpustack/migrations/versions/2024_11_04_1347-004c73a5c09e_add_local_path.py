@@ -31,6 +31,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('local_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
 
     with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('backend_version', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
         batch_op.add_column(sa.Column('local_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
         # The default is False, but is not valid in SQLite which uses interger for boolean. Use a generic representation.
         batch_op.add_column(sa.Column('image_only', sa.Boolean(), nullable=False, server_default="0"))
@@ -66,6 +67,7 @@ def downgrade() -> None:
         batch_op.drop_column('image_only')
         batch_op.drop_column('text_to_speech')
         batch_op.drop_column('speech_to_text')
+        batch_op.drop_column('backend_version')
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('local_path')
