@@ -64,6 +64,18 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("CACHE_DIR"),
     )
     group.add_argument(
+        "--bin-dir",
+        type=str,
+        help="Directory to store additional binaries, e.g., versioned backend executables.",
+        default=get_gpustack_env("BIN_DIR"),
+    )
+    group.add_argument(
+        "--pipx-path",
+        type=str,
+        help="Path to the pipx executable, used to install versioned backends.",
+        default=get_gpustack_env("PIPX_PATH"),
+    )
+    group.add_argument(
         "-t",
         "--token",
         type=str,
@@ -290,6 +302,8 @@ def set_common_options(args, config_data: dict):
         "debug",
         "data_dir",
         "cache_dir",
+        "bin_dir",
+        "pipx_path",
         "token",
         "huggingface_token",
     ]

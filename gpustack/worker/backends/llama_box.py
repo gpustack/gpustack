@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import sys
 import psutil
@@ -8,7 +9,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
 )
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_parameter, get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.worker.backends.base import InferenceServer
 
@@ -20,6 +21,14 @@ class LlamaBoxServer(InferenceServer):
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
         ).joinpath(get_llama_box_command())
+
+        if self._model.backend_version:
+            command_path = os.path.join(
+                self._config.bin_dir,
+                get_versioned_command(
+                    get_llama_box_command(), self._model.backend_version
+                ),
+            )
 
         layers = -1
         claim = self._model_instance.computed_resource_claim

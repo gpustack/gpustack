@@ -97,6 +97,7 @@ class ModelBase(SQLModel, ModelSource):
     text_to_speech: bool = False
 
     backend: Optional[str] = None
+    backend_version: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
 
     @model_validator(mode="after")

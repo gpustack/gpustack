@@ -112,6 +112,7 @@ class Worker:
 
         tools_manager = ToolsManager(
             tools_download_base_url=self._config.tools_download_base_url,
+            pipx_path=self._config.pipx_path,
             device=self.get_device_by_gpu_devices(),
         )
         tools_manager.prepare_tools()

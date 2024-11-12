@@ -1,9 +1,13 @@
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import logging
+import os
+import sys
 
 
 def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
+
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -50,3 +54,44 @@ def setup_logging(debug: bool = False):
             logger.setLevel(logging.DEBUG)
         else:
             logger.disabled = True
+
+
+def fileno(file_or_fd):
+    fd = getattr(file_or_fd, 'fileno', lambda: file_or_fd)()
+    if not isinstance(fd, int):
+        raise ValueError("Expected a file (`.fileno()`) or a file descriptor")
+    return fd
+
+
+@contextmanager
+def stdout_redirected(to=os.devnull, stdout=None):
+    """
+    Redirect stdout to another file descriptor, or os.devnull if to is None.
+    Use this instead of contextlib.redirect_stdout() to support stream handling.
+
+    More context: https://github.com/python/cpython/issues/123481
+    """
+    if stdout is None:
+        stdout = sys.stdout
+
+    stdout_fd = fileno(stdout)
+    # copy stdout_fd before it is overwritten
+    # NOTE: `copied` is inheritable on Windows when duplicating a standard stream
+    with os.fdopen(os.dup(stdout_fd), 'wb') as copied:
+        stdout.flush()  # flush library buffers that dup2 knows nothing about
+        try:
+            os.dup2(fileno(to), stdout_fd)  # $ exec >&to
+        except ValueError:  # filename
+            with open(to, 'wb') as to_file:
+                os.dup2(to_file.fileno(), stdout_fd)  # $ exec > to
+        try:
+            yield stdout  # allow code to be run with the redirected stdout
+        finally:
+            # restore stdout to its previous value
+            # NOTE: dup2 makes stdout_fd inheritable unconditionally
+            stdout.flush()
+            os.dup2(copied.fileno(), stdout_fd)  # $ exec >&copied
+
+
+def merged_stderr_stdout():  # $ exec 2>&1
+    return stdout_redirected(to=sys.stdout, stdout=sys.stderr)

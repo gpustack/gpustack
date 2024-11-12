@@ -5,7 +5,7 @@ import sys
 import sysconfig
 from typing import Optional
 from gpustack.schemas.models import ModelInstanceStateEnum
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_parameter, get_versioned_command
 from gpustack.utils.hub import get_max_model_len, get_pretrained_config
 from gpustack.worker.backends.base import InferenceServer
 
@@ -16,6 +16,11 @@ class VLLMServer(InferenceServer):
     def start(self):
         try:
             command_path = os.path.join(sysconfig.get_path("scripts"), "vllm")
+            if self._model.backend_version:
+                command_path = os.path.join(
+                    self._config.bin_dir,
+                    get_versioned_command("vllm", self._model.backend_version),
+                )
             arguments = [
                 "serve",
                 self._model_path,
