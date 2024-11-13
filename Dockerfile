@@ -28,4 +28,6 @@ RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
     pip3 cache purge && \
     rm -rf /workspace/gpustack
 
+RUN gpustack download-tools
+
 ENTRYPOINT [ "gpustack", "start" ]

@@ -43,9 +43,6 @@ class ToolsManager:
         self._device = platform.device()
         self._download_base_url = tools_download_base_url
 
-        if not self._download_base_url:
-            self._check_and_set_download_base_url()
-
         if gpu_devices:
             vendor = gpu_devices[0].vendor
             self._device = platform.device_from_vendor(vendor)
@@ -107,10 +104,10 @@ class ToolsManager:
         tmp_file = os.path.join(
             llama_box_tmp_dir, f"llama-box-{version}-{platform_name}.zip"
         )
-        url = f"{self._download_base_url}/gpustack/llama-box/releases/download/{version}/llama-box-{platform_name}.zip"
+        url_path = f"gpustack/llama-box/releases/download/{version}/llama-box-{platform_name}.zip"
 
         logger.info(f"downloading llama-box-{platform_name} '{version}'")
-        self._download_file(url, tmp_file)
+        self._download_file(url_path, tmp_file)
         self._extract_file(tmp_file, llama_box_tmp_dir)
 
         shutil.copy(llama_box_tmp_dir.joinpath(file_name), target_file)
@@ -174,10 +171,10 @@ class ToolsManager:
             return
 
         platform_name = self._get_gguf_parser_platform_name()
-        url = f"{self._download_base_url}/gpustack/gguf-parser-go/releases/download/{version}/gguf-parser-{platform_name}{suffix}"
+        url_path = f"gpustack/gguf-parser-go/releases/download/{version}/gguf-parser-{platform_name}{suffix}"
 
         logger.info(f"downloading gguf-parser-{platform_name} '{version}'")
-        self._download_file(url, target_file)
+        self._download_file(url_path, target_file)
 
         if self._os != "windows":
             st = os.stat(target_file)
@@ -228,9 +225,9 @@ class ToolsManager:
             shutil.rmtree(fastfetch_tmp_dir)
         os.makedirs(fastfetch_tmp_dir, exist_ok=True)
 
-        url = f"{self._download_base_url}/gpustack/fastfetch/releases/download/{version}/fastfetch-{platform_name}.zip"
+        url_path = f"gpustack/fastfetch/releases/download/{version}/fastfetch-{platform_name}.zip"
 
-        self._download_file(url, tmp_file)
+        self._download_file(url_path, tmp_file)
         self._extract_file(tmp_file, fastfetch_tmp_dir)
 
         extracted_fastfetch = fastfetch_tmp_dir.joinpath(
@@ -286,8 +283,12 @@ class ToolsManager:
 
         return platform_name
 
-    def _download_file(self, url, target_path):
-        """Download a file from the specified URL and save it to the target path."""
+    def _download_file(self, url_path: str, target_path: str):
+        """Download a file from the URL to the target path."""
+        if not self._download_base_url:
+            self._check_and_set_download_base_url()
+
+        url = f"{self._download_base_url}/{url_path}"
         max_retries = 5
         retries = 0
         while retries < max_retries:
