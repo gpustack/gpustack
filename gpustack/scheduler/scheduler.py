@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    def __init__(self, cfg: Config, check_interval: int = 30):
+    def __init__(self, cfg: Config, check_interval: int = 180):
         """
         Init the scheduler with queue and interval.
         """
@@ -122,6 +122,11 @@ class Scheduler:
                 if model is None:
                     raise Exception("Model not found.")
 
+                if instance.state != ModelInstanceStateEnum.ANALYZING:
+                    instance.state = ModelInstanceStateEnum.ANALYZING
+                    instance.state_message = "Evaluating resource requirements"
+                    await instance.update(session)
+
                 if is_gguf_model(model):
                     await self._evaluate_gguf_model(session, model, instance)
                 else:
@@ -146,10 +151,6 @@ class Scheduler:
         model: Model,
         instance: ModelInstance,
     ):
-        if instance.state != ModelInstanceStateEnum.ANALYZING:
-            instance.state = ModelInstanceStateEnum.ANALYZING
-            instance.state_message = "Evaluating resource requirements"
-            await instance.update(session)
         task_output = await calculate_model_resource_claim(
             instance,
             model,
