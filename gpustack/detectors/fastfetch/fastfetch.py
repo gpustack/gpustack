@@ -34,7 +34,7 @@ class Fastfetch(GPUDetector):
 
     def gather_gpu_vendor_info(self) -> List[str]:
         gpu_devices = self.gather_gpu_info()
-        vendors = set([device.vendor for device in gpu_devices])
+        vendors = set([device.vendor for device in gpu_devices] if gpu_devices else [])
         return vendors
 
     def gather_gpu_info(self) -> GPUDevicesInfo:
