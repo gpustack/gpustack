@@ -17,7 +17,7 @@ COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
     make build && \
     pip install /workspace/gpustack/dist/*.whl &&\
-    pip3 cache purge && \
+    pip cache purge && \
     rm -rf /workspace/gpustack
 
 RUN gpustack download-tools
