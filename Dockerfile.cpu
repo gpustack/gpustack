@@ -1,6 +1,4 @@
-ARG CUDA_VERSION=12.5.1
-
-FROM nvidia/cuda:$CUDA_VERSION-runtime-ubuntu22.04
+FROM ubuntu:22.04
 
 ARG TARGETPLATFORM
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,15 +14,8 @@ RUN apt-get update && apt-get install -y \
 
 COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
-    make build
-
-RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-    # Install vllm dependencies for x86_64
-    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[vllm]"; \
-    else  \
-    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)"; \
-    fi && \
-    pip install $WHEEL_PACKAGE &&\
+    make build && \
+    pip install /workspace/gpustack/dist/*.whl &&\
     pip cache purge && \
     rm -rf /workspace/gpustack
 
