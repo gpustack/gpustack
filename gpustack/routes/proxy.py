@@ -32,6 +32,8 @@ HEADER_SKIPPED = [
     "x-forwarded-server",
 ]
 
+timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
+
 
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy(session: SessionDep, request: Request, url: str):
@@ -46,7 +48,7 @@ async def proxy(session: SessionDep, request: Request, url: str):
 
     forwarded_headers = process_headers(request.headers)
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             if request.method == "GET":
                 response = await client.request(
