@@ -8,6 +8,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
 )
+from gpustack.utils.command import find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.worker.backends.base import InferenceServer
 
@@ -70,7 +71,10 @@ class LlamaBoxServer(InferenceServer):
         elif len(main_worker_tensor_split) > 1:
             final_tensor_split.extend(main_worker_tensor_split)
 
-        if final_tensor_split:
+        user_tensor_split = find_parameter(
+            self._model.backend_parameters, ["ts", "tensor-split"]
+        )
+        if user_tensor_split is None and final_tensor_split:
             tensor_split_argument = ",".join(
                 [str(int(tensor / (1024 * 1024))) for tensor in final_tensor_split]
             )  # convert to MiB to prevent overflow
@@ -78,8 +82,7 @@ class LlamaBoxServer(InferenceServer):
             arguments.extend(["--tensor-split", tensor_split_argument])
 
         if self._model.backend_parameters:
-            # A make-it-work solution for now.
-            # TODO Fine-grained control of llama-box parameters.
+            # append user-provided parameters
             for param in self._model.backend_parameters:
                 if "=" not in param:
                     arguments.append(param)

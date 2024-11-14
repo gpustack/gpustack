@@ -21,6 +21,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
+from gpustack.utils.command import find_parameter
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,13 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._model_instance = model_instance
         self._cache_dir = cache_dir
+
+        self._param_tensor_split = find_parameter(
+            model.backend_parameters, ["ts", "tensor-split"]
+        )
+
+    def _has_distributed_params(self):
+        return self._param_tensor_split
 
     async def select_candidates(
         self, workers: List[Worker]
@@ -91,6 +99,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         """
         Find single worker single gpu full offloading candidates for the model instance with workers.
         """
+        if self._has_distributed_params():
+            return []
+
         candidates = []
         for worker in workers:
             if not worker.status.gpu_devices:
@@ -206,6 +217,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             allocatable, worker
         )
 
+        if self._param_tensor_split:
+            # use specified tensor split when the param is set.
+            if total_gpu < len(self._param_tensor_split.split(",")):
+                return None
+            gpu_combinations = await self._generate_combinations_given_tensor_split()
+
         candidates = []
         for gpu_count in gpu_combinations:
             for gpu_combination in gpu_combinations[gpu_count]:
@@ -235,7 +252,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 for gci in range(len(gpu_combination)):
                     estimate_gpu_index = gci
                     real_gpu_index = gpu_combination[gci][0]
-                    gpu_allocatable = gpu_combination[gci][1]
+                    gpu_allocatable = allocatable.vram[real_gpu_index]
 
                     single_gpu_vram_claim = (
                         estimate.items[0].vrams[estimate_gpu_index].nonuma
@@ -335,6 +352,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         Find single worker single gpu partial offloading candidates for the model instance.
         requires: worker.status.gpu_devices is not None
         """
+        if self._has_distributed_params():
+            return []
+
         candidates = []
 
         is_unified_memory = worker.status.memory.is_unified_memory
@@ -524,6 +544,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             allocatable, worker
         )
 
+        if self._param_tensor_split:
+            # use specified tensor split when the param is set.
+            if total_gpu < len(self._param_tensor_split.split(",")):
+                return None
+            gpu_combinations = await self._generate_combinations_given_tensor_split()
+
         candidates: List[ModelInstanceScheduleCandidate] = []
         for gpu_count in gpu_combinations:
             for gpu_combination in gpu_combinations[gpu_count]:
@@ -664,6 +690,32 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         gpu_combinations = {}
         for i in range(2, total_gpu + 1):
             gpu_combinations[i] = list(itertools.combinations(sorted_gpus_memory, i))
+
+        return gpu_combinations
+
+    async def _generate_combinations_given_tensor_split(
+        self,
+    ) -> dict[Tuple[Tuple[int]]]:
+        """
+        Generate gpu combinations given tensor split.
+        Example:
+            Given: tensor_split = "1,5,8"
+            Output:
+            {
+                3: [
+                    ((0, 1), (1, 5), (2, 8))
+                ]
+            }
+        """
+        tensor_splits = [int(x) for x in self._param_tensor_split.split(",")]
+        n_split = len(tensor_splits)
+
+        split_by_index = []
+        for i in range(n_split):
+            split_by_index.append((i, tensor_splits[i]))
+        gpu_combinations = {
+            n_split: list(itertools.combinations(split_by_index, n_split))
+        }
 
         return gpu_combinations
 
