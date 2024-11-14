@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from typing import Dict, List
 
@@ -48,7 +49,8 @@ async def estimate_model_vram(model: Model) -> int:
     # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
     cuda_graph_size = 2 * 1024**3
     weight_size = 0
-    timeout_in_seconds = 5
+    timeout_in_seconds = 15
+
     try:
         if model.source == SourceEnum.HUGGING_FACE:
             weight_size = await asyncio.wait_for(
@@ -56,8 +58,6 @@ async def estimate_model_vram(model: Model) -> int:
                 timeout=timeout_in_seconds,
             )
         elif model.source == SourceEnum.MODEL_SCOPE:
-            # it may download a few files to get config, so set a longer timeout
-            timeout_in_seconds = 15
             trust_remote_code = False
             if (
                 model.backend_parameters
@@ -72,6 +72,8 @@ async def estimate_model_vram(model: Model) -> int:
                 ),
                 timeout=timeout_in_seconds,
             )
+        elif model.source == SourceEnum.LOCAL_PATH:
+            weight_size = get_local_model_weight_size(model.local_path)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -146,6 +148,29 @@ def parse_model_size_by_name(model_name: str) -> int:
         return int(size_in_billions * 1e9)
     else:
         raise ValueError(f"Cannot parse model size from model name: {model_name}")
+
+
+def get_local_model_weight_size(local_path: str) -> int:
+    """
+    Get the local model weight size in bytes. Estimate by the total size of files in the top-level (depth 1) of the directory.
+    """
+    total_size = 0
+
+    try:
+        with os.scandir(local_path) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    total_size += entry.stat().st_size
+    except FileNotFoundError:
+        raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
+    except NotADirectoryError:
+        raise NotADirectoryError(
+            f"The specified path '{local_path}' is not a directory."
+        )
+    except PermissionError:
+        raise PermissionError(f"Permission denied when accessing '{local_path}'.")
+
+    return total_size
 
 
 class VLLMResourceFitSelector(ScheduleCandidatesSelector):
