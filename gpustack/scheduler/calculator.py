@@ -115,9 +115,14 @@ async def _gguf_parser_command(
 
     tensor_split = kwargs.get("tensor_split")
     if tensor_split:
-        tensor_split_str = ",".join(
-            [str(int(i / (1024 * 1024))) for i in tensor_split]
-        )  # convert to MiB to prevent overflow
+        if all(i < 1024 * 1024 for i in tensor_split):
+            # user provided
+            tensor_split_str = ",".join([str(i) for i in tensor_split])
+        else:
+            # computed by the system, convert to MiB to prevent overflow
+            tensor_split_str = ",".join(
+                [str(int(i / (1024 * 1024))) for i in tensor_split]
+            )
         execuable_command.append("--tensor-split")
         execuable_command.append(tensor_split_str)
 
