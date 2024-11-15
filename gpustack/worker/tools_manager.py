@@ -131,6 +131,8 @@ class ToolsManager:
             platform_name = "darwin-amd64-avx2"
         elif self._os == "linux" and self._arch == "amd64" and self._device == "cuda":
             platform_name = "linux-amd64-cuda-12.4"
+        elif self._os == "linux" and self._arch == "amd64" and self._device == "musa":
+            platform_name = "linux-amd64-musa-rc3.1"
         elif self._os == "linux" and self._arch == "amd64" and self._device == "npu":
             platform_name = "linux-amd64-cann-8.0"
         elif self._os == "linux" and self._arch == "arm64" and self._device == "npu":

@@ -83,6 +83,13 @@ def device() -> str:
     ):
         return "cuda"
 
+    if (
+        is_command_available("mthreads-gmi")
+        or os.path.exists("/usr/local/musa")
+        or os.path.exists("/opt/musa")
+    ):
+        return "musa"
+
     if is_command_available("npu-smi"):
         return "npu"
 
