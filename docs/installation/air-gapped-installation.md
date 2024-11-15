@@ -26,7 +26,7 @@ PACKAGE_SPEC="gpustack"
 pip download $PACKAGE_SPEC --only-binary=:all: -d gpustack_offline_packages
 
 pip install gpustack
-gpustack download-tools --save-archive gpustack_offline_tools.tar
+gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
 ```
 
 !!! note
@@ -35,7 +35,7 @@ gpustack download-tools --save-archive gpustack_offline_tools.tar
 
 ### Step 2: Transfer the Packages
 
-Transfer the `gpustack_offline_packages` directory and the `gpustack_offline_tools.tar` file to the air-gapped environment.
+Transfer the `gpustack_offline_packages` directory and the `gpustack_offline_tools.tar.gz` file to the air-gapped environment.
 
 ### Step 3: Install GPUStack
 
@@ -43,7 +43,7 @@ Run the following commands in the air-gapped environment to install GPUStack:
 
 ```bash
 pip install --no-index --find-links=gpustack_offline_packages gpustack
-gpustack download-tools --load-archive gpustack_offline_tools.tar
+gpustack download-tools --load-archive gpustack_offline_tools.tar.gz
 ```
 
 Now you can run GPUStack as in the [Manual Installation](manual-installation.md#run-gpustack) guide.
