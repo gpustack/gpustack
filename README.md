@@ -121,12 +121,12 @@ curl http://myserver/v1-openai/chat/completions \
 - [x] Apple Metal
 - [x] NVIDIA CUDA
 - [x] Ascend CANN
+- [x] Moore Threads MUSA
 
 We plan to support the following accelerators in future releases.
 
 - [ ] AMD ROCm
 - [ ] Intel oneAPI
-- [ ] MTHREADS MUSA
 - [ ] Qualcomm AI Engine
 
 ## Supported Models
