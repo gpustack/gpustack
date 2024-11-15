@@ -27,14 +27,14 @@ def main():
         ),
     )
     subparsers = parser.add_subparsers(
-        help="sub-command help", metavar='{start,chat,version}'
+        help="sub-command help", metavar='{start,chat,download-tools,version}'
     )
 
     setup_start_cmd(subparsers)
     setup_chat_cmd(subparsers)
+    setup_download_tools_cmd(subparsers)
     setup_version_cmd(subparsers)
     setup_reset_admin_password_cmd(subparsers)
-    setup_download_tools_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

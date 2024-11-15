@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import socket
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from gpustack.config import Config
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
+from gpustack.utils import platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -110,11 +112,18 @@ class Worker:
 
         tools_manager = ToolsManager(
             tools_download_base_url=self._config.tools_download_base_url,
-            gpu_devices=self._config.get_gpu_devices(),
+            device=self.get_device_by_gpu_devices(),
         )
         tools_manager.prepare_tools()
 
         asyncio.run(self.start_async())
+
+    def get_device_by_gpu_devices(self) -> Optional[str]:
+        gpu_devices = self._config.get_gpu_devices()
+        if gpu_devices:
+            vendor = gpu_devices[0].vendor
+            return platform.device_from_vendor(vendor)
+        return None
 
     async def start_async(self):
         """
