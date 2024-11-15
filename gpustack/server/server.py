@@ -186,7 +186,7 @@ class Server:
                     file.write(bootstrap_password)
                 logger.info(
                     "Generated initial admin password. "
-                    f"You can get it from {bootstrap_password_file}."
+                    f"You can get it from {bootstrap_password_file}"
                 )
 
             user = User(
