@@ -29,6 +29,10 @@ pip install gpustack
 gpustack download-tools --save-archive gpustack_offline_tools.tar
 ```
 
+!!! note
+
+    Here we assume that the online environment is the same as the air-gapped environment. If the online environment is different, you can specify the `--system`, `--arch`, and `--device` flags to download the tools for the air-gapped environment. Refer to the [download-tools](../cli-reference/download-tools.md) command for more information.
+
 ### Step 2: Transfer the Packages
 
 Transfer the `gpustack_offline_packages` directory and the `gpustack_offline_tools.tar` file to the air-gapped environment.
