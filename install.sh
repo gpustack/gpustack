@@ -167,7 +167,7 @@ detect_device() {
 
   if command -v mthreads-gmi > /dev/null 2>&1; then
     if ! command -v mcc > /dev/null 2>&1 && ! ($SUDO ldconfig -p | grep -q libmusart) && ! ls /usr/local/musa >/dev/null 2>&1; then
-      warn "MTHREADS GPU detected but MUSA is not installed. Please install MUSA."
+      warn "Moore Threads GPU detected but MUSA is not installed. Please install MUSA."
     fi
     DEVICE="musa"
   fi
