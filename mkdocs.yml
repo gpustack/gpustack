@@ -65,6 +65,7 @@ nav:
       - Installation Script: installation/installation-script.md
       - Manual Installation: installation/manual-installation.md
       - Docker Installation: installation/docker-installation.md
+      - Air-Gapped Installation: installation/air-gapped-installation.md
       - Uninstallation: installation/uninstallation.md
   - Upgrade: upgrade.md
   - User Guide:
@@ -92,3 +93,4 @@ nav:
   - CLI Reference:
       - Start: cli-reference/start.md
       - Chat: cli-reference/chat.md
+      - Download Tools: cli-reference/download-tools.md

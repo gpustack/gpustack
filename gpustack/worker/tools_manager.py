@@ -5,9 +5,9 @@ from pathlib import Path
 import shutil
 import stat
 import time
+from typing import Optional
 import zipfile
 import requests
-from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform
 
@@ -24,7 +24,11 @@ class ToolsManager:
     """
 
     def __init__(
-        self, tools_download_base_url: str = None, gpu_devices: GPUDevicesInfo = None
+        self,
+        tools_download_base_url: str = None,
+        device: Optional[str] = None,
+        system: Optional[str] = None,
+        arch: Optional[str] = None,
     ):
         with pkg_resources.path("gpustack.third_party", "bin") as bin_path:
             self.bin_path: Path = bin_path
@@ -38,14 +42,10 @@ class ToolsManager:
                 except Exception as e:
                     logger.warning(f"Failed to load versions.json: {e}")
 
-        self._os = platform.system()
-        self._arch = platform.arch()
-        self._device = platform.device()
+        self._os = system if system else platform.system()
+        self._arch = arch if arch else platform.arch()
+        self._device = device if device else platform.device()
         self._download_base_url = tools_download_base_url
-
-        if gpu_devices:
-            vendor = gpu_devices[0].vendor
-            self._device = platform.device_from_vendor(vendor)
 
     def _check_and_set_download_base_url(self):
         urls = [
@@ -78,6 +78,34 @@ class ToolsManager:
         self.download_llama_box()
         self.download_gguf_parser()
         self.download_fastfetch()
+
+    def save_archive(self, archive_path: str):
+        """
+        Save all downloaded tools as a tar archive.
+        """
+        # Ensure the directory exists
+        target_dir = os.path.dirname(archive_path)
+        if target_dir and not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+
+        # Remove extension from archive_path for make_archive. e.g., .tar.gz
+        base_name = os.path.splitext(os.path.splitext(archive_path)[0])[0]
+
+        logger.info(f"Saving dependency tools to {archive_path}")
+        shutil.make_archive(base_name, "gztar", self.bin_path)
+
+    def load_archive(self, archive_path: str):
+        """
+        Load downloaded tools from a tar archive.
+        """
+        if not os.path.isfile(archive_path):
+            raise FileNotFoundError(f"Archive file not found: {archive_path}")
+
+        if not os.path.exists(self.bin_path):
+            os.makedirs(self.bin_path)
+
+        logger.info(f"Loading dependency tools from {archive_path}")
+        shutil.unpack_archive(archive_path, self.bin_path)
 
     def download_llama_box(self):
         version = "v0.0.74"
