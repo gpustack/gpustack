@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        device: ["cuda", "npu", "cpu"]
+        device: ["cuda", "musa", "npu", "cpu"]
     env:
       PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}}
       PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
