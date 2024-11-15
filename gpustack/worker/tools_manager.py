@@ -80,7 +80,7 @@ class ToolsManager:
         self.download_fastfetch()
 
     def download_llama_box(self):
-        version = "v0.0.74"
+        version = "v0.0.78"
         llama_box_dir = self.bin_path.joinpath("llama-box")
         llama_box_tmp_dir = llama_box_dir.joinpath(llama_box_dir, "tmp")
 
