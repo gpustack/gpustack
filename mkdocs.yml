@@ -86,6 +86,7 @@ nav:
       - Creating Text Embeddings: tutorials/creating-text-embeddings.md
       - Using Reranker Models: tutorials/using-reranker-models.md
       - Inference with Function Calling: tutorials/inference-with-function-calling.md
+      - Running Inference with Moore Threads GPUs: tutorials/running-inference-with-moorethreads-gpus.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
