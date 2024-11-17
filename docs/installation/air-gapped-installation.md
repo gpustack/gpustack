@@ -1,49 +1,72 @@
 # Air-Gapped Installation
 
-You can install GPUStack in an air-gapped environment. An air-gapped environment could be where GPUStack will be installed offline, behind a firewall, or behind a proxy.
+You can install GPUStack in an air-gapped environment. An air-gapped environment refers to a setup where GPUStack will be installed offline, behind a firewall, or behind a proxy.
 
-The following ways are available to install GPUStack in an air-gapped environment:
+The following methods are available for installing GPUStack in an air-gapped environment:
 
-- Docker Installation
-- Manual Installation
+- [Docker Installation](#docker-installation)
+- [Manual Installation](#manual-installation)
 
 ## Docker Installation
 
-When you run GPUStack using Docker, it works out of the box as long as the Docker images are available in the air-gapped environment. Please publish the GPUStack docker images to your private registry, then refer to the [Docker Installation](docker-installation.md) guide for how to run GPUStack using Docker.
+When running GPUStack with Docker, it works out of the box in an air-gapped environment as long as the Docker images are available. To do this, follow these steps:
+
+1. Pull GPUStack Docker images in an online environment.
+2. Publish Docker images to a private registry.
+3. Refer to the [Docker Installation](docker-installation.md) guide to run GPUStack using Docker.
 
 ## Manual Installation
 
-When you install GPUStack manually, you need to download the required packages in an online environment and then transfer them to the air-gapped environment.
-
-### Step 1: Download the Required Packages
-
-Run the following commands in an online environment to download the required packages:
-
-```bash
-# To install extra vllm dependencies: PACKAGE_SPEC="gpustack[vllm]"
-# To install a specific version: PACKAGE_SPEC="gpustack==0.4.0"
-PACKAGE_SPEC="gpustack"
-pip download $PACKAGE_SPEC --only-binary=:all: -d gpustack_offline_packages
-
-pip install gpustack
-gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
-```
+For manual installation, you need to prepare the required packages and tools in an online environment and then transfer them to the air-gapped environment.
 
 !!! note
 
-    Here we assume that the online environment is the same as the air-gapped environment. If the online environment is different, you can specify the `--system`, `--arch`, and `--device` flags to download the tools for the air-gapped environment. Refer to the [download-tools](../cli-reference/download-tools.md) command for more information.
+    Instructions here assume that the online environment is identical to the air-gapped environment, including **OS**, **architecture**, **Python version** and **GPU type**. If the online environment is different, Specify additional flags as described below:
+
+    - **Python packages**
+
+        Use `pip download` with the `--platform` and `--python-version` flags to download packages compatible with the air-gapped environment. See the [pip download](https://pip.pypa.io/en/stable/cli/pip_download/) command for more details.
+    - **Dependency tools**
+
+        Use `gpustack download-tools` with the `--system`, `--arch`, and `--device` flags to download tools for the air-gapped environment. Refer to the [download-tools](../cli-reference/download-tools.md) command for more information.
+
+### Step 1: Download the Required Packages
+
+Run the following commands in an online environment:
+
+```bash
+# Optional: To include vLLM dependencies or install a specific version
+# PACKAGE_SPEC="gpustack[vllm]"
+# PACKAGE_SPEC="gpustack==0.4.0"
+PACKAGE_SPEC="gpustack"
+
+# Download all required packages
+pip download $PACKAGE_SPEC --only-binary=:all: -d gpustack_offline_packages
+
+# Install GPUStack to access its CLI
+pip install gpustack
+
+# Download dependency tools and save them as an archive
+gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
+```
 
 ### Step 2: Transfer the Packages
 
-Transfer the `gpustack_offline_packages` directory and the `gpustack_offline_tools.tar.gz` file to the air-gapped environment.
+Transfer the following files from the online environment to the air-gapped environment.
+
+- `gpustack_offline_packages` directory.
+- `gpustack_offline_tools.tar.gz` file.
 
 ### Step 3: Install GPUStack
 
-Run the following commands in the air-gapped environment to install GPUStack:
+In the air-gapped environment, run the following commands:
 
 ```bash
+# Install GPUStack from the downloaded packages
 pip install --no-index --find-links=gpustack_offline_packages gpustack
+
+# Load and apply the pre-downloaded tools archive
 gpustack download-tools --load-archive gpustack_offline_tools.tar.gz
 ```
 
-Now you can run GPUStack as in the [Manual Installation](manual-installation.md#run-gpustack) guide.
+Now you can run GPUStack by following the instructions in the [Manual Installation](manual-installation.md#run-gpustack) guide.
