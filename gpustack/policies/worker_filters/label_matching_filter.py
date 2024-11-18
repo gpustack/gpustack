@@ -1,7 +1,7 @@
 import logging
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from gpustack.policies.base import WorkerFilter
-from gpustack.schemas.models import Model, ModelInstance
+from gpustack.schemas.models import BackendEnum, Model, ModelInstance, get_backend
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
 
@@ -14,7 +14,7 @@ class LabelMatchingFilter(WorkerFilter):
         self._model_instance = model_instance
         self._engine = get_engine()
 
-    async def filter(self, workers: List[Worker]) -> List[Worker]:
+    async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
         Filter the workers with the worker selector.
         """
@@ -24,13 +24,22 @@ class LabelMatchingFilter(WorkerFilter):
         )
 
         if self._model.worker_selector is None:
-            return workers
+            return workers, []
 
         candidates = []
         for worker in workers:
             if label_matching(self._model.worker_selector, worker.labels):
                 candidates.append(worker)
-        return candidates
+
+        messages = []
+        if len(candidates) != len(workers):
+            messages = [
+                f"Matched {len(candidates)}/{len(workers)} workers by label selector: {self._model.worker_selector}."
+            ]
+            if get_backend(self._model) == BackendEnum.VLLM:
+                messages[0] += " (Note: The vLLM backend supports amd64 Linux only.)"
+
+        return candidates, messages
 
 
 def label_matching(required_labels: Dict[str, str], current_labels) -> bool:

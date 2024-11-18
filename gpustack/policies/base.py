@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     ModelInstance,
@@ -47,9 +47,12 @@ class Allocated(AllocationResource):
 
 class WorkerFilter(ABC):
     @abstractmethod
-    def filter(self, workers: List[Worker]) -> List[Worker]:
+    def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
         Filter workers suitable for scheduling.
+        :return: A tuple containing:
+                 - A list of workers that pass the filter.
+                 - A list of messages why certain workers were filtered out.
         """
         pass
 
@@ -58,10 +61,19 @@ class WorkerFilterChain:
     def __init__(self, filters: List[WorkerFilter]):
         self.filters = filters
 
-    async def filter(self, workers):
+    async def filter(self, workers) -> Tuple[List[Worker], List[str]]:
+        """
+        Applies all filters sequentially to the list of workers.
+        :param workers: The initial list of workers.
+        :return: A tuple containing:
+                 - The final list of workers that pass all filters.
+                 - A list of messages for all workers filtered out across all filters.
+        """
+        messages = []
         for policy in self.filters:
-            workers = await policy.filter(workers)
-        return workers
+            workers, filter_messages = await policy.filter(workers)
+            messages.extend(filter_messages)
+        return workers, messages
 
 
 class ScheduleCandidatesSelector(ABC):
@@ -71,6 +83,8 @@ class ScheduleCandidatesSelector(ABC):
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Get schedule candidates.
+        :param workers: The list of workers to select from.
+        :return: A list of schedule candidates.
         """
         pass
 
@@ -82,6 +96,8 @@ class ModelInstanceScorer(ABC):
     ) -> List[ModelInstanceScore]:
         """
         Score the instances.
+        :param instances: The list of instances to score.
+        :return: A list of scored instances.
         """
         pass
 
@@ -93,5 +109,7 @@ class ScheduleCandidatesScorer(ABC):
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Score the candidates.
+        :param candidates: The list of candidates to score.
+        :return: A list of scored candidates.
         """
         pass
