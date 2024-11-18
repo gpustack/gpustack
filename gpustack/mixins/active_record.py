@@ -3,11 +3,11 @@ import importlib
 import json
 import logging
 import math
-from typing import Any, AsyncGenerator, Optional, Union, overload
+from typing import Any, AsyncGenerator, List, Optional, Union, overload, Tuple
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
-from sqlmodel import SQLModel, and_, col, or_, select
+from sqlmodel import SQLModel, and_, asc, col, desc, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import FlushError
@@ -112,10 +112,23 @@ class ActiveRecordMixin:
         fuzzy_fields: Optional[dict] = None,
         page: int = 1,
         per_page: int = 100,
+        order_by: Optional[List[Tuple[str, str]]] = None,
     ) -> PaginatedList[SQLModel]:
         """
-        Return a paginated list of objects match the given fields and values.
-        Return an empty list if not found.
+        Return a paginated and optionally sorted list of objects matching the given query criteria.
+
+        Args:
+            session (AsyncSession): The SQLAlchemy async session used to interact with the database.
+            fields (Optional[dict]): Exact match filters as key-value pairs.
+            fuzzy_fields (Optional[dict]): Fuzzy match filters using the SQL `LIKE` operator.
+            page (int): Page number for pagination, starting from 1. Default is 1.
+            per_page (int): Number of items per page. Default is 100.
+            order_by (Optional[List[Tuple[str, str]]]): Sorting criteria as a list of tuples,
+                each containing a field name and sort direction ("asc" or "desc").
+                If not provided, defaults to `created_at DESC`.
+
+        Returns:
+            PaginatedList[SQLModel]: A paginated list of matching objects with pagination metadata.
         """
 
         statement = select(cls)
@@ -131,6 +144,15 @@ class ActiveRecordMixin:
                 for key, value in fuzzy_fields.items()
             ]
             statement = statement.where(or_(*fuzzy_conditions))
+
+        if not order_by:
+            order_by = [("created_at", "desc")]
+
+        for field, direction in order_by:
+            column = col(getattr(cls, field))
+            statement = statement.order_by(
+                asc(column) if direction.lower() == "asc" else desc(column)
+            )
 
         if page is not None and per_page is not None:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
