@@ -48,7 +48,7 @@ def setup_download_tools_cmd(subparsers: argparse._SubParsersAction):
     parser.add_argument(
         "--device",
         type=str,
-        help="Device to download tools for. Default is the current device. (e.g. cuda, mps, npu, musa)",
+        help="Device to download tools for. Default is the current device. (e.g. cuda, mps, npu, musa, cpu)",
         default=get_gpustack_env("DEVICE"),
     )
 
