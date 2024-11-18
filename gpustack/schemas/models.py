@@ -261,6 +261,7 @@ def is_gguf_model(model: Model):
             and model.local_path
             and model.local_path.endswith(".gguf")
         )
+        or (model.backend == BackendEnum.LLAMA_BOX)
     )
 
 
