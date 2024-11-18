@@ -79,6 +79,13 @@ class ToolsManager:
         self.download_gguf_parser()
         self.download_fastfetch()
 
+    def remove_cached_tools(self):
+        """
+        Remove all cached tools.
+        """
+        if os.path.exists(self.bin_path):
+            shutil.rmtree(self.bin_path)
+
     def save_archive(self, archive_path: str):
         """
         Save all downloaded tools as a tar archive.

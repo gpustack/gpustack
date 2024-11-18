@@ -74,6 +74,7 @@ def run(args):
             tools_manager.load_archive(args.load_archive)
             return
 
+        tools_manager.remove_cached_tools()
         tools_manager.prepare_tools()
 
         if args.save_archive:
