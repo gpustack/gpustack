@@ -52,7 +52,7 @@ jobs:
         if: matrix.python-version == '3.11' && matrix.os == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-dist
+          name: gpustack-dist
           path: dist/*.whl
           retention-days: 5
 
