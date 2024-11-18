@@ -19,16 +19,9 @@ When running GPUStack with Docker, it works out of the box in an air-gapped envi
 
 For manual installation, you need to prepare the required packages and tools in an online environment and then transfer them to the air-gapped environment.
 
-!!! note
+### Prerequisites
 
-    Instructions here assume that the online environment is identical to the air-gapped environment, including **OS**, **architecture**, **Python version** and **GPU type**. If the online environment is different, Specify additional flags as described below:
-
-    - **Python packages**
-
-        Use `pip download` with the `--platform` and `--python-version` flags to download packages compatible with the air-gapped environment. See the [pip download](https://pip.pypa.io/en/stable/cli/pip_download/) command for more details.
-    - **Dependency tools**
-
-        Use `gpustack download-tools` with the `--system`, `--arch`, and `--device` flags to download tools for the air-gapped environment. Refer to the [download-tools](../cli-reference/download-tools.md) command for more information.
+Set up an online environment identical to the air-gapped environment, including **OS**, **architecture**, and **Python version**.
 
 ### Step 1: Download the Required Packages
 
@@ -49,6 +42,10 @@ pip install gpustack
 # Download dependency tools and save them as an archive
 gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
 ```
+
+!!!note
+
+    This instruction assumes that the online environment uses the same GPU type as the air-gapped environment. If the GPU types differ, use the `--device` flag to specify the device type for the air-gapped environment. Refer to the [download-tools](../cli-reference/download-tools.md) command for more information.
 
 ### Step 2: Transfer the Packages
 
