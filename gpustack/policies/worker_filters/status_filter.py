@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -14,7 +14,7 @@ class StatusFilter:
         self._model = model
         self._model_instance = model_instance
 
-    async def filter(self, workers: List[Worker]) -> List[Worker]:
+    async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
         Filter the workers with the worker selector.
         """
@@ -32,4 +32,10 @@ class StatusFilter:
         for worker in workers:
             if worker.state == WorkerStateEnum.READY:
                 candidates.append(worker)
-        return candidates
+
+        messages = []
+        if len(candidates) != len(workers):
+            messages = [
+                f"Matched {len(candidates)}/{len(workers)} workers by READY status."
+            ]
+        return candidates, messages

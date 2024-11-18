@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 import queue
-from typing import List
+from typing import List, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -27,10 +27,12 @@ from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.models import (
+    BackendEnum,
     DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    get_backend,
     is_gguf_model,
 )
 from gpustack.server.bus import EventType
@@ -266,7 +268,16 @@ class Scheduler:
         instance: ModelInstance,
         model: Model,
         workers: List[Worker],
-    ) -> ModelInstanceScheduleCandidate:
+    ) -> Tuple[ModelInstanceScheduleCandidate, List[str]]:
+        """
+        Find a schedule candidate for the model instance.
+        :param instance: Model instance to schedule.
+        :param model: Model to schedule.
+        :param workers: List of workers to consider.
+        :return: A tuple containing:
+                 - The schedule candidate.
+                 - A list of messages for the scheduling process.
+        """
         try:
             filters = [
                 GPUMatchingFilter(model, instance),
@@ -275,7 +286,7 @@ class Scheduler:
             ]
 
             worker_filter_chain = WorkerFilterChain(filters)
-            workers = await worker_filter_chain.filter(workers)
+            workers, messages = await worker_filter_chain.filter(workers)
 
             candidates_selector: ScheduleCandidatesSelector = None
             if is_gguf_model(model):
@@ -291,7 +302,13 @@ class Scheduler:
             candidates = await placement_scorer.score(candidates)
 
             candidate = self.pick_highest_score_candidate(candidates)
-            return candidate
+
+            if candidate is None and len(workers) > 0:
+                resource_fit_message = "No workers meet the resource requirements."
+                if get_backend(model) == BackendEnum.VLLM:
+                    resource_fit_message += " Consider adjusting parameters such as --gpu-memory-utilization (default: 0.9), --max-model-len, or --enforce-eager to lower the resource demands."
+                messages.append(resource_fit_message)
+            return candidate, messages
         except Exception as e:
             state_message = (
                 f"Failed to find candidate for model instance {instance.name}: {e}"
@@ -318,8 +335,11 @@ class Scheduler:
                 state_message = "Model not found"
 
             candidate = None
+            messages = []
             if workers and model:
-                candidate = await self.find_candidate(instance, model, workers)
+                candidate, messages = await self.find_candidate(
+                    instance, model, workers
+                )
 
             model_instance = await ModelInstance.one_by_id(session, instance.id)
             if candidate is None:
@@ -329,7 +349,10 @@ class Scheduler:
                     ModelInstanceStateEnum.ANALYZING,
                 ):
                     model_instance.state = ModelInstanceStateEnum.PENDING
-                    model_instance.state_message = "No suitable workers"
+                    model_instance.state_message = (
+                        "No suitable workers.\n"
+                        "Details:\n" + "\n".join(f"- {msg}" for msg in messages)
+                    )
                 if state_message != "":
                     model_instance.state_message = state_message
 

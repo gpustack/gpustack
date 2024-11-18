@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Tuple
 from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.workers import Worker
@@ -14,7 +14,7 @@ class GPUMatchingFilter(WorkerFilter):
         self._model_instance = model_instance
         self._engine = get_engine()
 
-    async def filter(self, workers: List[Worker]) -> List[Worker]:
+    async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
         Filter the gpus with the gpu selector.
         """
@@ -24,7 +24,7 @@ class GPUMatchingFilter(WorkerFilter):
         )
 
         if self._model.gpu_selector is None:
-            return workers
+            return workers, []
 
         candidates = []
         for worker in workers:
@@ -51,4 +51,4 @@ class GPUMatchingFilter(WorkerFilter):
                 worker.status.gpu_devices = gpu_candidates
                 candidates.append(worker)
 
-        return candidates
+        return candidates, [f"Matched {len(candidates)} workers by gpu selector."]
