@@ -28,6 +28,9 @@ Set up an online environment identical to the air-gapped environment, including 
 Run the following commands in an online environment:
 
 ```bash
+# On Windows (PowerShell):
+# $PACKAGE_SPEC = "gpustack"
+
 # Optional: To include vLLM dependencies or install a specific version
 # PACKAGE_SPEC="gpustack[vllm]"
 # PACKAGE_SPEC="gpustack==0.4.0"
