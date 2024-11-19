@@ -190,7 +190,7 @@ class ToolsManager:
         return platform_name
 
     def download_gguf_parser(self):
-        version = "v0.12.0"
+        version = "v0.12.1"
         gguf_parser_dir = self.bin_path.joinpath("gguf-parser")
         os.makedirs(gguf_parser_dir, exist_ok=True)
 

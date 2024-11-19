@@ -465,9 +465,24 @@ function Setup-GPUStackService {
 
         $gpustackLogDirectoryPath = Join-Path -Path $gpustackDirectoryPath -ChildPath "log"
         $gpustackLogPath = Join-Path -Path $gpustackLogDirectoryPath -ChildPath "gpustack.log"
+        $gpustackEnvPath = Join-Path -Path $gpustackDirectoryPath -ChildPath "gpustack.env"
 
         $null = New-Item -Path $gpustackDirectoryPath -ItemType "Directory" -ErrorAction SilentlyContinue -Force
         $null = New-Item -Path $gpustackLogDirectoryPath -ItemType "Directory" -ErrorAction SilentlyContinue -Force
+
+        # Load additional environment variables from gpustack.env file.
+        $additionalEnvVars = @()
+        if (Test-Path $gpustackEnvPath) {
+            Log-Info "Loading environment variables from $gpustackEnvPath..."
+            $envFileContent = Get-Content -Path $gpustackEnvPath -ErrorAction Stop
+            foreach ($line in $envFileContent) {
+                if ($line -match '^\s*#' -or $line -match '^\s*$') { continue }  # Skip comments and empty lines.
+                $additionalEnvVars += $line.Trim()
+            }
+        }
+
+        # Merge additional environment variables with the existing ones, separated by space.
+        $finalEnvList = @($envListString) + $additionalEnvVars -join " "
 
         $null = nssm install $serviceName $exePath
         if ($LASTEXITCODE -ne 0) {
@@ -486,7 +501,7 @@ function Setup-GPUStackService {
             "nssm set $serviceName AppExit Default Restart",
             "nssm set $serviceName AppStdout $gpustackLogPath",
             "nssm set $serviceName AppStderr $gpustackLogPath",
-            "nssm set $serviceName AppEnvironmentExtra $envListString"
+            "nssm set $serviceName AppEnvironmentExtra $finalEnvList"
         )
 
         foreach ($cmd in $commands) {

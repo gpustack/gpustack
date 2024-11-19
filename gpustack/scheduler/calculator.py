@@ -1,6 +1,7 @@
 import asyncio
 from enum import Enum
 import logging
+import os
 from pathlib import Path
 import subprocess
 from dataclasses import dataclass
@@ -161,7 +162,10 @@ async def calculate_model_resource_claim(
     command = await _gguf_parser_command(model, offload, **kwargs)
     try:
         process = await asyncio.create_subprocess_exec(
-            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *command,
+            env=os.environ.copy(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
         stdout, stderr = await process.communicate()

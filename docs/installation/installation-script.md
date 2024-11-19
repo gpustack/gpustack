@@ -68,13 +68,27 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
     Avoid using PowerShell ISE as it is not compatible with the installation script.
 
-## Available Environment Variables
+## Available Environment Variables for the Installation Script
 
 | Name                   | Default    | Description                                                                                                                                                     |
 | ---------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INSTALL_INDEX_URL`    | (empty)    | Base URL of the Python Package Index.                                                                                                                           |
 | `INSTALL_PACKAGE_SPEC` | `gpustack` | The package spec to install. It supports PYPI package names, URLs, and local paths. See https://pip.pypa.io/en/stable/cli/pip_install/#pip-install for details. |
 | `INSTALL_PRE_RELEASE`  | (empty)    | If set to 1, pre-release packages will be installed.                                                                                                            |
+
+## Set Environment Variables for the GPUStack Service
+
+You can set environment variables for the GPUStack service in an environment file located at:
+
+- **Linux and MacOS**: `/etc/default/gpustack`
+- **Windows**: `$env:APPDATA\gpustack\gpustack.env`
+
+The following is an example of the content of the file:
+
+```shell
+HF_TOKEN=mytoken
+HF_ENDPOINT=https://my-hf-endpoint
+```
 
 ## Available CLI Flags
 

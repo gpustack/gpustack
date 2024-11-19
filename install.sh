@@ -321,6 +321,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+EnvironmentFile=-/etc/default/%N
 ExecStart=$(which gpustack) start $_args
 Restart=always
 StandardOutput=append:/var/log/gpustack.log
@@ -338,6 +339,22 @@ EOF
 # Function to setup launchd for macOS
 setup_launchd() {
   info "Setting up GPUStack as a service using launchd."
+
+  # Load environment variables from /etc/default/gpustack if exists
+  ENV_FILE="/etc/default/gpustack"
+  if [ -f "$ENV_FILE" ]; then
+    info "Loading environment variables from $ENV_FILE"
+    ENV_VARS=""
+    while IFS='=' read -r key value; do
+      case "$key" in
+        \#*|"") continue ;;  # Skip comments and empty lines
+      esac
+      # Strip surrounding quotes if present
+      value=$(echo "$value" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+      ENV_VARS="$ENV_VARS    <key>$key</key><string>$value</string>\n"
+    done < "$ENV_FILE"
+  fi
+
   $SUDO tee /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -357,6 +374,21 @@ EOF
 
   $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
   </array>
+EOF
+
+  # Add EnvironmentVariables section if ENV_VARS is not empty
+  if [ -n "$ENV_VARS" ]; then
+    $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
+  <key>EnvironmentVariables</key>
+  <dict>
+EOF
+    printf "%s" "$ENV_VARS" | $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null
+    $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
+  </dict>
+EOF
+  fi
+
+  $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
