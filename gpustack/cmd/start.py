@@ -175,6 +175,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         ),
     )
     group.add_argument(
+        "--disable-rpc-servers",
+        action=OptionalBoolAction,
+        help="Disable RPC servers.",
+        default=get_gpustack_env_bool(
+            "DISABLE_METRICS",
+        ),
+    )
+    group.add_argument(
         "--metrics-port",
         type=int,
         help="Port to expose metrics.",
@@ -314,6 +322,7 @@ def set_worker_options(args, config_data: dict):
         "worker_name",
         "worker_port",
         "disable_metrics",
+        "disable_rpc_servers",
         "metrics_port",
         "log_dir",
         "system_reserved",

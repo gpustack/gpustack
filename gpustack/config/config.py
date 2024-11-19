@@ -44,6 +44,7 @@ class Config(BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
         disable_metrics: Disable metrics.
+        disable_rpc_servers: Disable RPC servers.
         metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
         log_dir: Directory to store logs.
@@ -77,6 +78,7 @@ class Config(BaseSettings):
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
     disable_metrics: bool = False
+    disable_rpc_servers: bool = False
     worker_port: int = 10150
     metrics_port: int = 10151
     log_dir: Optional[str] = None
