@@ -1,3 +1,4 @@
+import os
 from fastapi.responses import JSONResponse
 import httpx
 import logging
@@ -15,7 +16,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-ALLOWED_SITES = ["https://modelscope.cn", "https://www.modelscope.cn"]
+ALLOWED_SITES = [
+    "https://modelscope.cn",
+    "https://www.modelscope.cn",
+    "https://huggingface.co",
+]
 
 HEADER_FORWARDED_PREFIX = "x-forwarded-"
 HEADER_SKIPPED = [
@@ -31,6 +36,7 @@ HEADER_SKIPPED = [
     "x-forwarded-proto",
     "x-forwarded-server",
 ]
+HF_ENDPOINT = os.getenv("HF_ENDPOINT")
 
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 
@@ -45,6 +51,8 @@ async def proxy(session: SessionDep, request: Request, url: str):
 
     if request.method not in ["GET", "POST", "PUT", "DELETE"]:
         raise BadRequestException(message="Method not allowed")
+
+    url = replace_hf_endpoint(url)
 
     forwarded_headers = process_headers(request.headers)
 
@@ -75,6 +83,15 @@ async def proxy(session: SessionDep, request: Request, url: str):
                 content={"detail": str(e)},
                 media_type="application/json",
             )
+
+
+def replace_hf_endpoint(url: str) -> str:
+    """
+    Replace the huggingface.co domain with the specified endpoint if set.
+    """
+    if HF_ENDPOINT and url.startswith("https://huggingface.co"):
+        return url.replace("https://huggingface.co", HF_ENDPOINT, 1)
+    return url
 
 
 def process_headers(headers):
