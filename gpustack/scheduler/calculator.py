@@ -31,27 +31,28 @@ class GPUOffloadEnum(str, Enum):
 class layerMemoryEstimate:
     uma: int
     nonuma: int
-    handleLayers: Optional[int]
+    handleLayers: Optional[int] = None
 
 
 @dataclass_json
 @dataclass
 class memoryEstimate:
-    offloadLayers: int
     fullOffloaded: bool
     ram: layerMemoryEstimate
     vrams: List[layerMemoryEstimate]
+    offloadLayers: Optional[int] = None  # Not available for diffusion models
 
 
 @dataclass_json
 @dataclass
 class estimate:
     items: List[memoryEstimate]
-    contextSize: int
     architecture: str
-    embeddingOnly: bool
-    distributable: bool
-    reranking: bool
+    embeddingOnly: bool = False
+    imageOnly: bool = False
+    distributable: bool = False
+    reranking: bool = False
+    contextSize: Optional[int] = None
 
 
 @dataclass_json
@@ -88,6 +89,7 @@ empty_estimate = estimate(
     contextSize=0,
     architecture="",
     embeddingOnly=False,
+    imageOnly=False,
     distributable=False,
     reranking=False,
 )
