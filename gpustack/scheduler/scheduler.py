@@ -32,6 +32,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    SourceEnum,
     get_backend,
     is_gguf_model,
 )
@@ -128,6 +129,13 @@ class Scheduler:
                     instance.state = ModelInstanceStateEnum.ANALYZING
                     instance.state_message = "Evaluating resource requirements"
                     await instance.update(session)
+
+                if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
+                    model.local_path
+                ):
+                    # The local path model is not accessible from the server, skip evaluation.
+                    await self._queue.put(instance)
+                    return
 
                 if is_gguf_model(model):
                     await self._evaluate_gguf_model(session, model, instance)

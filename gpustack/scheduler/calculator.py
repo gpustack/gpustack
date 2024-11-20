@@ -76,6 +76,23 @@ class ModelInstanceResourceClaim:
         return False
 
 
+empty_layer_memory_estimate = layerMemoryEstimate(uma=0, nonuma=0, handleLayers=None)
+empty_memory_estimate = memoryEstimate(
+    offloadLayers=0,
+    fullOffloaded=False,
+    ram=empty_layer_memory_estimate,
+    vrams=[empty_layer_memory_estimate],
+)
+empty_estimate = estimate(
+    items=[empty_memory_estimate],
+    contextSize=0,
+    architecture="",
+    embeddingOnly=False,
+    distributable=False,
+    reranking=False,
+)
+
+
 async def _gguf_parser_command(
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
@@ -156,6 +173,11 @@ async def calculate_model_resource_claim(
         model_instance: Model instance to calculate the resource claim for.
         model: Model to calculate the resource claim for.
     """
+
+    if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(model.local_path):
+        # Skip the calculation if the model is not available, policies like spread strategy still apply.
+        # TODO Support user provided resource claim for better scheduling.
+        return ModelInstanceResourceClaim(model_instance, empty_estimate)
 
     logger.info(f"Calculating resource claim for model instance {model_instance.name}")
 
