@@ -72,7 +72,7 @@ async def estimate_model_vram(model: Model) -> int:
                 ),
                 timeout=timeout_in_seconds,
             )
-        elif model.source == SourceEnum.LOCAL_PATH:
+        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
             weight_size = get_local_model_weight_size(model.local_path)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
