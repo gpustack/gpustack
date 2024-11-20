@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     tzdata \
+    iproute2 \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -20,6 +21,6 @@ RUN cd /workspace/gpustack && \
     pip cache purge && \
     rm -rf /workspace/gpustack
 
-RUN gpustack download-tools
+RUN gpustack download-tools --device npu
 
-ENTRYPOINT [ "gpustack", "start" ]
+ENTRYPOINT [ "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && exec gpustack start \"$@\"", "--" ]
