@@ -25,7 +25,7 @@ from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
 )
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
-from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import (
     BackendEnum,
     DistributedServers,
@@ -326,9 +326,9 @@ class Scheduler:
         state_message = ""
 
         async with AsyncSession(self._engine) as session:
-            workers = await Worker.all_by_field(session, "state", WorkerStateEnum.READY)
+            workers = await Worker.all(session)
             if len(workers) == 0:
-                state_message = "No ready workers"
+                state_message = "No available workers"
 
             model = await Model.one_by_id(session, instance.model_id)
             if model is None:
