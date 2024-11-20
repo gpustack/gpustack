@@ -20,7 +20,7 @@ Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](http
 
 6. Click the `Save` button.
 
-### Deploying an ModelScope Model
+### Deploying a ModelScope Model
 
 1. Click the `Deploy Model` button, then select `ModelScope` in the dropdown.
 
@@ -41,6 +41,29 @@ Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](http
 2. Fill in the `Name` of the model.
 
 3. Select an `Ollama Model` from the dropdown list, or input any Ollama model you need. For example, `llama3`, `llama3:70b` or `youraccount/llama3:70b`.
+
+4. Adjust the `Replicas` as needed.
+
+5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
+
+6. Click the `Save` button.
+
+### Deploying a Local Path Model
+
+You can deploy a model from a local path. The model path can be a directory (e.g., a downloaded Hugging Face model directory) or a file (e.g., a GGUF model file) located on workers. This is useful when running in an air-gapped environment.
+
+!!!note
+
+    1. GPUStack does not check the validity of the model path for scheduling, which may lead to deployment failure if the model path is inaccessible. It is recommended to ensure the model path is accessible on all workers(e.g., using NFS, rsync, etc.). You can also use the worker selector configuration to deploy the model to specific workers.
+    2. GPUStack cannot evaluate the model's resource requirements unless the server has access to the same model path. You can customize backend parameters, such as tensor-split, to configure how the model is distributed across the GPUs.
+
+To deploy a local path model:
+
+1. Click the `Deploy Model` button, then select `Local Path` in the dropdown.
+
+2. Fill in the `Name` of the model.
+
+3. Fill in the `Model Path`.
 
 4. Adjust the `Replicas` as needed.
 
