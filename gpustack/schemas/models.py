@@ -81,6 +81,7 @@ class ModelBase(SQLModel, ModelSource):
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
     embedding_only: bool = False
+    image_only: bool = False
     reranker: bool = False
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: bool = False

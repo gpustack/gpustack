@@ -58,12 +58,16 @@ router.include_router(aliasable_router)
 async def list_models(
     session: SessionDep,
     embedding_only: Optional[bool] = None,
+    image_only: Optional[bool] = None,
     reranker: Optional[bool] = None,
 ):
     statement = select(Model).where(Model.ready_replicas > 0)
 
     if embedding_only is not None:
         statement = statement.where(Model.embedding_only == embedding_only)
+
+    if image_only is not None:
+        statement = statement.where(Model.image_only == image_only)
 
     if reranker is not None:
         statement = statement.where(Model.reranker == reranker)

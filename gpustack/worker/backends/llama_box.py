@@ -60,6 +60,9 @@ class LlamaBoxServer(InferenceServer):
         if self._model.reranker:
             arguments.append("--rerank")
 
+        if self._model.image_only:
+            arguments.append("--images")
+
         if rpc_servers:
             rpc_servers_argument = ",".join(rpc_servers)
             arguments.extend(["--rpc", rpc_servers_argument])

@@ -177,6 +177,10 @@ class Scheduler:
             should_update = True
             model.embedding_only = True
 
+        if task_output.resource_claim_estimate.imageOnly and not model.image_only:
+            should_update = True
+            model.image_only = True
+
         if task_output.resource_claim_estimate.reranking and not model.reranker:
             should_update = True
             model.reranker = True
