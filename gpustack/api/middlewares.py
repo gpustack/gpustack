@@ -188,21 +188,23 @@ async def process_chunk(
         if is_usage_chunk(response_chunk):
             await record_model_usage(request, response_chunk.usage, operation)
 
-        # Fill rate metrics. These are extended info not included in OAI APIs.
-        # llama-box provides them out-of-the-box. Align with other backends here.
-        # vLLM streams a chunk with empty choices between [DONE] and the one with finish_reason.
-        if should_add_metrics(response_chunk, response_dict):
-            add_metrics(response_dict, request, response_chunk)
+            # Fill rate metrics. These are extended info not included in OAI APIs.
+            # llama-box provides them out-of-the-box. Align with other backends here.
+            if should_add_metrics(response_dict):
+                add_metrics(response_dict, request, response_chunk)
 
         yield f"data: {json.dumps(response_dict, separators=(',', ':'))}\n\n".encode(
             "utf-8"
         )
 
 
-def should_add_metrics(response_chunk, response_dict):
-    return (
-        is_usage_chunk(response_chunk) or len(response_chunk.choices) == 0
-    ) and 'tokens_per_second' not in response_dict['usage']
+def should_add_metrics(response_dict):
+    if not isinstance(response_dict, dict):
+        return False
+
+    usage = response_dict.get('usage', {})
+
+    return 'tokens_per_second' not in usage
 
 
 def add_metrics(response_dict, request, response_chunk):
@@ -260,11 +262,11 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
 def is_usage_chunk(chunk: Union[ChatCompletionChunk, Completion]) -> bool:
     choices = chunk.choices
 
-    if not choices:
-        return False
+    if not choices and chunk.usage:
+        return True
 
     for choice in choices:
-        if choice.finish_reason is not None:
+        if choice.finish_reason is not None and chunk.usage:
             return True
 
     return False
