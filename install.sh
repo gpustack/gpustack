@@ -382,7 +382,7 @@ EOF
   <key>EnvironmentVariables</key>
   <dict>
 EOF
-    printf "%s" "$ENV_VARS" | $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null
+    printf "%b" "$ENV_VARS" | $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null
     $SUDO tee -a /Library/LaunchDaemons/ai.gpustack.plist > /dev/null <<EOF
   </dict>
 EOF
@@ -392,6 +392,8 @@ EOF
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
+  <true/>
+  <key>EnableTransactions</key>
   <true/>
   <key>StandardOutPath</key>
   <string>/var/log/gpustack.log</string>
@@ -494,6 +496,8 @@ install_gpustack() {
 
   # shellcheck disable=SC2090,SC2086
   pipx install --force --verbose $install_args "$INSTALL_PACKAGE_SPEC"
+  # Workaround for issue #581
+  pipx inject gpustack pydantic==2.9.2 --force > /dev/null 2>&1
 }
 
 # Main install process
