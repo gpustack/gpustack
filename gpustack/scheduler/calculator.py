@@ -77,22 +77,25 @@ class ModelInstanceResourceClaim:
         return False
 
 
-empty_layer_memory_estimate = layerMemoryEstimate(uma=0, nonuma=0, handleLayers=None)
-empty_memory_estimate = memoryEstimate(
-    offloadLayers=0,
-    fullOffloaded=False,
-    ram=empty_layer_memory_estimate,
-    vrams=[empty_layer_memory_estimate],
-)
-empty_estimate = estimate(
-    items=[empty_memory_estimate],
-    contextSize=0,
-    architecture="",
-    embeddingOnly=False,
-    imageOnly=False,
-    distributable=False,
-    reranking=False,
-)
+def _get_empty_estimate(n_gpu: int = 1) -> estimate:
+    empty_layer_memory_estimate = layerMemoryEstimate(
+        uma=0, nonuma=0, handleLayers=None
+    )
+    memory_estimate = memoryEstimate(
+        offloadLayers=0,
+        fullOffloaded=False,
+        ram=empty_layer_memory_estimate,
+        vrams=[empty_layer_memory_estimate for _ in range(n_gpu)],
+    )
+    return estimate(
+        items=[memory_estimate],
+        contextSize=0,
+        architecture="",
+        embeddingOnly=False,
+        imageOnly=False,
+        distributable=False,
+        reranking=False,
+    )
 
 
 async def _gguf_parser_command(
@@ -179,7 +182,11 @@ async def calculate_model_resource_claim(
     if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(model.local_path):
         # Skip the calculation if the model is not available, policies like spread strategy still apply.
         # TODO Support user provided resource claim for better scheduling.
-        return ModelInstanceResourceClaim(model_instance, empty_estimate)
+        estimate = _get_empty_estimate()
+        tensor_split = kwargs.get("tensor_split")
+        if tensor_split:
+            estimate = _get_empty_estimate(n_gpu=len(tensor_split))
+        return ModelInstanceResourceClaim(model_instance, estimate)
 
     logger.info(f"Calculating resource claim for model instance {model_instance.name}")
 
