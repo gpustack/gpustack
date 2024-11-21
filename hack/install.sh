@@ -18,29 +18,22 @@ function download_deps() {
 }
 
 function download_ui() {
-  local default_tag="latest"
   local ui_path="${ROOT_DIR}/gpustack/ui"
   local tmp_ui_path="${ui_path}/tmp"
   local tag="latest"
-  # local tag="${1}"
+
+  if [[ "${GIT_VERSION}" != "0.0.0" ]]; then
+    tag="${GIT_VERSION}"
+  fi
 
   rm -rf "${ui_path}"
   mkdir -p "${tmp_ui_path}/ui"
 
-  gpustack::log::info "downloading ui assets"
+  gpustack::log::info "downloading '${tag}' UI assets"
 
   if ! curl --retry 3 --retry-all-errors --retry-delay 3 -sSfL "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/${tag}.tar.gz" 2>/dev/null |
     tar -xzf - --directory "${tmp_ui_path}/ui" 2>/dev/null; then
-
-    if [[ "${tag:-}" =~ ^v([0-9]+)\.([0-9]+)(\.[0-9]+)?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-      gpustack::log::fatal "failed to download '${tag}' ui archive"
-    fi
-
-    gpustack::log::warn "failed to download '${tag}' ui archive, fallback to '${default_tag}' ui archive"
-    if ! curl --retry 3 --retry-all-errors --retry-delay 3 -sSfL "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/${default_tag}.tar.gz" |
-      tar -xzf - --directory "${PACKAGE_TMP_DIR}/ui" 2>/dev/null; then
-      gpustack::log::fatal "failed to download '${default_tag}' ui archive"
-    fi
+    gpustack::log::fatal "failed to download '${tag}' UI archive"
   fi
   cp -a "${tmp_ui_path}/ui/dist/." "${ui_path}"
 

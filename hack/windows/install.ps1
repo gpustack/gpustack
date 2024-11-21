@@ -25,16 +25,19 @@ function Install-Dependency {
 }
 
 function Get-UI {
-    $defaultTag = "latest"
     $uiPath = Join-Path -Path $ROOT_DIR -ChildPath "gpustack/ui"
     $tmpPath = Join-Path -Path $uiPath -ChildPath "tmp"
     $tmpUIPath = Join-Path -Path $tmpPath -ChildPath "ui"
     $tag = "latest"
 
+    if ($GIT_VERSION -ne "0.0.0") {
+        $tag = $GIT_VERSION
+    }
+
     $null = Remove-Item -Recurse -Force $uiPath -ErrorAction Ignore
     $null = New-Item -ItemType Directory -Path $tmpUIPath
 
-    GPUStack.Log.Info "downloading UI assets"
+    GPUStack.Log.Info "downloading '$tag' UI assets"
 
     try {
         $tmpFile = "$tmpPath/ui.tar.gz"
@@ -47,22 +50,6 @@ function Get-UI {
     }
     catch {
         GPUStack.Log.Fatal "failed to download '$tag' UI archive: $($_.Exception.Message)"
-
-        if (-eq $tag $defaultTag) {
-            return
-        }
-
-        GPUStack.Log.Warn "failed to download '$tag' UI archive, fallback to '$defaultTag' UI archive"
-
-        try {
-            $tmpFile = "$tmpPath/ui.tar.gz"
-            $url = "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/$defaultTag.tar.gz"
-            DownloadWithRetries -url $url -outFile $tmpFile -maxRetries 3
-            tar -xzf $tmpFile -C "$tmpUIPath"
-        }
-        catch {
-            GPUStack.Log.Fatal "failed to download '$defaultTag' UI archive: : $($_.Exception.Message)"
-        }
     }
 
     Copy-Item -Path "$tmpUIPath/dist/*" -Destination $uiPath -Recurse
