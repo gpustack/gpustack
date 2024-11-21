@@ -10,6 +10,7 @@ include = ["*/third_party/config/**/*","*/ui/**/*"]
 python = "^3.10"
 fastapi = "^0.115.0"
 sqlmodel = "^0.0.18"
+pydantic = ">=2.9.0,<2.10.0"
 pydantic-settings = "^2.2.1"
 setproctitle = "^1.3.3"
 inflection = "^0.5.1"
