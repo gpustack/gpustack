@@ -232,7 +232,7 @@ class Config(BaseSettings):
             token = secrets.token_hex(16)
             os.makedirs(self.data_dir, exist_ok=True)
             with open(token_path, "w") as file:
-                file.write(token)
+                file.write(token + "\n")
 
         self.token = token
 
