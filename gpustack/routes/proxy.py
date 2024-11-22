@@ -55,6 +55,7 @@ async def proxy(session: SessionDep, request: Request, url: str):
     url = replace_hf_endpoint(url)
 
     forwarded_headers = process_headers(request.headers)
+    forwarded_headers.pop("referer", None)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
