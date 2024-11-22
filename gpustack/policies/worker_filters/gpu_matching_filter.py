@@ -47,8 +47,7 @@ class GPUMatchingFilter(WorkerFilter):
 
                 gpu_candidates.append(gpu)
 
-            if len(gpu_candidates) != 0:
-                worker.status.gpu_devices = gpu_candidates
-                candidates.append(worker)
+            worker.status.gpu_devices = gpu_candidates
+            candidates.append(worker)
 
         return candidates, [f"Matched {len(candidates)} workers by gpu selector."]

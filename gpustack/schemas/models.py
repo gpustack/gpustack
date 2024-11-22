@@ -27,6 +27,7 @@ class PlacementStrategyEnum(str, Enum):
 class BackendEnum(str, Enum):
     LLAMA_BOX = "llama-box"
     VLLM = "vllm"
+    VOX_BOX = "vox-box"
 
 
 class GPUSelector(BaseModel):
@@ -92,6 +93,8 @@ class ModelBase(SQLModel, ModelSource):
     gpu_selector: Optional[GPUSelector] = Field(
         sa_column=Column(pydantic_column_type(GPUSelector)), default=None
     )
+    speech_to_text: bool = False
+    text_to_speech: bool = False
 
     backend: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
@@ -107,6 +110,11 @@ class ModelBase(SQLModel, ModelSource):
         elif backend == BackendEnum.VLLM:
             if self.cpu_offloading:
                 raise ValueError("CPU offloading is only supported for GGUF models")
+            if self.distributed_inference_across_workers:
+                raise ValueError(
+                    "Distributed inference accross workers is only supported for GGUF models"
+                )
+        elif backend == BackendEnum.VOX_BOX:
             if self.distributed_inference_across_workers:
                 raise ValueError(
                     "Distributed inference accross workers is only supported for GGUF models"
@@ -266,11 +274,27 @@ def is_gguf_model(model: Model):
     )
 
 
+def is_audio_model(model: Model):
+    """
+    Check if the model is a STT or TTS model.
+    Args:
+        model: Model to check.
+    """
+    return (
+        model.speech_to_text
+        or model.text_to_speech
+        or model.backend == BackendEnum.VOX_BOX
+    )
+
+
 def get_backend(model: Model) -> str:
     if model.backend:
         return model.backend
 
     if is_gguf_model(model):
         return BackendEnum.LLAMA_BOX
+
+    if is_audio_model(model):
+        return BackendEnum.VOX_BOX
 
     return BackendEnum.VLLM

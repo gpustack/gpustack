@@ -33,6 +33,15 @@ class OffloadLayerScorer(ModelInstanceScorer):
                 )
                 continue
 
+            if (
+                instance.computed_resource_claim.total_layers is None
+                or instance.computed_resource_claim.offload_layers is None
+            ):
+                scored_instances.append(
+                    ModelInstanceScore(model_instance=instance, score=0)
+                )
+                continue
+
             score = 0
             total_layers = instance.computed_resource_claim.total_layers
             offload_layers = instance.computed_resource_claim.offload_layers

@@ -34,9 +34,18 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('local_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
         # The default is False, but is not valid in SQLite which uses interger for boolean. Use a generic representation.
         batch_op.add_column(sa.Column('image_only', sa.Boolean(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('speech_to_text', sa.Boolean(),
+                            nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('text_to_speech', sa.Boolean(),
+                            nullable=False, server_default="0"))
 
 
     with op.batch_alter_table('model_usages', naming_convention=naming_convention) as batch_op:
+        batch_op.alter_column('operation',
+                              existing_type=sa.VARCHAR(length=16),
+                              type_=sa.Enum('COMPLETION', 'CHAT_COMPLETION', 'EMBEDDING', 'RERANK',
+                                            'IMAGE_GENERATION', 'AUDIO_SPEECH', 'AUDIO_TRANSCRIPTION', name='operationenum'),
+                              existing_nullable=False)
         batch_op.drop_constraint('fk_model_usages_user_id_users', type_='foreignkey')
         batch_op.drop_constraint('fk_model_usages_model_id_models', type_='foreignkey')
         batch_op.create_foreign_key('fk_model_usages_user_id_users', 'users', ['user_id'], ['id'], ondelete='CASCADE')
@@ -55,6 +64,8 @@ def downgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('local_path')
         batch_op.drop_column('image_only')
+        batch_op.drop_column('text_to_speech')
+        batch_op.drop_column('speech_to_text')
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('local_path')

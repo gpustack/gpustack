@@ -4,12 +4,13 @@ import logging
 import time
 from typing import Type, Union
 from fastapi import Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from jwt import DecodeError, ExpiredSignatureError
 from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types import Completion, CompletionUsage
 from openai.types.images_response import ImagesResponse
+from openai.types.audio.transcription_create_response import TranscriptionCreateResponse
 from openai.types.create_embedding_response import (
     CreateEmbeddingResponse,
     Usage as EmbeddingUsage,
@@ -59,6 +60,20 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                     ImagesResponse,
                     OperationEnum.IMAGE_GENERATION,
                 )
+            elif request.url.path == "/v1-openai/audio/speech":
+                return await process_request(
+                    request,
+                    response,
+                    FileResponse,
+                    OperationEnum.AUDIO_SPEECH,
+                )
+            elif request.url.path == "/v1-openai/audio/transcriptions":
+                return await process_request(
+                    request,
+                    response,
+                    TranscriptionCreateResponse,
+                    OperationEnum.AUDIO_TRANSCRIPTION,
+                )
             elif request.url.path == "/v1/rerank":
                 return await process_request(
                     request,
@@ -80,6 +95,8 @@ async def process_request(
             CreateEmbeddingResponse,
             RerankResponse,
             ImagesResponse,
+            FileResponse,
+            TranscriptionCreateResponse,
         ]
     ],
     operation: OperationEnum,
@@ -94,11 +111,16 @@ async def process_request(
     else:
         response_body = b"".join([chunk async for chunk in response.body_iterator])
         try:
-            response_dict = json.loads(response_body)
-            response_instance = response_class(**response_dict)
             usage = None
-            if hasattr(response_instance, "usage"):
-                usage = response_instance.usage
+            if (
+                response.headers.get("content-type")
+                .lower()
+                .startswith("application/json")
+            ):
+                response_dict = json.loads(response_body)
+                response_instance = response_class(**response_dict)
+                if hasattr(response_instance, "usage"):
+                    usage = response_instance.usage
 
             await record_model_usage(request, usage, operation)
         except Exception as e:
