@@ -90,6 +90,10 @@ HF_TOKEN="mytoken"
 HF_ENDPOINT="https://my-hf-endpoint"
 ```
 
+!!!note
+
+    Unlike Systemd, Launchd and Windows services do not natively support reading environment variables from a file. Configuration via the environment file is implemented by the installation script. It reads the file and applies the variables to the service configuration. After modifying the environment file on Windows and MacOS, you need to re-run the installation script to apply changes to the GPUStack service.
+
 ## Available CLI Flags
 
 The appended CLI flags of the installation script are passed directly as flags for the `gpustack start` command. You can refer to the [CLI Reference](../cli-reference/start.md) for details.
