@@ -224,6 +224,8 @@ def run(args: argparse.Namespace):
     try:
         cfg = parse_args(args)
         setup_logging(cfg.debug)
+        debug_env_info()
+
         if cfg.server_url:
             run_worker(cfg)
         else:
@@ -344,3 +346,9 @@ def get_gpustack_env_bool(env_var: str) -> Optional[bool]:
     if env_value is not None:
         return env_value.lower() in ["true", "True"]
     return None
+
+
+def debug_env_info():
+    hf_endpoint = os.getenv("HF_ENDPOINT")
+    if hf_endpoint:
+        logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
