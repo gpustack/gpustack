@@ -13,6 +13,8 @@ class OperationEnum(str, Enum):
     EMBEDDING = "embedding"
     RERANK = "rerank"
     IMAGE_GENERATION = "image_generation"
+    AUDIO_SPEECH = "audio_speech"
+    AUDIO_TRANSCRIPTION = "audit_transcription"
 
 
 class ModelUsage(SQLModel, ActiveRecordMixin, table=True):

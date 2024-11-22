@@ -15,6 +15,7 @@ from gpustack.utils import network
 from gpustack.utils.process import terminate_process_tree
 from gpustack.utils.signal import signal_handler
 from gpustack.worker.backends.llama_box import LlamaBoxServer
+from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
@@ -163,6 +164,8 @@ class ServeManager:
                     LlamaBoxServer(clientset, mi, cfg).start()
                 elif backend == BackendEnum.VLLM:
                     VLLMServer(clientset, mi, cfg).start()
+                elif backend == BackendEnum.VOX_BOX:
+                    VoxBoxServer(clientset, mi, cfg).start()
                 else:
                     raise ValueError(f"Unsupported backend {backend}")
 

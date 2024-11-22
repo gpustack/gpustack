@@ -22,12 +22,12 @@ colorama = "^0.4.6"
 psutil = "^5.9.8"
 requests = "^2.32.3"
 huggingface-hub = "^0.23.3"
-attrs = "^23.2.0"
+attrs = "^24.2.0"
 aiosqlite = "^0.20.0"
 sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
 pyjwt = "^2.8.0"
 argon2-cffi = "^23.1.0"
-python-multipart = "^0.0.9"
+python-multipart = "^0.0.17"
 dataclasses-json = "^0.6.7"
 apscheduler = "^3.10.4"
 asyncpg = "^0.29.0"
@@ -41,14 +41,14 @@ tzdata = "^2024.1"
 modelscope = "^1.19.0"
 vllm = {version = "^0.6.1", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
-uvicorn = "^0.30.6"
+uvicorn = "^0.32.0"
 transformers = "^4.44.2"
 fastapi-cdn-host = "^0.8.0"
 wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-
+vox-box = "^0.0.1"
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"

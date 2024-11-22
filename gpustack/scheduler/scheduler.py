@@ -8,6 +8,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from gpustack.policies.candidate_selectors.vox_box_resource_fit_selector import (
+    VoxBoxResourceFitSelector,
+)
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.config.config import Config
 from gpustack.policies.base import (
@@ -35,6 +38,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_backend,
     is_gguf_model,
+    is_audio_model,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
@@ -139,6 +143,8 @@ class Scheduler:
 
                 if is_gguf_model(model):
                     await self._evaluate_gguf_model(session, model, instance)
+                elif is_audio_model(model):
+                    pass
                 else:
                     await self._evaluate_pretrained_config(session, model)
 
@@ -305,6 +311,8 @@ class Scheduler:
                 candidates_selector = GGUFResourceFitSelector(
                     model, instance, self._cache_dir
                 )
+            elif is_audio_model(model):
+                candidates_selector = VoxBoxResourceFitSelector(model, instance)
             else:
                 candidates_selector = VLLMResourceFitSelector(model, instance)
 

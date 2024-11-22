@@ -7,6 +7,7 @@ from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from starlette.datastructures import UploadFile
 
 from gpustack.api.exceptions import (
     BadRequestException,
@@ -50,6 +51,16 @@ async def images_generations(session: SessionDep, request: Request):
     return await proxy_request_by_model(request, session, "images/generations")
 
 
+@aliasable_router.post("/audio/speech")
+async def audio_speech(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "audio/speech")
+
+
+@aliasable_router.post("/audio/transcriptions")
+async def audio_transcriptions(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "audio/transcriptions")
+
+
 router = APIRouter()
 router.include_router(aliasable_router)
 
@@ -86,37 +97,19 @@ async def list_models(
     return result
 
 
-async def proxy_request_by_model(  # noqa: C901
-    request: Request, session: SessionDep, endpoint: str
-):
+async def proxy_request_by_model(request: Request, session: SessionDep, endpoint: str):
     """
     Proxy the request to the model instance that is running the model specified in the
     request body.
     """
-
-    try:
-        body = await request.json()
-    except Exception as e:
-        raise BadRequestException(
-            message=f"We could not parse the JSON body of your request: {e}",
-            is_openai_exception=True,
-        )
-
-    model_name = body.get("model")
-    if not model_name:
-        raise InvalidException(
-            message="Missing 'model' field",
-            is_openai_exception=True,
-        )
-
-    model = await Model.one_by_field(session=session, field="name", value=model_name)
+    model, stream, body_json, form_data, form_files = await parse_request_body(
+        request, session
+    )
     if not model:
         raise NotFoundException(
             message="Model not found",
             is_openai_exception=True,
         )
-
-    stream = body.get("stream", False)
 
     request.state.model = model
     request.state.stream = stream
@@ -126,65 +119,13 @@ async def proxy_request_by_model(  # noqa: C901
     url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
     logger.debug(f"proxying to {url}")
 
-    headers = filter_headers(request.headers)
-
-    timeout = 120
-
     try:
         if stream:
-            if "stream_options" not in body:
-                # Defaults to include usage.
-                # TODO Record usage without client awareness.
-                body["stream_options"] = {"include_usage": True}
-
-            async def stream_generator():
-                try:
-                    async with httpx.AsyncClient() as client:
-                        async with client.stream(
-                            method=request.method,
-                            url=url,
-                            headers=headers,
-                            json=body,
-                            timeout=timeout,
-                        ) as resp:
-                            async for chunk in resp.aiter_text():
-                                yield chunk, resp.status_code
-                except httpx.RequestError:
-                    error_response = OpenAIAPIErrorResponse(
-                        error=OpenAIAPIError(
-                            message="Service unavailable. Please retry your requests after a brief wait.",
-                            code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            type="ServiceUnavailable",
-                        ),
-                    )
-                    yield error_response.model_dump_json(), status.HTTP_503_SERVICE_UNAVAILABLE
-                except Exception as e:
-                    error_response = OpenAIAPIErrorResponse(
-                        error=OpenAIAPIError(
-                            message=f"Internal server error: {e}",
-                            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            type="InternalServerError",
-                        ),
-                    )
-                    yield error_response.model_dump_json(), status.HTTP_500_INTERNAL_SERVER_ERROR
-
-            return StreamingResponseWithStatusCode(
-                stream_generator(), media_type="text/event-stream"
-            )
+            return await handle_streaming_request(request, url, body_json)
         else:
-            async with httpx.AsyncClient() as client:
-                resp = await client.request(
-                    method=request.method,
-                    url=url,
-                    headers=headers,
-                    json=body,
-                    timeout=timeout,
-                )
-                return Response(
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                    content=resp.content,
-                )
+            return await handle_standard_request(
+                request, url, body_json, form_data, form_files
+            )
     except Exception as e:
         raise ServiceUnavailableException(
             message=f"An unexpected error occurred: {e}",
@@ -192,11 +133,167 @@ async def proxy_request_by_model(  # noqa: C901
         )
 
 
+async def parse_request_body(request: Request, session: SessionDep):
+    model_id = None
+    model_name = None
+    stream = False
+    body_json = None
+    form_data = None
+    form_files = None
+    content_type = request.headers.get("content-type", "application/json").lower()
+
+    if request.method == "GET":
+        model_id = request.path_params.get("id")
+        if not model_id:
+            raise BadRequestException(
+                message="Missing 'id' field",
+                is_openai_exception=True,
+            )
+    elif content_type.startswith("multipart/form-data"):
+        form_data, form_files, model_name = await parse_form_data(request)
+    else:
+        body_json, model_name, stream = await parse_json_body(request)
+
+    model = await get_model(session, model_name, model_id)
+    return model, stream, body_json, form_data, form_files
+
+
+async def parse_form_data(request: Request):
+    try:
+        form = await request.form()
+        model_name = form.get("model")
+        if not model_name:
+            raise InvalidException(
+                message="Missing 'model' field",
+                is_openai_exception=True,
+            )
+
+        form_files = []
+        form_data = {}
+        for key, value in form.items():
+            if isinstance(value, UploadFile):
+                form_files.append(
+                    (key, (value.filename, await value.read(), value.content_type))
+                )
+            else:
+                form_data[key] = value
+
+        return form_data, form_files, model_name
+    except Exception as e:
+        raise BadRequestException(
+            message=f"We could not parse the form body of your request: {e}",
+            is_openai_exception=True,
+        )
+
+
+async def parse_json_body(request: Request):
+    try:
+        body_json = await request.json()
+        model_name = body_json.get("model")
+        stream = body_json.get("stream", False)
+        if not model_name:
+            raise InvalidException(
+                message="Missing 'model' field",
+                is_openai_exception=True,
+            )
+        return body_json, model_name, stream
+    except Exception as e:
+        raise BadRequestException(
+            message=f"We could not parse the JSON body of your request: {e}",
+            is_openai_exception=True,
+        )
+
+
+async def get_model(
+    session: SessionDep, model_name: Optional[str], model_id: Optional[int]
+):
+    if model_id:
+        return await Model.one_by_id(session=session, id=model_id)
+    else:
+        return await Model.one_by_field(session=session, field="name", value=model_name)
+
+
+async def handle_streaming_request(
+    request: Request, url: str, body_json: Optional[dict]
+):
+    timeout = 120
+    headers = filter_headers(request.headers)
+
+    if body_json and "stream_options" not in body_json:
+        # Defaults to include usage.
+        # TODO Record usage without client awareness.
+        body_json["stream_options"] = {"include_usage": True}
+
+    async def stream_generator():
+        try:
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    method=request.method,
+                    url=url,
+                    headers=headers,
+                    json=body_json,
+                    timeout=timeout,
+                ) as resp:
+                    async for chunk in resp.aiter_text():
+                        yield chunk, resp.status_code
+        except httpx.RequestError:
+            error_response = OpenAIAPIErrorResponse(
+                error=OpenAIAPIError(
+                    message="Service unavailable. Please retry your requests after a brief wait.",
+                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    type="ServiceUnavailable",
+                ),
+            )
+            yield error_response.model_dump_json(), status.HTTP_503_SERVICE_UNAVAILABLE
+        except Exception as e:
+            error_response = OpenAIAPIErrorResponse(
+                error=OpenAIAPIError(
+                    message=f"Internal server error: {e}",
+                    code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    type="InternalServerError",
+                ),
+            )
+            yield error_response.model_dump_json(), status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    return StreamingResponseWithStatusCode(
+        stream_generator(), media_type="text/event-stream"
+    )
+
+
+async def handle_standard_request(
+    request: Request,
+    url: str,
+    body_json: Optional[dict],
+    form_data: Optional[dict],
+    form_files: Optional[list],
+):
+    timeout = 120
+    headers = filter_headers(request.headers)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            json=body_json if body_json else None,
+            data=form_data if form_data else None,
+            files=form_files if form_files else None,
+            timeout=timeout,
+        )
+        return Response(
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+            content=resp.content,
+        )
+
+
 def filter_headers(headers):
     return {
         key: value
         for key, value in headers.items()
-        if key.lower() != "content-length" and key.lower() != "host"
+        if key.lower() != "content-length"
+        and key.lower() != "host"
+        and key.lower() != "content-type"
     }
 
 
