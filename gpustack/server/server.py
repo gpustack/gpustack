@@ -183,7 +183,7 @@ class Server:
                     self._config.data_dir, "initial_admin_password"
                 )
                 with open(bootstrap_password_file, "w") as file:
-                    file.write(bootstrap_password)
+                    file.write(bootstrap_password + "\n")
                 logger.info(
                     "Generated initial admin password. "
                     f"You can get it from {bootstrap_password_file}"
