@@ -49,11 +49,11 @@ You can update the `docker-compose.yml` file to customize the command while star
 
 ## Build Your Own Docker Image
 
-The official Docker image is built with CUDA 12.5. If you want to use a different version of CUDA, you can build your own Docker image.
+The official Docker image is built with CUDA 12.4. If you want to use a different version of CUDA, you can build your own Docker image.
 
 ```dockerfile
 # Example Dockerfile
-ARG CUDA_VERSION=12.5.1
+ARG CUDA_VERSION=12.4.1
 
 FROM nvidia/cuda:$CUDA_VERSION-runtime-ubuntu22.04
 
