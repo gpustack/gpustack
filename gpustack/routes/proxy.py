@@ -1,4 +1,6 @@
 import os
+from typing import Dict
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from fastapi.responses import JSONResponse
 import httpx
 import logging
@@ -9,7 +11,6 @@ from gpustack.api.exceptions import (
     BadRequestException,
     ForbiddenException,
 )
-from gpustack.server.deps import SessionDep
 
 router = APIRouter()
 
@@ -42,7 +43,7 @@ timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 
 
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy(session: SessionDep, request: Request, url: str):
+async def proxy(request: Request, url: str):
     if not url:
         raise BadRequestException(message="Missing 'url' query parameter")
 
@@ -54,28 +55,29 @@ async def proxy(session: SessionDep, request: Request, url: str):
 
     url = replace_hf_endpoint(url)
 
+    query_params = {
+        key: value for key, value in request.query_params.items() if key != "url"
+    }
+    url = merge_query_params(url, query_params)
+
     forwarded_headers = process_headers(request.headers)
     forwarded_headers.pop("referer", None)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            if request.method == "GET":
-                response = await client.request(
-                    request.method, url, headers=forwarded_headers
-                )
-            else:
-                data = (
-                    await request.body()
-                    if request.method in ["POST", "PUT", "DELETE"]
-                    else None
-                )
-                response = await client.request(
-                    request.method, url, headers=forwarded_headers, data=data
-                )
+            data = (
+                await request.body()
+                if request.method in ["POST", "PUT", "DELETE"]
+                else None
+            )
+            response = await client.request(
+                request.method, url, headers=forwarded_headers, data=data
+            )
 
             return Response(
                 status_code=response.status_code,
                 content=response.content,
+                headers=response.headers,
                 media_type=response.headers.get("Content-Type"),
             )
         except Exception as e:
@@ -84,6 +86,15 @@ async def proxy(session: SessionDep, request: Request, url: str):
                 content={"detail": str(e)},
                 media_type="application/json",
             )
+
+
+def merge_query_params(url: str, query_params: Dict[str, str]) -> str:
+    """Merge the query parameters into the URL."""
+    parsed_url = urlparse(url)
+    original_params = dict(parse_qsl(parsed_url.query))
+    merged_params = {**original_params, **query_params}
+    updated_query = urlencode(merged_params, doseq=True)
+    return urlunparse(parsed_url._replace(query=updated_query))
 
 
 def replace_hf_endpoint(url: str) -> str:
