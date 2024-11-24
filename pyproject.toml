@@ -48,7 +48,8 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = "^0.0.1"
+vox-box = {version = "^0.0.1", optional = true}
+
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
@@ -81,6 +82,8 @@ force-exclude = '''
 
 [tool.poetry.extras]
 vllm = ["vllm", "mistral_common"]
+audio = ["vox-box"]
+all = ["vllm", "mistral_common", "vox-box"]
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
