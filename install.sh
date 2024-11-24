@@ -484,10 +484,10 @@ install_gpustack() {
     install_args="--index-url $INSTALL_INDEX_URL $install_args"
   fi
 
-  default_package_spec="gpustack"
+  default_package_spec="gpustack[audio]"
   if [ "$OS" != "macos" ] && [ "$(uname -m)" = "x86_64" ] && [ "$DEVICE" = "cuda" ]; then
     # Install optional vLLM dependencies on amd64 Linux
-    default_package_spec="gpustack[vllm]"
+    default_package_spec="gpustack[all]"
   fi
 
   if [ -z "$INSTALL_PACKAGE_SPEC" ]; then
