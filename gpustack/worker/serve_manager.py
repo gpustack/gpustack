@@ -101,6 +101,8 @@ class ServeManager:
 
     def _start_serve_process(self, mi: ModelInstance):
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
 
         try:
             if mi.port is None:

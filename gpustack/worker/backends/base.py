@@ -58,7 +58,7 @@ def time_decorator(func):
             start_time = time.time()
             result = func(*args, **kwargs)
             end_time = time.time()
-            logger.info(
+            logger.debug(
                 f"{func.__name__} execution time: {end_time - start_time} seconds"
             )
             return result
