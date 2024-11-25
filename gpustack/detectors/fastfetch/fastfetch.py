@@ -2,7 +2,6 @@ import json
 import logging
 import platform
 import subprocess
-from typing import List
 from gpustack.detectors.base import GPUDetector
 from gpustack.schemas.workers import (
     CPUInfo,
@@ -31,11 +30,6 @@ class Fastfetch(GPUDetector):
         except Exception as e:
             logger.warning(f"Fastfetch is not available: {e}")
             return False
-
-    def gather_gpu_vendor_info(self) -> List[str]:
-        gpu_devices = self.gather_gpu_info()
-        vendors = set([device.vendor for device in gpu_devices] if gpu_devices else [])
-        return vendors
 
     def gather_gpu_info(self) -> GPUDevicesInfo:
         command = self._command_gather_gpu()

@@ -30,9 +30,13 @@ class WorkerStatusCollector:
         self._clientset = clientset
         self._worker_manager = worker_manager
 
-        detector = Custom(gpu_devices) if gpu_devices else None
+        detector_factory = (
+            DetectorFactory("custom", {"custom": Custom(gpu_devices)})
+            if gpu_devices
+            else None
+        )
         self._detector_factory = (
-            DetectorFactory(detector, {}) if detector else DetectorFactory()
+            detector_factory if detector_factory else DetectorFactory()
         )
 
     """A class for collecting worker status information."""
