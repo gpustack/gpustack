@@ -125,7 +125,7 @@ class ToolsManager:
         if backend == BackendEnum.LLAMA_BOX:
             self.install_versioned_llama_box(version)
         elif backend == BackendEnum.VLLM:
-            self.install_versioned_vllm("vllm", version)
+            self.install_versioned_vllm(version)
         elif backend == BackendEnum.VOX_BOX:
             self.install_versioned_package_by_pipx("vox-box", version)
         else:
@@ -211,8 +211,15 @@ class ToolsManager:
             )
 
         suffix = f"_{version}"
-        package = f"{package}=={version}"
-        install_command = [pipx_path, "install", "-vv", "--suffix", suffix, package]
+        install_command = [
+            pipx_path,
+            "install",
+            "-vv",
+            "--force",
+            "--suffix",
+            suffix,
+            f"{package}=={version}",
+        ]
 
         try:
             logger.info(f"Installing {package} {version} using pipx")
