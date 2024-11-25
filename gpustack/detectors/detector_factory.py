@@ -22,8 +22,9 @@ class DetectorFactory:
     ):
         self.system_info_detector = Fastfetch()
         self.device = device if device else platform.device()
-        self.gpu_detectors = gpu_detectors or self._get_builtin_gpu_detectors()
-        self.gpu_detector = self._get_gpu_detector()
+        if self.device:
+            self.gpu_detectors = gpu_detectors or self._get_builtin_gpu_detectors()
+            self.gpu_detector = self._get_gpu_detector()
 
         self._validate_detectors()
 
@@ -44,14 +45,18 @@ class DetectorFactory:
             raise Exception(
                 f"System info detector {self.system_info_detector.__class__.__name__} is not available"
             )
-        if not self.gpu_detector:
-            raise Exception(f"GPU detector for {self.device} not supported")
-        if not self.gpu_detector.is_available():
-            raise Exception(
-                f"GPU detector {self.gpu_detector.__class__.__name__} is not available"
-            )
+
+        if self.device:
+            if not self.gpu_detector:
+                raise Exception(f"GPU detector for {self.device} not supported")
+            if not self.gpu_detector.is_available():
+                raise Exception(
+                    f"GPU detector {self.gpu_detector.__class__.__name__} is not available"
+                )
 
     def detect_gpus(self) -> GPUDevicesInfo:
+        if not self.device:
+            return []
         gpus = self.gpu_detector.gather_gpu_info()
         return self._filter_gpu_devices(gpus)
 
