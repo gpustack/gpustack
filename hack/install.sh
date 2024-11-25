@@ -38,7 +38,7 @@ function download_ui() {
 
     gpustack::log::warn "failed to download '${tag}' ui archive, fallback to '${default_tag}' ui archive"
     if ! curl --retry 3 --retry-all-errors --retry-delay 3 -sSfL "https://gpustack-ui-1303613262.cos.accelerate.myqcloud.com/releases/${default_tag}.tar.gz" |
-      tar -xzf - --directory "${PACKAGE_TMP_DIR}/ui" 2>/dev/null; then
+      tar -xzf - --directory "${tmp_ui_path}/ui" 2>/dev/null; then
       gpustack::log::fatal "failed to download '${default_tag}' ui archive"
     fi
   fi
