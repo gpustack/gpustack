@@ -146,11 +146,11 @@ class WorkerManager:
 
     def _start_rpc_servers(self):
         try:
-            detector = Custom(self._gpu_devices) if self._gpu_devices else None
             detector_factory = (
-                DetectorFactory(detector, {}) if detector else DetectorFactory()
+                DetectorFactory("custom", {"custom": Custom(self._gpu_devices)})
+                if self._gpu_devices
+                else DetectorFactory()
             )
-
             gpu_devices = detector_factory.detect_gpus()
         except Exception as e:
             logger.error(f"Failed to get GPU devices while start rpc servers: {e}")
