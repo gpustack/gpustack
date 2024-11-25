@@ -36,6 +36,7 @@ def setup_logging(debug: bool = False):
         "apscheduler.executors.default",
         "tzlocal",
         "alembic.runtime.migration",
+        "python_multipart.multipart",
         "filelock",
     ]
 
