@@ -5,6 +5,7 @@ import sys
 from gpustack.cmd import setup_start_cmd
 from gpustack.cmd.chat import setup_chat_cmd
 from gpustack.cmd.download_tools import setup_download_tools_cmd
+from gpustack.cmd.draw import setup_draw_cmd
 from gpustack.cmd.reset_admin_password import setup_reset_admin_password_cmd
 from gpustack.cmd.version import setup_version_cmd
 
@@ -32,6 +33,7 @@ def main():
 
     setup_start_cmd(subparsers)
     setup_chat_cmd(subparsers)
+    setup_draw_cmd(subparsers)
     setup_download_tools_cmd(subparsers)
     setup_version_cmd(subparsers)
     setup_reset_admin_password_cmd(subparsers)

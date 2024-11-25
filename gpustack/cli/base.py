@@ -1,17 +1,15 @@
 import os
-import sys
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
+from abc import ABC, abstractmethod
 
-from colorama import Fore, Style
 from openai import OpenAI
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from tqdm import tqdm
 
-from gpustack.api.exceptions import HTTPException
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.schemas.models import (
     BackendEnum,
@@ -23,12 +21,10 @@ from gpustack.schemas.models import (
 from gpustack.server.bus import Event
 from openai.types.chat import (
     ChatCompletionMessageParam,
-    ChatCompletionUserMessageParam,
-    ChatCompletionAssistantMessageParam,
 )
 
 
-class ChatConfig(BaseSettings):
+class CLIConfig(BaseSettings):
     debug: bool = False
     model: str
     prompt: Optional[str] = None
@@ -48,23 +44,23 @@ class ChatConfig(BaseSettings):
         return self
 
 
-def parse_arguments(args) -> ChatConfig:
-    return ChatConfig(debug=args.debug, model=args.model, prompt=args.prompt)
+class APIRequestError(Exception):
+    pass
 
 
-def print_completion_result(message):
-    # move cursor to the end of previous line
-    sys.stdout.write("\033[F\033[1000C")
-    print(message)
+def parse_arguments(args) -> CLIConfig:
+    return CLIConfig(debug=args.debug, model=args.model, prompt=args.prompt)
 
 
-def print_error(message):
-    print(f"{Fore.RED}{message}{Style.RESET_ALL}")
-
-
-class ChatManager:
-    def __init__(self, cfg: ChatConfig) -> None:
+class BaseCLIClient(ABC):
+    def __init__(self, cfg: CLIConfig) -> None:
         self._model_name = cfg.model
+        if "hf.co" in cfg.model:
+            model_name, repo_id, filename = self.parse_hf_model(cfg.model)
+            self._model_name = model_name
+            self._hf_repo_id = repo_id
+            self._hf_filename = filename
+
         self._prompt = cfg.prompt
         self._clientset = ClientSet(base_url=cfg.base_url, api_key=cfg.api_key)
         self._openai_client = OpenAI(
@@ -72,47 +68,58 @@ class ChatManager:
         )
         self._history: List[ChatCompletionMessageParam] = []
 
-    def start(self):  # noqa: C901
-        try:
-            self._ensure_model()
-        except HTTPException as e:
-            raise Exception(f"Request to server failed: {e}")
+    @abstractmethod
+    def run(self):
+        pass
 
-        if self._prompt:
-            self.chat_completion(self._prompt)
-            return
+    @abstractmethod
+    def create_model(self):
+        pass
 
-        user_input = None
-        while True:
-            user_input = input(">")
-            if user_input == "\\q" or user_input == "\\quit":
-                break
-            elif user_input == "\\?" or user_input == "\\h" or user_input == "\\help":
-                self._print_help()
-                continue
-            elif user_input == "\\c" or user_input == "\\clear":
-                self._clear_context()
-                continue
-            elif not user_input.strip():
-                continue
+    def create_hf_model(self):
+        model_create = ModelCreate(
+            name=self._model_name,
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id=self._hf_repo_id,
+            huggingface_filename=self._hf_filename,
+            cpu_offloading=True,
+            distributed_inference_across_workers=True,
+            backend=BackendEnum.LLAMA_BOX,
+        )
+        if "turbo" in self._hf_repo_id and "stable-diffusion" in self._hf_repo_id:
+            # A simple hack to make the sugar command reproducible.
+            model_create.backend_parameters = ["--seed=42", "--image-cfg-scale=1.0"]
 
-            try:
-                self.chat_completion(user_input)
-            except Exception as e:
-                print_error(e)
+        self._model = self._clientset.models.create(model_create=model_create)
 
-    @staticmethod
-    def _print_help():
-        print("Commands:")
-        print("  \\q or \\quit - Quit the chat")
-        print("  \\c or \\clear - Clear chat context in prompt")
-        print("  \\h or \\? or \\help - Print this help message")
+    def parse_hf_model(self, model: str) -> Tuple[str, str, str]:
+        """
+        Parse ollama style hf model like:
+        - hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF
+        - hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0
+        if tag is not provided, it will use Q4_0 as default.
 
-    def _clear_context(self):
-        self._history = []
-        print("Chat context cleared.")
+        Returns model_name, repo_id and filename with wildcards
+        """
+        parts = model.split(":")
+        filename = ""
+        if len(parts) == 1:
+            filename = "Q4_0"
+        else:
+            filename = parts[1]
 
-    def _ensure_model(self):
+        parts = parts[0].split("/")
+        if len(parts) != 3:
+            raise Exception(f"Invalid model format: {model}")
+
+        repo_id = parts[1] + "/" + parts[2]
+
+        # remove GGUF suffix for the name
+        model_name = parts[2].replace("-GGUF", "")
+
+        return model_name, repo_id, f"*{filename}.gguf"
+
+    def ensure_model(self):
         models = self._clientset.models.list()
         for model in models.items:
             if model.name == self._model_name:
@@ -120,21 +127,12 @@ class ChatManager:
                 break
 
         if not hasattr(self, "_model"):
-            self._create_model()
+            if hasattr(self, "_hf_repo_id") and hasattr(self, "_hf_filename"):
+                self.create_hf_model()
+            else:
+                self.create_model()
 
         self._wait_for_model_ready()
-
-    def _create_model(self):
-        model_create = ModelCreate(
-            name=self._model_name,
-            source=SourceEnum.OLLAMA_LIBRARY,
-            ollama_library_model_name=self._model_name,
-            cpu_offloading=True,
-            distributed_inference_across_workers=True,
-            backend=BackendEnum.LLAMA_BOX,
-        )
-        created = self._clientset.models.create(model_create=model_create)
-        self._model = created
 
     def _wait_for_model_ready(self):
         if self._model_is_running():
@@ -201,32 +199,10 @@ class ChatManager:
 
     def _stop_when_running(self, event: Event) -> bool:
         if (
-            event.data["id"] == self._model.id
+            event.data["model_id"] == self._model.id
             and event.data["state"] == ModelInstanceStateEnum.RUNNING
         ):
             return True
         elif event.data["state"] == ModelInstanceStateEnum.ERROR:
             raise Exception(f"Error running model: {event.data['state_message']}")
         return False
-
-    def chat_completion(self, prompt: str):
-        self._history.append(
-            ChatCompletionUserMessageParam(role="user", content=prompt)
-        )
-
-        completion = self._openai_client.chat.completions.create(
-            model=self._model_name,
-            messages=self._history,
-            stream=True,
-        )
-
-        result = ""
-        for chunk in completion:
-            if chunk.choices[0].delta.content:
-                result += chunk.choices[0].delta.content
-                print(chunk.choices[0].delta.content, end="", flush=True)
-
-        self._history.append(
-            ChatCompletionAssistantMessageParam(role="assistant", content=result)
-        )
-        print()
