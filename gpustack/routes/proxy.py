@@ -1,6 +1,4 @@
 import os
-from typing import Dict
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from fastapi.responses import JSONResponse
 import httpx
 import logging
@@ -55,11 +53,6 @@ async def proxy(request: Request, url: str):
 
     url = replace_hf_endpoint(url)
 
-    query_params = {
-        key: value for key, value in request.query_params.items() if key != "url"
-    }
-    url = merge_query_params(url, query_params)
-
     forwarded_headers = process_headers(request.headers)
     forwarded_headers.pop("referer", None)
 
@@ -86,15 +79,6 @@ async def proxy(request: Request, url: str):
                 content={"detail": str(e)},
                 media_type="application/json",
             )
-
-
-def merge_query_params(url: str, query_params: Dict[str, str]) -> str:
-    """Merge the query parameters into the URL."""
-    parsed_url = urlparse(url)
-    original_params = dict(parse_qsl(parsed_url.query))
-    merged_params = {**original_params, **query_params}
-    updated_query = urlencode(merged_params, doseq=True)
-    return urlunparse(parsed_url._replace(query=updated_query))
 
 
 def replace_hf_endpoint(url: str) -> str:
