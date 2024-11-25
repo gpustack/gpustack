@@ -125,9 +125,13 @@ class ToolsManager:
         if backend == BackendEnum.LLAMA_BOX:
             self.install_versioned_llama_box(version)
         elif backend == BackendEnum.VLLM:
-            self.install_versioned_vllm(version)
+            self.install_versioned_vllm("vllm", version)
+        elif backend == BackendEnum.VOX_BOX:
+            self.install_versioned_package_by_pipx("vox-box", version)
         else:
-            raise NotImplementedError(f"not implementaed for {backend}")
+            raise NotImplementedError(
+                f"Auto-installation for versioned {backend} is not supported. Please install it manually."
+            )
 
     def download_llama_box(self):
         version = "v0.0.81"
@@ -161,9 +165,32 @@ class ToolsManager:
         self._download_llama_box(version, target_dir, file_name)
 
     def install_versioned_vllm(self, version: str):
-        target_path = Path(self._bin_dir) / get_versioned_command("vllm", version)
+        system = platform.system()
+        arch = platform.arch()
+        device = platform.device()
+
+        if system != "linux" or arch != "amd64":
+            target_path = Path(self._bin_dir) / get_versioned_command("vllm", version)
+            raise Exception(
+                f"Auto-installation for versioned vLLM is only supported on amd64 Linux. Please install vLLM manually and link it to {target_path}."
+            )
+        elif device != "cuda":
+            raise Exception(
+                f"Auto-installation for versioned vLLM is only supported on CUDA devices. Please install vLLM manually and link it to {target_path}."
+            )
+
+        self.install_versioned_package_by_pipx("vllm", version)
+
+    def install_versioned_package_by_pipx(self, package: str, version: str):
+        """
+        Install a versioned package using pipx.
+
+        :param package: The name of the package to install.
+        :param version: The version of the package to install.
+        """
+        target_path = Path(self._bin_dir) / get_versioned_command(package, version)
         if target_path.exists():
-            logger.debug(f"vLLM {version} already exists, skipping installation")
+            logger.debug(f"{package} {version} already exists, skipping installation")
             return
 
         pipx_path = shutil.which("pipx")
@@ -172,9 +199,9 @@ class ToolsManager:
 
         if not pipx_path:
             raise Exception(
-                "pipx is required to install versioned vLLM but not found in system PATH. "
-                "Please install pipx first or provide the path to pipx using the option `--pipx-path`. "
-                f"Alternatively, you can manually install vLLM to {target_path}."
+                f"pipx is required to install versioned {package} but not found in system PATH. "
+                "Please install pipx first or provide the path to pipx using the server option `--pipx-path`. "
+                f"Alternatively, you can install {package} manually and link it to {target_path}."
             )
 
         pipx_bin_path = self._get_pipx_bin_dir(pipx_path)
@@ -184,14 +211,14 @@ class ToolsManager:
             )
 
         suffix = f"_{version}"
-        package = f"vllm=={version}"
+        package = f"{package}=={version}"
         install_command = [pipx_path, "install", "-vv", "--suffix", suffix, package]
 
         try:
-            logger.info(f"Installing vLLM {version} using pipx")
+            logger.info(f"Installing {package} {version} using pipx")
             subprocess.run(install_command, check=True, text=True)
 
-            installed_bin_path = pipx_bin_path / f"vllm{suffix}"
+            installed_bin_path = pipx_bin_path / f"{package}{suffix}"
             if not installed_bin_path.exists():
                 raise Exception(
                     f"Installation succeeded, but executable not found at {installed_bin_path}"
@@ -201,9 +228,13 @@ class ToolsManager:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.symlink_to(installed_bin_path)
 
-            print(f"vLLM {version} successfully installed and linked to {target_path}")
+            print(
+                f"{package} {version} successfully installed and linked to {target_path}"
+            )
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to install vLLM {version} using pipx: {e}") from e
+            raise Exception(
+                f"Failed to install {package} {version} using pipx: {e}"
+            ) from e
         except Exception as e:
             raise Exception(f"An error occurred: {e}") from e
 
