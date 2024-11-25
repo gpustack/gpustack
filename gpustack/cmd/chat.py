@@ -1,6 +1,7 @@
 import argparse
 import sys
-from gpustack.chat.manager import ChatManager, parse_arguments
+from gpustack.cli.base import parse_arguments
+from gpustack.cli.chat import ChatCLIClient
 
 
 def setup_chat_cmd(subparsers: argparse._SubParsersAction):
@@ -26,7 +27,7 @@ def setup_chat_cmd(subparsers: argparse._SubParsersAction):
 def run(args):
     try:
         cfg = parse_arguments(args)
-        ChatManager(cfg).start()
+        ChatCLIClient(cfg).run()
     except Exception as e:
         print(e)
         sys.exit(1)
