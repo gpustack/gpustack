@@ -4,6 +4,7 @@ from gpustack.detectors.base import (
     GPUDetector,
     GPUDevicesInfo,
 )
+from gpustack.detectors.nvidia_smi.nvidia_smi import NvidiaSMI
 from gpustack.schemas.workers import SystemInfo
 from gpustack.detectors.fastfetch.fastfetch import Fastfetch
 from gpustack.detectors.npu_smi.npu_smi import NPUSMI
@@ -29,7 +30,7 @@ class DetectorFactory:
     def _get_builtin_gpu_detectors(self) -> Dict[str, GPUDetector]:
         fastfetch = Fastfetch()
         return {
-            "cuda": fastfetch,
+            "cuda": NvidiaSMI(),
             "npu": NPUSMI(),
             "mps": fastfetch,
             "musa": fastfetch,
