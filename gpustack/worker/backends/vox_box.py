@@ -1,6 +1,8 @@
 import logging
+import os
 import subprocess
 import sys
+import sysconfig
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.worker.backends.base import InferenceServer
 
@@ -10,7 +12,7 @@ logger = logging.getLogger(__name__)
 class VoxBoxServer(InferenceServer):
     def start(self):
         try:
-            command_path = "vox-box"
+            command_path = os.path.join(sysconfig.get_path("scripts"), "vox-box")
             arguments = [
                 "start",
                 "--model",
