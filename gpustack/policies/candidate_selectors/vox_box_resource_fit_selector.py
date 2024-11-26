@@ -13,7 +13,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
 )
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import VendorEnum, Worker
 
 from gpustack.server.db import get_engine
 
@@ -92,6 +92,9 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
 
         if worker.status.gpu_devices:
             for _, gpu in enumerate(worker.status.gpu_devices):
+                if gpu.vendor != VendorEnum.NVIDIA.value:
+                    continue
+
                 gpu_index = gpu.index
                 allocatable_vram = allocatable.vram.get(gpu_index, 0)
 
