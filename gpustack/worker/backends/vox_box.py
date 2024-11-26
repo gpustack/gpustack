@@ -36,16 +36,9 @@ class VoxBoxServer(InferenceServer):
                     ]
                 )
 
-            worker_gpu_devices = None
-            worker = self._clientset.workers.get(self._model_instance.worker_id)
-            if worker and worker.status.gpu_devices:
-                worker_gpu_devices = worker.status.gpu_devices
-
             arguments.extend(built_in_arguments)
 
-            env = self.get_inference_running_env(
-                self._model_instance.gpu_indexes, worker_gpu_devices
-            )
+            env = os.environ.copy()
 
             logger.info("Starting vox-box server")
             logger.debug(f"Run vox-box with arguments: {' '.join(arguments)}")
