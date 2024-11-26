@@ -26,6 +26,7 @@ HEADER_SKIPPED = [
     "host",
     "port",
     "proto",
+    "referer",
     "server",
     "content-length",
     "transfer-encoding",
@@ -54,7 +55,6 @@ async def proxy(request: Request, url: str):
     url = replace_hf_endpoint(url)
 
     forwarded_headers = process_headers(request.headers)
-    forwarded_headers.pop("referer", None)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -98,6 +98,12 @@ def process_headers(headers):
         elif key.lower().startswith(HEADER_FORWARDED_PREFIX):
             new_key = key[len(HEADER_FORWARDED_PREFIX) :]
             processed_headers[new_key] = value
+        # set accept-encoding to identity to avoid decompression
+        # httpx automatically decodes the content and we want to keep it raw
+        # See https://www.python-httpx.org/quickstart/#binary-response-content
+        elif key.lower() == "accept-encoding":
+            processed_headers[key] = "identity"
         else:
             processed_headers[key] = value
+
     return processed_headers
