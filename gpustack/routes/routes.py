@@ -13,6 +13,7 @@ from gpustack.routes import (
     users,
     models,
     openai,
+    voice,
     workers,
 )
 
@@ -82,6 +83,12 @@ api_router.include_router(
     dependencies=[Depends(get_current_user)],
     prefix="/v1",
     tags=["Rerank"],
+)
+api_router.include_router(
+    voice.router,
+    dependencies=[Depends(get_current_user)],
+    prefix="/v1",
+    tags=["Voice"],
 )
 api_router.include_router(
     proxy.router,
