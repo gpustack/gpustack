@@ -11,7 +11,6 @@ from starlette.datastructures import UploadFile
 
 from gpustack.api.exceptions import (
     BadRequestException,
-    InvalidException,
     NotFoundException,
     OpenAIAPIError,
     OpenAIAPIErrorResponse,
@@ -134,7 +133,6 @@ async def proxy_request_by_model(request: Request, session: SessionDep, endpoint
 
 
 async def parse_request_body(request: Request, session: SessionDep):
-    model_id = None
     model_name = None
     stream = False
     body_json = None
@@ -143,18 +141,19 @@ async def parse_request_body(request: Request, session: SessionDep):
     content_type = request.headers.get("content-type", "application/json").lower()
 
     if request.method == "GET":
-        model_id = request.path_params.get("id")
-        if not model_id:
-            raise BadRequestException(
-                message="Missing 'id' field",
-                is_openai_exception=True,
-            )
+        model_name = request.query_params.get("model")
     elif content_type.startswith("multipart/form-data"):
         form_data, form_files, model_name = await parse_form_data(request)
     else:
         body_json, model_name, stream = await parse_json_body(request)
 
-    model = await get_model(session, model_name, model_id)
+    if not model_name:
+        raise BadRequestException(
+            message="Missing 'model' field",
+            is_openai_exception=True,
+        )
+
+    model = await get_model(session, model_name)
     return model, stream, body_json, form_data, form_files
 
 
@@ -162,11 +161,6 @@ async def parse_form_data(request: Request):
     try:
         form = await request.form()
         model_name = form.get("model")
-        if not model_name:
-            raise InvalidException(
-                message="Missing 'model' field",
-                is_openai_exception=True,
-            )
 
         form_files = []
         form_data = {}
@@ -191,11 +185,6 @@ async def parse_json_body(request: Request):
         body_json = await request.json()
         model_name = body_json.get("model")
         stream = body_json.get("stream", False)
-        if not model_name:
-            raise InvalidException(
-                message="Missing 'model' field",
-                is_openai_exception=True,
-            )
         return body_json, model_name, stream
     except Exception as e:
         raise BadRequestException(
@@ -204,13 +193,8 @@ async def parse_json_body(request: Request):
         )
 
 
-async def get_model(
-    session: SessionDep, model_name: Optional[str], model_id: Optional[int]
-):
-    if model_id:
-        return await Model.one_by_id(session=session, id=model_id)
-    else:
-        return await Model.one_by_field(session=session, field="name", value=model_name)
+async def get_model(session: SessionDep, model_name: Optional[str]):
+    return await Model.one_by_field(session=session, field="name", value=model_name)
 
 
 async def handle_streaming_request(

@@ -1,8 +1,7 @@
 import math
-from typing import List, Union
-from fastapi import APIRouter, Request
+from typing import Union
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from openai import BaseModel
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -10,7 +9,6 @@ from gpustack.api.exceptions import (
     NotFoundException,
     BadRequestException,
 )
-from gpustack.routes.openai import proxy_request_by_model
 from gpustack.schemas.common import Pagination
 from gpustack.schemas.models import ModelInstance, ModelInstancesPublic, is_audio_model
 from gpustack.schemas.workers import VendorEnum, Worker
@@ -146,20 +144,3 @@ async def delete_model(session: SessionDep, id: int):
         await model.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
-
-
-class VoicesResponse(BaseModel):
-    model: str
-    voices: List[str]
-
-
-@router.get("/{id}/voices", response_model=VoicesResponse)
-async def voices(session: SessionDep, request: Request, id: int):
-    model = await Model.one_by_id(session, id)
-    if not model:
-        raise NotFoundException(message="Model not found")
-
-    if model.text_to_speech is None or not model.text_to_speech:
-        raise BadRequestException(message="Model does not support voices API")
-
-    return await proxy_request_by_model(request, session, "voices")
