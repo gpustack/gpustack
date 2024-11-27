@@ -30,7 +30,23 @@ For manual installation, docker installation or detailed configuration options, 
 gpustack chat llama3.2 "tell me a joke."
 ```
 
-2. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+2. Generate an image with the **stable-diffusion-v3-5-large-turbo** model:
+
+!!!tip
+
+      This command downloads the model (~12GB) from Hugging Face. The download time depends on your network speed. Ensure you have enough disk space and VRAM (12GB) to run the model. If you encounter issues, you can skip this step and move to the next one.
+
+```bash
+gpustack draw hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF \
+"A minion holding a sign that says 'GPUStack'. The background is filled with futuristic elements like neon lights, circuit boards, and holographic displays. The minion is wearing a tech-themed outfit, possibly with LED lights or digital patterns. The sign itself has a sleek, modern design with glowing edges. The overall atmosphere is high-tech and vibrant, with a mix of dark and neon colors." \
+--sample-steps 5 --show
+```
+
+Once the command completes, the generated image will appear in the default viewer. You can experiment with the prompt and CLI options to customize the output.
+
+![Generated Image](assets/quickstart-minion.png)
+
+3. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
 **Linux or MacOS**
 

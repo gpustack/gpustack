@@ -94,4 +94,5 @@ nav:
   - CLI Reference:
       - Start: cli-reference/start.md
       - Chat: cli-reference/chat.md
+      - Draw: cli-reference/draw.md
       - Download Tools: cli-reference/download-tools.md
