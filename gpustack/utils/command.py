@@ -33,6 +33,17 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
     return None
 
 
+def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
+    """
+    Find specified boolean parameter by name from the parameters.
+    Return True if the parameter is set, otherwise return False.
+    """
+    for i, param in enumerate(parameters):
+        if param.lstrip('-') in param_names:
+            return True
+    return False
+
+
 def get_versioned_command(command_name: str, version: str) -> str:
     """
     Get the versioned command name.

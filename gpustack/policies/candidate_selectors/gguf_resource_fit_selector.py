@@ -83,6 +83,13 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             ) and candidate_func == self.find_multi_worker_multi_gpu_candidates:
                 continue
 
+            if self._model.image_only and not (
+                candidate_func
+                == self.find_single_worker_single_gpu_full_offloading_candidates
+            ):
+                # Only full offloading is supported for image models.
+                continue
+
             logger.debug(
                 f"model {self._model.name}, filter candidates with resource fit selector: {candidate_func.__name__}, instance {self._model_instance.name}"
             )

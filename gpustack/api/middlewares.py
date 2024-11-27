@@ -139,7 +139,7 @@ async def record_model_usage(
     operation: OperationEnum,
 ):
     prompt_tokens, total_tokens, completion_tokens = 0, 0, 0
-    if usage:
+    if usage and hasattr(usage, 'prompt_tokens'):
         prompt_tokens = usage.prompt_tokens
         total_tokens = usage.total_tokens
         completion_tokens = getattr(
@@ -205,9 +205,14 @@ async def process_chunk(
     for line in lines[:-1]:
         data = line.split('data: ')[-1]
         if data.startswith('[DONE]'):
+            yield "data: [DONE]\n\n".encode("utf-8")
             continue
 
-        response_dict = json.loads(data.strip())
+        response_dict = None
+        try:
+            response_dict = json.loads(data.strip())
+        except Exception as e:
+            raise e
         response_chunk = response_class(**response_dict)
 
         if is_usage_chunk(response_chunk):
@@ -229,7 +234,7 @@ def should_add_metrics(response_dict):
 
     usage = response_dict.get('usage', {})
 
-    return 'tokens_per_second' not in usage
+    return 'prompt_tokens' in usage and 'tokens_per_second' not in usage
 
 
 def add_metrics(response_dict, request, response_chunk):
@@ -284,13 +289,15 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def is_usage_chunk(chunk: Union[ChatCompletionChunk, Completion]) -> bool:
-    choices = chunk.choices
+def is_usage_chunk(
+    chunk: Union[ChatCompletionChunk, Completion, ImageGenerationChunk]
+) -> bool:
+    choices = getattr(chunk, "choices", None)
 
     if not choices and chunk.usage:
         return True
 
-    for choice in choices:
+    for choice in choices or []:
         if choice.finish_reason is not None and chunk.usage:
             return True
 
