@@ -234,8 +234,13 @@ async def handle_streaming_request(
                     json=body_json,
                     timeout=timeout,
                 ) as resp:
-                    async for chunk in resp.aiter_text():
-                        yield chunk, resp.status_code
+                    chunk = ""
+                    async for line in resp.aiter_lines():
+                        if line != "":
+                            chunk = line + "\n"
+                        else:
+                            chunk += "\n"
+                            yield chunk, resp.status_code
         except httpx.RequestError:
             error_response = OpenAIAPIErrorResponse(
                 error=OpenAIAPIError(

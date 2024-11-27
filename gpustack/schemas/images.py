@@ -3,16 +3,16 @@ from pydantic import BaseModel
 
 
 class ImageData(BaseModel):
-    b64_json: str
-    finish_reason: Optional[str]
     index: int
     object: str
     progress: float
+    b64_json: Optional[str] = None
+    finish_reason: Optional[str] = None
 
 
 class ImageGenerationChunk(BaseModel):
     created: int
-    model: Optional[str]
-    data: List[ImageData]
     object: str
-    usage: dict
+    model: Optional[str] = None
+    data: List[ImageData] = []
+    usage: Optional[dict] = None

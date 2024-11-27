@@ -11,7 +11,7 @@ from dataclasses_json import dataclass_json
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, ModelInstance, SourceEnum
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_bool_parameter, find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 from gpustack.utils import platform
@@ -98,7 +98,7 @@ def _get_empty_estimate(n_gpu: int = 1) -> estimate:
     )
 
 
-async def _gguf_parser_command(
+async def _gguf_parser_command(  # noqa: C901
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
     command = "gguf-parser"
@@ -126,6 +126,18 @@ async def _gguf_parser_command(
 
     execuable_command.append("--ctx-size")
     execuable_command.append(ctx_size)
+
+    image_no_text_encoder_model_offload = find_bool_parameter(
+        model.backend_parameters, ["image-no-text-encoder-model-offload"]
+    )
+    if image_no_text_encoder_model_offload:
+        execuable_command.append("--image-no-text-encoder-model-offload")
+
+    image_no_vae_model_offload = find_bool_parameter(
+        model.backend_parameters, ["image-no-vae-model-offload"]
+    )
+    if image_no_vae_model_offload:
+        execuable_command.append("--image-no-vae-model-offload")
 
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
