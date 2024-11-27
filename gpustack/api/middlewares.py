@@ -16,6 +16,7 @@ from openai.types.create_embedding_response import (
     Usage as EmbeddingUsage,
 )
 from gpustack.routes.rerank import RerankResponse, RerankUsage
+from gpustack.schemas.images import ImageGenerationChunk
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
@@ -105,6 +106,8 @@ async def process_request(
     if stream:
         if response_class == ChatCompletion:
             response_class = ChatCompletionChunk
+        if response_class == ImagesResponse:
+            response_class = ImageGenerationChunk
         return await handle_streaming_response(
             request, response, response_class, operation
         )
@@ -171,7 +174,7 @@ async def record_model_usage(
 async def handle_streaming_response(
     request: Request,
     response: StreamingResponse,
-    response_class: Type[Union[ChatCompletionChunk, Completion]],
+    response_class: Type[Union[ChatCompletionChunk, Completion, ImageGenerationChunk]],
     operation: OperationEnum,
 ):
     async def streaming_generator():
