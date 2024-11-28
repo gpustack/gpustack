@@ -62,6 +62,7 @@ jobs:
           tags: |
             type=pep440,pattern={{raw}}
             type=pep440,pattern=v{{major}}.{{minor}}
+            type=ref,event=branch
             type=ref,event=pr
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, 'rc') }}
           # set no tag suffix for cuda as the default, set -{device} suffix for others
