@@ -35,26 +35,27 @@ class HfDownloader:
     _registry_url = "https://huggingface.co"
 
     @classmethod
-    def get_model_file_size(
-        cls, model_instance: ModelInstance, token: Optional[str]
-    ) -> int:
+    def get_file_size(cls, repo_id: str, filename: str, token: Optional[str]) -> int:
         api = HfApi(token=token)
-        repo_info = api.repo_info(
-            model_instance.huggingface_repo_id, files_metadata=True
-        )
+        repo_info = api.repo_info(repo_id, files_metadata=True)
         total_size = sum(
             sibling.size
             for sibling in repo_info.siblings
-            if (
-                not model_instance.huggingface_filename
-                or fnmatch.fnmatch(
-                    sibling.rfilename, model_instance.huggingface_filename
-                )
-            )
+            if (not filename or fnmatch.fnmatch(sibling.rfilename, filename))
             and sibling.size is not None
         )
 
         return total_size
+
+    @classmethod
+    def get_model_file_size(
+        cls, model_instance: ModelInstance, token: Optional[str]
+    ) -> int:
+        return HfDownloader.get_file_size(
+            model_instance.huggingface_repo_id,
+            model_instance.huggingface_filename,
+            token,
+        )
 
     @classmethod
     def download(
@@ -457,24 +458,27 @@ class OllamaLibraryDownloader:
 class ModelScopeDownloader:
 
     @classmethod
-    def get_model_file_size(cls, model_instance: ModelInstance) -> int:
+    def get_file_size(
+        cls,
+        model_id: str,
+        file_name: Optional[str],
+    ) -> int:
         api = HubApi()
-        repo_files = api.get_model_files(
-            model_instance.model_scope_model_id, recursive=True
-        )
+        repo_files = api.get_model_files(model_id, recursive=True)
         total_size = sum(
-            sibling.get('Size')
+            sibling.get("Size")
             for sibling in repo_files
-            if (
-                not model_instance.model_scope_file_path
-                or fnmatch.fnmatch(
-                    sibling.get('Path', ''), model_instance.model_scope_file_path
-                )
-            )
-            and 'Size' in sibling
+            if (not file_name or fnmatch.fnmatch(sibling.get("Path", ""), file_name))
+            and "Size" in sibling
         )
 
         return total_size
+
+    @classmethod
+    def get_model_file_size(cls, model_instance: ModelInstance) -> int:
+        return ModelScopeDownloader.get_file_size(
+            model_instance.model_scope_model_id, model_instance.model_scope_file_path
+        )
 
     @classmethod
     def download(

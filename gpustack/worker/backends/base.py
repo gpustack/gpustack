@@ -111,6 +111,26 @@ def get_model_file_size(mi: ModelInstance, cfg: Config) -> Optional[int]:
     return None
 
 
+def get_file_size(
+    huggingface_repo_id: Optional[str] = None,
+    huggingface_filename: Optional[str] = None,
+    model_scope_model_id: Optional[str] = None,
+    model_scope_file_path: Optional[str] = None,
+    huggingface_token: Optional[str] = None,
+) -> str:
+    if huggingface_repo_id is not None:
+        return HfDownloader.get_file_size(
+            repo_id=huggingface_repo_id,
+            filename=huggingface_filename,
+            token=huggingface_token,
+        )
+    elif model_scope_model_id is not None:
+        return ModelScopeDownloader.get_file_size(
+            model_id=model_scope_model_id,
+            file_path=model_scope_file_path,
+        )
+
+
 class InferenceServer(ABC):
     @time_decorator
     def __init__(
