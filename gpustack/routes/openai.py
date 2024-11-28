@@ -70,6 +70,8 @@ async def list_models(
     embedding_only: Optional[bool] = None,
     image_only: Optional[bool] = None,
     reranker: Optional[bool] = None,
+    speech_to_text: Optional[bool] = None,
+    text_to_speech: Optional[bool] = None,
 ):
     statement = select(Model).where(Model.ready_replicas > 0)
 
@@ -81,6 +83,12 @@ async def list_models(
 
     if reranker is not None:
         statement = statement.where(Model.reranker == reranker)
+
+    if speech_to_text is not None:
+        statement = statement.where(Model.speech_to_text == speech_to_text)
+
+    if text_to_speech is not None:
+        statement = statement.where(Model.text_to_speech == text_to_speech)
 
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")
