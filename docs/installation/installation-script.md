@@ -123,7 +123,7 @@ cat /var/lib/gpustack/token
 ### Windows:
 
 ```powershell
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } --server-url http://myserver --token mytoken"
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url http://myserver --token mytoken"
 ```
 
 In the default setup, you can run the following on the server node to get the token used for adding workers:
