@@ -19,14 +19,18 @@ set -o noglob
 #     It supports PYPI package names, git URLs, and local paths.
 #
 #   - INSTALL_PRE_RELEASE
-#     If set to true will install pre-release packages.
+#     If set to 1 will install pre-release packages.
 #
 #   - INSTALL_INDEX_URL
 #     Base URL of the Python Package Index.
+#
+#   - INSTALL_SKIP_POST_CHECK
+#     If set to 1 will skip the post installation check.
 
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
 INSTALL_PRE_RELEASE="${INSTALL_PRE_RELEASE:-0}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
+INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
 
 # --- helper functions for logs ---
 info()
@@ -441,11 +445,64 @@ setup_and_start() {
   fi
 }
 
+# Helper function to check service status
+is_service_running() {
+  if [ "$OS" = "macos" ]; then
+    # Get service info
+    SERVICE_INFO=$($SUDO launchctl print system/ai.gpustack 2>/dev/null)
+    # shellcheck disable=SC2181
+    if [ $? -ne 0 ]; then
+      return 1
+    fi
+
+    # Extract service details
+    LAST_EXIT_STATUS=$(echo "$SERVICE_INFO" | grep "last exit code =" | awk -F "= " '{print $2}' | xargs)
+    IS_RUNNING=$(echo "$SERVICE_INFO" | grep "state = running")
+
+    # Evaluate service health
+    if [ -n "$IS_RUNNING" ]; then
+      if [ "$LAST_EXIT_STATUS" = "0" ] || [ "$LAST_EXIT_STATUS" = "(never exited)" ]; then
+        return 0
+      else
+        return 1
+      fi
+    else
+      return 1
+    fi
+
+  else
+    $SUDO systemctl is-active --quiet gpustack.service
+  fi
+}
+
+# Function to check service status
+check_service() {
+  if [ "$INSTALL_SKIP_POST_CHECK" -eq 1 ]; then
+    return 0
+  fi
+  info "Waiting for the service to initialize..."
+  sleep 10
+  info "Running post-install checks..."
+
+  retries=3
+  for i in $(seq 1 $retries); do
+    if is_service_running; then
+      info "GPUStack service is running."
+      return 0
+    fi
+    info "Service not ready, retrying in 2 seconds ($i/$retries)..."
+    sleep 2
+  done
+
+  fatal "GPUStack service failed to start. Please check the logs at /var/log/gpustack.log for details."
+}
+
 # Function to create uninstall script
 create_uninstall_script() {
   $SUDO mkdir -p /var/lib/gpustack
   $SUDO tee /var/lib/gpustack/uninstall.sh > /dev/null <<EOF
 #!/bin/bash
+set -e
 export PYTHONPATH="$PYTHONPATH"
 export PIPX_HOME=$(pipx environment --value PIPX_HOME)
 export PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
@@ -512,5 +569,6 @@ install_gpustack() {
   create_uninstall_script
   disable_service
   setup_and_start "$@"
+  check_service
   print_complete_message "$@"
 }
