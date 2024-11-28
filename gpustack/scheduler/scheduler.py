@@ -69,6 +69,9 @@ class Scheduler:
             self._cache_dir = os.path.join(self._config.cache_dir, "gguf-parser")
             os.makedirs(self._cache_dir, exist_ok=True)
 
+            self._vox_box_cache_dir = os.path.join(self._config.cache_dir, "vox-box")
+            os.makedirs(self._vox_box_cache_dir, exist_ok=True)
+
     async def start(self):
         """
         Start the scheduler.
@@ -144,7 +147,7 @@ class Scheduler:
                 if is_gguf_model(model):
                     await self._evaluate_gguf_model(session, model, instance)
                 elif is_audio_model(model):
-                    pass
+                    await self._evaluate_audio_model(session, model)
                 else:
                     await self._evaluate_pretrained_config(session, model)
 
@@ -235,6 +238,43 @@ class Scheduler:
         if should_update:
             await model.update(session)
 
+    async def _evaluate_audio_model(
+        self,
+        session: AsyncSession,
+        model: Model,
+    ):
+        try:
+            from vox_box.elstimator.estimate import estimate_model
+            from vox_box.config import Config as VoxBoxConfig
+        except ImportError:
+            raise Exception("vox_box is not installed.")
+
+        cfg = VoxBoxConfig()
+        cfg.cache_dir = self._vox_box_cache_dir
+        cfg.model = model.local_path
+        cfg.huggingface_repo_id = model.huggingface_repo_id
+        cfg.model_scope_model_id = model.model_scope_model_id
+
+        try:
+            model_dict = estimate_model(cfg)
+        except Exception as e:
+            logger.error(f"Failed to estimate model {model.name}: {e}")
+            return
+
+        supported = model_dict.get("supported", False)
+        if not supported:
+            logger.error(f"Model {model.name} is not supported.")
+            return
+
+        task_type = model_dict.get("task_type")
+        if task_type == "tts":
+            model.text_to_speech = True
+        elif task_type == "stt":
+            model.speech_to_text = True
+
+        if model.text_to_speech or model.speech_to_text:
+            await model.update(session)
+
     def _should_schedule(self, instance: ModelInstance) -> bool:
         """
         Check if the model instance should be scheduled.
@@ -312,7 +352,9 @@ class Scheduler:
                     model, instance, self._cache_dir
                 )
             elif is_audio_model(model):
-                candidates_selector = VoxBoxResourceFitSelector(model, instance)
+                candidates_selector = VoxBoxResourceFitSelector(
+                    self._config, model, instance, self._vox_box_cache_dir
+                )
             else:
                 candidates_selector = VLLMResourceFitSelector(model, instance)
 
