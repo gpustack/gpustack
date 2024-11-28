@@ -37,7 +37,7 @@ function Install-Dependency {
 
 function Set-Version {
     $versionFile = Join-Path -Path $ROOT_DIR -ChildPath "gpustack\__init__.py"
-    $version = if ($null -ne $global:GIT_VERSION) { $global:GIT_VERSION } else { "0.0.0" }
+    $version = if ($null -ne $global:GIT_VERSION) { $global:GIT_VERSION } else { "v0.0.0" }
     $gitCommit = if ($null -ne $global:GIT_COMMIT) { $global:GIT_COMMIT } else { "HEAD" }
     $gitCommitShort = $gitCommit.Substring(0, [Math]::Min(7, $gitCommit.Length))
 
@@ -73,7 +73,8 @@ try {
     Set-Version
     Build
     Restore-Version-File
-} catch {
+}
+catch {
     GPUStack.Log.Fatal "failed to build: $($_.Exception.Message)"
 }
 GPUStack.Log.Info "--- BUILD ---"

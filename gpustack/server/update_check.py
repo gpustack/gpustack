@@ -18,7 +18,7 @@ UPDATE_CHECK_URL = "https://update-service.gpustack.ai"
 
 
 def is_dev_version() -> bool:
-    return __version__ == "0.0.0"
+    return "0.0.0" in __version__
 
 
 class UpdateResponse(BaseModel):

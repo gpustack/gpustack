@@ -16,7 +16,8 @@ function Get-GPUStackVersionVar {
         # Parse the version from '$Format:%D$'
         if ('%$Format:%D$' -match 'tag:\s+(v[^ ,]+)') {
             $GIT_VERSION = $matches[1]
-        } else {
+        }
+        else {
             $GIT_VERSION = $GIT_COMMIT.Substring(0, 7)
         }
 
@@ -38,7 +39,8 @@ function Get-GPUStackVersionVar {
         $gitStatus = (git status --porcelain 2>$null)
         if ($gitStatus) {
             $GIT_TREE_STATE = "dirty"
-        } else {
+        }
+        else {
             $GIT_TREE_STATE = "clean"
         }
 
@@ -52,9 +54,9 @@ function Get-GPUStackVersionVar {
             }
         }
 
-        # Set version to '0.0.0' if the tree is dirty or version format does not match
-        if ($GIT_TREE_STATE -eq "dirty" -or -not ($GIT_VERSION -match '^([0-9]+)\.([0-9]+)(\.[0-9]+)?(-?[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')) {
-            $GIT_VERSION = "0.0.0"
+        # Set version to 'v0.0.0' if the tree is dirty or version format does not match
+        if ($GIT_TREE_STATE -eq "dirty" -or -not ($GIT_VERSION -match '^v([0-9]+)\.([0-9]+)(\.[0-9]+)?(-?[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')) {
+            $GIT_VERSION = "v0.0.0"
         }
 
         # Respect specified version
