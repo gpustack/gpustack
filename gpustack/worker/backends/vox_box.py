@@ -4,6 +4,7 @@ import subprocess
 import sys
 import sysconfig
 from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.utils.command import get_versioned_command
 from gpustack.worker.backends.base import InferenceServer
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,11 @@ class VoxBoxServer(InferenceServer):
     def start(self):
         try:
             command_path = os.path.join(sysconfig.get_path("scripts"), "vox-box")
+            if self._model.backend_version:
+                command_path = os.path.join(
+                    self._config.bin_dir,
+                    get_versioned_command("vox-box", self._model.backend_version),
+                )
             arguments = [
                 "start",
                 "--model",
