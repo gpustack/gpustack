@@ -342,7 +342,6 @@ class CosyVoice(BaseModelResourceEstimator):
         return {
             "cuda": {"vram": 3 * Gib, "ram": 7 * Gib},
             "cpu": {"ram": 6 * Gib},
-            "os": ["linux"],
         }
 
 
