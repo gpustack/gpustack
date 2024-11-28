@@ -1,3 +1,4 @@
+from typing import List, Tuple
 from fastapi.responses import StreamingResponse
 from fastapi import status
 from starlette.types import Send
@@ -17,16 +18,22 @@ class StreamingResponseWithStatusCode(StreamingResponse):
 
     async def stream_response(self, send: Send) -> None:
         try:
-            first_chunk_content, self.status_code = await self.body_iterator.__anext__()
+            first_chunk_content, headers, self.status_code = (
+                await self.body_iterator.__anext__()
+            )
 
             if not isinstance(first_chunk_content, bytes):
                 first_chunk_content = first_chunk_content.encode(self.charset)
 
+            asgi_headers: List[Tuple[bytes, bytes]] = [
+                (key.encode("latin-1"), value.encode("latin-1"))
+                for key, value in headers.items()
+            ]
             await send(
                 {
                     "type": "http.response.start",
                     "status": self.status_code,
-                    "headers": self.raw_headers,
+                    "headers": asgi_headers,
                 }
             )
             await send(
@@ -37,7 +44,7 @@ class StreamingResponseWithStatusCode(StreamingResponse):
                 }
             )
 
-            async for chunk_content, self.status_code in self.body_iterator:
+            async for chunk_content, _, _ in self.body_iterator:
                 if not isinstance(chunk_content, bytes):
                     chunk_content = chunk_content.encode(self.charset)
                 await send(
