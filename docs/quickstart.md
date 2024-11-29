@@ -92,3 +92,7 @@ curl http://myserver/v1-openai/chat/completions \
     "stream": true
   }'
 ```
+
+## Cleanup
+
+After you complete using the deployed models, you can go to the `Models` page in the GPUStack UI and delete the models to free up resources.

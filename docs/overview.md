@@ -2,11 +2,12 @@
 
 ![demo](assets/gpustack-demo.gif)
 
-GPUStack is an open-source GPU cluster manager for running large language models(LLMs).
+GPUStack is an open-source GPU cluster manager for running AI models.
 
 ### Key Features
 
-- **Supports a Wide Variety of Hardware:** Run with different brands of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
+- **Broad Hardware Compatibility:** Run with different brands of GPUs in Apple MacBooks, Windows PCs, and Linux servers.
+- **Broad Model Support:** From LLMs to diffusion models, audio, embedding, and reranker models.
 - **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.
 - **Distributed Inference**: Supports both single-node multi-GPU and multi-node inference and serving.
 - **Multiple Inference Backends**: Supports llama-box (llama.cpp) and vLLM as the inference backend.
@@ -47,8 +48,8 @@ GPUStack supports both **AMD64** and **ARM64** architectures, with the following
 
 ## Supported Accelerators
 
-- [x] Apple Metal
-- [x] NVIDIA CUDA([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
+- [x] Apple Metal (M-series chips)
+- [x] NVIDIA CUDA ([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
 - [x] Ascend CANN
 - [x] Moore Threads MUSA
 
@@ -61,7 +62,7 @@ We plan to support the following accelerators in future releases.
 
 ## Supported Models
 
-GPUStack uses [llama.cpp](https://github.com/ggerganov/llama.cpp) and [vLLM](https://github.com/vllm-project/vllm) as the backends and supports a wide range of models. Models from the following sources are supported:
+GPUStack uses [llama-box](https://github.com/gpustack/llama-box) (bundled [llama.cpp](https://github.com/ggerganov/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) server), [vLLM](https://github.com/vllm-project/vllm) and [vox-box](https://github.com/gpustack/vox-box) as the backends and supports a wide range of models. Models from the following sources are supported:
 
 1. [Hugging Face](https://huggingface.co/)
 
@@ -69,26 +70,17 @@ GPUStack uses [llama.cpp](https://github.com/ggerganov/llama.cpp) and [vLLM](htt
 
 3. [Ollama Library](https://ollama.com/library)
 
-Example language models:
+4. Local File Path
 
-- [x] [LLaMA](https://huggingface.co/meta-llama)
-- [x] [Mistral 7B](https://huggingface.co/mistralai/Mistral-7B-v0.1)
-- [x] [Mixtral MoE](https://huggingface.co/models?search=mistral-ai/Mixtral)
-- [x] [Falcon](https://huggingface.co/models?search=tiiuae/falcon)
-- [x] [Baichuan](https://huggingface.co/models?search=baichuan-inc/Baichuan)
-- [x] [Yi](https://huggingface.co/models?search=01-ai/Yi)
-- [x] [Deepseek](https://huggingface.co/models?search=deepseek-ai/deepseek)
-- [x] [Qwen](https://huggingface.co/models?search=Qwen/Qwen)
-- [x] [Phi](https://huggingface.co/models?search=microsoft/phi)
-- [x] [Grok-1](https://huggingface.co/xai-org/grok-1)
+### Example Models:
 
-Example multimodal models:
-
-- [x] [Llama3.2-Vision](https://huggingface.co/models?pipeline_tag=image-text-to-text&search=llama3.2)
-- [x] [Pixtral](https://huggingface.co/models?search=pixtral)
-- [x] [Qwen2-VL](https://huggingface.co/models?search=Qwen/Qwen2-VL)
-- [x] [LLaVA](https://huggingface.co/models?search=llava)
-- [x] [InternVL2](https://huggingface.co/models?search=internvl2)
+| **Category**                     | **Models**                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Large Language Models(LLMs)**  | [Qwen](https://huggingface.co/models?search=Qwen/Qwen), [LLaMA](https://huggingface.co/meta-llama), [Mistral](https://huggingface.co/mistralai), [Deepseek](https://huggingface.co/models?search=deepseek-ai/deepseek), [Phi](https://huggingface.co/models?search=microsoft/phi), [Yi](https://huggingface.co/models?search=01-ai/Yi)       |
+| **Vision Language Models(VLMs)** | [Llama3.2-Vision](https://huggingface.co/models?pipeline_tag=image-text-to-text&search=llama3.2), [Pixtral](https://huggingface.co/models?search=pixtral) , [Qwen2-VL](https://huggingface.co/models?search=Qwen/Qwen2-VL), [LLaVA](https://huggingface.co/models?search=llava), [InternVL2](https://huggingface.co/models?search=internvl2) |
+| **Diffusion Models**             | [Stable Diffusion](https://huggingface.co/models?search=gpustack/stable-diffusion), [FLUX](https://huggingface.co/models?search=gpustack/flux)                                                                                                                                                                                               |
+| **Rerankers**                    | [GTE](https://huggingface.co/gpustack/gte-multilingual-reranker-base-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina)                                                                     |
+| **Audio Models**                 | [Whisper](https://huggingface.co/models?search=Systran/faster) (speech-to-text), [CosyVoice](https://huggingface.co/models?search=FunAudioLLM/CosyVoice) (text-to-speech)                                                                                                                                                                    |
 
 For full list of supported models, please refer to the supported models section in the [inference backends](./user-guide/inference-backends.md) documentation.
 

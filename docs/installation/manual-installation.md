@@ -9,6 +9,8 @@ Install python3.10 or above with pip.
 Run the following to install GPUStack:
 
 ```shell
+# You can add extra dependencies, options are "vllm", "audio" and "all".
+# e.g., gpustack[all]
 pip install gpustack
 ```
 
@@ -41,8 +43,11 @@ Create a service file in `/etc/systemd/system/gpustack.service`:
 ```
 [Unit]
 Description=GPUStack Service
+Wants=network-online.target
+After=network-online.target
 
 [Service]
+EnvironmentFile=-/etc/default/%N
 ExecStart=gpustack start
 Restart=always
 RestartSec=3

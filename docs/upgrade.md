@@ -47,6 +47,18 @@ $env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } <EXISTING_GPUSTACK_ARGS>"
 ```
 
+## Docker Upgrade
+
+If you installed GPUStack using Docker, upgrade to the a new version by pulling the Docker image with the desired version tag.
+
+For example:
+
+```bash
+docker pull gpustack/gpustack:vX.Y.Z
+```
+
+Then restart the GPUStack service with the new image.
+
 ## Manual Upgrade
 
 If you install GPUStack manually, upgrade using the common `pip` workflow.

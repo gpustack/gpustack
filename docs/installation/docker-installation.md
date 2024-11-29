@@ -67,7 +67,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 
-RUN pip3 install gpustack[vllm] && \
+RUN pip3 install gpustack[all] && \
     pip3 cache purge
 
 ENTRYPOINT [ "gpustack", "start" ]
