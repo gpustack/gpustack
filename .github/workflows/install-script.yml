@@ -81,18 +81,7 @@ jobs:
       - name: Run install script
         continue-on-error: true
         run: |
-          ARCH=${{ runner.arch }}
-          OS=${{ matrix.os }}
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            if [[ "${ARCH}" == "X64" ]]; then
-              export INSTALL_PACKAGE_SPEC=$(ls dist/*x86_64.whl)
-            elif [[ ${ARCH} == "ARM64" ]]; then
-              export INSTALL_PACKAGE_SPEC=$(ls dist/*aarch64.whl)
-            fi
-          else
-            export INSTALL_PACKAGE_SPEC=$(ls dist/*.whl)
-          fi
-
+          export INSTALL_PACKAGE_SPEC=$(ls dist/*.whl)
           cat install.sh | sh -
 
       - name: Verify installation
