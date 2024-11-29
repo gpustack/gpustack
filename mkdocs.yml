@@ -63,13 +63,15 @@ nav:
   - Quickstart: quickstart.md
   - Installation:
       - Installation Script: installation/installation-script.md
-      - Manual Installation: installation/manual-installation.md
       - Docker Installation: installation/docker-installation.md
+      - Manual Installation: installation/manual-installation.md
       - Air-Gapped Installation: installation/air-gapped-installation.md
       - Uninstallation: installation/uninstallation.md
   - Upgrade: upgrade.md
   - User Guide:
-      - Playground: user-guide/playground.md
+      - Playground:
+          - Playgound: user-guide/playground/index.md
+          - Chat: user-guide/playground/chat.md
       - Model Management: user-guide/model-management.md
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md

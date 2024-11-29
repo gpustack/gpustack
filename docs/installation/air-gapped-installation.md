@@ -31,8 +31,8 @@ Run the following commands in an online environment:
 # On Windows (PowerShell):
 # $PACKAGE_SPEC = "gpustack"
 
-# Optional: To include vLLM dependencies or install a specific version
-# PACKAGE_SPEC="gpustack[vllm]"
+# Optional: To include extra dependencies (vllm, audio, all) or install a specific version
+# PACKAGE_SPEC="gpustack[all]"
 # PACKAGE_SPEC="gpustack==0.4.0"
 PACKAGE_SPEC="gpustack"
 

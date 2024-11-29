@@ -26,7 +26,7 @@ The GPUStack server connects to a SQL database as the datastore. GPUStack uses S
 
 ### Inference Server
 
-Inference servers are the backends that performs the inference tasks. GPUStack supports [llama-box](https://github.com/gpustack/llama-box) and [vLLM](https://github.com/vllm-project/vllm) as the inference server.
+Inference servers are the backends that performs the inference tasks. GPUStack supports [llama-box](https://github.com/gpustack/llama-box), [vLLM](https://github.com/vllm-project/vllm) and [vox-box](https://github.com/gpustack/vox-box) as the inference server.
 
 ### RPC Server
 
