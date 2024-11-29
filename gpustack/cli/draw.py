@@ -71,6 +71,8 @@ class DrawCLIClient(BaseCLIClient):
             sanitized_prompt = re.sub(r'[^\w-]', '_', truncated_prompt)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f"{sanitized_prompt}_{timestamp}.png"
+            if self._cfg.output:
+                filename = self._cfg.output
             save_image_from_b64(image, filename)
             if self._cfg.show:
                 open_image(filename)
