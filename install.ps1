@@ -570,14 +570,14 @@ function Check-GPUStackService {
             $hasError = $false
 
             foreach ($event in $events) {
-                if ($event.Message -match "$serviceName" -and $event.Message -match "exit code 1") {
+                if ($event.Message -match "$serviceName" -and $event.Message -match "exit code") {
                     $hasError = $true
                     break
                 }
             }
 
             if ($hasError) {
-                throw "GPUStack service is running but encountered an abnormal exit (exit code 1). Please check logs at: $gpustackLogPath for details."
+                throw "GPUStack service is running but exited abnormally. Please check logs at: $gpustackLogPath for details."
             }
 
             return
