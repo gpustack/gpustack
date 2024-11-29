@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import asyncio
 from gpustack.config.config import Config
 from gpustack.utils.file import get_local_file_size_in_byte
 from gpustack.worker.backends.base import get_file_size as get_remote_file_size
@@ -54,8 +55,12 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates that fit the GPU resources requirement.
         """
 
-        resource_claim = await estimate_model_resource(
-            self._cfg, self._model, self._cache_dir
+        timeout_in_seconds = 15
+        resource_claim = await asyncio.wait_for(
+            asyncio.to_thread(
+                estimate_model_resource, self._cfg, self._model, self._cache_dir
+            ),
+            timeout=timeout_in_seconds,
         )
         if resource_claim is not None:
             self._gpu_ram_claim = resource_claim.get("cuda", {}).get("ram", 0)
@@ -198,7 +203,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ]
 
 
-async def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
+def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
     try:
         from vox_box.elstimator.estimate import estimate_model
         from vox_box.config import Config as VoxBoxConfig
@@ -234,7 +239,7 @@ async def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> 
         logger.error(f"Unsupported framework {framework} for model {model.name}")
         return {}
 
-    return await framework_class(cfg, model, model_dict).get_required_resource()
+    return framework_class(cfg, model, model_dict).get_required_resource()
 
 
 class BaseModelResourceEstimator(ABC):
@@ -244,12 +249,12 @@ class BaseModelResourceEstimator(ABC):
         self._model_info = model_info
 
     @abstractmethod
-    async def get_required_resource(self) -> Dict:
+    def get_required_resource(self) -> Dict:
         pass
 
 
 class FasterWhisper(BaseModelResourceEstimator):
-    async def get_required_resource(self) -> Dict:
+    def get_required_resource(self) -> Dict:
         """
         File size from https://huggingface.co/Systran
         | large            | Size   | Size (MiB/GiB) |
@@ -306,7 +311,7 @@ class FasterWhisper(BaseModelResourceEstimator):
 
 
 class Bark(BaseModelResourceEstimator):
-    async def get_required_resource(self) -> Dict:
+    def get_required_resource(self) -> Dict:
         """
         Main model file size from https://huggingface.co/suno
         | large            | Size   | Size (MiB/GiB) |
@@ -335,7 +340,7 @@ class Bark(BaseModelResourceEstimator):
 
 
 class CosyVoice(BaseModelResourceEstimator):
-    async def get_required_resource(self) -> Dict:
+    def get_required_resource(self) -> Dict:
         # The required resource values used here are based on test estimates
         # and may not accurately reflect actual requirements. Adjustments might be
         # necessary based on real-world scenarios in feature.
@@ -346,7 +351,7 @@ class CosyVoice(BaseModelResourceEstimator):
 
 
 class FunASR(BaseModelResourceEstimator):
-    async def get_required_resource(self) -> Dict:
+    def get_required_resource(self) -> Dict:
         # TODO: Update the resource requirements based on the test.
         return {}
 
