@@ -26,11 +26,15 @@ set -o noglob
 #
 #   - INSTALL_SKIP_POST_CHECK
 #     If set to 1 will skip the post installation check.
+#
+#   - INSTALL_SKIP_BUILD_DEPENDENCIES
+#     If set to 1 will skip the build dependencies.
 
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
 INSTALL_PRE_RELEASE="${INSTALL_PRE_RELEASE:-0}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
+INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-0}"
 
 # --- helper functions for logs ---
 info()
@@ -267,6 +271,15 @@ install_dependencies() {
               fatal "semanage is required while SeLinux enabled but missing. Please install the appropriate package for your OS (e.g., policycoreutils-python-utils for Rocky/RHEL/Ubuntu/Debian)."
           fi
       fi
+  fi
+
+  if [ "$INSTALL_SKIP_BUILD_DEPENDENCIES" != "1" ] && [ "$OS" = "macos" ]; then
+    if ! command -v brew > /dev/null 2>&1; then
+      fatal "Homebrew is required but missing. Please install Homebrew."
+    elif ! brew list openfst > /dev/null 2>&1; then
+      # audio dependency library
+      brew install openfst
+    fi
   fi
 }
 
@@ -555,6 +568,16 @@ install_gpustack() {
   pipx install --force --verbose $install_args "$INSTALL_PACKAGE_SPEC"
   # Workaround for issue #581
   pipx inject gpustack pydantic==2.9.2 --force > /dev/null 2>&1
+
+  # audio dependencies for macOS
+  if [ "$INSTALL_SKIP_BUILD_DEPENDENCIES" != "1" ] && [ "$OS" = "macos" ]; then
+    CPLUS_INCLUDE_PATH="$(brew --prefix openfst)/include"
+    export CPLUS_INCLUDE_PATH
+    LIBRARY_PATH="$(brew --prefix openfst)/lib"
+    export LIBRARY_PATH
+    pipx inject gpustack pynini
+    pipx inject gpustack wetextprocessing
+  fi
 }
 
 # Main install process
