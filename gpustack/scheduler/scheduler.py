@@ -256,7 +256,11 @@ class Scheduler:
         cfg.model_scope_model_id = model.model_scope_model_id
 
         try:
-            model_dict = estimate_model(cfg)
+            timeout_in_seconds = 15
+            model_dict = await asyncio.wait_for(
+                asyncio.to_thread(estimate_model, cfg),
+                timeout=timeout_in_seconds,
+            )
         except Exception as e:
             logger.error(f"Failed to estimate model {model.name}: {e}")
             return
