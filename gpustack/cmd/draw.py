@@ -77,6 +77,8 @@ def run(args):
     try:
         cfg = parse_arguments(args)
         DrawCLIClient(cfg).run()
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
         print(e)
         sys.exit(1)

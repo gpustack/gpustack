@@ -16,6 +16,7 @@ from gpustack.utils import platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
+from gpustack.utils.signal import add_signal_handlers_in_loop
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.worker.serve_manager import ServeManager
@@ -107,6 +108,7 @@ class Worker:
 
     def start(self, is_multiprocessing=False):
         setup_logging(self._config.debug)
+
         if is_multiprocessing:
             setproctitle.setproctitle("gpustack_worker")
 
@@ -117,7 +119,14 @@ class Worker:
         )
         tools_manager.prepare_tools()
 
-        asyncio.run(self.start_async())
+        try:
+            asyncio.run(self.start_async())
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        except Exception as e:
+            logger.error(f"Error serving worker APIs: {e}")
+        finally:
+            logger.info("Worker has shut down.")
 
     def get_device_by_gpu_devices(self) -> Optional[str]:
         gpu_devices = self._config.get_gpu_devices()
@@ -132,6 +141,8 @@ class Worker:
         """
 
         logger.info("Starting GPUStack worker.")
+
+        add_signal_handlers_in_loop()
 
         if self._exporter_enabled:
             # Start the metric exporter with retry.
@@ -184,10 +195,8 @@ class Worker:
         setup_logging()
         logger.info(f"Serving worker APIs on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
-        try:
-            await server.serve()
-        finally:
-            logger.info("Worker stopped.")
+
+        await server.serve()
 
     def _check_worker_ip_change(self):
         """

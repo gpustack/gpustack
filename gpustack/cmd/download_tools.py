@@ -79,6 +79,8 @@ def run(args):
 
         if args.save_archive:
             tools_manager.save_archive(args.save_archive)
+    except KeyboardInterrupt:
+        pass
     except ValueError as e:
         logger.fatal(e)
     except Exception as e:

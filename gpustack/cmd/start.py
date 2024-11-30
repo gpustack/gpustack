@@ -262,7 +262,14 @@ def run_server(cfg: Config):
 
     server = Server(config=cfg, sub_processes=sub_processes)
 
-    asyncio.run(server.start())
+    try:
+        asyncio.run(server.start())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    except Exception as e:
+        logger.error(f"Error running server: {e}")
+    finally:
+        logger.info("Server has shut down.")
 
 
 def run_worker(cfg: Config):

@@ -2,7 +2,6 @@ import multiprocessing
 import psutil
 import setproctitle
 import os
-import signal
 import time
 from typing import Dict
 import logging
@@ -13,7 +12,7 @@ from gpustack.config.config import Config
 from gpustack.logging import merged_stderr_stdout, stdout_redirected
 from gpustack.utils import network
 from gpustack.utils.process import terminate_process_tree
-from gpustack.utils.signal import signal_handler
+from gpustack.utils.signal import add_signal_handlers
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.vllm import VLLMServer
@@ -152,7 +151,7 @@ class ServeManager:
     ):
 
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
-        signal.signal(signal.SIGTERM, signal_handler)
+        add_signal_handlers()
 
         clientset = ClientSet(
             base_url=cfg.server_url,
