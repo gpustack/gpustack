@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from typing import Callable, Optional
+from gpustack.utils.signal import threading_stop_event
 
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ def run_periodically(
         try:
             func(*args, **kwargs)
         except Exception as e:
-            print(f"Error running {func.__name__}: {e}")
+            logger.error(f"Error running {func.__name__}: {e}")
+            if stop_event.is_set():
+                break
         time.sleep(interval)
 
 
@@ -47,7 +50,7 @@ def run_periodically_in_thread(
     func: Callable,
     interval: float,
     initial_delay: float = 0,
-    stop_event: Optional[threading.Event] = None,
+    stop_event: Optional[threading.Event] = threading_stop_event,
     *args,
     **kwargs,
 ) -> threading.Thread:

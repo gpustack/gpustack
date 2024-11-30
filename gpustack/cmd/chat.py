@@ -28,6 +28,8 @@ def run(args):
     try:
         cfg = parse_arguments(args)
         ChatCLIClient(cfg).run()
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
         print(e)
         sys.exit(1)

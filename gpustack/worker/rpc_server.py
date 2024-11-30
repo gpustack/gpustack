@@ -2,14 +2,13 @@ from contextlib import redirect_stderr, redirect_stdout
 import logging
 import multiprocessing
 import os
-import signal
 import subprocess
 import sys
 
 import setproctitle
 
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils.signal import signal_handler
+from gpustack.utils.signal import add_signal_handlers
 from gpustack.worker.backends.base import get_env_name_by_vendor
 from gpustack.worker.backends.llama_box import get_llama_box_command
 
@@ -32,7 +31,7 @@ class RPCServer:
     @staticmethod
     def start(port: int, gpu_index: int, vendor: str, log_file_path: str):
         setproctitle.setproctitle(f"gpustack_rpc_server_process: gpu_{gpu_index}")
-        signal.signal(signal.SIGTERM, signal_handler)
+        add_signal_handlers()
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):

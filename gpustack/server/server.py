@@ -1,5 +1,4 @@
 import asyncio
-import atexit
 from multiprocessing import Process
 import os
 from typing import List
@@ -21,6 +20,7 @@ from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_syncer import WorkerSyncer
+from gpustack.utils.signal import add_signal_handlers_in_loop
 
 
 logger = logging.getLogger(__name__)
@@ -33,8 +33,6 @@ class Server:
         self._config: Config = config
         self._sub_processes = sub_processes
 
-        atexit.register(self.at_exit)
-
     @property
     def all_processes(self):
         return self._sub_processes
@@ -45,6 +43,8 @@ class Server:
 
     async def start(self):
         logger.info("Starting GPUStack server.")
+
+        add_signal_handlers_in_loop()
 
         self._run_migrations()
         await self._prepare_data()
@@ -83,6 +83,7 @@ class Server:
 
         logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
+
         await server.serve()
 
     def _run_migrations(self):
@@ -197,11 +198,3 @@ class Server:
                 require_password_change=require_password_change,
             )
             await User.create(session, user)
-
-    def at_exit(self):
-        logger.debug("GPUStack server exiting.")
-        for process in self._sub_processes:
-            if process.is_alive():
-                process.terminate()
-                process.join()
-        logger.debug("Stopped all subprocesses.")
