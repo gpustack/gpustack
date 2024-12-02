@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y \
 COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
     make build && \
-    pip install /workspace/gpustack/dist/*.whl &&\
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \
+    pip install $WHEEL_PACKAGE && \
     pip cache purge && \
     rm -rf /workspace/gpustack
 

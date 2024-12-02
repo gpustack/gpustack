@@ -20,9 +20,9 @@ RUN cd /workspace/gpustack && \
 
 RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
     # Install vllm dependencies for x86_64
-    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[vllm]"; \
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[all]"; \
     else  \
-    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)"; \
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]"; \
     fi && \
     pip install $WHEEL_PACKAGE &&\
     pip cache purge && \
