@@ -8,7 +8,7 @@ include = ["*/third_party/config/**/*","*/ui/**/*"]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-fastapi = "^0.115.0"
+fastapi = "^0.115.5"
 sqlmodel = "^0.0.18"
 pydantic = ">=2.9.0,<2.10.0"
 pydantic-settings = "^2.2.1"
@@ -42,7 +42,7 @@ modelscope = "^1.19.0"
 vllm = {version = "^0.6.1", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
-transformers = "^4.44.2"
+transformers = "^4.46.3"
 fastapi-cdn-host = "^0.8.0"
 wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
