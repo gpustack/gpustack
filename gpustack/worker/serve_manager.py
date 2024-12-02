@@ -9,8 +9,10 @@ import logging
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
-from gpustack.logging import merged_stderr_stdout, stdout_redirected
-from gpustack.utils import network
+from gpustack.logging import (
+    RedirectStdoutStderr,
+)
+from gpustack.utils import network, platform
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
@@ -99,7 +101,9 @@ class ServeManager:
 
     def _start_serve_process(self, mi: ModelInstance):
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
-        if os.path.exists(log_file_path):
+        if os.path.exists(log_file_path) and platform.system() != "windows":
+            # TODO Windows does not support os.remove() on open files.
+            # Investigate file occupation issue.
             os.remove(log_file_path)
 
         try:
@@ -160,7 +164,7 @@ class ServeManager:
         backend = get_backend(model)
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
-            with stdout_redirected(log_file), merged_stderr_stdout():
+            with RedirectStdoutStderr(log_file):
                 if backend == BackendEnum.LLAMA_BOX:
                     LlamaBoxServer(clientset, mi, cfg).start()
                 elif backend == BackendEnum.VLLM:
