@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from typing import Callable, Optional
-from gpustack.utils.signal import threading_stop_event
+from gpustack.utils.process import threading_stop_event
 
 
 logger = logging.getLogger(__name__)

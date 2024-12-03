@@ -11,8 +11,7 @@ from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.logging import merged_stderr_stdout, stdout_redirected
 from gpustack.utils import network
-from gpustack.utils.process import terminate_process_tree
-from gpustack.utils.signal import add_signal_handlers
+from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.vllm import VLLMServer

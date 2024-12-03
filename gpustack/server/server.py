@@ -20,7 +20,7 @@ from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_syncer import WorkerSyncer
-from gpustack.utils.signal import add_signal_handlers_in_loop
+from gpustack.utils.process import add_signal_handlers_in_loop
 
 
 logger = logging.getLogger(__name__)
