@@ -82,7 +82,7 @@ def _get_empty_estimate(n_gpu: int = 1) -> estimate:
         uma=0, nonuma=0, handleLayers=None
     )
     memory_estimate = memoryEstimate(
-        offloadLayers=-1,
+        offloadLayers=999,
         fullOffloaded=True,
         ram=empty_layer_memory_estimate,
         vrams=[empty_layer_memory_estimate for _ in range(n_gpu)],
