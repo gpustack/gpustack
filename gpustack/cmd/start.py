@@ -237,6 +237,7 @@ def run(args: argparse.Namespace):
         cfg = parse_args(args)
         setup_logging(cfg.debug)
         debug_env_info()
+        multiprocessing.set_start_method('spawn')
 
         if cfg.server_url:
             run_worker(cfg)
