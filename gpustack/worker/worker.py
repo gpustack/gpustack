@@ -16,7 +16,7 @@ from gpustack.utils import platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
-from gpustack.utils.signal import add_signal_handlers_in_loop
+from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.worker.serve_manager import ServeManager
