@@ -236,15 +236,15 @@ async def handle_streaming_request(
                         else:
                             chunk += "\n"
                             yield chunk, resp.headers, resp.status_code
-        except httpx.RequestError:
+        except httpx.ConnectError as e:
             error_response = OpenAIAPIErrorResponse(
                 error=OpenAIAPIError(
-                    message="Service unavailable. Please retry your requests after a brief wait.",
+                    message=f"Service unavailable. Please retry your requests after a brief wait. Original error: {e}",
                     code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     type="ServiceUnavailable",
                 ),
             )
-            yield error_response.model_dump_json(), status.HTTP_503_SERVICE_UNAVAILABLE
+            yield error_response.model_dump_json(), {}, status.HTTP_503_SERVICE_UNAVAILABLE
         except Exception as e:
             error_response = OpenAIAPIErrorResponse(
                 error=OpenAIAPIError(
@@ -253,7 +253,7 @@ async def handle_streaming_request(
                     type="InternalServerError",
                 ),
             )
-            yield error_response.model_dump_json(), status.HTTP_500_INTERNAL_SERVER_ERROR
+            yield error_response.model_dump_json(), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
 
     return StreamingResponseWithStatusCode(
         stream_generator(), media_type="text/event-stream"
