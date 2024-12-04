@@ -55,7 +55,7 @@ The official Docker image is built with CUDA 12.4. If you want to use a differen
 # Example Dockerfile
 ARG CUDA_VERSION=12.4.1
 
-FROM nvidia/cuda:$CUDA_VERSION-runtime-ubuntu22.04
+FROM nvidia/cuda:$CUDA_VERSION-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
