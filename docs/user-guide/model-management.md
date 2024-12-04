@@ -4,7 +4,7 @@ You can manage large language models in GPUStack by navigating to the `Models` p
 
 ## Deploy Model
 
-Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](https://modelscope.cn) and [Ollama](https://ollama.com/library) are supported.
+Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](https://modelscope.cn), [Ollama](https://ollama.com/library) and local paths are supported.
 
 ### Deploying a Hugging Face Model
 
@@ -55,7 +55,7 @@ You can deploy a model from a local path. The model path can be a directory (e.g
 !!!note
 
     1. GPUStack does not check the validity of the model path for scheduling, which may lead to deployment failure if the model path is inaccessible. It is recommended to ensure the model path is accessible on all workers(e.g., using NFS, rsync, etc.). You can also use the worker selector configuration to deploy the model to specific workers.
-    2. GPUStack cannot evaluate the model's resource requirements unless the server has access to the same model path. You can customize backend parameters, such as tensor-split, to configure how the model is distributed across the GPUs.
+    2. GPUStack cannot evaluate the model's resource requirements unless the server has access to the same model path. Consequently, you may observe empty VRAM/RAM allocations for a deployed model. To mitigate this, it is recommended to make the model files available on the same path on the server. Alternatively, you can customize backend parameters, such as `tensor-split`, to configure how the model is distributed across the GPUs.
 
 To deploy a local path model:
 
@@ -112,7 +112,7 @@ To deploy a local path model:
 3. Find the model instance you want to check.
 4. Click the `View Logs` button for the model instance in the `Operations` column.
 
-## Use Self-hosted Model
+## Use Self-hosted Ollama Models
 
 You can deploy self-hosted Ollama models by configuring the `--ollama-library-base-url` option in the GPUStack server. The `Ollama Library` URL should point to the base URL of the Ollama model registry. For example, `https://registry.mycompany.com`.
 
@@ -170,6 +170,10 @@ This schedule type allows users to specify which GPU to deploy the model instanc
 The inference backend. Currently, GPUStack supports two backends: llama-box and vLLM. GPUStack automatically selects the backend based on the model's configuration.
 
 For more details, please refer to the [Inference Backends](./inference-backends.md) section.
+
+### Backend Version
+
+Specify a backend version, such as `v1.0.0`. The version format and availability depend on the selected backend. This option is useful for ensuring compatibility or taking advantage of features introduced in specific backend versions. Refer to the [Pinned Backend Versions](./pinned-backend-versions.md) section for more information.
 
 ### Backend Parameters
 

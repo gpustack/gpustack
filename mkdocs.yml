@@ -76,6 +76,7 @@ nav:
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md
       - Inference Backends: user-guide/inference-backends.md
+      - Pinned Backend Versions: user-guide/pinned-backend-versions.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
       - Rerank API: user-guide/rerank-api.md
   - Tutorials:
