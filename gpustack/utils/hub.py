@@ -18,7 +18,8 @@ def match_hugging_face_files(repo_id: str, filename: str) -> List[str]:
     hffs = HfFileSystem()
 
     files = [
-        file["name"] if isinstance(file, dict) else file for file in hffs.ls(repo_id)
+        file["name"] if isinstance(file, dict) else file
+        for file in hffs.ls(repo_id, recursive=True)
     ]
 
     file_list: List[str] = []
