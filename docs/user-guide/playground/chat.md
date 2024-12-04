@@ -46,7 +46,7 @@ You can do a completion by clicking the `Submit` button.
 
 ## View Code
 
-Once you've done experimenting with the prompts and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `python`, and `nodejs` are provided.
+Once you've done experimenting with the prompts and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `Python`, and `Node.js` are provided.
 
 # Compare Playground
 
@@ -77,3 +77,180 @@ You can select available models in GPUStack by clicking the model dropdown at th
 ## Customize Parameters
 
 You can customize completion parameters by clicking the settings button of each model.
+
+## Image Playground
+
+You can test the model's image generation capabilities in this section.
+
+### Prompt
+
+You can input or randomly generate a prompt, then click the Submit button to generate an image.
+
+![here a image](../assets/playground/image-prompt.png)
+
+### Clear Prompt
+
+Click the `Clear` button to reset the prompt and remove the generated image.
+
+### Select Model
+
+You can select available models in GPUStack by clicking the model dropdown at the top-left corner of each model panel.
+
+### Customize Parameters
+
+You can customize the image generation parameters by switching between two styles:
+
+1. **OpenAI-compatible mode**.
+2. **Advanced mode**.
+
+For details on advanced mode parameters, refer to the [documentation](https://github.com/gpustack/llama-box)。
+
+![image-parameter](../assets/playground/image-params.png)
+
+!!! warning
+
+    The maximum image size is restricted by the model's deployment settings. See the diagram below:
+
+![image-size-setting](../assets/playground/image-size.png)
+
+### View Code
+
+Once you've done experimenting with the prompts and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `Python`, and `Node.js` are provided.
+
+## Audio - Text to Speech
+
+Switch to the top tab to test text-to-speech models.
+
+### Text Input
+
+Enter the text you want to convert, then click the `Submit` button to generate the corresponding speech.
+
+![text-to-speech](../assets/playground/text-to-speech.png)
+
+### Clear Text
+
+Click the `Clear` button to reset the text input and remove the generated speech.
+
+### Select Model
+
+You can select available models in GPUStack by clicking the model dropdown at the top-left corner of each model panel.
+
+### Customize Parameters
+
+Customize the voice and format of the audio output.
+
+!!! warning
+    
+    Supported voices may vary between models.
+
+### View Code
+
+Once you've done experimenting with the input text and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `Python`, and `Node.js` are provided.
+
+## Audio - Speech to Text
+
+Switch to the "Audio - Speech to Text" tab to test speech-to-text models.
+
+### Provide Audio File
+
+You can provide the audio for conversion in two ways:
+
+1. **Upload an audio file**.
+2. **Record audio online**.
+
+!!! warning
+    If the online recording is not available, it could be due to one of the following reasons:
+
+    1. For HTTPS or `http://localhost` access, microphone permissions must be enabled in your browser.  
+    2. For access via `http://{host IP}`, the URL must be added to your browser's trusted list.  
+
+          **Example:** In Chrome, go to `chrome://flags/`, add the GPUStack URL to "Insecure origins treated as secure," and enable this option.  
+
+![speech-to-text](../assets/playground/speech-to-text.png)
+
+### Select Model
+
+You can select available models in GPUStack by clicking the model dropdown at the top-left corner of each model panel.
+
+
+### Copy Text
+
+Copy the generated transcription results.
+
+### Customize Parameters
+
+Select the appropriate language for your audio file.
+
+### View Code
+
+Once you've done experimenting with the input text and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `Python`, and `Node.js` are provided.
+
+## Embedding
+
+You can test the model's ability to transform text into embeddings in this section.
+
+### Add Text
+
+Add at least two text entries and click the `Submit` button.
+
+### Batch Input Text
+
+Enable `Batch Input Mode` to automatically split multi-line text into separate entries based on line breaks.
+
+### Visualization
+
+Visualize the embedding results using PCA to reduce dimensions and display them on a 2D plot. Results can be viewed in two ways:
+
+1. **Chart** - Display PCA results.
+2. **JSON** - View raw embeddings for copying.
+
+In the chart, the distance between points represents the similarity between the corresponding texts. Closer points indicate higher similarity.
+
+![embedding](../assets/playground/embedding.png)
+
+### Clear
+
+Click the `Clear` button to reset documents and output.
+
+### Select Model
+
+You can select available models in GPUStack by clicking the model dropdown at the top-left corner of each model panel.
+
+### View Code
+
+Once you've done experimenting with the input text and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `Python`, and `Node.js` are provided.
+
+## Rerank
+
+You can test rerank models to reorder multiple texts based on relevance in this section.
+
+### Add Text
+
+Add text entries to the document.
+
+### Bach Input Text
+
+Enable `Batch Input Mode` to split multi-line text into separate entries based on line breaks.
+
+### Clear
+
+Click the `Clear` button to reset the document and query results.
+
+### Query
+
+Input a query and click `Submit` to get a ranked list of similar texts along with their scores.
+
+![rerank](../assets/playground/ranker.png)
+
+### Select Model
+
+You can select available models in GPUStack by clicking the model dropdown at the top-left corner of each model panel.
+
+
+### Customize Parameters
+
+In the parameter section, set `Top N` to specify the number of matching texts to retrieve.
+
+### View Code
+
+Once you've done experimenting with the input text and parameters, you can click the `View Code` button to check how you can call the API with the same input by code. Code examples in `curl`, `Python`, and `Node.js` are provided.
