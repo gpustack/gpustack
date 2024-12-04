@@ -78,6 +78,7 @@ nav:
       - Inference Backends: user-guide/inference-backends.md
       - Pinned Backend Versions: user-guide/pinned-backend-versions.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
+      - Image Generation APIs: user-guide/image-generation-apis.md
       - Rerank API: user-guide/rerank-api.md
   - Tutorials:
       - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
