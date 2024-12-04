@@ -23,17 +23,18 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 - [x] Windows
 - [x] Linux
 
-The following Linux distributions are verified to work with GPUStack:
+The following operating systems are verified to work with GPUStack:
 
-| Distributions | Versions        |
-| ------------- | --------------- |
-| Ubuntu        | \>= 20.04       |
-| Debian        | \>= 11          |
-| RHEL          | \>= 8           |
-| Rocky         | \>= 8           |
-| Fedora        | \>= 36          |
-| OpenSUSE      | \>= 15.3 (leap) |
-| OpenEuler     | \>= 22.03       |
+| OS        | Versions        |
+| --------- | --------------- |
+| Windows   | 10, 11          |
+| Ubuntu    | \>= 20.04       |
+| Debian    | \>= 11          |
+| RHEL      | \>= 8           |
+| Rocky     | \>= 8           |
+| Fedora    | \>= 36          |
+| OpenSUSE  | \>= 15.3 (leap) |
+| OpenEuler | \>= 22.03       |
 
 !!! note
 
