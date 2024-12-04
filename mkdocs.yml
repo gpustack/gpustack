@@ -72,6 +72,10 @@ nav:
       - Playground:
           - Playgound: user-guide/playground/index.md
           - Chat: user-guide/playground/chat.md
+          - Image: user-guide/playground/image.md
+          - Audio: user-guide/playground/audio.md
+          - Embedding: user-guide/playground/embedding.md
+          - Rerank: user-guide/playground/rerank.md
       - Model Management: user-guide/model-management.md
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md
