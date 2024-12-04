@@ -167,7 +167,7 @@ This schedule type allows users to specify which GPU to deploy the model instanc
 
 ### Backend
 
-The inference backend. Currently, GPUStack supports two backends: llama-box and vLLM. GPUStack automatically selects the backend based on the model's configuration.
+The inference backend. Currently, GPUStack supports three backends: llama-box, vLLM and vox-box. GPUStack automatically selects the backend based on the model's configuration.
 
 For more details, please refer to the [Inference Backends](./inference-backends.md) section.
 
