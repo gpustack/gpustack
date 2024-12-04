@@ -2,7 +2,6 @@ import asyncio
 from enum import Enum
 import logging
 import os
-from pathlib import Path
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
@@ -320,8 +319,7 @@ def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> str | Non
         if len(matching_files) == 0:
             raise ValueError(f"File {filename} not found in {repo_id}")
 
-        filename = Path(matching_files[0]).name
-        return filename
+        return matching_files[0]
 
 
 def model_scope_file_path(model_id: str, file_path: str) -> str:
