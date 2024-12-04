@@ -70,12 +70,12 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 ## Available Environment Variables for the Installation Script
 
-| Name                      | Default    | Description                                                                                                                                                     |
-| ------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `INSTALL_INDEX_URL`       | (empty)    | Base URL of the Python Package Index.                                                                                                                           |
-| `INSTALL_PACKAGE_SPEC`    | `gpustack` | The package spec to install. It supports PYPI package names, URLs, and local paths. See https://pip.pypa.io/en/stable/cli/pip_install/#pip-install for details. |
-| `INSTALL_PRE_RELEASE`     | (empty)    | If set to 1, pre-release packages will be installed.                                                                                                            |
-| `INSTALL_SKIP_POST_CHECK` | (empty)    | If set to 1, the installation script will skip the post-installation check.                                                                                     |
+| Name                      | Default                              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INSTALL_INDEX_URL`       | (empty)                              | Base URL of the Python Package Index.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `INSTALL_PACKAGE_SPEC`    | `gpustack[all]` or `gpustack[audio]` | The package spec to install. The install script will automatically decide based on the platform. It supports PYPI package names, URLs, and local paths. See the [pip install documentation](https://pip.pypa.io/en/stable/cli/pip_install/#pip-install) for details. <ul><li>`gpustack[all]`: With all inference backends: llama-box, vllm, vox-box.</li><li>`gpustack[vllm]`: With inference backends: llama-box, vllm.</li><li>`gpustack[audio]`: With inference backends: llama-box, vox-box.</li></ul> |
+| `INSTALL_PRE_RELEASE`     | (empty)                              | If set to 1, pre-release packages will be installed.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `INSTALL_SKIP_POST_CHECK` | (empty)                              | If set to 1, the installation script will skip the post-installation check.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Set Environment Variables for the GPUStack Service
 
@@ -109,7 +109,7 @@ To form a cluster, you can add GPUStack workers on additional nodes. Install GPU
 
 Examples are as follows:
 
-### Linux or MacOS:
+### Linux or MacOS
 
 ```shell
 curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
@@ -121,7 +121,7 @@ In the default setup, you can run the following on the server node to get the to
 cat /var/lib/gpustack/token
 ```
 
-### Windows:
+### Windows
 
 ```powershell
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url http://myserver --token mytoken"
