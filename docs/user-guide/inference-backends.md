@@ -74,3 +74,52 @@ vLLM supports multimodal language models listed [here](https://docs.vllm.ai/en/s
 ### Parameters Reference
 
 See the full list of supported parameters for vLLM [here](https://docs.vllm.ai/en/stable/serving/openai_compatible_server.html#command-line-arguments-for-the-server).
+
+## vox-box
+
+[vox-box](https://github.com/gpustack/vox-box) is an inference engine designed for deploying text-to-speech and speech-to-text models. It also provides an API that is fully compatible with the OpenAI audio API.
+
+### Supported Platforms
+
+The vox-box works on a wide range of platforms, including macOS, Linux, and Windows. 
+
+!!! note
+
+    1. When users install GPUStack on Linux, macOS and Windows using the installation script, vox-box is automatically installed. 
+    2. Support Nvidia GPU, requires the following NVIDIA libraries to be installed [cuBLAS for CUDA 12](https://developer.nvidia.com/cublas), [cuDNN 9 for CUDA 12](https://developer.nvidia.com/cudnn).
+    3. Users intending to use CosyVoice models should note that these models are natively supported on Linux AMD architecture, but are not supported on Linux ARM or Windows architectures. On macOS, after running the installation script, the following script need to be run manually.
+    ```bash
+    # For macOS, you need to manually install `openfst`, `pynini`, and `wetextprocessing` after installing `gpustack` to make `cosyvoice` work:
+    brew install openfst
+    export CPLUS_INCLUDE_PATH=$(brew --prefix openfst)/include
+    export LIBRARY_PATH=$(brew --prefix openfst)/lib
+    pipx runpip gpustack install pynini==2.1.6
+    pipx runpip gpustack install wetextprocessing==1.0.4.1
+    ```
+
+### Supported Models
+
+| Model                           | Type           | Link                                                                                                                                               | Supported Platforms                                     |
+| ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Faster-whisper-large-v3         | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-large-v3)                                                                             | Linux, macOS, Windows                                   |
+| Faster-whisper-large-v2         | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-large-v2)                                                                             | Linux, macOS, Windows                                   |
+| Faster-whisper-large-v1         | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-large-v1)                                                                             | Linux, macOS, Windows                                   |
+| Faster-whisper-medium           | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-medium)                                                                               | Linux, macOS, Windows                                   |
+| Faster-whisper-medium.en        | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-medium.en)                                                                            | Linux, macOS, Windows                                   |
+| Faster-whisper-small            | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-small)                                                                                | Linux, macOS, Windows                                   |
+| Faster-whisper-small.en         | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-small.en)                                                                             | Linux, macOS, Windows                                   |
+| Faster-distil-whisper-large-v3  | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-distil-whisper-large-v3)                                                                      | Linux, macOS, Windows                                   |
+| Faster-distil-whisper-large-v2  | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-distil-whisper-large-v2)                                                                      | Linux, macOS, Windows                                   |
+| Faster-distil-whisper-medium.en | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-distil-whisper-medium.en)                                                                     | Linux, macOS, Windows                                   |
+| Faster-whisper-tiny             | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-tiny)                                                                                 | Linux, macOS, Windows                                   |
+| Faster-whisper-tiny.en          | speech-to-text | [Hugging Face](https://huggingface.co/Systran/faster-whisper-tiny.en)                                                                              | Linux, macOS, Windows                                   |
+| CosyVoice-300M-Instruct         | text-to-speech | [Hugging Face](https://huggingface.co/FunAudioLLM/CosyVoice-300M-Instruct), [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M-Instruct) | Linux(ARM not supported), macOS, Windows(Not supported) |
+| CosyVoice-300M-SFT              | text-to-speech | [Hugging Face](https://huggingface.co/FunAudioLLM/CosyVoice-300M-SFT), [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M-SFT)           | Linux(ARM not supported), macOS, Windows(Not supported) |
+| CosyVoice-300M                  | text-to-speech | [Hugging Face](https://huggingface.co/FunAudioLLM/CosyVoice-300M), [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M)                   | Linux(ARM not supported), macOS, Windows(Not supported) |
+| CosyVoice-300M-25Hz             | text-to-speech | [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M-25Hz)                                                                                 | Linux(ARM not supported), macOS, Windows(Not supported) |
+
+### Supported Features
+
+#### Allow GPU/CPU Offloading
+
+vox-box supports deploying models to NVIDIA GPUs. If GPU resources are insufficient, it will automatically deploy the models to the CPU.
