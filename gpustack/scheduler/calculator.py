@@ -97,6 +97,44 @@ def _get_empty_estimate(n_gpu: int = 1) -> estimate:
     )
 
 
+def add_bool_flag(
+    parameters: Optional[List[str]],
+    keys: List[str],
+    command_list: List[str],
+    flag_name: str,
+) -> None:
+    """
+    Adds a boolean flag to the command list if the parameter is found.
+
+    :param parameters: A list of parameters, or None.
+    :param keys: A list of keys to search for in the parameters.
+    :param command_list: The list of commands to which the flag should be added.
+    :param flag_name: The name of the flag to add to the command list.
+    """
+    if parameters and find_bool_parameter(parameters, keys):
+        command_list.append(flag_name)
+
+
+def add_parameter_with_value(
+    parameters: Optional[List[str]],
+    keys: List[str],
+    command_list: List[str],
+    flag_name: str,
+) -> None:
+    """
+    Adds a parameter and its value to the command list if the parameter is found.
+
+    :param parameters: A list of parameters, or None.
+    :param keys: A list of keys to search for in the parameters.
+    :param command_list: The list of commands to which the parameter and value should be added.
+    :param flag_name: The name of the parameter to add to the command list.
+    """
+    if parameters:
+        value = find_parameter(parameters, keys)
+        if value:
+            command_list.extend([flag_name, value])
+
+
 async def _gguf_parser_command(  # noqa: C901
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
@@ -113,6 +151,7 @@ async def _gguf_parser_command(  # noqa: C901
         "--skip-tokenizer",
         "--skip-architecture",
         "--skip-metadata",
+        "--image-vae-tiling",
         "--cache-expiration",
         "168h0m0s",
         "--no-mmap",
@@ -123,35 +162,49 @@ async def _gguf_parser_command(  # noqa: C901
     if ctx_size is None:
         ctx_size = "8192"
 
-    execuable_command.append("--ctx-size")
-    execuable_command.append(ctx_size)
+    execuable_command.extend(["--ctx-size", ctx_size])
 
-    image_no_text_encoder_model_offload = find_bool_parameter(
-        model.backend_parameters, ["image-no-text-encoder-model-offload"]
+    add_bool_flag(
+        model.backend_parameters,
+        ["image-no-text-encoder-model-offload"],
+        execuable_command,
+        "--image-no-text-encoder-model-offload",
     )
-    if image_no_text_encoder_model_offload:
-        execuable_command.append("--image-no-text-encoder-model-offload")
-
-    image_no_vae_model_offload = find_bool_parameter(
-        model.backend_parameters, ["image-no-vae-model-offload"]
+    add_bool_flag(
+        model.backend_parameters,
+        ["image-no-vae-model-offload"],
+        execuable_command,
+        "--image-no-vae-model-offload",
     )
-    if image_no_vae_model_offload:
-        execuable_command.append("--image-no-vae-model-offload")
+    add_bool_flag(
+        model.backend_parameters,
+        ["image-no-vae-tiling"],
+        execuable_command,
+        "--image-no-vae-tiling",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["image-max-height"],
+        execuable_command,
+        "--image-max-height",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["image-max-width"],
+        execuable_command,
+        "--image-max-width",
+    )
 
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
-        execuable_command.append("--cache-path")
-        execuable_command.append(cache_dir)
+        execuable_command.extend(["--cache-path", cache_dir])
 
     if offload == GPUOffloadEnum.Full:
-        execuable_command.append("--gpu-layers")
-        execuable_command.append("-1")
+        execuable_command.extend(["--gpu-layers", "-1"])
     elif offload == GPUOffloadEnum.Partial:
-        execuable_command.append("--gpu-layers-step")
-        execuable_command.append("1")
+        execuable_command.extend(["--gpu-layers-step", "1"])
     elif offload == GPUOffloadEnum.Disable:
-        execuable_command.append("--gpu-layers")
-        execuable_command.append("0")
+        execuable_command.extend(["--gpu-layers", "0"])
 
     tensor_split = kwargs.get("tensor_split")
     if tensor_split:
@@ -163,14 +216,12 @@ async def _gguf_parser_command(  # noqa: C901
             tensor_split_str = ",".join(
                 [str(int(i / (1024 * 1024))) for i in tensor_split]
             )
-        execuable_command.append("--tensor-split")
-        execuable_command.append(tensor_split_str)
+        execuable_command.extend(["--tensor-split", tensor_split_str])
 
     rpc = kwargs.get("rpc")
     if rpc:
         rpc_str = ",".join([v for v in rpc])
-        execuable_command.append("--rpc")
-        execuable_command.append(rpc_str)
+        execuable_command.extend(["--rpc", rpc_str])
 
     source_args = await _gguf_parser_command_args_from_source(model, **kwargs)
     execuable_command.extend(source_args)
