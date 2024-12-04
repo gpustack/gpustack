@@ -6,7 +6,7 @@ GPUStack serves [Jina compatible Rerank API](https://jina.ai/reranker/) using th
 
 !!! note
 
-    The Rerank API is only available when using the llama-box [inference backend](./inference-backends.md).
+    The Rerank API is only available when using the [llama-box](./inference-backends.md#llama-box) inference backend.
 
 ## Supported Models
 

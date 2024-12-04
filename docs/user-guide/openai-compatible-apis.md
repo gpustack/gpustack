@@ -6,12 +6,14 @@ GPUStack serves [OpenAI-compatible APIs](https://platform.openai.com/docs/api-re
 
 The following API endpoints are supported:
 
-- [x] List Models
-- [x] Create Completions
-- [x] Create Chat Completions
-- [x] Create Embeddings
-- [x] Create Speech
-- [x] Create Transcription
+- [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
+- [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
+- [x] [Create Chat Completion](https://platform.openai.com/docs/api-reference/chat/create)
+- [x] [Create Embeddings](https://platform.openai.com/docs/api-reference/embeddings/create)
+- [x] [Create Image](https://platform.openai.com/docs/api-reference/images/create)
+- [x] [Create Image Edit](https://platform.openai.com/docs/api-reference/images/createEdit)
+- [x] [Create Speech](https://platform.openai.com/docs/api-reference/audio/createSpeech)
+- [x] [Create Transcription](https://platform.openai.com/docs/api-reference/audio/createTranscription)
 
 ## Usage
 
