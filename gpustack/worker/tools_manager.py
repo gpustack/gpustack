@@ -134,7 +134,7 @@ class ToolsManager:
             )
 
     def download_llama_box(self):
-        version = "v0.0.85"
+        version = "v0.0.88"
         target_dir = self.third_party_bin_path / "llama-box"
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / file_name
@@ -326,7 +326,7 @@ class ToolsManager:
         return platform_name
 
     def download_gguf_parser(self):
-        version = "v0.13.2"
+        version = "v0.13.3"
         gguf_parser_dir = self.third_party_bin_path.joinpath("gguf-parser")
         os.makedirs(gguf_parser_dir, exist_ok=True)
 
