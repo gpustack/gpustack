@@ -87,15 +87,7 @@ The vox-box works on a wide range of platforms, including macOS, Linux, and Wind
 
     1. When users install GPUStack on Linux, macOS and Windows using the installation script, vox-box is automatically installed. 
     2. Support Nvidia GPU, requires the following NVIDIA libraries to be installed [cuBLAS for CUDA 12](https://developer.nvidia.com/cublas), [cuDNN 9 for CUDA 12](https://developer.nvidia.com/cudnn).
-    3. Users intending to use CosyVoice models should note that these models are natively supported on Linux AMD architecture, but are not supported on Linux ARM or Windows architectures. On macOS, after running the installation script, the following script need to be run manually.
-    ```bash
-    # For macOS, you need to manually install `openfst`, `pynini`, and `wetextprocessing` after installing `gpustack` to make `cosyvoice` work:
-    brew install openfst
-    export CPLUS_INCLUDE_PATH=$(brew --prefix openfst)/include
-    export LIBRARY_PATH=$(brew --prefix openfst)/lib
-    pipx runpip gpustack install pynini==2.1.6
-    pipx runpip gpustack install wetextprocessing==1.0.4.1
-    ```
+    3. Users intending to use CosyVoice models should note that these models are natively supported on Linux AMD architecture and macOS, but are not supported on Linux ARM or Windows architectures.
 
 ### Supported Models
 
