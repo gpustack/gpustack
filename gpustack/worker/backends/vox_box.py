@@ -34,6 +34,9 @@ class VoxBoxServer(InferenceServer):
                 str(self._model_instance.port),
             ]
 
+            if self._model.backend_parameters:
+                arguments.extend(self._model.backend_parameters)
+
             if self._model_instance.gpu_indexes is not None:
                 arguments.extend(
                     [
