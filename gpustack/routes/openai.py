@@ -51,6 +51,11 @@ async def images_generations(session: SessionDep, request: Request):
     return await proxy_request_by_model(request, session, "images/generations")
 
 
+@aliasable_router.post("/images/edits")
+async def images_edits(session: SessionDep, request: Request):
+    return await proxy_request_by_model(request, session, "images/edits")
+
+
 @aliasable_router.post("/audio/speech")
 async def audio_speech(session: SessionDep, request: Request):
     return await proxy_request_by_model(request, session, "audio/speech")
