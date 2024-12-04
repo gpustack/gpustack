@@ -62,6 +62,9 @@ InternalServerErrorException = http_exception_factory(
 ServiceUnavailableException = http_exception_factory(
     status.HTTP_503_SERVICE_UNAVAILABLE, "ServiceUnavailable", "Service unavailable"
 )
+GatewayTimeoutException = http_exception_factory(
+    status.HTTP_504_GATEWAY_TIMEOUT, "GatewayTimeout", "Gateway timeout"
+)
 
 
 def raise_if_response_error(response: httpx.Response):  # noqa: C901
