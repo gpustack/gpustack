@@ -4,23 +4,27 @@ GPUStack supports the following inference backends:
 
 - llama-box
 - vLLM
+- vox-box
 
 When users deploy a model, the backend is selected automatically based on the following criteria:
 
-- If the model is a [GGUF](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) model, llama-box is used.
-- Otherwise, vLLM is used.
+- If the model is a [GGUF](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) model, `llama-box` is used.
+- If the model is a known `text-to-speech` or `speech-to-text` model, `vox-box` is used.
+- Otherwise, `vLLM` is used.
 
 ## llama-box
 
-[llama-box](https://github.com/gpustack/llama-box) is a LLM inference server based on [llama.cpp](https://github.com/ggerganov/llama.cpp).
+[llama-box](https://github.com/gpustack/llama-box) is a LM inference server based on [llama.cpp](https://github.com/ggerganov/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp).
 
 ### Supported Platforms
 
-The llama-box backend works on a wide range of platforms, including MacOS, Linux and Windows(with CPU offloading only on Windows ARM architecture).
+The llama-box backend works on a wide range of platforms, including MacOS, Linux and Windows (with CPU offloading only on Windows ARM architecture).
 
 ### Supported Models
 
-Please refer to the list of supported models in [README](https://github.com/ggerganov/llama.cpp#description) of llama.cpp project.
+- LLMs: For supported LLMs, refer to the llama.cpp [README](https://github.com/ggerganov/llama.cpp#description).
+- Difussion Models: Supported models are listed in this [Hugging Face collection](https://huggingface.co/collections/gpustack/image-672dafeb2fa0d02dbe2539a9).
+- Reranker Models: Supported models can be found in this [Hugging Face collection](https://huggingface.co/collections/gpustack/reranker-6721a234527f6fcd90deedc4).
 
 ### Supported Features
 
