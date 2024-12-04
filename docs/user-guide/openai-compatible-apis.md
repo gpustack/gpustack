@@ -10,6 +10,8 @@ The following API endpoints are supported:
 - [x] Create Completions
 - [x] Create Chat Completions
 - [x] Create Embeddings
+- [x] Create Speech
+- [x] Create Transcription
 
 ## Usage
 
