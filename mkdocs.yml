@@ -88,12 +88,13 @@ nav:
       - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
       - Performing Distributed Inference Across Workers: tutorials/performing-distributed-inference-across-workers.md
       - Using Vision Language Models: tutorials/using-vision-language-models.md
+      - Using Image Generation Models: tutorials/using-image-generation-models.md
       - Using Audio Models: tutorials/using-audio-models.md
+      - Using Reranker Models: tutorials/using-reranker-models.md
       - Inference on CPUs: tutorials/inference-on-cpus.md
       - Running Inference with Ascend NPUs: tutorials/running-inference-with-ascend-npus.md
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
       - Creating Text Embeddings: tutorials/creating-text-embeddings.md
-      - Using Reranker Models: tutorials/using-reranker-models.md
       - Inference with Function Calling: tutorials/inference-with-function-calling.md
       - Running Inference with Moore Threads GPUs: tutorials/running-inference-with-moorethreads-gpus.md
   - Architecture: architecture.md
