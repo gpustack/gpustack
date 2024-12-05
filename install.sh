@@ -428,6 +428,8 @@ disable_service_in_launchd() {
   if [ -f /Library/LaunchDaemons/ai.gpustack.plist ]; then
     $SUDO launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
     $SUDO rm /Library/LaunchDaemons/ai.gpustack.plist
+    # wait a grace period for the service to stop
+    sleep 10
   fi
 }
 
@@ -437,6 +439,8 @@ disable_service_in_systemd() {
     $SUDO systemctl disable gpustack.service
     $SUDO rm /etc/systemd/system/gpustack.service
     $SUDO systemctl daemon-reload
+    # wait a grace period for the service to stop
+    sleep 10
   fi
 }
 
