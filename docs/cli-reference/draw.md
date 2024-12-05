@@ -21,10 +21,11 @@ gpustack draw [model] [prompt]
 The `model` can be either of the following:
 
 1. Name of a GPUStack model. You need to create a model in GPUStack before using it here.
-2. Reference to a Hugging Face GGUF diffusion model in Ollama style. When using this option, the model will be deployed if it is not already available. When not specified the `Q4-0` quantization is used. Examples:
+2. Reference to a Hugging Face GGUF diffusion model in Ollama style. When using this option, the model will be deployed if it is not already available. When not specified the default `Q4_0` tag is used. Examples:
 
    - `hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF`
    - `hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:FP16`
+   - `hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:stable-diffusion-v3-5-large-turbo-Q4_0.gguf`
 
 ## Configurations
 
