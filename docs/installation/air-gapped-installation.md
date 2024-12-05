@@ -37,7 +37,7 @@ Run the following commands in an online environment:
 PACKAGE_SPEC="gpustack"
 
 # Download all required packages
-pip download $PACKAGE_SPEC -d gpustack_offline_packages
+pip wheel $PACKAGE_SPEC -w gpustack_offline_packages
 
 # Install GPUStack to access its CLI
 pip install gpustack
