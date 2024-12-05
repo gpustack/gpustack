@@ -85,10 +85,13 @@ class BaseCLIClient(ABC):
             cpu_offloading=True,
             distributed_inference_across_workers=True,
             backend=BackendEnum.LLAMA_BOX,
+            backend_parameters=["--no-warmup"],
         )
         if "turbo" in self._hf_repo_id and "stable-diffusion" in self._hf_repo_id:
             # A simple hack to make the sugar command reproducible.
-            model_create.backend_parameters = ["--seed=42", "--image-cfg-scale=1.0"]
+            model_create.backend_parameters.extend(
+                ["--seed=42", "--image-cfg-scale=1.0"]
+            )
 
         self._model = self._clientset.models.create(model_create=model_create)
 
@@ -117,7 +120,7 @@ class BaseCLIClient(ABC):
         # remove GGUF suffix for the name
         model_name = parts[2].replace("-GGUF", "")
 
-        return model_name, repo_id, f"*{filename}.gguf"
+        return model_name, repo_id, f"*{filename}*"
 
     def ensure_model(self):
         models = self._clientset.models.list()

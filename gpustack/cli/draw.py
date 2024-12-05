@@ -10,6 +10,7 @@ from openai import Stream
 from openai.types.images_response import ImagesResponse
 from tqdm import tqdm
 from tenacity import (
+    RetryError,
     retry,
     stop_after_attempt,
     wait_exponential,
@@ -78,6 +79,8 @@ class DrawCLIClient(BaseCLIClient):
                 open_image(filename)
         except HTTPException as e:
             raise Exception(f"Request to server failed: {e}")
+        except RetryError as e:
+            raise e.last_attempt.exception()
 
     def create_model(self):
         raise Exception(
@@ -133,7 +136,7 @@ class DrawCLIClient(BaseCLIClient):
                 stream_cls=Stream[ImageGenerationChunk],
             )
         except Exception as e:
-            raise APIRequestError("Error during API request") from e
+            raise APIRequestError(f"Error during API request: {e}")
 
         current_progress = 0
         for chunk in image:
