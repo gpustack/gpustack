@@ -4,7 +4,7 @@
 
 If you installed GPUStack using the installation script, you can view GPUStack logs at the following path:
 
-### Linux or MacOS
+### Linux or macOS
 
 ```bash
 /var/log/gpustack.log
