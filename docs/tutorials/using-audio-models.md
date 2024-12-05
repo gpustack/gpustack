@@ -9,9 +9,8 @@ In this tutorial, we will walk you through deploying and using speech-to-text an
 Before you begin, ensure that you have the following:
 
 - A Linux system with AMD architecture or macOS.
-- GPUStack is installed and running. If not, refer to the [Quickstart Guide](../quickstart.md).
-- Additional installation steps for Vox-Box based on your platform have been completed. For details, see the Vox-Box section in the [Inference Backends](../user-guide/inference-backends.md)
 - Access to Hugging Face for downloading the model files.
+- GPUStack is installed and running. If not, refer to the [Quickstart Guide](../quickstart.md).
 
 ## Running Speech-to-Text Model
 
@@ -44,6 +43,7 @@ After deployment, you can monitor the model's status on the `Models` page.
 ## Running Text-to-Speech Model
 
 ### Step 1: Deploy Text-to-Speech Model
+
 Follow these steps to deploy the model from Hugging Face:
 
 1. Navigate to the `Models` page in the GPUStack UI.

@@ -18,7 +18,7 @@ Running the installation script will:
 
 ### Linux and macOS
 
-For example, to upgrade GPUStack to the latest version on a Linux system and MacOS:
+For example, to upgrade GPUStack to the latest version on a Linux system and macOS:
 
 ```bash
 curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>

@@ -1,6 +1,6 @@
 # Installation Script
 
-## Linux and MacOS
+## Linux and macOS
 
 You can use the installation script available at `https://get.gpustack.ai` to install GPUStack as a service on systemd and launchd based systems.
 
@@ -81,7 +81,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 
 You can set environment variables for the GPUStack service in an environment file located at:
 
-- **Linux and MacOS**: `/etc/default/gpustack`
+- **Linux and macOS**: `/etc/default/gpustack`
 - **Windows**: `$env:APPDATA\gpustack\gpustack.env`
 
 The following is an example of the content of the file:
@@ -93,7 +93,7 @@ HF_ENDPOINT="https://my-hf-endpoint"
 
 !!!note
 
-    Unlike Systemd, Launchd and Windows services do not natively support reading environment variables from a file. Configuration via the environment file is implemented by the installation script. It reads the file and applies the variables to the service configuration. After modifying the environment file on Windows and MacOS, you need to re-run the installation script to apply changes to the GPUStack service.
+    Unlike Systemd, Launchd and Windows services do not natively support reading environment variables from a file. Configuration via the environment file is implemented by the installation script. It reads the file and applies the variables to the service configuration. After modifying the environment file on Windows and macOS, you need to re-run the installation script to apply changes to the GPUStack service.
 
 ## Available CLI Flags
 
@@ -109,7 +109,7 @@ To form a cluster, you can add GPUStack workers on additional nodes. Install GPU
 
 Examples are as follows:
 
-### Linux or MacOS
+### Linux or macOS
 
 ```shell
 curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken

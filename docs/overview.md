@@ -10,7 +10,7 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 - **Broad Model Support:** From LLMs to diffusion models, audio, embedding, and reranker models.
 - **Scales with Your GPU Inventory:** Easily add more GPUs or nodes to scale up your operations.
 - **Distributed Inference**: Supports both single-node multi-GPU and multi-node inference and serving.
-- **Multiple Inference Backends**: Supports llama-box (llama.cpp) and vLLM as the inference backend.
+- **Multiple Inference Backends**: Supports llama-box (llama.cpp & stable-diffusion.cpp), vox-box and vLLM as the inference backend.
 - **Lightweight Python Package:** Minimal dependencies and operational overhead.
 - **OpenAI-compatible APIs:** Serve APIs that are compatible with OpenAI standards.
 - **User and API key management:** Simplified management of users and API keys.
@@ -19,7 +19,7 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 
 ## Supported Platforms
 
-- [x] MacOS
+- [x] macOS
 - [x] Windows
 - [x] Linux
 
@@ -44,7 +44,7 @@ The following operating systems are verified to work with GPUStack:
 
 GPUStack supports both **AMD64** and **ARM64** architectures, with the following notes:
 
-- On MacOS and Linux, if using Python versions below 3.12, ensure you install the Python distribution matching your architecture.
+- On Linux and macOS, if using Python versions below 3.12, ensure you install the Python distribution matching your architecture.
 - On Windows, please use the AMD64 distribution of Python, as wheel packages for certain dependencies are unavailable for ARM64. If you use tools like `conda`, this will be handled automatically, as conda installs the AMD64 distribution by default.
 
 ## Supported Accelerators

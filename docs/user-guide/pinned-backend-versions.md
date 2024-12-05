@@ -38,7 +38,7 @@ When automatic installation is not feasible or preferred, GPUStack provides a st
 1. **Prepare the Executable**  
    Install the backend executable or link it under the GPUStack bin directory. The default locations are:
 
-   - **Linux/MacOS:** `/var/lib/gpustack/bin`
+   - **Linux/macOS:** `/var/lib/gpustack/bin`
    - **Windows:** `$env:AppData\gpustack\bin`
 
 !!! tip
@@ -48,7 +48,7 @@ When automatic installation is not feasible or preferred, GPUStack provides a st
 2. **Name the Executable**  
    Ensure the executable is named in the following format:
 
-   - **Linux/MacOS:** `<backend>_<version>`
+   - **Linux/macOS:** `<backend>_<version>`
    - **Windows:** `<backend>_<version>.exe`
 
 For example, the vLLM executable for version v0.6.4 should be named `vllm_v0.6.4` on Linux.

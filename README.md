@@ -35,7 +35,7 @@ GPUStack is an open-source GPU cluster manager for running large language models
 
 ## Installation
 
-### Linux or MacOS
+### Linux or macOS
 
 GPUStack provides a script to install it as a service on systemd or launchd based systems. To install GPUStack using this method, just run:
 
@@ -65,7 +65,7 @@ gpustack chat llama3.2 "tell me a joke."
 
 2. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
-**Linux or MacOS**
+**Linux or macOS**
 
 ```bash
 cat /var/lib/gpustack/initial_admin_password
@@ -112,7 +112,7 @@ curl http://myserver/v1-openai/chat/completions \
 
 ## Supported Platforms
 
-- [x] MacOS
+- [x] macOS
 - [x] Linux
 - [x] Windows
 

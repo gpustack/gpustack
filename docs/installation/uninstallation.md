@@ -8,7 +8,7 @@
 
 If you installed GPUStack using the installation script, a script to uninstall GPUStack was generated during installation.
 
-### Linux or MacOS
+### Linux or macOS
 
 Run the following command to uninstall GPUStack:
 
