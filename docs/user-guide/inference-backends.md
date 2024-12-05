@@ -18,7 +18,7 @@ When users deploy a model, the backend is selected automatically based on the fo
 
 ### Supported Platforms
 
-The llama-box backend works on a wide range of platforms, including Linux, macOS and Windows (with CPU offloading only on Windows ARM architecture).
+The llama-box backend supports Linux, macOS and Windows (with CPU offloading only on Windows ARM architecture) platforms.
 
 ### Supported Models
 
@@ -54,7 +54,7 @@ For more details, please refer to [vLLM documentation](https://docs.vllm.ai/en/s
 
 ### Supported Platforms
 
-The vLLM backend works on Linux.
+The vLLM backend works on AMD Linux.
 
 !!! note
 
@@ -81,13 +81,15 @@ See the full list of supported parameters for vLLM [here](https://docs.vllm.ai/e
 
 ### Supported Platforms
 
-The vox-box works on a wide range of platforms, including macOS, Linux, and Windows.
+The vox-box backend supports Linux, macOS and Windows platforms.
 
 !!! note
 
-    1. When users install GPUStack on Linux, macOS and Windows using the installation script, vox-box is automatically installed.
-    2. Support Nvidia GPU, requires the following NVIDIA libraries to be installed [cuBLAS for CUDA 12](https://developer.nvidia.com/cublas), [cuDNN 9 for CUDA 12](https://developer.nvidia.com/cudnn).
-    3. Users intending to use CosyVoice models should note that these models are natively supported on Linux AMD architecture and macOS, but are not supported on Linux ARM or Windows architectures.
+    1. To use Nvidia GPUs, ensure the following NVIDIA libraries are installed on workers:
+        - [cuBLAS for CUDA 12](https://developer.nvidia.com/cublas)
+        - [cuDNN 9 for CUDA 12](https://developer.nvidia.com/cudnn)
+    2. When users install GPUStack on Linux, macOS and Windows using the installation script, vox-box is automatically installed.
+    3. CosyVoice models are natively supported on Linux AMD architecture and macOS. However, these models are not supported on Linux ARM or Windows architectures.
 
 ### Supported Models
 
