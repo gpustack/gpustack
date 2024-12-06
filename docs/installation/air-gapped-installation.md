@@ -46,6 +46,19 @@ pip install gpustack
 gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
 ```
 
+Optional: Additional Dependencies for macOS.
+
+```bash
+# Deploying the speech-to-text CosyVoice model on macOS requires additional dependencies.
+brew install openfst
+CPLUS_INCLUDE_PATH=$(brew --prefix openfst)/include
+LIBRARY_PATH=$(brew --prefix openfst)/lib
+
+AUDIO_DEPENDENCY_PACKAGE_SPEC="wetextprocessing"
+pip wheel $AUDIO_DEPENDENCY_PACKAGE_SPEC -w gpustack_audio_dependency_offline_packages
+mv gpustack_audio_dependency_offline_packages/* gpustack_offline_packages/ && rm -rf gpustack_audio_dependency_offline_packages
+```
+
 !!!note
 
     This instruction assumes that the online environment uses the same GPU type as the air-gapped environment. If the GPU types differ, use the `--device` flag to specify the device type for the air-gapped environment. Refer to the [download-tools](../cli-reference/download-tools.md) command for more information.
@@ -67,6 +80,15 @@ pip install --no-index --find-links=gpustack_offline_packages gpustack
 
 # Load and apply the pre-downloaded tools archive
 gpustack download-tools --load-archive gpustack_offline_tools.tar.gz
+```
+
+Optional: Additional Dependencies for macOS.
+
+```bash
+# Install the additional dependencies for speech-to-text CosyVoice model on macOS.
+brew install openfst
+
+pip install --no-index --find-links=gpustack_offline_packages wetextprocessing
 ```
 
 Now you can run GPUStack by following the instructions in the [Manual Installation](manual-installation.md#run-gpustack) guide.
