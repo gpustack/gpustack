@@ -19,7 +19,6 @@
 $ErrorActionPreference = "Stop"
 
 $INSTALL_PACKAGE_SPEC = if ($env:INSTALL_PACKAGE_SPEC) { $env:INSTALL_PACKAGE_SPEC } else { "gpustack[audio]" }
-$INSTALL_PRE_RELEASE = if ($env:INSTALL_PRE_RELEASE) { $env:INSTALL_PRE_RELEASE } else { 0 }
 $INSTALL_INDEX_URL = if ($env:INSTALL_INDEX_URL) { $env:INSTALL_INDEX_URL } else { "" }
 $INSTALL_SKIP_POST_CHECK = if ($env:INSTALL_SKIP_POST_CHECK) { $env:INSTALL_SKIP_POST_CHECK } else { 0 }
 
@@ -327,10 +326,6 @@ function Install-GPUStack {
     try {
         Log-Info "$ACTION GPUStack..."
         $installArgs = @()
-        if ($INSTALL_PRE_RELEASE -eq 1) {
-            $installArgs += "--pip-args=--pre"
-        }
-
         if ($INSTALL_INDEX_URL) {
             $installArgs += "--index-url=$INSTALL_INDEX_URL"
         }

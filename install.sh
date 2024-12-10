@@ -18,9 +18,6 @@ set -o noglob
 #     The package spec to install. Defaults to "gpustack".
 #     It supports PYPI package names, git URLs, and local paths.
 #
-#   - INSTALL_PRE_RELEASE
-#     If set to 1 will install pre-release packages.
-#
 #   - INSTALL_INDEX_URL
 #     Base URL of the Python Package Index.
 #
@@ -31,7 +28,6 @@ set -o noglob
 #     If set to 1 will skip the build dependencies.
 
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
-INSTALL_PRE_RELEASE="${INSTALL_PRE_RELEASE:-0}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
 INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-0}"
@@ -549,11 +545,6 @@ install_gpustack() {
   fi
 
   install_args=""
-  if [ "$INSTALL_PRE_RELEASE" -eq 1 ]; then
-    # shellcheck disable=SC2089
-    install_args="--pip-args='--pre'"
-  fi
-
   if [ -n "$INSTALL_INDEX_URL" ]; then
     install_args="--index-url $INSTALL_INDEX_URL $install_args"
   fi
