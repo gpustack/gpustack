@@ -76,6 +76,15 @@ def arch() -> str:
 
 
 def device() -> str:
+    """
+    Returns the customized device type. This is similar to the device types in PyTorch but includes some additional types. Examples include:
+    - cuda
+    - musa
+    - npu
+    - mps
+    - rocm
+    - etc.
+    """
     if (
         is_command_available("nvidia-smi")
         or os.path.exists("/usr/local/cuda")
@@ -96,6 +105,10 @@ def device() -> str:
     if system() == "darwin" and arch() == "arm64":
         return "mps"
 
+    if is_command_available("rocm-smi") or os.path.exists(
+        "C:\\Program Files\\AMD\\ROCm"
+    ):
+        return "rocm"
     return ""
 
 

@@ -31,7 +31,7 @@ class WorkerStatusCollector:
         self._worker_manager = worker_manager
 
         detector_factory = (
-            DetectorFactory("custom", {"custom": Custom(gpu_devices)})
+            DetectorFactory("custom", {"custom": [Custom(gpu_devices)]})
             if gpu_devices
             else None
         )

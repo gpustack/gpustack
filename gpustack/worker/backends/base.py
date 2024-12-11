@@ -32,6 +32,7 @@ lock = threading.Lock()
 ACCELERATOR_VENDOR_TO_ENV_NAME = {
     VendorEnum.NVIDIA: "CUDA_VISIBLE_DEVICES",
     VendorEnum.Huawei: "ASCEND_RT_VISIBLE_DEVICES",
+    VendorEnum.AMD: "ROCR_VISIBLE_DEVICES",
 }
 
 

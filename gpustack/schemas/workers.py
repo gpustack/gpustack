@@ -54,6 +54,7 @@ class VendorEnum(str, Enum):
     MTHREADS = "Moore Threads"
     Apple = "Apple"
     Huawei = "Huawei"
+    AMD = "AMD"
 
 
 class MountPoint(BaseModel):

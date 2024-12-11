@@ -176,7 +176,7 @@ class Config(BaseSettings):
 
             if vendor not in VendorEnum.__members__.values():
                 raise Exception(
-                    "Unsupported GPU device vendor, supported vendors are: Apple, NVIDIA, 'Moore Threads', Huawei"
+                    "Unsupported GPU device vendor, supported vendors are: Apple, NVIDIA, 'Moore Threads', Huawei, AMD"
                 )
 
             if not memory:
