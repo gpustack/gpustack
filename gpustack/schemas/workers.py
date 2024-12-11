@@ -44,6 +44,7 @@ class GPUDeviceInfo(BaseModel):
     core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
     memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
     temperature: Optional[float] = Field(default=None)  # in celsius
+    labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
 
 GPUDevicesInfo = List[GPUDeviceInfo]
@@ -54,6 +55,7 @@ class VendorEnum(str, Enum):
     MTHREADS = "Moore Threads"
     Apple = "Apple"
     Huawei = "Huawei"
+    AMD = "AMD"
 
 
 class MountPoint(BaseModel):
