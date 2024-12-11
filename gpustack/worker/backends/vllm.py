@@ -69,7 +69,7 @@ class VLLMServer(InferenceServer):
             arguments.extend(built_in_arguments)
 
             env = self.get_inference_running_env(
-                self._model_instance.gpu_indexes, worker_gpu_devices
+                self._model_instance.gpu_indexes, worker_gpu_devices, "vllm"
             )
             logger.info("Starting vllm server")
             logger.debug(f"Run vllm with arguments: {' '.join(arguments)}")

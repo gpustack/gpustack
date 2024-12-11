@@ -15,7 +15,8 @@ SELECT
     json_extract(value, '$.index') AS 'index',
     json_extract(value, '$.core') AS core,
     json_extract(value, '$.memory') AS memory,
-    json_extract(value, '$.temperature') AS temperature
+    json_extract(value, '$.temperature') AS temperature,
+    json_extract(value, '$.labels') AS labels
 FROM
     workers w,
     json_each(w.status, '$.gpu_devices')
@@ -40,7 +41,8 @@ SELECT
     (gpu_device::json->>'index')::INTEGER AS "index",
     (gpu_device::json->>'core')::JSONB AS core,
     (gpu_device::json->>'memory')::JSONB AS memory,
-    (gpu_device::json->>'temperature')::FLOAT AS temperature
+    (gpu_device::json->>'temperature')::FLOAT AS temperature,
+    (gpu_device::json->>'labels')::JSONB AS labels
 FROM
     workers w,
     LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device

@@ -147,7 +147,7 @@ class WorkerManager:
     def _start_rpc_servers(self):
         try:
             detector_factory = (
-                DetectorFactory("custom", {"custom": Custom(self._gpu_devices)})
+                DetectorFactory("custom", {"custom": [Custom(self._gpu_devices)]})
                 if self._gpu_devices
                 else DetectorFactory()
             )
