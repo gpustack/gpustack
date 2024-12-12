@@ -222,23 +222,24 @@ class Fastfetch(GPUDetector):
         return devices
 
     def _run_command(self, command, parse_output=True):
+        result = None
         try:
             result = subprocess.run(
                 command, capture_output=True, text=True, check=True, encoding="utf-8"
             )
-            output = result.stdout
 
             if result.returncode != 0:
                 raise Exception(f"Unexpected return code: {result.returncode}")
 
+            output = result.stdout
             if output == "" or output is None:
                 raise Exception(f"Output is empty, return code: {result.returncode}")
 
         except Exception as e:
-            raise Exception(
-                f"Failed to execute {command}: {e},"
-                f" stdout: {result.stdout}, stderr: {result.stderr}"
-            )
+            error_message = f"Failed to execute {command}: {e}"
+            if result:
+                error_message += f", stdout: {result.stdout}, stderr: {result.stderr}"
+            raise Exception(error_message)
 
         if not parse_output:
             return output

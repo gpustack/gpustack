@@ -43,20 +43,25 @@ class WorkerStatusCollector:
 
     def collect(self) -> Worker:  # noqa: C901
         """Collect worker status information."""
+        status = WorkerStatus()
 
-        system_info = self._detector_factory.detect_system_info()
-        gpu_devices = self._detector_factory.detect_gpus()
+        try:
+            system_info = self._detector_factory.detect_system_info()
+            status.cpu = system_info.cpu
+            status.memory = system_info.memory
+            status.swap = system_info.swap
+            status.filesystem = system_info.filesystem
+            status.os = system_info.os
+            status.kernel = system_info.kernel
+            status.uptime = system_info.uptime
+        except Exception as e:
+            logger.error(f"Failed to detect system info: {e}")
 
-        status = WorkerStatus(
-            gpu_devices=gpu_devices,
-            cpu=system_info.cpu,
-            memory=system_info.memory,
-            swap=system_info.swap,
-            filesystem=system_info.filesystem,
-            os=system_info.os,
-            kernel=system_info.kernel,
-            uptime=system_info.uptime,
-        )
+        try:
+            gpu_devices = self._detector_factory.detect_gpus()
+            status.gpu_devices = gpu_devices
+        except Exception as e:
+            logger.error(f"Failed to detect GPU devices: {e}")
 
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
@@ -84,7 +89,8 @@ class WorkerStatusCollector:
         if status.gpu_devices is not None and len(status.gpu_devices) != 0:
             is_unified_memory = status.gpu_devices[0].memory.is_unified_memory
 
-        status.memory.is_unified_memory = is_unified_memory
+        if status.memory is not None:
+            status.memory.is_unified_memory = is_unified_memory
 
     def _inject_computed_filesystem_usage(self, status: WorkerStatus):
         if (
@@ -114,7 +120,9 @@ class WorkerStatusCollector:
         except Exception as e:
             logger.error(f"Failed to inject filesystem usage: {e}")
 
-    def _inject_allocated_resource(self, status: WorkerStatus) -> Allocated:
+    def _inject_allocated_resource(  # noqa: C901
+        self, status: WorkerStatus
+    ) -> Allocated:
         allocated = Allocated(ram=0, vram={})
         try:
             model_instances = self._clientset.model_instances.list()
@@ -136,8 +144,10 @@ class WorkerStatusCollector:
                         ) + (vram.get(gpu_index) or 0)
 
             # inject allocated resources
-            status.memory.allocated = allocated.ram
-            for ag, agv in allocated.vram.items():
-                status.gpu_devices[ag].memory.allocated = agv
+            if status.memory is not None:
+                status.memory.allocated = allocated.ram
+            if status.gpu_devices is not None:
+                for ag, agv in allocated.vram.items():
+                    status.gpu_devices[ag].memory.allocated = agv
         except Exception as e:
             logger.error(f"Failed to inject allocated resources: {e}")
