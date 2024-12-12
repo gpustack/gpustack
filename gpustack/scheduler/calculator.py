@@ -151,7 +151,6 @@ async def _gguf_parser_command(  # noqa: C901
         "--skip-tokenizer",
         "--skip-architecture",
         "--skip-metadata",
-        "--skip-rang-download-detect",
         "--image-vae-tiling",
         "--cache-expiration",
         "168h0m0s",
