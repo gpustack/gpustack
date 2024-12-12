@@ -461,14 +461,14 @@ class ModelScopeDownloader:
     def get_file_size(
         cls,
         model_id: str,
-        file_name: Optional[str],
+        file_path: Optional[str],
     ) -> int:
         api = HubApi()
         repo_files = api.get_model_files(model_id, recursive=True)
         total_size = sum(
             sibling.get("Size")
             for sibling in repo_files
-            if (not file_name or fnmatch.fnmatch(sibling.get("Path", ""), file_name))
+            if (not file_path or fnmatch.fnmatch(sibling.get("Path", ""), file_path))
             and "Size" in sibling
         )
 
