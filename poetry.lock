@@ -7829,14 +7829,14 @@ video = ["decord"]
 
 [[package]]
 name = "vox-box"
-version = "0.0.8"
+version = "0.0.9"
 description = "Vox box"
 optional = true
 python-versions = "<4.0,>=3.10"
 files = [
-    {file = "vox_box-0.0.8-py3-none-manylinux2014_aarch64.whl", hash = "sha256:6dcf9749294294e7e8e1ae0acc57db99be16706f9e3b511177c147b78ee8c6c0"},
-    {file = "vox_box-0.0.8-py3-none-manylinux2014_x86_64.whl", hash = "sha256:761f0f683bef24efd019bf5a06ce8e16b169cb0a5a075c99d8ddf15a7701af1a"},
-    {file = "vox_box-0.0.8.tar.gz", hash = "sha256:a7cd371acb16acc45686d3368baebc7c87cd9470425d09761ae3e75112a230bb"},
+    {file = "vox_box-0.0.9-py3-none-manylinux2014_aarch64.whl", hash = "sha256:1f27d8fdac83441015972b39b1ffa1df09cae69b632b745a250c788a774b6468"},
+    {file = "vox_box-0.0.9-py3-none-manylinux2014_x86_64.whl", hash = "sha256:27aeb6d236ad29983462679e3ba4e97b73cd3022dda38fe96c9518feebad5136"},
+    {file = "vox_box-0.0.9.tar.gz", hash = "sha256:d8333937fd5cabaae25ce1fa20e1d2e74a2a3e807eed3681f53e0c68b30f472c"},
 ]
 
 [package.dependencies]
@@ -8466,4 +8466,4 @@ vllm = ["mistral_common", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "6f629d68b1f917cbbcb0ac5c1301915467cd72e43643cc0fdb28c23d6d749c9e"
+content-hash = "7bf0f4d5ffe894d15b653a947f88eee29aeeae97f958b689380bfad32419511c"
