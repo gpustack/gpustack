@@ -7829,14 +7829,14 @@ video = ["decord"]
 
 [[package]]
 name = "vox-box"
-version = "0.0.7"
+version = "0.0.8"
 description = "Vox box"
 optional = true
 python-versions = "<4.0,>=3.10"
 files = [
-    {file = "vox_box-0.0.7-py3-none-manylinux2014_aarch64.whl", hash = "sha256:c97b8e1a205765e3f41c687f7f56e87b8fab0a1be6fcf6d3d3b7b9f9afdb4966"},
-    {file = "vox_box-0.0.7-py3-none-manylinux2014_x86_64.whl", hash = "sha256:440dd5c8f52e7fa4c8fa9ed307e6d6c537ba2749e89373e8a0d6aea08246692e"},
-    {file = "vox_box-0.0.7.tar.gz", hash = "sha256:619f639994a2cea6d4f8a48ac620239edbb6a768b26362ee3f5ac57713186da8"},
+    {file = "vox_box-0.0.8-py3-none-manylinux2014_aarch64.whl", hash = "sha256:6dcf9749294294e7e8e1ae0acc57db99be16706f9e3b511177c147b78ee8c6c0"},
+    {file = "vox_box-0.0.8-py3-none-manylinux2014_x86_64.whl", hash = "sha256:761f0f683bef24efd019bf5a06ce8e16b169cb0a5a075c99d8ddf15a7701af1a"},
+    {file = "vox_box-0.0.8.tar.gz", hash = "sha256:a7cd371acb16acc45686d3368baebc7c87cd9470425d09761ae3e75112a230bb"},
 ]
 
 [package.dependencies]
@@ -7903,7 +7903,7 @@ optimum = ">=1.23.3,<2.0.0"
 pipx = ">=1.7.1,<2.0.0"
 pyarrow = ">=18.0.0,<19.0.0"
 pynini = {version = "2.1.6", markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\""}
-python-multipart = ">=0.0.17,<0.0.18"
+python-multipart = ">=0.0.17,<0.0.19"
 rich = ">=13.9.4,<14.0.0"
 scipy = ">=1.14.1,<2.0.0"
 tn = ">=0.0.4,<0.0.5"
@@ -8466,4 +8466,4 @@ vllm = ["mistral_common", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "dbfe612aad71d333c5351871999fae7a7530861bb2a31ca5198004ce3485856b"
+content-hash = "6f629d68b1f917cbbcb0ac5c1301915467cd72e43643cc0fdb28c23d6d749c9e"
