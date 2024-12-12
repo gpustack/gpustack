@@ -10,7 +10,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types import Completion, CompletionUsage
 from openai.types.images_response import ImagesResponse
-from openai.types.audio.transcription_create_response import TranscriptionCreateResponse
+from openai.types.audio.transcription_create_response import (
+    Transcription,
+)
 from openai.types.create_embedding_response import (
     CreateEmbeddingResponse,
     Usage as EmbeddingUsage,
@@ -72,7 +74,7 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                 return await process_request(
                     request,
                     response,
-                    TranscriptionCreateResponse,
+                    Transcription,
                     OperationEnum.AUDIO_TRANSCRIPTION,
                 )
             elif request.url.path == "/v1/rerank":
@@ -97,7 +99,7 @@ async def process_request(
             RerankResponse,
             ImagesResponse,
             FileResponse,
-            TranscriptionCreateResponse,
+            Transcription,
         ]
     ],
     operation: OperationEnum,
