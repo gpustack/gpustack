@@ -62,6 +62,7 @@ nav:
   - Overview: overview.md
   - Quickstart: quickstart.md
   - Installation:
+      - Installation Requirements: installation/installation-requirements.md
       - Installation Script: installation/installation-script.md
       - Docker Installation: installation/docker-installation.md
       - Manual Installation: installation/manual-installation.md

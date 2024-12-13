@@ -23,30 +23,6 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 - [x] Windows
 - [x] Linux
 
-The following operating systems are verified to work with GPUStack:
-
-| OS        | Versions        |
-| --------- | --------------- |
-| Windows   | 10, 11          |
-| Ubuntu    | \>= 20.04       |
-| Debian    | \>= 11          |
-| RHEL      | \>= 8           |
-| Rocky     | \>= 8           |
-| Fedora    | \>= 36          |
-| OpenSUSE  | \>= 15.3 (leap) |
-| OpenEuler | \>= 22.03       |
-
-!!! note
-
-    The installation of GPUStack worker on a Linux system requires that the GLIBC version be 2.29 or higher.
-
-### Supported Architectures
-
-GPUStack supports both **AMD64** and **ARM64** architectures, with the following notes:
-
-- On Linux and macOS, if using Python versions below 3.12, ensure you install the Python distribution matching your architecture.
-- On Windows, please use the AMD64 distribution of Python, as wheel packages for certain dependencies are unavailable for ARM64. If you use tools like `conda`, this will be handled automatically, as conda installs the AMD64 distribution by default.
-
 ## Supported Accelerators
 
 - [x] Apple Metal (M-series chips)
