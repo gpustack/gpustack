@@ -64,6 +64,7 @@ class LlamaBoxServer(InferenceServer):
             "--model",
             self._model_path,
             "--no-mmap",
+            "--no-warmup",
         ]
 
         if self._model.reranker:
