@@ -10,6 +10,10 @@ GPUStack provides APIs for generating images given a prompt and/or an input imag
 
 The following models are available for image generation:
 
+!!! tip
+
+      Please use the converted GGUF models provided by GPUStack. Check the model link for more details.
+
 - [stabilityai/stable-diffusion-3.5-large-turbo](https://huggingface.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF)
 - [stabilityai/stable-diffusion-3.5-large](https://huggingface.co/gpustack/stable-diffusion-v3-5-large-GGUF)
 - [stabilityai/stable-diffusion-3.5-medium](https://huggingface.co/gpustack/stable-diffusion-v3-5-medium-GGUF)
