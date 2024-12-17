@@ -2,7 +2,7 @@
 
 ## Prerequites:
 
-Install python3.10 or above with pip.
+Install Python version 3.10 to 3.12.
 
 ## Install GPUStack CLI
 

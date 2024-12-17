@@ -4,7 +4,7 @@ This page describes the software and networking requirements for the nodes where
 
 ## Python Requirements
 
-GPUStack requires Python version 3.10 or higher.
+GPUStack requires Python version 3.10 to 3.12.
 
 ## Operating System Requirements
 
