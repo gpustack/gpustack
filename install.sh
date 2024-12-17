@@ -187,15 +187,16 @@ check_python_tools() {
     elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
       $SUDO yum install -y python3
     elif [ "$OS" = "macos" ]; then
-      brew install python
+      brew install python@3.12
     else
       fatal "Unsupported OS for automatic Python installation. Please install Python3 manually."
     fi
   fi
 
   PYTHON_VERSION=$(python3 -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)")
-  if [ "$PYTHON_VERSION" -lt 40 ]; then
-    fatal "Python version is less than 3.10. Please upgrade Python to at least version 3.10."
+  CURRENT_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+  if [ "$PYTHON_VERSION" -lt 40 ] || [ "$PYTHON_VERSION" -ge 43 ]; then
+    fatal "Python version $CURRENT_VERSION is not supported. Please use Python 3.10, 3.11, or 3.12."
   fi
 
   PYTHON_STDLIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
@@ -220,14 +221,12 @@ check_python_tools() {
       python3 -m ensurepip --upgrade
     fi
 
-    PIP_PYTHON_VERSION=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}' | awk -F. '{print $1 * 10 + $2}')
+    PIP_PYTHON_VERSION_READABLE=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}')
+    PIP_PYTHON_VERSION=$(echo "$PIP_PYTHON_VERSION_READABLE" | awk -F. '{print $1 * 10 + $2}')
     if [ "$PIP_PYTHON_VERSION" -lt 40 ]; then
-      fatal "Python version for pip3 is less than 3.10. Please upgrade pip3 to be associated with at least Python 3.10."
+      fatal "Python version for pip3 is $PIP_PYTHON_VERSION_READABLE which is not supported. Please use Python 3.10, 3.11, or 3.12."
     fi
   fi
-
-
-  PYTHONPATH=$(python3 -c 'import site, sys; print(":".join(sys.path + [site.getusersitepackages()]))')
 
   if ! command -v pipx > /dev/null 2>&1; then
     info "Pipx could not be found. Attempting to install..."
@@ -512,6 +511,13 @@ check_service() {
 
 # Function to create uninstall script
 create_uninstall_script() {
+  PYTHON_BIN="python3"
+  PIPX_PYTHON_PATH=$(pipx environment --value PIPX_DEFAULT_PYTHON)
+  if [ -n "$PIPX_PYTHON_PATH" ]; then
+    PYTHON_BIN="$PIPX_PYTHON_PATH"
+  fi
+  PYTHONPATH=$("$PYTHON_BIN" -c 'import site, sys; print(":".join(sys.path + [site.getusersitepackages()]))')
+
   $SUDO mkdir -p /var/lib/gpustack
   $SUDO tee /var/lib/gpustack/uninstall.sh > /dev/null <<EOF
 #!/bin/bash
@@ -560,7 +566,7 @@ install_gpustack() {
   fi
 
   # shellcheck disable=SC2090,SC2086
-  pipx install --force --verbose $install_args "$INSTALL_PACKAGE_SPEC"
+  pipx install --force --verbose $install_args --python "$(which python3)" "$INSTALL_PACKAGE_SPEC"
   # Workaround for issue #581
   pipx inject gpustack pydantic==2.9.2 --force > /dev/null 2>&1
 

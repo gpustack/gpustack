@@ -236,8 +236,10 @@ function Install-Python {
 
     $needInstallPython = $true
     $PYTHON_VERSION = $null
+    $CURRENT_VERSION = $null
     if (Get-Command python -ErrorAction SilentlyContinue) {
         $PYTHON_VERSION = python -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)'
+        $CURRENT_VERSION = python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
         $pythonSource = $(Get-Command python).Source
         $isDirty = (($null -eq $PYTHON_VERSION) -or ($PYTHON_VERSION -eq "")) -and ($pythonSource -match "WindowsApps")
 
@@ -246,8 +248,8 @@ function Install-Python {
             Remove-Item "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
             Remove-Item "$env:LOCALAPPDATA\Microsoft\WindowsApps\python3.exe" -ErrorAction SilentlyContinue
         }
-        elseif ($PYTHON_VERSION -lt 40) {
-            throw "Python version is $PYTHON_VERSION, which is less than 3.10. Please upgrade Python to at least version 3.10."
+        elseif ($PYTHON_VERSION -lt 40 -or $PYTHON_VERSION -ge 43) {
+            throw "Python version $CURRENT_VERSION is not supported. Please use Python 3.10, 3.11, or 3.12."
         }
         else {
             $needInstallPython = $false
