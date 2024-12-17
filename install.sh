@@ -241,12 +241,16 @@ check_python_tools() {
     else
       fatal "Unsupported OS for automatic pipx installation. Please install pipx manually."
     fi
+
     USER_BASE_BIN=$(python3 -m site --user-base)/bin
     export PATH="$USER_BASE_BIN:$PATH"
     pipx ensurepath --force
 
     PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
     export PATH="$PIPX_BIN_DIR:$PATH"
+
+    # In case pipx installation causes python3 PATH changes (e.g., brew link), re-evaluate once.
+    check_python_tools
   fi
 }
 
