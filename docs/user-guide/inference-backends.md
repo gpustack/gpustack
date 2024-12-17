@@ -23,8 +23,8 @@ The llama-box backend supports Linux, macOS and Windows (with CPU offloading onl
 ### Supported Models
 
 - LLMs: For supported LLMs, refer to the llama.cpp [README](https://github.com/ggerganov/llama.cpp#description).
-- Difussion Models: Supported models are listed in this [Hugging Face collection](https://huggingface.co/collections/gpustack/image-672dafeb2fa0d02dbe2539a9).
-- Reranker Models: Supported models can be found in this [Hugging Face collection](https://huggingface.co/collections/gpustack/reranker-6721a234527f6fcd90deedc4).
+- Diffussion Models: Supported models are listed in this [Hugging Face collection](https://huggingface.co/collections/gpustack/image-672dafeb2fa0d02dbe2539a9) or this [ModelScope collection](https://modelscope.cn/collections/Image-fab3d241f8a641).
+- Reranker Models: Supported models can be found in this [Hugging Face collection](https://huggingface.co/collections/gpustack/reranker-6721a234527f6fcd90deedc4) or this [ModelScope collection](https://modelscope.cn/collections/Reranker-7576210e79de4a).
 
 ### Supported Features
 
