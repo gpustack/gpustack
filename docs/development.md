@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install `python 3.10+`.
+Install Python (version 3.10 to 3.12).
 
 ## Set Up Environment
 

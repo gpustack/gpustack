@@ -208,7 +208,7 @@ Please see the [official docs site](https://docs.gpustack.ai) for complete docum
 
 ## Build
 
-1. Install `python 3.10+`.
+1. Install Python (version 3.10 to 3.12).
 
 2. Run `make build`.
 
