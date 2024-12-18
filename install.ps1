@@ -239,7 +239,7 @@ function Install-Python {
     $CURRENT_VERSION = $null
     if (Get-Command python -ErrorAction SilentlyContinue) {
         $PYTHON_VERSION = python -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)'
-        $CURRENT_VERSION = python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+        $CURRENT_VERSION = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
         $pythonSource = $(Get-Command python).Source
         $isDirty = (($null -eq $PYTHON_VERSION) -or ($PYTHON_VERSION -eq "")) -and ($pythonSource -match "WindowsApps")
 
@@ -278,11 +278,6 @@ function Install-Python {
                 throw "failed to install pipx."
             }
 
-            pipx ensurepath
-            if ($LASTEXITCODE -ne 0) {
-                throw "failed to run pipx ensurepath."
-            }
-
             Log-Info "Pipx installed successfully."
         }
         catch {
@@ -291,6 +286,11 @@ function Install-Python {
     }
     else {
         Log-Info "Pipx already installed."
+    }
+
+    pipx ensurepath --force
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to run pipx ensurepath."
     }
 }
 
