@@ -53,8 +53,7 @@ Ensure all necessary drivers and libraries are installed on the system prior to 
 
 To use NVIDIA CUDA as an accelerator, ensure the following components are installed:
 
-- [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
-- [NVIDIA cuBLAS](https://developer.nvidia.com/cublas) (Optional, required for audio models)
+- [NVIDIA CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit) (Including CUDA Runtime, cuBLAS, NVIDIA driver)
 - [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) (Optional, required for audio models)
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit) (Optional, required for docker installation)
 
