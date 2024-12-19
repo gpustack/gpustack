@@ -96,8 +96,9 @@ GPUStack uses the following ports for communication:
 
 **Worker Ports**
 
-| Port            | Description                                 |
-| --------------- | ------------------------------------------- |
-| TCP 10150       | Default port for the GPUStack worker        |
-| TCP 10151       | Default port for exposing metrics           |
-| TCP 40000-41024 | Port range allocated for inference services |
+| Port            | Description                                    |
+| --------------- | ---------------------------------------------- |
+| TCP 10150       | Default port for the GPUStack worker           |
+| TCP 10151       | Default port for exposing metrics              |
+| TCP 40000-41024 | Port range allocated for inference services    |
+| TCP 50000-51024 | Port range allocated for llama-box RPC servers |
