@@ -308,12 +308,16 @@ class ToolsManager:
             platform_name = "linux-amd64-cann-8.0"
         elif self._os == "linux" and self._arch == "arm64" and self._device == "npu":
             platform_name = "linux-arm64-cann-8.0"
+        elif self._os == "linux" and self._arch == "amd64" and self._device == "rocm":
+            platform_name = "linux-amd64-hip-6.1"
         elif self._os == "linux" and self._arch == "amd64":
             platform_name = "linux-amd64-avx2"
         elif self._os == "linux" and self._arch == "arm64":
             platform_name = "linux-arm64-neon"
         elif self._os == "windows" and self._arch == "amd64" and self._device == "cuda":
             platform_name = "windows-amd64-cuda-12.4"
+        elif self._os == "windows" and self._arch == "amd64" and self._device == "rocm":
+            platform_name = "windows-amd64-hip-6.1"
         elif self._os == "windows" and self._arch == "amd64":
             platform_name = "windows-amd64-avx2"
         elif self._os == "windows" and self._arch == "arm64":
