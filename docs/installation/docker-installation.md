@@ -33,7 +33,7 @@ docker run -d --gpus all --ipc=host --network=host \
 
 !!! note
 
-    The `--network=host` flag is used to ensure that server is accessible to the worker and inference services running on it. Alternatively, you can set `--worker-ip <host-ip> -p 10150:10150 -p 40000-41024:40000-41024` to expose relevant ports.
+    The `--network=host` flag is used to ensure that server is accessible to the worker and inference services running on it. Alternatively, you can set `--worker-ip <host-ip> -p 10150:10150 -p 40000-41024:40000-41024 -p 50000-51024:50000-51024` to expose relevant ports.
 
 For configuration details, please refer to the [CLI Reference](../cli-reference/start.md).
 
