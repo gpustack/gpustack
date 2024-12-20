@@ -1,13 +1,13 @@
-# Inference with Function Calling
+# Inference with Tool Calling
 
-Function calling allows you to connect models to external tools and systems. This is useful for many things such as empowering AI assistants with capabilities, or building deep integrations between your applications and the models.
+Tool calling allows you to connect models to external tools and systems. This is useful for many things such as empowering AI assistants with capabilities, or building deep integrations between your applications and the models.
 
-In this tutorial, you’ll learn how to set up and use function calling within GPUStack to extend your AI’s capabilities.
+In this tutorial, you’ll learn how to set up and use tool calling within GPUStack to extend your AI’s capabilities.
 
 !!! note
 
-    1. Function calling is supported in the [vLLM](../user-guide/inference-backends.md#vllm) inference backend.
-    2. Function calling is essentially achieved through prompt engineering, requiring models to be trained with internalized templates to enable this capability. Therefore, not all LLMs support function calling.
+    1. Tool calling is supported in both [llama-box](../user-guide/inference-backends.md#llama-box) and [vLLM](../user-guide/inference-backends.md#vllm) inference backends.
+    2. Tool calling is essentially achieved through prompt engineering, requiring models to be trained with internalized templates to enable this capability. Therefore, not all LLMs support tool calling.
 
 ## Prerequisites
 
@@ -19,6 +19,23 @@ Before proceeding, ensure the following:
 
 ## Step 1: Deploy the Model
 
+You can deploy the model using either llama-box or vLLM. Choose one of the following methods according to your preference:
+
+### Example Using llama-box
+
+When you deploy GGUF models using llama-box, tool calling is enabled by default for models that support it.
+
+1. Navigate to the `Models` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
+2. Enable the `GGUF` checkbox to filter models by GGUF format.
+3. Use the search bar to find the `Qwen/Qwen2.5-7B-Instruct-GGUF` model.
+4. Click the `Save` button to deploy the model.
+
+![Deploy GGUF Model](../assets/tutorials/inference-with-tool-calling/deploy-model-gguf.png)
+
+### Example Using vLLM
+
+When you deploy models using vLLM, you need to enable tool calling with additional parameters.
+
 1. Navigate to the `Models` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
 2. Use the search bar to find the `Qwen/Qwen2.5-7B-Instruct` model.
 3. Expand the `Advanced` section in configurations and scroll down to the `Backend Parameters` section.
@@ -29,7 +46,7 @@ Before proceeding, ensure the following:
 
 5. Click the `Save` button to deploy the model.
 
-![Deploy Model](../assets/tutorials/inference-with-function-calling/deploy-model.png)
+![Deploy Model](../assets/tutorials/inference-with-tool-calling/deploy-model.png)
 
 After deployment, you can monitor the model's status on the `Models` page.
 
