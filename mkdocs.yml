@@ -90,6 +90,7 @@ nav:
       - Performing Distributed Inference Across Workers: tutorials/performing-distributed-inference-across-workers.md
       - Using Vision Language Models: tutorials/using-vision-language-models.md
       - Using Image Generation Models: tutorials/using-image-generation-models.md
+      - Recommended Parameters for Image Generation Models: tutorials/recommended-parameters-for-image-generation-models.md
       - Using Audio Models: tutorials/using-audio-models.md
       - Using Reranker Models: tutorials/using-reranker-models.md
       - Inference on CPUs: tutorials/inference-on-cpus.md
