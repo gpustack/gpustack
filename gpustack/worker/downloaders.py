@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
-from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.models import Model, get_extra_filename
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 
 logger = logging.getLogger(__name__)
@@ -35,26 +35,39 @@ class HfDownloader:
     _registry_url = "https://huggingface.co"
 
     @classmethod
-    def get_file_size(cls, repo_id: str, filename: str, token: Optional[str]) -> int:
+    def get_file_size(
+        cls,
+        repo_id: str,
+        filename: str,
+        extra_filename: Optional[str],
+        token: Optional[str],
+    ) -> int:
         api = HfApi(token=token)
         repo_info = api.repo_info(repo_id, files_metadata=True)
         total_size = sum(
             sibling.size
             for sibling in repo_info.siblings
-            if (not filename or fnmatch.fnmatch(sibling.rfilename, filename))
+            if (
+                not filename
+                or fnmatch.fnmatch(sibling.rfilename, filename)
+                or (
+                    extra_filename
+                    and fnmatch.fnmatch(sibling.rfilename, extra_filename)
+                )
+            )
             and sibling.size is not None
         )
 
         return total_size
 
     @classmethod
-    def get_model_file_size(
-        cls, model_instance: ModelInstance, token: Optional[str]
-    ) -> int:
+    def get_model_file_size(cls, model: Model, token: Optional[str]) -> int:
+
         return HfDownloader.get_file_size(
-            model_instance.huggingface_repo_id,
-            model_instance.huggingface_filename,
-            token,
+            repo_id=model.huggingface_repo_id,
+            filename=model.huggingface_filename,
+            extra_filename=get_extra_filename(model),
+            token=token,
         )
 
     @classmethod
@@ -62,6 +75,7 @@ class HfDownloader:
         cls,
         repo_id: str,
         filename: Optional[str],
+        extra_filename: Optional[str],
         token: Optional[str] = None,
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
@@ -91,7 +105,13 @@ class HfDownloader:
 
         if filename is not None:
             return cls.download_file(
-                repo_id, filename, token, local_dir, local_dir_use_symlinks, cache_dir
+                repo_id=repo_id,
+                filename=filename,
+                token=token,
+                local_dir=local_dir,
+                local_dir_use_symlinks=local_dir_use_symlinks,
+                cache_dir=cache_dir,
+                extra_filename=extra_filename,
             )
 
         return snapshot_download(
@@ -112,6 +132,7 @@ class HfDownloader:
         local_dir_use_symlinks: Union[bool, Literal["auto"]] = "auto",
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
         max_workers: int = 8,
+        extra_filename: Optional[str] = None,
     ) -> str:
         """Download a model from the Hugging Face Hub.
         Args:
@@ -124,7 +145,7 @@ class HfDownloader:
             The path to the downloaded model.
         """
 
-        matching_files = match_hugging_face_files(repo_id, filename)
+        matching_files = match_hugging_face_files(repo_id, filename, extra_filename)
 
         if len(matching_files) == 0:
             raise ValueError(f"No file found in {repo_id} that match {filename}")
@@ -462,22 +483,32 @@ class ModelScopeDownloader:
         cls,
         model_id: str,
         file_path: Optional[str],
+        extra_file_path: Optional[str],
     ) -> int:
         api = HubApi()
         repo_files = api.get_model_files(model_id, recursive=True)
         total_size = sum(
             sibling.get("Size")
             for sibling in repo_files
-            if (not file_path or fnmatch.fnmatch(sibling.get("Path", ""), file_path))
+            if (
+                not file_path
+                or fnmatch.fnmatch(sibling.get("Path", ""), file_path)
+                or (
+                    extra_file_path
+                    and fnmatch.fnmatch(sibling.get("Path", ""), extra_file_path)
+                )
+            )
             and "Size" in sibling
         )
 
         return total_size
 
     @classmethod
-    def get_model_file_size(cls, model_instance: ModelInstance) -> int:
+    def get_model_file_size(cls, model: Model) -> int:
         return ModelScopeDownloader.get_file_size(
-            model_instance.model_scope_model_id, model_instance.model_scope_file_path
+            model_id=model.model_scope_model_id,
+            file_path=model.model_scope_file_path,
+            extra_file_path=get_extra_filename(model),
         )
 
     @classmethod
@@ -485,6 +516,7 @@ class ModelScopeDownloader:
         cls,
         model_id: str,
         file_path: Optional[str],
+        extra_file_path: Optional[str],
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
     ) -> str:
         """Download a model from Model Scope.
@@ -508,16 +540,20 @@ class ModelScopeDownloader:
         logger.info("Retriving file lock")
         with FileLock(lock_filename):
             if file_path is not None:
-                matching_files = match_model_scope_file_paths(model_id, file_path)
+                matching_files = match_model_scope_file_paths(
+                    model_id, file_path, extra_file_path
+                )
                 if len(matching_files) == 0:
                     raise ValueError(
                         f"No file found in {model_id} that match {file_path}"
                     )
 
+                unfolder_matching_files = [Path(file).name for file in matching_files]
+
                 model_path = modelscope_snapshot_download(
                     model_id=model_id,
                     cache_dir=cache_dir,
-                    allow_patterns=file_path,
+                    allow_patterns=unfolder_matching_files,
                 )
                 return os.path.join(model_path, matching_files[0])
 
