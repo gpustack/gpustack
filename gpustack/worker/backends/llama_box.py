@@ -1,5 +1,7 @@
+import glob
 import logging
 import os
+from pathlib import Path
 import subprocess
 import sys
 import psutil
@@ -73,6 +75,11 @@ class LlamaBoxServer(InferenceServer):
         if self._model.image_only:
             arguments.extend(["--images", "--image-vae-tiling"])
 
+        mmproj = find_parameter(self._model.backend_parameters, ["mmproj"])
+        default_mmproj = get_mmproj_file(self._model_path)
+        if mmproj is None and default_mmproj:
+            arguments.extend(["--mmproj", default_mmproj])
+
         if rpc_servers:
             rpc_servers_argument = ",".join(rpc_servers)
             arguments.extend(["--rpc", rpc_servers_argument])
@@ -95,6 +102,7 @@ class LlamaBoxServer(InferenceServer):
             arguments.extend(["--tensor-split", tensor_split_argument])
 
         if self._model.backend_parameters:
+            self.normalize_mmproj_path()
             # append user-provided parameters
             for param in self._model.backend_parameters:
                 if "=" not in param:
@@ -138,6 +146,39 @@ class LlamaBoxServer(InferenceServer):
                 self._update_model_instance(self._model_instance.id, **patch_dict)
             except Exception as ue:
                 logger.error(f"Failed to update model instance: {ue}")
+
+    def normalize_mmproj_path(self):
+        """
+        We provide a syntax sugar for the user to specify the mmproj file relative to the model path.
+        So, users can specify --mmproj=mmproj.gguf instead of --mmproj=/path/to/mmproj.gguf.
+        This function normalizes the file path to the same directory of the model path and set it back to the backend parameters.
+        """
+
+        model_dir = Path(self._model_path).parent
+        mmproj_param = "--mmproj"
+        for i, param in enumerate(self._model.backend_parameters):
+            if '=' in param:
+                key, value = param.split('=', 1)
+                if key == mmproj_param and not Path(value).is_absolute():
+                    self._model.backend_parameters[i] = (
+                        f"{mmproj_param}={model_dir / value}"
+                    )
+            else:
+                if param == mmproj_param and i + 1 < len(
+                    self._model.backend_parameters
+                ):
+                    value = self._model.backend_parameters[i + 1]
+                    if not Path(value).is_absolute():
+                        self._model.backend_parameters[i + 1] = str(model_dir / value)
+
+
+def get_mmproj_file(model_path: str) -> str:
+    directory = os.path.dirname(model_path)
+    pattern = os.path.join(directory, '*mmproj*.gguf')
+    files = glob.glob(pattern)
+
+    if files:
+        return files[0]
 
 
 def set_priority(pid: int):

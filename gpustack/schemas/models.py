@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column
@@ -8,6 +9,7 @@ from sqlmodel import Field, Relationship, SQLModel
 from gpustack.schemas.common import PaginatedList, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.workers import RPCServer
+from gpustack.utils.command import find_parameter
 
 # Models
 
@@ -299,3 +301,17 @@ def get_backend(model: Model) -> str:
         return BackendEnum.VOX_BOX
 
     return BackendEnum.VLLM
+
+
+def get_extra_filename(model: Model) -> Optional[str]:
+    """
+    Get extra filename for the model. Currently mainly used for grabbing the mmproj file for VLMs.
+    """
+    if get_backend(model) != BackendEnum.LLAMA_BOX:
+        return None
+
+    mmproj = find_parameter(model.backend_parameters, ["mmproj"])
+    if mmproj and Path(mmproj).name == mmproj:
+        return mmproj
+
+    return "*mmproj*.gguf"

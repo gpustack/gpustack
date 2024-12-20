@@ -11,11 +11,13 @@ from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import (
+    Model,
     ModelInstance,
     ModelInstanceUpdate,
     SourceEnum,
     ModelInstanceStateEnum,
     get_backend,
+    get_extra_filename,
 )
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo
 from gpustack.utils import platform
@@ -67,45 +69,47 @@ def time_decorator(func):
 
 
 def download_model(
-    mi: ModelInstance,
+    model: Model,
     cache_dir: Optional[str] = None,
     ollama_library_base_url: Optional[str] = None,
     huggingface_token: Optional[str] = None,
 ) -> str:
-    if mi.source == SourceEnum.HUGGING_FACE:
+    if model.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.download(
-            repo_id=mi.huggingface_repo_id,
-            filename=mi.huggingface_filename,
+            repo_id=model.huggingface_repo_id,
+            filename=model.huggingface_filename,
+            extra_filename=get_extra_filename(model),
             token=huggingface_token,
             cache_dir=os.path.join(cache_dir, "huggingface"),
         )
-    elif mi.source == SourceEnum.OLLAMA_LIBRARY:
+    elif model.source == SourceEnum.OLLAMA_LIBRARY:
         ollama_downloader = OllamaLibraryDownloader(
             registry_url=ollama_library_base_url
         )
         return ollama_downloader.download(
-            model_name=mi.ollama_library_model_name,
+            model_name=model.ollama_library_model_name,
             cache_dir=os.path.join(cache_dir, "ollama"),
         )
-    elif mi.source == SourceEnum.MODEL_SCOPE:
+    elif model.source == SourceEnum.MODEL_SCOPE:
         return ModelScopeDownloader.download(
-            model_id=mi.model_scope_model_id,
-            file_path=mi.model_scope_file_path,
+            model_id=model.model_scope_model_id,
+            file_path=model.model_scope_file_path,
+            extra_file_path=get_extra_filename(model),
             cache_dir=os.path.join(cache_dir, "model_scope"),
         )
-    elif mi.source == SourceEnum.LOCAL_PATH:
-        return mi.local_path
+    elif model.source == SourceEnum.LOCAL_PATH:
+        return model.local_path
 
 
-def get_model_file_size(mi: ModelInstance, cfg: Config) -> Optional[int]:
-    if mi.source == SourceEnum.HUGGING_FACE:
+def get_model_file_size(model: Model, cfg: Config) -> Optional[int]:
+    if model.source == SourceEnum.HUGGING_FACE:
         return HfDownloader.get_model_file_size(
-            model_instance=mi,
+            model=model,
             token=cfg.huggingface_token,
         )
-    elif mi.source == SourceEnum.MODEL_SCOPE:
+    elif model.source == SourceEnum.MODEL_SCOPE:
         return ModelScopeDownloader.get_model_file_size(
-            model_instance=mi,
+            model=model,
         )
 
     return None
@@ -141,22 +145,23 @@ class InferenceServer(ABC):
     ):
         setup_logging(debug=cfg.debug)
 
-        model_file_size = get_model_file_size(mi, cfg)
-        if model_file_size:
-            logger.debug(f"Model file size: {model_file_size}")
-            self._model_file_size = model_file_size
-            self._model_downloaded_size = 0
-        # for download progress update frequency control
-        self._last_download_update_time = time.time()
-        self.hijack_tqdm_progress()
-
-        self._clientset = clientset
-        self._model_instance = mi
-        self._config = cfg
         try:
+            self._clientset = clientset
+            self._model_instance = mi
+            self._config = cfg
             self._model = self._clientset.models.get(id=mi.model_id)
-            self._until_model_instance_initializing()
 
+            model_file_size = get_model_file_size(self._model, cfg)
+            if model_file_size:
+                logger.debug(f"Model file size: {model_file_size}")
+                self._model_file_size = model_file_size
+                self._model_downloaded_size = 0
+
+            # for download progress update frequency control
+            self._last_download_update_time = time.time()
+            self.hijack_tqdm_progress()
+
+            self._until_model_instance_initializing()
             if self._model.backend_version:
                 tools_manager = ToolsManager(
                     tools_download_base_url=cfg.tools_download_base_url,
@@ -175,7 +180,7 @@ class InferenceServer(ABC):
             self._update_model_instance(mi.id, **patch_dict)
 
             self._model_path = download_model(
-                mi,
+                self._model,
                 cfg.cache_dir,
                 ollama_library_base_url=cfg.ollama_library_base_url,
                 huggingface_token=cfg.huggingface_token,

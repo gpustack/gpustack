@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 import fnmatch
 from huggingface_hub import HfFileSystem
@@ -12,7 +12,9 @@ from gpustack.schemas.models import Model, SourceEnum
 logger = logging.getLogger(__name__)
 
 
-def match_hugging_face_files(repo_id: str, filename: str) -> List[str]:
+def match_hugging_face_files(
+    repo_id: str, filename: str, extra_filename: Optional[str] = None
+) -> List[str]:
     validate_repo_id(repo_id)
 
     hffs = HfFileSystem()
@@ -29,10 +31,25 @@ def match_hugging_face_files(repo_id: str, filename: str) -> List[str]:
 
     matching_files = [file for file in file_list if fnmatch.fnmatch(file, filename)]  # type: ignore
     matching_files = sorted(matching_files)
+
+    if extra_filename is None:
+        return matching_files
+
+    extra_matching_files = [
+        file for file in file_list if fnmatch.fnmatch(file, extra_filename)
+    ]
+    extra_matching_files = sorted(extra_matching_files, reverse=True)
+    if extra_matching_files:
+        # Add the first element of the extra matching files to the matching files
+        # For example, when matches f16 and f32 mmproj files, prefer f32 over f16
+        matching_files.append(extra_matching_files[0])
+
     return matching_files
 
 
-def match_model_scope_file_paths(model_id: str, file_path: str) -> List[str]:
+def match_model_scope_file_paths(
+    model_id: str, file_path: str, extra_file_path: Optional[str] = None
+) -> List[str]:
     if '/' in file_path:
         root, _ = file_path.rsplit('/', 1)
     else:
@@ -44,6 +61,19 @@ def match_model_scope_file_paths(model_id: str, file_path: str) -> List[str]:
     file_paths = [file["Path"] for file in files]
     matching_paths = [p for p in file_paths if fnmatch.fnmatch(p, file_path)]
     matching_paths = sorted(matching_paths)
+
+    if extra_file_path is None:
+        return matching_paths
+
+    extra_matching_paths = [
+        p for p in file_paths if fnmatch.fnmatch(p, extra_file_path)
+    ]
+    extra_matching_paths = sorted(extra_matching_paths, reverse=True)
+    if extra_matching_paths:
+        # Add the first element of the extra matching paths to the matching paths
+        # For example, when matches f16 and f32 mmproj files, prefer f32 over f16
+        matching_paths.append(extra_matching_paths[0])
+
     return matching_paths
 
 
