@@ -96,7 +96,7 @@ nav:
       - Running Inference with Ascend NPUs: tutorials/running-inference-with-ascend-npus.md
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
       - Creating Text Embeddings: tutorials/creating-text-embeddings.md
-      - Inference with Function Calling: tutorials/inference-with-function-calling.md
+      - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
       - Running Inference with Moore Threads GPUs: tutorials/running-inference-with-moorethreads-gpus.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
