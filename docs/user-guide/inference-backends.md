@@ -36,6 +36,16 @@ After enabling CPU offloading, GPUStack prioritizes loading as many layers as po
 
 Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more others workers, offloading computation tasks to them.
 
+#### Multimodal Language Models
+
+Llama-box supports the following multimodal language models. When using a vision language model, image inputs are supported in the chat completion API.
+
+- Qwen2-VL
+
+!!! Note
+
+    When deploying a vision language model, GPUStack downloads and uses the multimodal projector file with the pattern `*mmproj*.gguf` by default. If multiple files match the pattern, GPUStack selects the file with higher precision (e.g., `f32` over `f16`). If the default pattern does not match the projector file or you want to use a specific one, you can customize the multimodal projector file by setting the `--mmproj` parameter in the model configuration. You can specify the relative path to the projector file in the model source. This syntax acts as shorthand, and GPUStack will download the file from the source and normalize the path when using it.
+
 ### Parameters Reference
 
 See the full list of supported parameters for llama-box [here](https://github.com/gpustack/llama-box#usage).
