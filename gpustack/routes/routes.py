@@ -7,6 +7,7 @@ from gpustack.routes import (
     debug,
     gpu_devices,
     model_instances,
+    model_sets,
     probes,
     proxy,
     update,
@@ -41,6 +42,9 @@ v1_admin_router.include_router(models.router, prefix="/models", tags=["Models"])
 v1_admin_router.include_router(workers.router, prefix="/workers", tags=["Workers"])
 v1_admin_router.include_router(
     model_instances.router, prefix="/model-instances", tags=["Model Instances"]
+)
+v1_admin_router.include_router(
+    model_sets.router, prefix="/model-sets", tags=["Model Sets"]
 )
 v1_admin_router.include_router(
     gpu_devices.router, prefix="/gpu-devices", tags=["GPU Devices"]

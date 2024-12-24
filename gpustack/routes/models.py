@@ -39,7 +39,11 @@ async def get_models(
 
     if params.watch:
         return StreamingResponse(
-            Model.streaming(session, fuzzy_fields=fuzzy_fields),
+            Model.streaming(
+                session,
+                fuzzy_fields=fuzzy_fields,
+                filter_func=lambda data: categories_filter(data, categories),
+            ),
             media_type="text/event-stream",
         )
 
@@ -62,6 +66,17 @@ async def get_models(
         page=params.page,
         per_page=params.perPage,
     )
+
+
+def categories_filter(data: Model, categories: Optional[List[str]]):
+    if not categories:
+        return True
+
+    data_categories = data.categories or []
+    if not data_categories and "" in categories:
+        return True
+
+    return any(category in data_categories for category in categories)
 
 
 @router.get("/{id}", response_model=ModelPublic)
