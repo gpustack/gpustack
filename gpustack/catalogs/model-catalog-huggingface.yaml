@@ -1,0 +1,84 @@
+- name: Llama3.3 70B Instruct
+  description: |
+    The Meta Llama 3.3 multilingual large language model (LLM) is an instruction tuned generative model in 70B (text in/text out). The Llama 3.3 instruction tuned text only model is optimized for multilingual dialogue use cases and outperforms many of the available open source and closed chat models on common industry benchmarks.
+  home: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF
+  icon: https://avatars.githubusercontent.com/u/153379578?s=200
+  template:
+    name: llama3.3-70b-instruct
+    source: huggingface
+    huggingface_repo_id: bartowski/Llama-3.3-70B-Instruct-GGUF
+    huggingface_filename: Llama-3.3-70B-Instruct-Q4_K_M.gguf
+    replicas: 1
+    backend: llama-box
+- name: Llama3.2 3B Instruct
+  description: |
+    The Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks.
+  home: https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF
+  icon: https://avatars.githubusercontent.com/u/153379578?s=200
+  template:
+    name: llama3.2-3b-instruct
+    source: huggingface
+    huggingface_repo_id: bartowski/Llama-3.2-3B-Instruct-GGUF
+    huggingface_filename: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+    replicas: 1
+    backend: llama-box
+- name: QwQ 32B Preview
+  description: |
+    QwQ-32B-Preview is an experimental research model developed by the Qwen Team, focused on advancing AI reasoning capabilities.
+  home: https://huggingface.co/bartowski/QwQ-32B-Preview-GGUF
+  icon: https://avatars.githubusercontent.com/u/141221163?s=200
+  template:
+    name: qwq-32b-preview
+    source: huggingface
+    huggingface_repo_id: bartowski/QwQ-32B-Preview-GGUF
+    huggingface_filename: QwQ-32B-Preview-Q4_K_M.gguf
+    replicas: 1
+    backend: llama-box
+- name: Qwen2.5 7B Instruct
+  description: |
+    Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  home: https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF
+  icon: https://avatars.githubusercontent.com/u/141221163?s=200
+  template:
+    name: qwen2.5-7b-instruct
+    source: huggingface
+    huggingface_repo_id: bartowski/Qwen2.5-7B-Instruct-GGUF
+    huggingface_filename: Qwen2.5-7B-Instruct-Q4_K_M.gguf
+    replicas: 1
+    backend: llama-box
+- name: Qwen2.5 0.5B Instruct
+  description: |
+    Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  home: https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF
+  icon: https://avatars.githubusercontent.com/u/141221163?s=200
+  template:
+    name: qwen2.5-0.5b-instruct
+    source: huggingface
+    huggingface_repo_id: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+    huggingface_filename: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+    replicas: 1
+    backend: llama-box
+- name: Stable Diffusion XL
+  description: |
+    Text-to-image diffusion model capable of generating photo-realistic images given any text input.
+  home: https://huggingface.co/gpustack/stable-diffusion-xl-1.0-turbo-GGUF
+  icon: ""
+  template:
+    name: stable-diffusion-xl
+    source: huggingface
+    huggingface_repo_id: gpustack/stable-diffusion-xl-1.0-turbo-GGUF
+    huggingface_filename: stable-diffusion-xl-1.0-turbo-Q4_1.gguf
+    replicas: 1
+    backend: llama-box
+- name: FLUX.1 Schnell
+  description: |
+    FLUX.1 [schnell] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
+  home: https://huggingface.co/gpustack/FLUX.1-schnell-GGUF
+  icon: ""
+  template:
+    name: flux.1-schnell
+    source: huggingface
+    huggingface_repo_id: gpustack/FLUX.1-schnell-GGUF
+    huggingface_filename: FLUX.1-schnell-Q4_1.gguf
+    replicas: 1
+    backend: llama-box

@@ -87,8 +87,8 @@ class ModelBase(SQLModel, ModelSource):
     image_only: bool = False
     reranker: bool = False
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
-    cpu_offloading: bool = False
-    distributed_inference_across_workers: bool = False
+    cpu_offloading: bool = True
+    distributed_inference_across_workers: bool = True
     worker_selector: Optional[Dict[str, str]] = Field(
         sa_column=Column(JSON), default={}
     )

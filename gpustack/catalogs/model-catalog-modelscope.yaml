@@ -1,0 +1,12 @@
+- name: Qwen2.5 0.5B Instruct
+  description: |
+    Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  home: https://modelscope.cn/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  icon: https://resouces.modelscope.cn/avatar/40c50d63-9e30-4589-9b79-0e46800b5cc3.png
+  template:
+    name: qwen2.5-0.5b-instruct
+    source: huggingface
+    model_scope_model_id: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    model_scope_file_path: qwen2.5-0.5b-instruct-q4_k_m.gguf
+    replicas: 1
+    backend: llama-box
