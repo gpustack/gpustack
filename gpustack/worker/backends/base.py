@@ -4,7 +4,7 @@ import os
 import sys
 import threading
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
 
 from gpustack.client.generated_clientset import ClientSet
@@ -34,6 +34,7 @@ lock = threading.Lock()
 ACCELERATOR_VENDOR_TO_ENV_NAME = {
     VendorEnum.NVIDIA: "CUDA_VISIBLE_DEVICES",
     VendorEnum.Huawei: "ASCEND_RT_VISIBLE_DEVICES",
+    VendorEnum.AMD: "ROCR_VISIBLE_DEVICES",
 }
 
 
@@ -303,7 +304,7 @@ class InferenceServer(ABC):
 
     @staticmethod
     def get_inference_running_env(
-        gpu_indexes: List[int] = None, gpu_devices: GPUDevicesInfo = None
+        gpu_indexes: List[int] = None, gpu_devices: GPUDevicesInfo = None, backend=None
     ):
         env = os.environ.copy()
         system = platform.system()
@@ -322,10 +323,51 @@ class InferenceServer(ABC):
 
             env_name = get_env_name_by_vendor(vendor)
             env[env_name] = ",".join([str(i) for i in gpu_indexes])
+            set_vllm_env(env, vendor, backend, gpu_indexes, gpu_devices)
+
             return env
         else:
             # TODO: support more.
             return None
+
+
+def set_vllm_env(
+    env: Dict[str, str],
+    vendor: VendorEnum,
+    backend: str,
+    gpu_indexes: List[int] = None,
+    gpu_devices: GPUDevicesInfo = None,
+):
+
+    system = platform.system()
+    if not gpu_indexes or not gpu_devices:
+        return
+
+    if system != "linux" or vendor != VendorEnum.AMD or backend != "vllm":
+        return
+
+    llvm = None
+    for g in gpu_devices:
+        if (
+            g.index in gpu_indexes
+            and g.labels.get("llvm")
+            and g.vendor == VendorEnum.AMD
+        ):
+            llvm = g.labels.get("llvm")
+            break
+
+    if llvm:
+        # vllm supports llvm target: gfx908;gfx90a;gfx942;gfx1100,
+        # try to use the similar LLVM target that is supported.
+        # https://docs.vllm.ai/en/v0.6.2/getting_started/amd-installation.html#build-from-source-rocm
+        # https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html
+        emulate_gfx_version = {
+            "gfx1101": "11.0.0",
+            "gfx1102": "11.0.0",
+        }
+
+        if emulate_gfx_version.get(llvm):
+            env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[llvm]
 
 
 def get_env_name_by_vendor(vendor: str) -> str:

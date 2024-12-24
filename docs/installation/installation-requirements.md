@@ -46,6 +46,7 @@ GPUStack supports the following accelerators:
 - [x] NVIDIA CUDA ([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
 - [x] Ascend CANN
 - [x] Moore Threads MUSA
+- [x] AMD ROCm
 
 Ensure all necessary drivers and libraries are installed on the system prior to installing GPUStack.
 
@@ -70,6 +71,12 @@ To use Moore Threads MUSA as an accelerator, ensure the following components are
 
 - [MUSA SDK](https://developer.mthreads.com/sdk/download/musa)
 - [MT Container Toolkits](https://developer.mthreads.com/sdk/download/CloudNative)(Optional, required for docker installation)
+
+### AMD ROCm
+
+To use AMD ROCm as an accelerator, ensure the following components are installed:
+
+- [ROCm](https://rocm.docs.amd.com/en/docs-6.1.0/)
 
 ## Networking Requirements
 
