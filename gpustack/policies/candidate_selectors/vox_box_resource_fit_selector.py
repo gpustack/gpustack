@@ -210,6 +210,10 @@ def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
     except ImportError:
         raise Exception("vox_box is not installed.")
 
+    if model.local_path is not None and not os.path.exists(model.local_path):
+        logger.debug(f"Model {model.name} local path {model.local_path} does not exist")
+        return
+
     box_cfg = VoxBoxConfig()
     box_cfg.cache_dir = cache_dir
     box_cfg.model = model.local_path
@@ -220,6 +224,10 @@ def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
         model_dict = estimate_model(box_cfg)
     except Exception as e:
         logger.error(f"Failed to estimate model {model.name}: {e}")
+        return
+
+    if model_dict is None:
+        logger.debug(f"model_dict is empty after estimate model {model.name}")
         return
 
     framework = model_dict.get("backend_framework", "")

@@ -39,8 +39,8 @@ class HfDownloader:
         cls,
         repo_id: str,
         filename: str,
-        extra_filename: Optional[str],
         token: Optional[str],
+        extra_filename: Optional[str] = None,
     ) -> int:
         api = HfApi(token=token)
         repo_info = api.repo_info(repo_id, files_metadata=True)
@@ -483,7 +483,7 @@ class ModelScopeDownloader:
         cls,
         model_id: str,
         file_path: Optional[str],
-        extra_file_path: Optional[str],
+        extra_file_path: Optional[str] = None,
     ) -> int:
         api = HubApi()
         repo_files = api.get_model_files(model_id, recursive=True)
