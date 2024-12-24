@@ -222,7 +222,16 @@ class Scheduler:
         architectures = getattr(pretrained_config, "architectures", []) or []
 
         # https://docs.vllm.ai/en/latest/models/supported_models.html#text-embedding
-        supported_embedding_architectures = ["Gemma2Model", "MistralModel"]
+        supported_embedding_architectures = [
+            "BertModel",
+            "Gemma2Model",
+            "MistralModel",
+            "LlamaModel",
+            "Qwen2Model",
+            "RobertaModel",
+            "RobertaForMaskedLM",
+            "XLMRobertaModel",
+        ]
         is_embedding_model = False
 
         for architecture in architectures:
