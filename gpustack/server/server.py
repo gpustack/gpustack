@@ -10,6 +10,7 @@ from gpustack.schemas.users import User
 from gpustack.security import JWTManager, generate_secure_password, get_secret_hash
 from gpustack.server.app import app
 from gpustack.config import Config
+from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
     ModelController,
     ModelInstanceController,
@@ -48,6 +49,8 @@ class Server:
 
         self._run_migrations()
         await self._prepare_data()
+
+        init_model_catalog(self._config.data_dir, self._config.model_catalog_file)
 
         self._start_sub_processes()
         self._start_scheduler()

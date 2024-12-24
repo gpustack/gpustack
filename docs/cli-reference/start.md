@@ -38,6 +38,7 @@ gpustack start [OPTIONS]
 | `--force-auth-localhost`            | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
 | `--ollama-library-base-url`         | `https://registry.ollama.ai`           | Base URL for the Ollama library.                                                                                                                    |
 | `--disable-update-check`            | `False`                                | Disable update check.                                                                                                                               |
+| `--model-catalog-file` value        | (empty)                                | Path or URL to the model catalog file.                                                                                                              |
 
 ### Worker Options
 
@@ -85,6 +86,7 @@ force_auth_localhost: false
 bootstrap_password: myadminpassword
 ollama_library_base_url: https://registry.mycompany.com
 disable_update_check: false
+model_catalog_file: /path_or_url/to/model_catalog_file
 
 # Worker Options
 server_url: http://myserver

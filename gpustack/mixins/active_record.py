@@ -3,7 +3,7 @@ import importlib
 import json
 import logging
 import math
-from typing import Any, AsyncGenerator, List, Optional, Union, overload, Tuple
+from typing import Any, AsyncGenerator, Callable, List, Optional, Union, overload, Tuple
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
@@ -380,6 +380,7 @@ class ActiveRecordMixin:
         session: AsyncSession,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
+        filter_func: Optional[Callable[[Any], bool]] = None,
     ) -> AsyncGenerator[str, None]:
         async for event in cls.subscribe(session):
             skip_event = False
@@ -399,6 +400,9 @@ class ActiveRecordMixin:
                     fuzzy_match = True
                     break
             if fuzzy_fields and not fuzzy_match:
+                continue
+
+            if filter_func and not filter_func(event.data):
                 continue
 
             # Convert the current instance to the corresponding Public class if exists

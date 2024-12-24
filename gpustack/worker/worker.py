@@ -12,6 +12,7 @@ from pathlib import Path
 
 from gpustack.config import Config
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
+from gpustack.server import catalog
 from gpustack.utils import platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
@@ -118,6 +119,7 @@ class Worker:
             device=self.get_device_by_gpu_devices(),
         )
         tools_manager.prepare_tools()
+        catalog.prepare_chat_templates(self._config.data_dir)
 
         try:
             asyncio.run(self.start_async())

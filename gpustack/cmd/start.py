@@ -157,6 +157,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help=argparse.SUPPRESS,
         default=get_gpustack_env("UPDATE_CHECK_URL"),
     )
+    group.add_argument(
+        "--model-catalog-file",
+        type=str,
+        help="Path or URL to the model catalog file.",
+        default=get_gpustack_env("MODEL_CATALOG_FILE"),
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -333,6 +339,7 @@ def set_server_options(args, config_data: dict):
         "ollama_library_base_url",
         "disable_update_check",
         "update_check_url",
+        "model_catalog_file",
     ]
 
     for option in options:

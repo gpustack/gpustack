@@ -1,0 +1,2058 @@
+- name: Llama3.3 Instruct
+  description: The Meta Llama 3.3 multilingual large language model (LLM) is an instruction tuned generative model in 70B (text in/text out). The Llama 3.3 instruction tuned text only model is optimized for multilingual dialogue use cases and outperforms many of the available open source and closed chat models on common industry benchmarks.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 70
+  licenses:
+    - llama3.3
+  release_date: "2024-12-06"
+  templates:
+    - quantizations: &default_f16_quantizations
+        - Q2_K
+        - Q3_K_M
+        - Q3_K_S
+        - Q4_0
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f16
+      source: huggingface
+      huggingface_repo_id: bartowski/Llama-3.3-70B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Llama-3.3-70B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-3.3-70B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.3-70B-Instruct
+      replicas: 1
+      backend: vllm
+- name: Llama3.2
+  description: The Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 1
+    - 3
+  licenses:
+    - llama3.2
+  release_date: "2024-09-25"
+  order: 2
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Llama-3.2-{size}B-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Llama-3.2-{size}B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-3.2-{size}B
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.2-{size}B
+      replicas: 1
+      backend: vllm
+- name: Llama3.2 Instruct
+  description: The Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 1
+    - 3
+  licenses:
+    - llama3.2
+  release_date: "2024-09-25"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Llama-3.2-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Llama-3.2-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-3.2-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.2_json.jinja
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.2-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.2_json.jinja
+- name: Llama3.1 Instruct
+  description: The Meta Llama 3.1 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction tuned generative models in 8B, 70B and 405B sizes (text in/text out). The Llama 3.1 instruction tuned text only models (8B, 70B, 405B) are optimized for multilingual dialogue use cases and outperform many of the available open source and closed chat models on common industry benchmarks.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes: [8, 70, 405]
+  licenses:
+    - llama3.1
+  release_date: "2024-07-23"
+  templates:
+    - quantizations: &default_f32_quantizations
+        - Q2_K
+        - Q3_K_M
+        - Q3_K_S
+        - Q4_0
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f32
+      source: huggingface
+      huggingface_repo_id: bartowski/Meta-Llama-3.1-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f32_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Meta-Llama-3.1-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: meta-llama/Llama-3.1-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.1_json.jinja
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: meta-llama/Llama-3.1-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.1_json.jinja
+- name: Qwen2.5
+  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes: [0.5, 1.5, 3, 7, 14, 32, 72]
+  licenses:
+    - apache-2.0
+    - qwen-research
+  release_date: "2024-09-19"
+  order: 1
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2.5-{size}B-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2.5-{size}B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-{size}B
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-{size}B
+      replicas: 1
+      backend: vllm
+- name: Qwen2.5 Instruct
+  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes: [0.5, 1.5, 3, 7, 14, 32, 72]
+  licenses:
+    - apache-2.0
+    - qwen-research
+  release_date: "2024-09-19"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+- name: Qwen2.5 Coder
+  description: Qwen2.5-Coder is the latest series of Code-Specific Qwen large language models (formerly known as CodeQwen). As of now, Qwen2.5-Coder has covered six mainstream model sizes, 0.5, 1.5, 3, 7, 14, 32 billion parameters, to meet the needs of different developers.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes: [0.5, 1.5, 3, 7, 14, 32]
+  licenses:
+    - apache-2.0
+  release_date: "2024-11-12"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-Coder-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-Coder-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+- name: QwQ Preview
+  description: QwQ-32B-Preview is an experimental research model developed by the Qwen Team, focused on advancing AI reasoning capabilities.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 32
+  licenses:
+    - apache-2.0
+  release_date: "2024-11-28"
+  templates:
+    - quantizations: &default_bf16_quantizations
+        - Q2_K
+        - Q3_K_M
+        - Q3_K_S
+        - Q4_0
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - bf16
+      source: huggingface
+      huggingface_repo_id: bartowski/QwQ-32B-Preview-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_bf16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/QwQ-32B-Preview-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/QwQ-32B-Preview
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: Qwen/QwQ-32B-Preview
+      replicas: 1
+      backend: vllm
+- name: Mistral Instruct
+  description: The 7B model released by Mistral AI, updated to version 0.3.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+    - tools
+  sizes:
+    - 7
+  licenses:
+    - apache-2.0
+  release_date: "2024-05-22"
+  templates:
+    - quantizations: *default_f32_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Mistral-7B-Instruct-v0.3-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f32_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-7B-Instruct-v0.3-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/mistral-7b-instruct-v0.3
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/mistral-7b-instruct-v0.3
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+- name: Mistral Small Instruct
+  description: Mistral Small is a lightweight model designed for cost-effective use in tasks like translation and summarization.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 22
+  licenses:
+    - mrl
+  release_date: "2024-09-17"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Mistral-Small-Instruct-2409-GGUF
+      huggingface_filename: "-*{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-Small-Instruct-2409-GGUF
+      model_scope_file_path: "-*{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: AI-ModelScope/Mistral-Small-Instruct-2409
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/Mistral-Small-Instruct-2409
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+- name: Mistral Large Instruct
+  description: Mistral Large 2 is Mistral's new flagship model that is significantly more capable in code generation, mathematics, and reasoning with 128k context window and support for dozens of languages.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 123
+  licenses:
+    - mrl
+  release_date: "2024-11-18"
+  templates:
+    - quantizations: &default_quantizations
+        - Q2_K
+        - Q3_K_M
+        - Q3_K_S
+        - Q4_0
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: bartowski/Mistral-Large-Instruct-2411-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-Large-Instruct-2411-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: mistral-community/Mistral-Large-Instruct-2411
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: mistral-community/Mistral-Large-Instruct-2411
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+- name: Mistral Nemo Instruct
+  description: The Mistral-Nemo-Instruct-2407 Large Language Model (LLM) is an instruct fine-tuned version of the Mistral-Nemo-Base-2407. Trained jointly by Mistral AI and NVIDIA, it significantly outperforms existing models smaller or similar in size.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 12
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-18"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Mistral-Nemo-Instruct-2407-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-Nemo-Instruct-2407-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/Mistral-Nemo-Instruct-2407
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/Mistral-Nemo-Instruct-2407
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
+- name: Codestral
+  description: Codestral is Mistral AI’s first-ever code model designed for code generation tasks. Codestral is trained on a diverse dataset of 80+ programming languages, including the most popular ones, such as Python, Java, C, C++, JavaScript, and Bash.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+  sizes:
+    - 22
+  licenses:
+    - mnpl
+  release_date: "2024-05-29"
+  templates:
+    - quantizations: *default_f32_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Codestral-22B-v0.1-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f32_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Codestral-22B-v0.1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: mistralai/Codestral-22B-v0.1
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: LLM-Research/Codestral-22B-v0.1
+      replicas: 1
+      backend: vllm
+- name: Gemma 2 Instruct
+  description: Gemma is a family of lightweight, state-of-the-art open models from Google, built from the same research and technology used to create the Gemini models. They are text-to-text, decoder-only large language models, available in English, with open weights for both pre-trained variants and instruction-tuned variants. Gemma models are well-suited for a variety of text generation tasks, including question answering, summarization, and reasoning. Their relatively small size makes it possible to deploy them in environments with limited resources such as a laptop, desktop or your own cloud infrastructure, democratizing access to state of the art AI models and helping foster innovation for everyone.
+  home: https://ai.google.dev/gemma
+  icon: /static/catalog_icons/google.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes: [2, 9, 27]
+  licenses:
+    - gemma
+  release_date: "2024-07-16"
+  templates:
+    - quantizations: *default_f32_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/gemma-2-{size}b-it-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f32_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/gemma-2-{size}b-it-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/gemma-2-{size}b-it
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/gemma-2-{size}b-it
+      replicas: 1
+      backend: vllm
+- name: Phi3.5 Mini
+  description: Phi-3.5-mini is a lightweight, state-of-the-art open model built upon datasets used for Phi-3 - synthetic data and filtered publicly available websites - with a focus on very high-quality, reasoning dense data. The model belongs to the Phi-3 model family and supports 128K token context length. The model underwent a rigorous enhancement process, incorporating both supervised fine-tuning, proximal policy optimization, and direct preference optimization to ensure precise instruction adherence and robust safety measures.
+  home: https://azure.microsoft.com/en-us/products/phi
+  icon: /static/catalog_icons/microsoft.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 3.8
+  licenses:
+    - mit
+  release_date: "2024-08-16"
+  templates:
+    - quantizations: *default_f32_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Phi-3.5-mini-instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f32_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Phi-3.5-mini-instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: microsoft/Phi-3.5-mini-instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/Phi-3.5-mini-instruct
+      replicas: 1
+      backend: vllm
+- name: Deepseek V2.5
+  description: DeepSeek-V2.5 is an upgraded version that combines DeepSeek-V2-Chat and DeepSeek-Coder-V2-Instruct. The new model integrates the general and coding abilities of the two previous versions.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 236
+  licenses:
+    - deepseek
+  release_date: "2024-12-10"
+  templates:
+    - quantizations: *default_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/DeepSeek-V2.5-1210-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/DeepSeek-V2.5-1210-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/DeepSeek-V2.5-1210
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V2.5-1210
+      replicas: 1
+      backend: vllm
+- name: Deepseek V3
+  description: DeepSeek-V3 is a strong Mixture-of-Experts (MoE) language model with 671B total parameters with 37B activated for each token. To achieve efficient inference and cost-effective training, DeepSeek-V3 adopts Multi-head Latent Attention (MLA) and DeepSeekMoE architectures, which were thoroughly validated in DeepSeek-V2. Furthermore, DeepSeek-V3 pioneers an auxiliary-loss-free strategy for load balancing and sets a multi-token prediction training objective for stronger performance.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 671
+  licenses:
+    - deepseek
+  release_date: "2024-12-26"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/DeepSeek-V3
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V3
+      replicas: 1
+      backend: vllm
+- name: Yi1.5
+  description: Yi 1.5 is a high-performing, bilingual language model.
+  home: https://www.01.ai
+  icon: /static/catalog_icons/01ai.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+  sizes: [6, 9, 34]
+  licenses:
+    - apache-2.0
+  release_date: "2024-05-12"
+  templates:
+    - quantizations: *default_f32_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Yi-1.5-{size}B-Chat-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f32_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Yi-1.5-{size}B-Chat-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: 01-ai/Yi-1.5-{size}B-Chat
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: 01ai/Yi-1.5-{size}B-Chat
+      replicas: 1
+      backend: vllm
+- name: Command R
+  description: C4AI Command R (08-2024) is a research release of a 32 billion parameter highly performant generative model. Command R (08-2024) is a large language model with open weights optimized for a variety of use cases including reasoning, summarization, and question answering. Command R (08-2024) has the capability for multilingual generation, trained on 23 languages and evaluated in 10 languages and highly performant RAG capabilities.
+  home: https://cohere.com
+  icon: /static/catalog_icons/cohere.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 32
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2024-08-20"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/c4ai-command-r-08-2024-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/c4ai-command-r-08-2024-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/c4ai-command-r-08-2024
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/c4ai-command-r-08-2024
+      replicas: 1
+      backend: vllm
+- name: Falcon3
+  description: Falcon3 family of Open Foundation Models is a set of pretrained and instruct LLMs ranging from 1B to 10B parameters.
+  home: https://www.tii.ae
+  icon: /static/catalog_icons/falcon3.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+  sizes: [1, 3, 7, 10]
+  licenses:
+    - falcon-llm-license
+  release_date: "2024-12-17"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Falcon3-{size}B-Base-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Falcon3-{size}B-Base-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: tiiuae/Falcon3-{size}B-Base
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: tiiuae/Falcon3-{size}B-Base
+      replicas: 1
+      backend: vllm
+- name: Falcon3 Instruct
+  description: Falcon3 family of Open Foundation Models is a set of pretrained and instruct LLMs ranging from 1B to 10B parameters.
+  home: https://www.tii.ae
+  icon: /static/catalog_icons/falcon3.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+  sizes: [1, 3, 7, 10]
+  licenses:
+    - falcon-llm-license
+  release_date: "2024-12-17"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Falcon3-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Falcon3-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: tiiuae/Falcon3-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: tiiuae/Falcon3-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+- name: Granite3.1 Instruct
+  description: Granite is a family of AI models purpose-built for business, engineered from the ground up to ensure trust and scalability in AI-driven applications.
+  home: https://www.ibm.com/granite
+  icon: /static/catalog_icons/ibm.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes: [2, 8]
+  licenses:
+    - apache-2.0
+  release_date: "2024-12-18"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/granite-3.1-{size}b-instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/granite-3.1-{size}b-instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: ibm-granite/granite-3.1-{size}b-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=granite
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/granite-3.1-{size}b-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=granite
+# Vision language models
+- name: Qwen2 VL
+  description: Qwen2-VL is the latest iteration of Qwen-VL models developed by Alibaba. Qwen2-VL achieves state-of-the-art performance on visual understanding benchmarks, including MathVista, DocVQA, RealWorldQA, MTVQA, etc.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+    - vision
+  sizes: [2, 7, 72]
+  licenses:
+    - apache-2.0
+    - qwen
+  release_date: "2024-08-29"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2-VL-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2-VL-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2-VL-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2-VL-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+- name: QvQ Preview
+  description: QVQ-72B-Preview is an experimental research model developed by the Qwen team, focusing on enhancing visual reasoning capabilities.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - vision
+  sizes:
+    - 72
+  licenses:
+    - qwen
+  release_date: "2024-12-25"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: huggingface
+      huggingface_repo_id: bartowski/QVQ-72B-Preview-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/QVQ-72B-Preview-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/QVQ-72B-Preview
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: Qwen/QVQ-72B-Preview
+      replicas: 1
+      backend: vllm
+- name: Llama3.2 Vision
+  description: The Llama 3.2-Vision collection of multimodal large language models (LLMs) is a collection of pretrained and instruction-tuned image reasoning generative models in 11B and 90B sizes (text + images in / text out). The Llama 3.2-Vision instruction-tuned models are optimized for visual recognition, image reasoning, captioning, and answering general questions about an image. The models outperform many of the available open source and closed multimodal models on common industry benchmarks.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - vision
+  sizes:
+    - 11
+    - 90
+  licenses:
+    - llama3.2
+  release_date: "2024-09-25"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-3.2-{size}B-Vision-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enforce-eager
+        - --max-num-seqs=16
+        - --max-model-len=8192
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.2-{size}B-Vision-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enforce-eager
+        - --max-num-seqs=16
+        - --max-model-len=8192
+- name: Pixtral
+  description: The Pixtral-12B-2409 is a Multimodal Model of 12B parameters plus a 400M parameter vision encoder.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - vision
+  sizes:
+    - 12
+  licenses:
+    - apache-2.0
+  release_date: "2024-09-11"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: mistralai/Pixtral-12B-2409
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --tokenizer-mode=mistral
+        - --limit-mm-per-prompt=image=4
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/Pixtral-12B-2409
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --tokenizer-mode=mistral
+        - --limit-mm-per-prompt=image=4
+- name: Phi3.5 Vision
+  description: Phi-3.5-vision is a lightweight, state-of-the-art open multimodal model built upon datasets which include - synthetic data and filtered publicly available websites - with a focus on very high-quality, reasoning dense data both on text and vision. The model belongs to the Phi-3 model family, and the multimodal version comes with 128K context length (in tokens) it can support. The model underwent a rigorous enhancement process, incorporating both supervised fine-tuning and direct preference optimization to ensure precise instruction adherence and robust safety measures.
+  home: https://azure.microsoft.com/en-us/products/phi
+  icon: /static/catalog_icons/microsoft.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - vision
+  sizes:
+    - 4
+  licenses:
+    - mit
+  release_date: "2024-08-22"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: microsoft/Phi-3.5-vision-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: LLM-Research/Phi-3.5-vision-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+# Embedding models
+- name: BGE M3
+  description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  licenses:
+    - mit
+  release_date: "2024-01-28"
+  templates:
+    - quantizations: &embedding_quantizations
+        - Q2_K
+        - Q3_K
+        - Q4_0
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/bge-m3-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/bge-m3-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: BCE Embedding Base V1
+  description: Bilingual and Crosslingual Embedding (BCEmbedding) in English and Chinese, developed by NetEase Youdao, encompasses EmbeddingModel and RerankerModel. The EmbeddingModel specializes in generating semantic vectors, playing a crucial role in semantic search and question-answering.
+  home: https://github.com/netease-youdao/BCEmbedding
+  icon: /static/catalog_icons/youdao.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/768
+    - max_tokens/512
+  licenses:
+    - apache-2.0
+  release_date: "2024-01-05"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/bce-embedding-base_v1-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/bce-embedding-base_v1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Jina Embeddings V2 Base EN
+  description: Jina-embeddings-v2-base-en is an English, monolingual embedding model supporting 8192 sequence length. It is based on a BERT architecture (JinaBERT) that supports the symmetric bidirectional variant of ALiBi to allow longer sequence length. The backbone jina-bert-v2-base-en is pretrained on the C4 dataset. The model is further trained on Jina AI's collection of more than 400 millions of sentence pairs and hard negatives. These pairs were obtained from various domains and were carefully selected through a thorough cleaning process.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/768
+    - max_tokens/8192
+  licenses:
+    - apache-2.0
+  release_date: "2024-01-25"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/jina-embeddings-v2-base-en-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/jina-embeddings-v2-base-en-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Jina Embeddings V2 Base ZH
+  description: jina-embeddings-v2-base-zh is a Chinese/English bilingual text embedding model supporting 8192 sequence length. It is based on a BERT architecture (JinaBERT) that supports the symmetric bidirectional variant of ALiBi to allow longer sequence length. We have designed it for high performance in mono-lingual & cross-lingual applications and trained it specifically to support mixed Chinese-English input without bias.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/768
+    - max_tokens/8192
+  licenses:
+    - apache-2.0
+  release_date: "2024-01-25"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/jina-embeddings-v2-base-zh-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/jina-embeddings-v2-base-zh-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+# Reranker models
+- name: BGE Reranker V2 M3
+  description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
+  home: https://github.com/FlagOpen/FlagEmbedding
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - reranker
+  licenses:
+    - apache-2.0
+  release_date: "2024-03-19"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/bge-reranker-v2-m3-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/bge-reranker-v2-m3-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: BCE Reranker Base V1
+  description: Bilingual and Crosslingual Embedding (BCEmbedding) in English and Chinese, developed by NetEase Youdao, encompasses EmbeddingModel and RerankerModel. The Reranker model excels at refining search results and ranking tasks.
+  home: https://github.com/netease-youdao/BCEmbedding
+  icon: /static/catalog_icons/youdao.png
+  categories:
+    - reranker
+  licenses:
+    - apache-2.0
+  release_date: "2023-12-29"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/bce-reranker-base_v1-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/bce-reranker-base_v1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: GTE Multilingual Reranker Base
+  description: The gte-multilingual-reranker-base model is the first reranker model in the GTE family of models, developed by Alibaba-NLP.
+  home: https://huggingface.co/Alibaba-NLP/gte-multilingual-reranker-base
+  icon: /static/catalog_icons/alibaba.png
+  categories:
+    - reranker
+  licenses:
+    - apache-2.0
+  release_date: "2024-08-09"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/gte-multilingual-reranker-base-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/gte-multilingual-reranker-base-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Jina Reranker V2 Base Multilingual
+  description: The Jina Reranker v2 (jina-reranker-v2-base-multilingual) is a transformer-based model that has been fine-tuned for text reranking task, which is a crucial component in many information retrieval systems. It is a cross-encoder model that takes a query and a document pair as input and outputs a score indicating the relevance of the document to the query. The model is trained on a large dataset of query-document pairs and is capable of reranking documents in multiple languages with high accuracy.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - reranker
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2024-06-26"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/jina-reranker-v2-base-multilingual-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/jina-reranker-v2-base-multilingual-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Jina Reranker V1 Turbo EN
+  description: This model is designed for blazing-fast reranking while maintaining competitive performance. What's more, it leverages the power of our JinaBERT model as its foundation. JinaBERT itself is a unique variant of the BERT architecture that supports the symmetric bidirectional variant of ALiBi.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - reranker
+  licenses:
+    - apache-2.0
+  release_date: "2024-04-19"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/jina-reranker-v1-turbo-en-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/jina-reranker-v1-turbo-en-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Jina Reranker V1 Tiny EN
+  description: This model is designed for blazing-fast reranking while maintaining competitive performance. What's more, it leverages the power of our JinaBERT model as its foundation. JinaBERT itself is a unique variant of the BERT architecture that supports the symmetric bidirectional variant of ALiBi.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - reranker
+  licenses:
+    - apache-2.0
+  release_date: "2024-04-19"
+  templates:
+    - quantizations: *embedding_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/jina-reranker-v1-tiny-en-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *embedding_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/jina-reranker-v1-tiny-en-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+# Image models
+- name: Stable Diffusion v3.5 Large
+  description: Stable Diffusion 3.5 Large is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - stabilityai-ai-community
+  release_date: "2024-10-22"
+  templates:
+    - quantizations: &image_quantizations
+        - Q4_0
+        - Q4_1
+        - Q8_0
+        - FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-GGUF
+      huggingface_filename: "*large-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-large-GGUF
+      model_scope_file_path: "*large-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v3.5 Large Turbo
+  description: Stable Diffusion 3.5 Large Turbo is a Multimodal Diffusion Transformer (MMDiT) text-to-image model with Adversarial Diffusion Distillation (ADD) that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency, with a focus on fewer inference steps.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - stabilityai-ai-community
+  release_date: "2024-10-22"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-turbo-GGUF
+      huggingface_filename: "*turbo-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-large-turbo-GGUF
+      model_scope_file_path: "*turbo-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v3.5 Medium
+  description: Stable Diffusion 3.5 Medium is a Multimodal Diffusion Transformer with improvements (MMDiT-X) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - stabilityai-ai-community
+  release_date: "2024-10-22"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-5-medium-GGUF
+      huggingface_filename: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-medium-GGUF
+      model_scope_file_path: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v3 Medium
+  description: Stable Diffusion 3 Medium is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features greatly improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - stabilityai-ai-community
+  release_date: "2024-06-12"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-medium-GGUF
+      huggingface_filename: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-medium-GGUF
+      model_scope_file_path: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion XL
+  description: SDXL is a model that can be used to generate and modify images based on text prompts. It is a Latent Diffusion Model that uses two fixed, pretrained text encoders (OpenCLIP-ViT/G and CLIP-ViT/L).
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - openrail++
+  release_date: "2023-07-26"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-xl-base-1.0-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-base-1.0-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion XL Turbo
+  description: SDXL-Turbo is a fast generative text-to-image model that can synthesize photorealistic images from a text prompt in a single network evaluation.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - sai-nc-community
+  release_date: "2023-11-28"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-xl-1.0-turbo-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-1.0-turbo-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion XL Refiner
+  description: SDXL consists of an ensemble of experts pipeline for latent diffusion. In a first step, the base model ( https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) is used to generate (noisy) latents, which are then further processed with a refinement model specialized for the final denoising steps.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - openrail++
+  release_date: "2023-07-26"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-xl-refiner-1.0-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-refiner-1.0-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion XL Inpainting
+  description: SD-XL Inpainting (0.1) is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input, with the extra capability of inpainting the pictures by using a mask.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - openrail++
+  release_date: "2023-09-01"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-xl-inpainting-1.0-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-inpainting-1.0-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v2.1
+  description: This stable-diffusion-2-1 model is fine-tuned from stable-diffusion-2 (768-v-ema.ckpt) with an additional 55k steps on the same dataset (with punsafe=0.1), and then fine-tuned for another 155k extra steps with punsafe=0.98.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - openrail++
+  release_date: "2022-12-20"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v2-1-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v2-1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v2.1 Turbo
+  description: SD-Turbo is a fast generative text-to-image model that can synthesize photorealistic images from a text prompt in a single network evaluation. We release SD-Turbo as a research artifact, and to study small, distilled text-to-image models. For increased quality and prompt understanding, we recommend SDXL-Turbo.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - stabilityai-ai-community
+  release_date: "2023-12-01"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v2-1-turbo-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v2-1-turbo-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v2 Inpainting
+  description: This stable-diffusion-2-inpainting model is resumed from stable-diffusion-2-base (512-base-ema.ckpt) and trained for another 200k steps. Follows the mask-generation strategy presented in LAMA which, in combination with the latent VAE representations of the masked image, are used as an additional conditioning.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - openrail++
+  release_date: "2022-12-14"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v2-inpainting-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v2-inpainting-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v1.5 Inpainting
+  description: Stable Diffusion Inpainting is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input, with the extra capability of inpainting the pictures by using a mask.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - creativeml-openrail-m
+  release_date: "2022-11-24"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v1-5-inpainting-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v1-5-inpainting-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Stable Diffusion v1.5
+  description: Stable Diffusion is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input.
+  home: https://stability.ai
+  icon: /static/catalog_icons/stability.png
+  categories:
+    - image
+  licenses:
+    - creativeml-openrail-m
+  release_date: "2022-11-24"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v1-5-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v1-5-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: FLUX.1 Dev
+  description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  categories:
+    - image
+  licenses:
+    - flux-1-dev-non-commercial-license
+  release_date: "2024-08-02"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-dev-GGUF
+      huggingface_filename: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-dev-GGUF
+      model_scope_file_path: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: FLUX.1 Schnell
+  description: FLUX.1 [schnell] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2024-08-02"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-schnell-GGUF
+      huggingface_filename: "*schnell-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-schnell-GGUF
+      model_scope_file_path: "*schnell-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: FLUX.1 Fill Dev
+  description: FLUX.1 Fill [dev] is a 12 billion parameter rectified flow transformer capable of filling areas in existing images based on a text description.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  categories:
+    - image
+  licenses:
+    - flux-1-dev-non-commercial-license
+  release_date: "2024-11-25"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-Fill-dev-GGUF
+      huggingface_filename: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-Fill-dev-GGUF
+      model_scope_file_path: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: FLUX.1 Lite
+  description: Flux.1 Lite is an 8B parameter transformer model distilled from the FLUX.1-dev model. This version uses 7 GB less RAM and runs 23% faster while maintaining the same precision (bfloat16) as the original model.
+  home: https://huggingface.co/Freepik/flux.1-lite-8B-alpha
+  icon: /static/catalog_icons/freepik.jpeg
+  categories:
+    - image
+  licenses:
+    - flux-1-dev-non-commercial-license
+  release_date: "2024-10-23"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-lite-GGUF
+      huggingface_filename: "*lite-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-lite-GGUF
+      model_scope_file_path: "*lite-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: FLUX.1 Mini
+  description: A 3.2B MMDiT distilled from Flux-dev for efficient text-to-image generation.
+  home: https://huggingface.co/TencentARC/flux-mini
+  icon: /static/catalog_icons/tencentARC.png
+  categories:
+    - image
+  licenses:
+    - flux-1-dev-non-commercial-license
+  release_date: "2024-11-15"
+  templates:
+    - quantizations: *image_quantizations
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-mini-GGUF
+      huggingface_filename: "*mini-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-mini-GGUF
+      model_scope_file_path: "*mini-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+# Audio models
+- name: Faster Whisper Large v3
+  description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-11-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-large-v3
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-large-v3
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Large v2
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-large-v2 to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-large-v2
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-large-v2
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Medium
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-medium to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-medium
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-medium
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Medium EN
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. The English-only models were trained on the task of speech recognition. This is the conversion of openai/whisper-medium.en to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-medium.en
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-medium.en
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Small
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-small to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-small
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-small
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Small EN
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-small.en to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-small.en
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-small.en
+      replicas: 1
+      backend: vox-box
+- name: Faster Distil Whisper Large v3
+  description: This is the third and final installment of the Distil-Whisper English series. It the knowledge distilled version of OpenAI's Whisper large-v3, the latest and most performant Whisper model to date. This is the conversion of distil-whisper/distil-large-v3 to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2024-03-25"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-distil-whisper-large-v3
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-distil-whisper-large-v3
+      replicas: 1
+      backend: vox-box
+- name: Faster Distil Whisper Large v2
+  description: It is a distilled version of the Whisper model that is 6 times faster, 49% smaller, and performs within 1% WER on out-of-distribution evaluation sets. This is the conversion of distil-whisper/distil-large-v2 to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2024-01-19"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-distil-whisper-large-v2
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-distil-whisper-large-v2
+      replicas: 1
+      backend: vox-box
+- name: Faster Distil Whisper Medium EN
+  description: It is a distilled version of the Whisper model that is 6 times faster, 49% smaller, and performs within 1% WER on out-of-distribution evaluation sets. This is the conversion of distil-whisper/distil-medium.en to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-01-19"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-distil-whisper-medium.en
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-distil-whisper-medium.en
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Tiny
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-tiny to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-tiny
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-tiny
+      replicas: 1
+      backend: vox-box
+- name: Faster Whisper Tiny EN
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-tiny.en to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-tiny.en
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-tiny.en
+      replicas: 1
+      backend: vox-box
+- name: CosyVoice 300M
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: FunAudioLLM/CosyVoice-300M
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: iic/CosyVoice-300M
+      replicas: 1
+      backend: vox-box
+- name: CosyVoice 300M Instruct
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: FunAudioLLM/CosyVoice-300M-Instruct
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: iic/CosyVoice-300M-Instruct
+      replicas: 1
+      backend: vox-box
+- name: CosyVoice 300M SFT
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  templates:
+    - quantizations: ["FP16"]
+      source: huggingface
+      huggingface_repo_id: FunAudioLLM/CosyVoice-300M-SFT
+      replicas: 1
+      backend: vox-box
+    - quantizations: ["FP16"]
+      source: model_scope
+      model_scope_model_id: iic/CosyVoice-300M-SFT
+      replicas: 1
+      backend: vox-box
