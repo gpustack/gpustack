@@ -13,12 +13,14 @@ on:
       - "**.png"
       - "**.jpg"
       - "**.gif"
+      - "Dockerfile.rocm.base"
   pull_request:
     branches: [main]
     paths:
       - "Dockerfile"
       - "Dockerfile.*"
       - ".github/workflows/docker-ci.yaml"
+      - "!Dockerfile.rocm.base"
 
 jobs:
   publish-docker:
@@ -30,7 +32,7 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        device: ["cuda", "musa", "npu", "cpu"]
+        device: ["cuda", "musa", "npu", "rocm", "cpu"]
     env:
       PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}}
       PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
@@ -40,8 +42,11 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Free Space
-        uses: jlumbroso/free-disk-space@v1.3.1
+      - name: Maximize Docker Build Space
+        uses: gpustack/.github/.github/actions/maximize-docker-build-space@main
+        with:
+          deep-clean: false
+          root-reserve-mb: 20480
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -76,8 +81,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           file: ${{ github.workspace }}/${{ matrix.device == 'cuda' && 'Dockerfile' || format('Dockerfile.{0}', matrix.device) }}
           context: ${{ github.workspace }}
-          platforms: "linux/amd64,linux/arm64"
+          platforms: ${{ matrix.device == 'rocm' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           provenance: true
           sbom: true
+          build-args: |
+            ${{ matrix.device == 'rocm' && 'BUILD_FA="0"' || '' }}

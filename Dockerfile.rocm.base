@@ -1,0 +1,198 @@
+# Refer to and modify the Dockerfile: 
+# https://github.com/vllm-project/vllm/blob/v0.6.5/Dockerfile.rocm
+# https://github.com/ROCm/rocm-examples/blob/rocm-6.3.0/Dockerfiles/hip-libraries-rocm-ubuntu.Dockerfile
+ARG UBUNTU_VERSION=22.04
+ARG ROCM_VERSION=6.2.4
+ARG BASE_IMAGE=rocm/dev-ubuntu-${UBUNTU_VERSION}:${ROCM_VERSION}
+
+# Default ROCm ARCHes to build vLLM for.
+ARG PYTORCH_ROCM_ARCH="gfx908;gfx90a;gfx942;gfx1100"
+
+# Whether to install CK-based flash-attention
+# If 0, will not install flash-attention
+ARG BUILD_FA="0"
+ARG FA_GFX_ARCHS="gfx90a;gfx942"
+ARG FA_BRANCH="3cea2fb"
+
+# Whether to build triton on rocm
+ARG BUILD_TRITON="1"
+ARG TRITON_BRANCH="e192dba"
+
+### Base image build stage
+FROM $BASE_IMAGE AS base
+
+# Import arg(s) defined before this build stage
+ARG PYTORCH_ROCM_ARCH
+
+# Install some basic utilities
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    sudo \
+    git \
+    bzip2 \
+    libx11-6 \
+    wget \
+    unzip \
+    tmux \
+    ccache \
+    miopen-hip \
+    rocrand-dev hiprand-dev \
+    rocprim-dev hipcub-dev \
+    rocblas-dev hipblas-dev hipblaslt \
+    rocsolver-dev hipsolver-dev \
+    rocfft-dev hipfft-dev hipsparse \
+    rocsparse-dev \
+    rocthrust-dev \
+    rocm-smi-lib \
+    amd-smi-lib \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# When launching the container, mount the code directory to /vllm-workspace
+ARG APP_MOUNT=/vllm-workspace
+WORKDIR ${APP_MOUNT}
+
+RUN python3 -m pip install --upgrade pip setuptools
+# Remove sccache so it doesn't interfere with ccache
+# TODO: implement sccache support across components
+RUN apt-get purge -y sccache; python3 -m pip uninstall -y sccache; rm -f "$(which sccache)"
+
+# Install torch == 2.6.0 on ROCm
+# torch version may need to be updated based on the ROCm version
+RUN --mount=type=cache,target=/root/.cache/pip \
+    case "$(ls /opt | grep -Po 'rocm-[0-9]\.[0-9]')" in \
+        *"rocm-6.2"*) \
+            python3 -m pip uninstall -y torch torchvision \
+            && python3 -m pip install --pre \
+                torch==2.6.0.dev20241113+rocm6.2 \
+                'setuptools-scm>=8' \
+                torchvision==0.20.0.dev20241113+rocm6.2 \
+                --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2 \
+                --debug --verbose --timeout 120 --retries 3;; \
+        *) ;; esac
+
+# Set environment variables
+ENV LLVM_SYMBOLIZER_PATH=/opt/rocm/llvm/bin/llvm-symbolizer
+ENV PATH=$PATH:/opt/rocm/bin:/libtorch/bin:
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/:/libtorch/lib:
+ENV CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:/libtorch/include:/libtorch/include/torch/csrc/api/include/:/opt/rocm/include/:
+ENV PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}
+ENV CCACHE_DIR=/root/.cache/ccache
+
+
+### Flash-Attention wheel build stage
+FROM base AS build_fa
+ARG BUILD_FA
+ARG FA_GFX_ARCHS
+ARG FA_BRANCH
+# Build ROCm flash-attention wheel if `BUILD_FA = 1`
+RUN --mount=type=cache,target=${CCACHE_DIR} \
+    if [ "$BUILD_FA" = "1" ]; then \
+        mkdir -p libs \
+        && cd libs \
+        && git clone https://github.com/ROCm/flash-attention.git \
+        && cd flash-attention \
+        && git checkout "${FA_BRANCH}" \
+        && git submodule update --init \
+        && GPU_ARCHS="${FA_GFX_ARCHS}" python3 setup.py bdist_wheel --dist-dir=/install \
+        && cd .. \
+        && rm -rf flash-attention; \
+    # Create an empty directory otherwise as later build stages expect one
+    else mkdir -p /install; \
+    fi
+
+
+### Triton wheel build stage
+# Build triton wheel if `BUILD_TRITON = 1`
+FROM base AS build_triton
+ARG BUILD_TRITON
+ARG TRITON_BRANCH
+RUN --mount=type=cache,target=${CCACHE_DIR} \
+    if [ "$BUILD_TRITON" = "1" ]; then \
+    mkdir -p libs \
+    && cd libs \
+    && python3 -m pip install ninja wheel pybind11 cmake \
+    && git clone https://github.com/OpenAI/triton.git \
+    && cd triton \
+    && git checkout "${TRITON_BRANCH}" \
+    && cd python \
+    && python3 setup.py bdist_wheel --dist-dir=/install \
+    && cd ../.. \
+    && rm -rf triton; \
+    # Create an empty directory otherwise as later build stages expect one
+    else mkdir -p /install; \
+    fi
+
+### AMD-SMI build stage
+FROM base AS build_amdsmi
+# Build amdsmi wheel
+RUN cd /opt/rocm/share/amd_smi \
+    && python3 -m pip wheel . --wheel-dir=/install
+
+
+### Final image
+FROM base AS final
+
+# Build vLLM
+# Workaround for ray >= 2.10.0
+ENV RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1
+# Silences the HF Tokenizers warning
+ENV TOKENIZERS_PARALLELISM=false
+
+ARG VLLM_VERSION=v0.6.5
+# Package upgrades for useful functionality or to avoid dependency issues
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --upgrade numba scipy huggingface-hub[cli] pytest-shard cmake
+
+RUN --mount=type=cache,target=${CCACHE_DIR} \
+    --mount=type=cache,target=/root/.cache/pip \
+    git clone https://github.com/vllm-project/vllm.git  \
+    && cd vllm \
+    && git checkout "tags/${VLLM_VERSION}" \
+    && python3 -m pip install -Ur requirements-rocm.txt \
+    && python3 setup.py clean --all \
+    && python3 setup.py develop
+
+# Copy amdsmi wheel into final image
+RUN --mount=type=bind,from=build_amdsmi,src=/install,target=/install \
+    mkdir -p libs \
+    && cp /install/*.whl libs \
+    # Preemptively uninstall to avoid same-version no-installs
+    && python3 -m pip uninstall -y amdsmi;
+
+# Copy triton wheel(s) into final image if they were built
+RUN --mount=type=bind,from=build_triton,src=/install,target=/install \
+    mkdir -p libs \
+    && if ls /install/*.whl; then \
+        cp /install/*.whl libs \
+        # Preemptively uninstall to avoid same-version no-installs
+        && python3 -m pip uninstall -y triton; fi
+
+# Copy flash-attn wheel(s) into final image if they were built
+RUN --mount=type=bind,from=build_fa,src=/install,target=/install \
+    mkdir -p libs \
+    && if ls /install/*.whl; then \
+        cp /install/*.whl libs \
+        # Preemptively uninstall to avoid same-version no-installs
+        && python3 -m pip uninstall -y flash-attn; fi
+
+# Install wheels that were built to the final image
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if ls libs/*.whl; then \
+    python3 -m pip install libs/*.whl; fi
+
+# Clean packages
+RUN apt-get purge -y bzip2 libx11-6 tmux unzip && apt-get autoremove -y \
+    && rm -rf /root/.cache /install /libs \
+    && python3 -m pip uninstall -y cmake
+
+### Squashed final image
+FROM scratch AS squashed-final
+COPY --from=final / /
+
+# Set environment variables
+ENV LLVM_SYMBOLIZER_PATH=/opt/rocm/llvm/bin/llvm-symbolizer
+ENV PATH=$PATH:/opt/rocm/bin:/libtorch/bin:
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/:/libtorch/lib:
+ENV CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:/libtorch/include:/libtorch/include/torch/csrc/api/include/:/opt/rocm/include/:
+ENV PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}
+ENV CCACHE_DIR=/root/.cache/ccache
