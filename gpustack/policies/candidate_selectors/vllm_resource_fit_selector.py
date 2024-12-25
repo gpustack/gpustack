@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
@@ -18,10 +18,10 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.schemas.workers import GPUDevicesInfo, Worker
-from huggingface_hub import HfApi
 
 from gpustack.server.db import get_engine
 from gpustack.utils.command import find_parameter
+from gpustack.utils.hub import get_pretrained_config
 
 logger = logging.getLogger(__name__)
 
@@ -52,24 +52,12 @@ async def estimate_model_vram(model: Model) -> int:
     timeout_in_seconds = 15
 
     try:
-        if model.source == SourceEnum.HUGGING_FACE:
+        if (
+            model.source == SourceEnum.HUGGING_FACE
+            or model.source == SourceEnum.MODEL_SCOPE
+        ):
             weight_size = await asyncio.wait_for(
-                asyncio.to_thread(get_hf_model_weight_size, model.huggingface_repo_id),
-                timeout=timeout_in_seconds,
-            )
-        elif model.source == SourceEnum.MODEL_SCOPE:
-            trust_remote_code = False
-            if (
-                model.backend_parameters
-                and "--trust-remote-code" in model.backend_parameters
-            ):
-                trust_remote_code = True
-            weight_size = await asyncio.wait_for(
-                asyncio.to_thread(
-                    get_ms_model_weight_size,
-                    model.model_scope_model_id,
-                    trust_remote_code=trust_remote_code,
-                ),
+                asyncio.to_thread(get_hub_model_weight_size, model),
                 timeout=timeout_in_seconds,
             )
         elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
@@ -82,50 +70,50 @@ async def estimate_model_vram(model: Model) -> int:
     return weight_size * 1.2 + cuda_graph_size
 
 
-def get_hf_model_weight_size(repo_id: str) -> int:
-    """
-    Get the model weight size in bytes from the hugging face model_info API.
-    """
-    api = HfApi()
-    model_info = api.model_info(repo_id)
-    safetensors_info = model_info.safetensors
-    if not safetensors_info or not safetensors_info.parameters:
-        raise ValueError("No safetensors information found.")
-
-    d_type, total_params = next(iter(model_info.safetensors.parameters.items()))
-
-    # https://github.com/huggingface/huggingface_hub/blob/v0.25.1/src/huggingface_hub/utils/_safetensors.py#L10
-    dtype_to_bytes = {
-        "F64": 8,
-        "F32": 4,
-        "F16": 2,
-        "BF16": 2,
-        "I64": 8,
-        "I32": 4,
-        "I16": 2,
-        "I8": 1,
-        "U8": 1,
-        "BOOL": 1,
-    }
-
-    bytes_per_param = dtype_to_bytes.get(d_type, 2)
-    total_weight_size = total_params * bytes_per_param
-    return int(total_weight_size)
-
-
-def get_ms_model_weight_size(model_id: str, trust_remote_code: bool = False) -> int:
-    """
-    Get the modelscope model weight size in bytes.
-    """
-    from modelscope import AutoConfig
-
-    # ModelScope does not provide the info in the API. Infer from the model name.
+def get_hub_model_weight_size(model: Model) -> int:
+    # Infer from the model name.
+    model_id = model.huggingface_repo_id or model.model_scope_model_id
     total_params = parse_model_size_by_name(model_id)
+    config = get_pretrained_config(model)
 
-    config = AutoConfig.from_pretrained(
-        model_id,
-        trust_remote_code=trust_remote_code,
-    )
+    return get_model_weight_size_by_pretrained_config(config, total_params)
+
+
+def get_model_weight_size_by_pretrained_config(config: Any, total_params: int) -> int:
+    """
+    Get model weight size in bytes.
+    """
+
+    quantization_config = getattr(config, "quantization_config", None)
+    if quantization_config:
+        # Extract quantization details
+        quant_method = quantization_config.get("quant_method", "").lower()
+
+        if quant_method in ["bitsandbytes", "bnb-4bit"]:
+            bytes_per_param = 0.5
+            if quantization_config.get("load_in_8bit", False):
+                bytes_per_param = 1
+
+            total_weight_size = total_params * bytes_per_param
+
+            return int(total_weight_size)
+
+        elif quant_method in ["gptq"]:
+            bits = quantization_config.get("bits", 4)  # Typically 4-bit
+            total_weight_size = total_params * bits / 8
+
+            return int(total_weight_size)
+
+        elif quant_method in ["int8", "llm_int8"]:
+            bytes_per_param = 1
+            total_weight_size = total_params * bytes_per_param
+            return int(total_weight_size)
+
+        else:
+            logger.debug(
+                f"Unrecognized quantization method for resource estimation: {quant_method}"
+            )
+
     torch_dtype = getattr(config, 'torch_dtype', "float16")
     dtype_to_bytes = {
         "float32": 4,
