@@ -8,6 +8,7 @@ from gpustack.schemas.workers import (
     MemoryInfo,
     VendorEnum,
 )
+from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
 
 
@@ -63,6 +64,7 @@ class NvidiaSMI(GPUDetector):
                     total=0,  # Total cores information is not provided by nvidia-smi
                 ),
                 temperature=temperature_gpu,
+                type=platform.DeviceTypeEnum.CUDA.value,
             )
             devices.append(device)
         return devices

@@ -132,7 +132,7 @@ class Worker:
         gpu_devices = self._config.get_gpu_devices()
         if gpu_devices:
             vendor = gpu_devices[0].vendor
-            return platform.device_from_vendor(vendor)
+            return platform.device_type_from_vendor(vendor)
         return None
 
     async def start_async(self):

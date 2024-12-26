@@ -2,6 +2,7 @@ import os
 
 from gpustack.detectors.npu_smi.npu_smi import NPUSMI
 from gpustack.schemas.workers import GPUCoreInfo, GPUDeviceInfo, MemoryInfo, VendorEnum
+from gpustack.utils.platform import DeviceTypeEnum
 
 
 def test_decode_gpu_devices():
@@ -140,4 +141,5 @@ def gpu_device(
             utilization_rate=mem_used / mem_total * 100 if mem_total > 0 else 0,
         ),
         temperature=temp,
+        type=DeviceTypeEnum.NPU.value,
     )

@@ -10,6 +10,7 @@ from gpustack.schemas.workers import (
     MemoryInfo,
     VendorEnum,
 )
+from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ class RocmSMI(GPUDetector):
                     total=0,  # Total cores information is not provided by rocm-smi
                 ),
                 temperature=temperature_gpu,
+                type=platform.DeviceTypeEnum.ROCM.value,
             )
             devices.append(device)
         return devices

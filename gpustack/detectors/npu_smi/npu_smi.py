@@ -9,6 +9,7 @@ from gpustack.schemas.workers import (
     MemoryInfo,
     VendorEnum,
 )
+from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
 
 # match |, / and space
@@ -109,6 +110,7 @@ class NPUSMI(GPUDetector):
                 device.name = arr[header_indexes.get("Name")]
                 device.temperature = float(arr[header_indexes.get("Temp(C)")])
                 device.vendor = VendorEnum.Huawei.value
+                device.type = platform.DeviceTypeEnum.NPU.value
 
             if line_num == 2:
 

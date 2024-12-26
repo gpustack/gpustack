@@ -18,6 +18,7 @@ from gpustack.schemas.workers import (
     VendorEnum,
 )
 from gpustack.utils.compat_importlib import pkg_resources
+from gpustack.utils.platform import device_type_from_vendor
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,7 @@ class Fastfetch(GPUDetector):
             vendor = next(
                 (v for v in vendor_all_values if v.lower() in vendor.lower()), vendor
             )
+            device = device_type_from_vendor(vender)
 
             # Append.
             devices.append(
@@ -216,6 +218,7 @@ class Fastfetch(GPUDetector):
                     core=core,
                     memory=memory,
                     temperature=self._get_value(value, "temperature"),
+                    type=device,
                 )
             )
 
