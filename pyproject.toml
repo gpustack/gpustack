@@ -39,7 +39,7 @@ truststore = "^0.9.1"
 cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = "^1.19.0"
-vllm = {version = "^0.6.1", optional = true}
+vllm = {version = "0.6.5", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
 transformers = "^4.44.2"
@@ -48,7 +48,7 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = {version = "^0.0.9", optional = true}
+vox-box = {version = "0.0.9", optional = true}
 
 tenacity = "^9.0.0"
 [tool.poetry.group.dev.dependencies]
