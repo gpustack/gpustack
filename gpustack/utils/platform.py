@@ -1,3 +1,4 @@
+from enum import Enum
 import os
 import platform
 import logging
@@ -75,6 +76,14 @@ def arch() -> str:
     return arch_map.get(get_native_arch(), "unknown")
 
 
+class DeviceTypeEnum(str, Enum):
+    CUDA = "cuda"
+    NPU = "npu"
+    MPS = "mps"
+    ROCM = "rocm"
+    MUSA = "musa"
+
+
 def device() -> str:
     """
     Returns the customized device type. This is similar to the device types in PyTorch but includes some additional types. Examples include:
@@ -90,33 +99,35 @@ def device() -> str:
         or os.path.exists("/usr/local/cuda")
         or os.path.exists("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA")
     ):
-        return "cuda"
+        return DeviceTypeEnum.CUDA.value
 
     if (
         is_command_available("mthreads-gmi")
         or os.path.exists("/usr/local/musa")
         or os.path.exists("/opt/musa")
     ):
-        return "musa"
+        return DeviceTypeEnum.MUSA.value
 
     if is_command_available("npu-smi"):
         return "npu"
 
     if system() == "darwin" and arch() == "arm64":
-        return "mps"
+        return DeviceTypeEnum.MPS.value
 
     if is_command_available("rocm-smi") or os.path.exists(
         "C:\\Program Files\\AMD\\ROCm"
     ):
-        return "rocm"
+        return DeviceTypeEnum.ROCM.value
     return ""
 
 
-def device_from_vendor(vendor: VendorEnum) -> str:
+def device_type_from_vendor(vendor: VendorEnum) -> str:
     mapping = {
-        VendorEnum.NVIDIA.value: "cuda",
-        VendorEnum.Huawei.value: "npu",
-        VendorEnum.Apple.value: "mps",
+        VendorEnum.NVIDIA.value: DeviceTypeEnum.CUDA.value,
+        VendorEnum.Huawei.value: DeviceTypeEnum.NPU.value,
+        VendorEnum.Apple.value: DeviceTypeEnum.MPS.value,
+        VendorEnum.AMD.value: DeviceTypeEnum.ROCM.value,
+        VendorEnum.MTHREADS.value: DeviceTypeEnum.MUSA.value,
     }
 
     return mapping.get(vendor, "")

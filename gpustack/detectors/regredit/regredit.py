@@ -116,6 +116,7 @@ class Regredit(GPUDetector):
             vendor = vendor_from_vendor_id(vendor_id)
             if vendor == "Unknown":
                 continue
+            type = platform.device_type_from_vendor(vendor)
 
             luid = subvalue.get("AdapterLuid", "Unknown")
             name = subvalue.get("Description", "Unknown")
@@ -132,6 +133,7 @@ class Regredit(GPUDetector):
                     total=memory_total,
                     is_unified_memory=False,
                 ),
+                type=type,
             )
             devices.append(device_info)
             index += 1

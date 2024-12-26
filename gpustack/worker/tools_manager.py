@@ -174,7 +174,7 @@ class ToolsManager:
             raise Exception(
                 f"Auto-installation for versioned vLLM is only supported on amd64 Linux. Please install vLLM manually and link it to {target_path}."
             )
-        elif device != "cuda":
+        elif device != platform.DeviceTypeEnum.CUDA.value:
             raise Exception(
                 f"Auto-installation for versioned vLLM is only supported on CUDA devices. Please install vLLM manually and link it to {target_path}."
             )
@@ -296,27 +296,59 @@ class ToolsManager:
 
     def _get_llama_box_platform_name(self) -> str:  # noqa C901
         platform_name = ""
-        if self._os == "darwin" and self._arch == "arm64" and self._device == "mps":
+        if (
+            self._os == "darwin"
+            and self._arch == "arm64"
+            and self._device == platform.DeviceTypeEnum.MPS.value
+        ):
             platform_name = "darwin-arm64-metal"
         elif self._os == "darwin":
             platform_name = "darwin-amd64-avx2"
-        elif self._os == "linux" and self._arch == "amd64" and self._device == "cuda":
+        elif (
+            self._os == "linux"
+            and self._arch == "amd64"
+            and self._device == platform.DeviceTypeEnum.CUDA.value
+        ):
             platform_name = "linux-amd64-cuda-12.4"
-        elif self._os == "linux" and self._arch == "amd64" and self._device == "musa":
+        elif (
+            self._os == "linux"
+            and self._arch == "amd64"
+            and self._device == platform.DeviceTypeEnum.MUSA.value
+        ):
             platform_name = "linux-amd64-musa-rc3.1"
-        elif self._os == "linux" and self._arch == "amd64" and self._device == "npu":
+        elif (
+            self._os == "linux"
+            and self._arch == "amd64"
+            and self._device == platform.DeviceTypeEnum.NPU.value
+        ):
             platform_name = "linux-amd64-cann-8.0"
-        elif self._os == "linux" and self._arch == "arm64" and self._device == "npu":
+        elif (
+            self._os == "linux"
+            and self._arch == "arm64"
+            and self._device == platform.DeviceTypeEnum.NPU.value
+        ):
             platform_name = "linux-arm64-cann-8.0"
-        elif self._os == "linux" and self._arch == "amd64" and self._device == "rocm":
+        elif (
+            self._os == "linux"
+            and self._arch == "amd64"
+            and self._device == platform.DeviceTypeEnum.ROCM.value
+        ):
             platform_name = "linux-amd64-hip-6.1"
         elif self._os == "linux" and self._arch == "amd64":
             platform_name = "linux-amd64-avx2"
         elif self._os == "linux" and self._arch == "arm64":
             platform_name = "linux-arm64-neon"
-        elif self._os == "windows" and self._arch == "amd64" and self._device == "cuda":
+        elif (
+            self._os == "windows"
+            and self._arch == "amd64"
+            and self._device == platform.DeviceTypeEnum.CUDA.value
+        ):
             platform_name = "windows-amd64-cuda-12.4"
-        elif self._os == "windows" and self._arch == "amd64" and self._device == "rocm":
+        elif (
+            self._os == "windows"
+            and self._arch == "amd64"
+            and self._device == platform.DeviceTypeEnum.ROCM.value
+        ):
             platform_name = "windows-amd64-hip-6.1"
         elif self._os == "windows" and self._arch == "amd64":
             platform_name = "windows-amd64-avx2"
