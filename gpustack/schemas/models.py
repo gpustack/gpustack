@@ -33,9 +33,8 @@ class BackendEnum(str, Enum):
 
 
 class GPUSelector(BaseModel):
-    worker_name: str
-    gpu_index: int
-    gpu_name: Optional[str] = None
+    # format of each element: "worker_name:device:gpu_index", example: "worker1:cuda:0"
+    gpu_ids: Optional[List[str]] = None
 
 
 class ModelSource(BaseModel):
