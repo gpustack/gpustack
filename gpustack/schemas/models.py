@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, model_validator
+from typing import Annotated, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticField
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -82,9 +82,27 @@ class ModelBase(SQLModel, ModelSource):
 
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
-    embedding_only: bool = False
-    image_only: bool = False
-    reranker: bool = False
+    categories: List[str] = Field(sa_column=Column(JSON), default=[])
+    embedding_only: Annotated[
+        bool,
+        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
+    ]
+    image_only: Annotated[
+        bool,
+        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
+    ]
+    reranker: Annotated[
+        bool,
+        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
+    ]
+    speech_to_text: Annotated[
+        bool,
+        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
+    ]
+    text_to_speech: Annotated[
+        bool,
+        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
+    ]
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: bool = False
     distributed_inference_across_workers: bool = False
@@ -94,8 +112,6 @@ class ModelBase(SQLModel, ModelSource):
     gpu_selector: Optional[GPUSelector] = Field(
         sa_column=Column(pydantic_column_type(GPUSelector)), default=None
     )
-    speech_to_text: bool = False
-    text_to_speech: bool = False
 
     backend: Optional[str] = None
     backend_version: Optional[str] = None
@@ -282,11 +298,15 @@ def is_audio_model(model: Model):
     Args:
         model: Model to check.
     """
-    return (
-        model.speech_to_text
-        or model.text_to_speech
-        or model.backend == BackendEnum.VOX_BOX
-    )
+    if model.backend == BackendEnum.VOX_BOX:
+        return True
+
+    if model.categories:
+        return (
+            'speech_to_text' in model.categories or 'text_to_speech' in model.categories
+        )
+
+    return False
 
 
 def get_backend(model: Model) -> str:
