@@ -41,36 +41,43 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         if response.status_code == 200:
-            if request.url.path == "/v1-openai/chat/completions":
+            path = request.url.path
+            if path == "/v1-openai/chat/completions" or path == "/v1/chat/completions":
                 return await process_request(
                     request, response, ChatCompletion, OperationEnum.CHAT_COMPLETION
                 )
-            elif request.url.path == "/v1-openai/completions":
+            elif path == "/v1-openai/completions" or path == "/v1/completions":
                 return await process_request(
                     request, response, Completion, OperationEnum.COMPLETION
                 )
-            elif request.url.path == "/v1-openai/embeddings":
+            elif path == "/v1-openai/embeddings" or path == "/v1/embeddings":
                 return await process_request(
                     request,
                     response,
                     CreateEmbeddingResponse,
                     OperationEnum.EMBEDDING,
                 )
-            elif request.url.path == "/v1-openai/images/generations":
+            elif (
+                path == "/v1-openai/images/generations"
+                or path == "/v1/images/generations"
+            ):
                 return await process_request(
                     request,
                     response,
                     ImagesResponse,
                     OperationEnum.IMAGE_GENERATION,
                 )
-            elif request.url.path == "/v1-openai/audio/speech":
+            elif path == "/v1-openai/audio/speech" or path == "/v1/audio/speech":
                 return await process_request(
                     request,
                     response,
                     FileResponse,
                     OperationEnum.AUDIO_SPEECH,
                 )
-            elif request.url.path == "/v1-openai/audio/transcriptions":
+            elif (
+                path == "/v1-openai/audio/transcriptions"
+                or path == "/v1/audio/transcriptions"
+            ):
                 return await process_request(
                     request,
                     response,
