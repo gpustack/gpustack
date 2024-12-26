@@ -399,7 +399,14 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
         worker_linux_nvidia_2_4080_gpu(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=True)
+    m = new_model(
+        1,
+        "test",
+        1,
+        "llama3:70b",
+        cpu_offloading=True,
+        distributed_inference_across_workers=False,
+    )
     mi_binpack = new_model_instance(1, "test_binpack", 1)
 
     resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi_binpack)

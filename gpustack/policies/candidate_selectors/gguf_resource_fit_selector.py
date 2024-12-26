@@ -66,8 +66,8 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         candidate_functions = [
             self.find_single_worker_single_gpu_full_offloading_candidates,
             self.find_single_worker_multi_gpu_full_offloading_candidates,
-            self.find_single_worker_partial_offloading_candidates,
             self.find_multi_worker_multi_gpu_candidates,
+            self.find_single_worker_partial_offloading_candidates,
             self.find_single_worker_cpu_candidates,
         ]
 
