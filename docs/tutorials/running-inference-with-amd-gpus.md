@@ -10,17 +10,15 @@ GPUStack supports running inference on AMD GPUs. This tutorial will guide you th
 | ----- | ------------ | ------- | ------------------ |
 | Linux | x86_64       | Support | Ubuntu 20.04/22.04 |
 
-| Device                                              | Status              | Verified |
-| --------------------------------------------------- | ------------------- | -------- |
-| AMD Radeon RX 7800                                  | Support(Linux only) | Yes      |
-| AMD Radeon RX 7900                                  | Support(Linux only) |          |
-| AMD Instinct MI300X/MI300A/MI250X/MI250/MI210/MI100 | Support(Linux only) |          |
-
-| GPUStack Inference Backend | Status  | Verified |
-| -------------------------- | ------- | -------- |
-| llama-box                  | Support | Yes      |
-| vLLM                       | Support | Yes      |
-| vox-box                    | Support | Yes      |
+| Device                                                      | Supported Backends | Verified |
+| ----------------------------------------------------------- | ------------------ | -------- |
+| gfx1101: AMD Radeon RX 7800                                 | llama-box, vLLM    | Yes      |
+| gfx1100: AMD Radeon RX 7900/7700/7600                       | llama-box, vLLM    |          |
+| gfx90a: AMD Instinct accelerators MI250X/MI250/MI210/MI200s | llama-box, vLLM    |          |
+| gfx942: AMD Instinct accelerators MI325X/MI300X/MI300A      | llama-box, vLLM    |          |
+| gfx1030: AMD Radeon RX 6950 XT/6900 XT/6800 XT/6800         | llama-box          |          |
+| gfx908: AMD Instinct accelerators MI100                     | llama-box          |          |
+| gfx906: AMD Instinct accelerators MI60/MI50                 | llama-box          |          |
 
 ### Setup Instructions
 
@@ -110,17 +108,15 @@ After installation, you can deploy models and run inference. Refer to the [model
 | Linux   | x86_64       | Support | Ubuntu 20.04/22.04 |
 | Windows | x86_64       | Support | Windows 11         |
 
-| Device                                              | Status              | Verified |
-| --------------------------------------------------- | ------------------- | -------- |
-| AMD Radeon RX 7800                                  | Support             | Yes      |
-| AMD Radeon RX 7900                                  | Support             |          |
-| AMD Radeon PRO W7900/W7800/W6800/V620               | Support             |          |
-| AMD Instinct MI300X/MI300A/MI250X/MI250/MI210/MI100 | Support(Linux only) |          |
-
-| GPUStack Inference Backend | Status  | Verified |
-| -------------------------- | ------- | -------- |
-| llama-box                  | Support | Yes      |
-| vox-box                    | Support | Yes      |
+| Device                                                      | Supported Backends                      | Verified |
+| ----------------------------------------------------------- | --------------------------------------- | -------- |
+| gfx1101: AMD Radeon RX 7800                                 | llama-box, vLLM(Linux Only)             | Yes      |
+| gfx1100: AMD Radeon RX 7900/7700/7600                       | llama-box, vLLM(Linux Only)             |          |
+| gfx90a: AMD Instinct accelerators MI250X/MI250/MI210/MI200s | llama-box(Linux Only), vLLM(Linux Only) |          |
+| gfx942: AMD Instinct accelerators MI325X/MI300X/MI300A      | llama-box(Linux Only), vLLM(Linux Only) |          |
+| gfx1030: AMD Radeon RX 6950 XT/6900 XT/6800 XT/6800         | llama-box                               |          |
+| gfx908: AMD Instinct accelerators MI100                     | llama-box(Linux Only)                   |          |
+| gfx906: AMD Instinct accelerators MI60/MI50                 | llama-box(Linux Only)                   |          |
 
 ### Setup Instructions
 
