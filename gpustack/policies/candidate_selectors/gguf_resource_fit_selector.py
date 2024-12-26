@@ -739,7 +739,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
             result = await get_worker_allocatable_resource(self._engine, worker)
             workers_allocatable[worker.id] = result
-            workers_allocatable_vram.append([worker.id, sum(result.vram.values())])
+            worker_allocatable_vram = sum(result.vram.values())
+            if worker_allocatable_vram > 0:
+                workers_allocatable_vram.append([worker.id, worker_allocatable_vram])
 
             for gpu_device in worker.status.gpu_devices:
                 if gpu_device.index is None:
@@ -747,9 +749,11 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                         f"gpu index is not found for {worker.name} {gpu_device.name}"
                     )
 
-                workers_gpus_allocatable.append(
-                    [worker.id, gpu_device.index, result.vram.get(gpu_device.index)]
-                )
+                gpu_allocatable_vram = result.vram.get(gpu_device.index)
+                if gpu_allocatable_vram is not None and gpu_allocatable_vram > 0:
+                    workers_gpus_allocatable.append(
+                        [worker.id, gpu_device.index, gpu_allocatable_vram]
+                    )
 
         sorted_workers = sorted(
             workers_allocatable_vram, key=lambda item: item[1], reverse=True

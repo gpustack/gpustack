@@ -20,6 +20,7 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
+from gpustack.utils.gpu import parse_gpu_id
 
 router = APIRouter()
 
@@ -83,23 +84,33 @@ async def validate_model_in(
     session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
 ):
     if model_in.gpu_selector is not None:
-        worker = await Worker.one_by_field(
-            session, "name", model_in.gpu_selector.worker_name
-        )
-        if not worker:
-            raise BadRequestException(
-                message=f"Worker {model_in.gpu_selector.worker_name} not found"
-            )
+        for gpu_id in model_in.gpu_selector.gpu_ids:
+            await validate_gpu_id(session, model_in, gpu_id)
 
-        if is_audio_model(model_in):
-            for worker_gpu in worker.status.gpu_devices:
-                if (
-                    worker_gpu.index == model_in.gpu_selector.gpu_index
-                    and worker_gpu.vendor != VendorEnum.NVIDIA.value
-                ):
-                    raise BadRequestException(
-                        "Audio models are supported for running on NVIDIA GPUs and CPUs"
-                    )
+
+async def validate_gpu_id(
+    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate], gpu_id: str
+):
+    is_valid, matched = parse_gpu_id(gpu_id)
+    if not is_valid:
+        raise BadRequestException(message=f"Invalid GPU ID: {gpu_id}")
+
+    worker_name = matched.get("worker_name")
+    gpu_index = matched.get("gpu_index")
+
+    worker = await Worker.one_by_field(session, "name", worker_name)
+    if not worker:
+        raise BadRequestException(message=f"Worker {worker_name} not found")
+
+    if is_audio_model(model_in):
+        for worker_gpu in worker.status.gpu_devices:
+            if (
+                worker_gpu.index == gpu_index
+                and worker_gpu.type != VendorEnum.NVIDIA.value
+            ):
+                raise BadRequestException(
+                    "Audio models are supported for running on NVIDIA GPUs and CPUs"
+                )
 
 
 @router.post("", response_model=ModelPublic)
