@@ -1,11 +1,11 @@
-from typing import Optional
+from typing import List, Optional
 import httpx
 import logging
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Query, Request, Response, status
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
-from sqlmodel import select
+from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.datastructures import UploadFile
 
@@ -73,28 +73,57 @@ router.include_router(aliasable_router)
 @router.get("/models")
 async def list_models(
     session: SessionDep,
-    embedding_only: Optional[bool] = None,
-    image_only: Optional[bool] = None,
-    reranker: Optional[bool] = None,
-    speech_to_text: Optional[bool] = None,
-    text_to_speech: Optional[bool] = None,
+    embedding_only: Optional[bool] = Query(
+        None,
+        deprecated=True,
+        description="This parameter is deprecated and will be removed in a future version.",
+    ),
+    image_only: Optional[bool] = Query(
+        None,
+        deprecated=True,
+        description="This parameter is deprecated and will be removed in a future version.",
+    ),
+    reranker: Optional[bool] = Query(
+        None,
+        deprecated=True,
+        description="This parameter is deprecated and will be removed in a future version.",
+    ),
+    speech_to_text: Optional[bool] = Query(
+        None,
+        deprecated=True,
+        description="This parameter is deprecated and will be removed in a future version.",
+    ),
+    text_to_speech: Optional[bool] = Query(
+        None,
+        deprecated=True,
+        description="This parameter is deprecated and will be removed in a future version.",
+    ),
+    categories: List[str] = Query(
+        [],
+        description="Model categories to filter by.",
+    ),
 ):
     statement = select(Model).where(Model.ready_replicas > 0)
 
     if embedding_only is not None:
-        statement = statement.where(Model.embedding_only == embedding_only)
+        categories.append("embedding")
 
     if image_only is not None:
-        statement = statement.where(Model.image_only == image_only)
+        categories.append("image")
 
     if reranker is not None:
-        statement = statement.where(Model.reranker == reranker)
+        categories.append("reranker")
 
     if speech_to_text is not None:
-        statement = statement.where(Model.speech_to_text == speech_to_text)
+        categories.append("speech_to_speech")
 
     if text_to_speech is not None:
-        statement = statement.where(Model.text_to_speech == text_to_speech)
+        categories.append("text_to_speech")
+
+    if categories:
+        statement = statement.where(
+            or_(*[col(Model.categories).contains(category) for category in categories])
+        )
 
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")

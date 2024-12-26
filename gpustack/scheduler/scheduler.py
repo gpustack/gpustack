@@ -179,20 +179,17 @@ class Scheduler:
         )
 
         should_update = False
-        if (
-            task_output.resource_claim_estimate.embeddingOnly
-            and not model.embedding_only
-        ):
+        if task_output.resource_claim_estimate.embeddingOnly and not model.categories:
             should_update = True
-            model.embedding_only = True
+            model.categories = ["embedding"]
 
-        if task_output.resource_claim_estimate.imageOnly and not model.image_only:
+        if task_output.resource_claim_estimate.imageOnly and not model.categories:
             should_update = True
-            model.image_only = True
+            model.categories = ["image"]
 
-        if task_output.resource_claim_estimate.reranking and not model.reranker:
+        if task_output.resource_claim_estimate.reranking and not model.categories:
             should_update = True
-            model.reranker = True
+            model.categories = ["reranker"]
 
         if (
             task_output.resource_claim_estimate.distributable
@@ -281,9 +278,9 @@ class Scheduler:
 
         task_type = model_dict.get("task_type")
         if task_type == "tts":
-            model.text_to_speech = True
+            model.categories = ["text_to_speech"]
         elif task_type == "stt":
-            model.speech_to_text = True
+            model.categories = ["speech_to_text"]
 
         if model.text_to_speech or model.speech_to_text:
             await model.update(session)
