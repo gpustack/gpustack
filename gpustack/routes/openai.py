@@ -122,7 +122,16 @@ async def list_models(
 
     if categories:
         statement = statement.where(
-            or_(*[col(Model.categories).contains(category) for category in categories])
+            or_(
+                *[
+                    (
+                        col(Model.categories) == []
+                        if category == ""
+                        else col(Model.categories).contains(category)
+                    )
+                    for category in categories
+                ]
+            )
         )
 
     models = (await session.exec(statement)).all()
