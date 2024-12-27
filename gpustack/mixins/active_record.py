@@ -110,6 +110,7 @@ class ActiveRecordMixin:
         session: AsyncSession,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
+        extra_conditions: Optional[List] = None,
         page: int = 1,
         per_page: int = 100,
         order_by: Optional[List[Tuple[str, str]]] = None,
@@ -144,6 +145,9 @@ class ActiveRecordMixin:
                 for key, value in fuzzy_fields.items()
             ]
             statement = statement.where(or_(*fuzzy_conditions))
+
+        if extra_conditions:
+            statement = statement.where(and_(*extra_conditions))
 
         if not order_by:
             order_by = [("created_at", "desc")]
