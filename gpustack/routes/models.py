@@ -1,7 +1,8 @@
 import math
-from typing import Union
-from fastapi import APIRouter
+from typing import List, Optional, Union
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from sqlmodel import col, or_
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -26,7 +27,12 @@ router = APIRouter()
 
 
 @router.get("", response_model=ModelsPublic)
-async def get_models(session: SessionDep, params: ListParamsDep, search: str = None):
+async def get_models(
+    session: SessionDep,
+    params: ListParamsDep,
+    search: str = None,
+    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
+):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
@@ -37,9 +43,22 @@ async def get_models(session: SessionDep, params: ListParamsDep, search: str = N
             media_type="text/event-stream",
         )
 
+    extra_conditions = []
+    if categories:
+        category_conditions = [
+            (
+                col(Model.categories) == []
+                if category == ""
+                else col(Model.categories).contains(category)
+            )
+            for category in categories
+        ]
+        extra_conditions.append(or_(*category_conditions))
+
     return await Model.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
+        extra_conditions=extra_conditions,
         page=params.page,
         per_page=params.perPage,
     )
