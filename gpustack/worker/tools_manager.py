@@ -134,7 +134,7 @@ class ToolsManager:
             )
 
     def download_llama_box(self):
-        version = "v0.0.96"
+        version = "v0.0.98"
         target_dir = self.third_party_bin_path / "llama-box"
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / file_name
