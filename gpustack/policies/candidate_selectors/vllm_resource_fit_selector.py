@@ -171,6 +171,11 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._model_instance = model_instance
         self._gpu_count = None
+        self._vram_claim = 0
+
+        # When user defined gpu selector, we use the gpu count from it.
+        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
+            self._gpu_count = len(self._model.gpu_selector.gpu_ids)
 
         # When tp/pp is set, the gpu count is calculated by tp * pp.
         # Pick the candidate with satisfied gpu count.
