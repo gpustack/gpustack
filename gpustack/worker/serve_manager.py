@@ -1,5 +1,6 @@
 import multiprocessing
 import psutil
+import requests
 import setproctitle
 import os
 import time
@@ -42,6 +43,7 @@ class ServeManager:
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
+        self._starting_model_instances: Dict[str, ModelInstance] = {}
         self._clientset = clientset
         self._cache_dir = cfg.cache_dir
 
@@ -124,6 +126,7 @@ class ServeManager:
             process.daemon = False
             process.start()
             self._serving_model_instances[mi.id] = process
+            self._starting_model_instances[mi.id] = mi
 
             patch_dict = {
                 "state": ModelInstanceStateEnum.INITIALIZING,
@@ -199,10 +202,10 @@ class ServeManager:
 
             self._serving_model_instances.pop(id)
 
-    def monitor_processes(self):
-        for id in list(self._serving_model_instances.keys()):
-            process = self._serving_model_instances[id]
+    def health_check_serving_instances(self):
+        for id, process in list(self._serving_model_instances.items()):
             if not process.is_alive():
+                # monitor inference server process exit
                 exitcode = process.exitcode
                 try:
                     mi = self._clientset.model_instances.get(id=id)
@@ -217,3 +220,26 @@ class ServeManager:
                 except Exception:
                     logger.error(f"Failed to update model instance {id} state.")
                 self._serving_model_instances.pop(id)
+                self._starting_model_instances.pop(id, None)
+            elif id in self._starting_model_instances:
+                # health check for starting model instances
+                mi = self._starting_model_instances[id]
+                if is_running(mi):
+                    mi = self._clientset.model_instances.get(id=id)
+                    if mi.state != ModelInstanceStateEnum.ERROR:
+                        self._update_model_instance(
+                            id, state=ModelInstanceStateEnum.RUNNING
+                        )
+                    self._starting_model_instances.pop(id, None)
+
+
+def is_running(mi: ModelInstance) -> bool:
+    try:
+        # This endpoint is served by all backends (llama-box, vox-box, vllm)
+        health_check_url = f"http://127.0.0.1:{mi.port}/v1/models"
+        response = requests.get(health_check_url, timeout=1)
+        if response.status_code == 200:
+            return True
+    except Exception:
+        pass
+    return False
