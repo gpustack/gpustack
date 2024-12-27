@@ -10,6 +10,8 @@ from gpustack.utils import platform
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
+    is_image_model,
+    is_renaker_model,
 )
 from gpustack.utils.command import find_parameter, get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
@@ -69,10 +71,10 @@ class LlamaBoxServer(InferenceServer):
             "--no-warmup",
         ]
 
-        if self._model.reranker:
+        if is_renaker_model(self._model):
             arguments.append("--rerank")
 
-        if self._model.image_only:
+        if is_image_model(self._model):
             arguments.extend(["--images", "--image-vae-tiling"])
 
         mmproj = find_parameter(self._model.backend_parameters, ["mmproj"])
