@@ -311,6 +311,24 @@ def is_audio_model(model: Model):
     return False
 
 
+def is_image_model(model: Model):
+    """
+    Check if the model is an image model.
+    Args:
+        model: Model to check.
+    """
+    return "image" in model.categories
+
+
+def is_renaker_model(model: Model):
+    """
+    Check if the model is a reranker model.
+    Args:
+        model: Model to check.
+    """
+    return "reranker" in model.categories
+
+
 def get_backend(model: Model) -> str:
     if model.backend:
         return model.backend

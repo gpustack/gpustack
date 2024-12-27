@@ -18,6 +18,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceRPCServer,
+    is_image_model,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
@@ -83,7 +84,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             ) and candidate_func == self.find_multi_worker_multi_gpu_candidates:
                 continue
 
-            if self._model.image_only and not (
+            if is_image_model(self._model) and not (
                 candidate_func
                 == self.find_single_worker_single_gpu_full_offloading_candidates
             ):
