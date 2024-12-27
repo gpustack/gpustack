@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticField
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
@@ -79,6 +79,7 @@ class ModelSource(BaseModel):
 class ModelBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     description: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = Field(sa_column=Column(JSON), default={})
 
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)

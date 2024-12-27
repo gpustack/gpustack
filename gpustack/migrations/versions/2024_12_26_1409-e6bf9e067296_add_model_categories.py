@@ -24,6 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.add_column(sa.Column('categories', sa.JSON(), nullable=True))
+        batch_op.add_column(sa.Column('meta', sa.JSON(), nullable=True, default={}))
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.alter_column('state',
@@ -62,6 +63,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('categories')
+        batch_op.drop_column('meta')
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.alter_column('state',

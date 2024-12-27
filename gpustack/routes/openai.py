@@ -102,6 +102,10 @@ async def list_models(
         [],
         description="Model categories to filter by.",
     ),
+    with_meta: Optional[bool] = Query(
+        None,
+        description="Include model meta information.",
+    ),
 ):
     statement = select(Model).where(Model.ready_replicas > 0)
 
@@ -134,6 +138,7 @@ async def list_models(
                 object="model",
                 created=int(model.created_at.timestamp()),
                 owned_by="gpustack",
+                meta=model.meta if with_meta else None,
             )
         )
     return result
