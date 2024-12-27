@@ -1,7 +1,8 @@
 import logging
 import random
 import string
-from typing import List
+from typing import Any, Dict, List
+import httpx
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.config.config import Config
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
@@ -84,6 +85,16 @@ class ModelInstanceController:
                     await sync_replicas(session, model, self._config)
 
                 await model.refresh(session)
+
+                if (
+                    event.type == EventType.UPDATED
+                    and model_instance.state == ModelInstanceStateEnum.RUNNING
+                ):
+                    # fetch meta from running instance, if it's different from the model meta update it
+                    meta = await get_meta_from_running_instance(model_instance)
+                    if meta and meta != model.meta:
+                        model.meta = meta
+
                 await sync_ready_replicas(session, model)
 
         except Exception as e:
@@ -201,6 +212,41 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
     if model.ready_replicas != ready_replicas:
         model.ready_replicas = ready_replicas
         await model.update(session)
+
+
+async def get_meta_from_running_instance(mi: ModelInstance) -> Dict[str, Any]:
+    """
+    Get the meta information from the running instance.
+    """
+
+    if mi.state != ModelInstanceStateEnum.RUNNING:
+        return {}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"http://{mi.worker_ip}:{mi.port}/v1/models")
+            response.raise_for_status()
+
+            models = response.json()
+            if "data" not in models or not models["data"]:
+                return {}
+
+            first_model = models["data"][0]
+            meta_info = first_model.get("meta", {})
+
+            # Optional keys from different backends
+            optional_keys = [
+                "voices",
+                "max_model_len",
+            ]
+            for key in optional_keys:
+                if key in first_model:
+                    meta_info[key] = first_model[key]
+
+            return meta_info
+        except Exception as e:
+            logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
+            return {}
 
 
 class WorkerController:
