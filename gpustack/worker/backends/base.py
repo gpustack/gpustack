@@ -188,7 +188,7 @@ class InferenceServer(ABC):
             )
 
             patch_dict = {
-                "state": ModelInstanceStateEnum.RUNNING,
+                "state": ModelInstanceStateEnum.STARTING,
                 "state_message": "",
             }
             self._update_model_instance(mi.id, **patch_dict)

@@ -176,6 +176,7 @@ ModelsPublic = PaginatedList[ModelPublic]
 class ModelInstanceStateEnum(str, Enum):
     INITIALIZING = "initializing"
     PENDING = "pending"
+    STARTING = "starting"
     RUNNING = "running"
     SCHEDULED = "scheduled"
     ERROR = "error"

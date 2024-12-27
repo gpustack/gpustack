@@ -25,6 +25,12 @@ def upgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.add_column(sa.Column('categories', sa.JSON(), nullable=True))
 
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.alter_column('state',
+                      existing_type=sa.VARCHAR(length=16),
+                      type_=sa.Enum('INITIALIZING', 'PENDING', 'STARTING', 'RUNNING', 'SCHEDULED', 'ERROR', 'DOWNLOADING', 'ANALYZING', name='modelinstancestateenum'),
+                      existing_nullable=False)
+
     with op.batch_alter_table('models', schema=None) as batch_op:
         connection = batch_op.get_bind()
         categories_case = sa.case(
@@ -56,3 +62,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('categories')
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.alter_column('state',
+                      existing_type=sa.VARCHAR(length=16),
+                      type_=sa.Enum('INITIALIZING', 'PENDING', 'RUNNING', 'SCHEDULED', 'ERROR', 'DOWNLOADING', 'ANALYZING', name='modelinstancestateenum'),
+                      existing_nullable=False)
