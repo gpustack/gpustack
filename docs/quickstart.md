@@ -4,7 +4,7 @@
 
 ### Linux or macOS
 
-GPUStack provides a script to install it as a service on systemd or launchd based systems. To install GPUStack using this method, just run:
+GPUStack provides a script to install it as a service on systemd or launchd based systems with default port 80. To install GPUStack using this method, just run:
 
 ```bash
 curl -sfL https://get.gpustack.ai | sh -s -

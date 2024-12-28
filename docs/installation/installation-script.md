@@ -10,6 +10,9 @@ You can set additional environment variables and CLI flags when running the scri
 # Run server.
 curl -sfL https://get.gpustack.ai | sh -s -
 
+# Run server with non-default port 
+curl -sfL https://get.gpustack.ai | sh -s - --port 8080
+
 # Run server without the embedded worker.
 curl -sfL https://get.gpustack.ai | sh -s - --disable-worker
 
