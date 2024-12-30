@@ -354,6 +354,7 @@ def filter_headers(headers):
         if key.lower() != "content-length"
         and key.lower() != "host"
         and key.lower() != "content-type"
+        and key.lower() != "transfer-encoding"
     }
 
 
