@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
@@ -70,11 +70,30 @@ async def estimate_model_vram(model: Model) -> int:
     return weight_size * 1.2 + cuda_graph_size
 
 
+def get_model_num_attention_heads(model: Model) -> Optional[int]:
+    """
+    Get the number of attention heads in the model.
+    """
+
+    num_attention_heads = None
+    try:
+        config = get_pretrained_config(model, trust_remote_code=True)
+        num_attention_heads = getattr(config, "num_attention_heads", None)
+        if not num_attention_heads:
+            llm_config = getattr(config, "llm_config", None)
+            if llm_config:
+                num_attention_heads = getattr(llm_config, "num_attention_heads", None)
+    except Exception as e:
+        logger.warning(f"Cannot get num_attention_heads for model {model.name}: {e}")
+
+    return num_attention_heads
+
+
 def get_hub_model_weight_size(model: Model) -> int:
     # Infer from the model name.
     model_id = model.huggingface_repo_id or model.model_scope_model_id
     total_params = parse_model_size_by_name(model_id)
-    config = get_pretrained_config(model)
+    config = get_pretrained_config(model, trust_remote_code=True)
 
     return get_model_weight_size_by_pretrained_config(config, total_params)
 
@@ -172,6 +191,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._model_instance = model_instance
         self._gpu_count = None
         self._vram_claim = 0
+        self._num_attention_heads = None
 
         # When user defined gpu selector, we use the gpu count from it.
         if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
@@ -192,6 +212,18 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         gmu = find_parameter(model.backend_parameters, ["gpu-memory-utilization"])
         if gmu:
             self._gpu_memory_utilization = float(gmu)
+
+        self._num_attention_heads = get_model_num_attention_heads(model)
+        if (
+            self._gpu_count
+            and self._num_attention_heads
+            and self._num_attention_heads % self._gpu_count != 0
+        ):
+            raise ValueError(
+                f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by gpu count "
+                f"({self._gpu_count})."
+            )
 
     async def select_candidates(
         self, workers: List[Worker]
@@ -355,6 +387,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             vram_claim[gpu.index] = int(gpu.memory.total * self._gpu_memory_utilization)
             gpu_sum += 1
             vram_sum += vram_claim[gpu.index]
+
+            if self._num_attention_heads and self._num_attention_heads % gpu_sum != 0:
+                continue
 
             if self._gpu_count and gpu_sum >= self._gpu_count:
                 found_candidate = True

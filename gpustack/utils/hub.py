@@ -77,7 +77,7 @@ def match_model_scope_file_paths(
     return matching_paths
 
 
-def get_pretrained_config(model: Model):
+def get_pretrained_config(model: Model, **kwargs):
     """
     Get the pretrained config of the model from Hugging Face or ModelScope.
     Args:
@@ -85,7 +85,9 @@ def get_pretrained_config(model: Model):
     """
 
     trust_remote_code = False
-    if model.backend_parameters and "--trust-remote-code" in model.backend_parameters:
+    if (
+        model.backend_parameters and "--trust-remote-code" in model.backend_parameters
+    ) or kwargs.get("trust_remote_code"):
         trust_remote_code = True
 
     global_config = get_global_config()
