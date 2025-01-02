@@ -253,7 +253,7 @@ class Scheduler:
         model: Model,
     ):
         try:
-            from vox_box.elstimator.estimate import estimate_model
+            from vox_box.estimator.estimate import estimate_model
             from vox_box.config import Config as VoxBoxConfig
         except ImportError:
             raise Exception("vox_box is not installed.")

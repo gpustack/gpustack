@@ -205,7 +205,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
 
 def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
     try:
-        from vox_box.elstimator.estimate import estimate_model
+        from vox_box.estimator.estimate import estimate_model
         from vox_box.config import Config as VoxBoxConfig
     except ImportError:
         raise Exception("vox_box is not installed.")
