@@ -32,6 +32,9 @@ INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
 INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-0}"
 
+BREW_APP_OPENFST_NAME="openfst"
+BREW_APP_OPENFST_VERSION="1.8.3"
+
 # --- helper functions for logs ---
 info()
 {
@@ -254,6 +257,68 @@ check_python_tools() {
   export PATH="$PIPX_BIN_DIR:$PATH"
 }
 
+# Function to install a specific version of a Homebrew application
+brew_install_with_version() {
+  BREW_APP_NAME="$1"
+  BREW_APP_VERSION="$2"
+  BREW_APP_NAME_WITH_VERSION="$BREW_APP_NAME@$BREW_APP_VERSION"
+  TAP_NAME="$USER/local-$BREW_APP_NAME-$BREW_APP_VERSION"
+  
+  # Check current installed versions
+  info "Checking installed versions of $BREW_APP_NAME."
+  INSTALLED_VERSIONS=$(brew list --versions | grep "$BREW_APP_NAME" || true)
+  INSTALLED_VERSION_COUNT=$(brew list --versions | grep -c "$BREW_APP_NAME" || true)
+
+  if [ -n "$INSTALLED_VERSIONS" ]; then
+    # Check if the target version is already installed
+    if echo "$INSTALLED_VERSIONS" | grep -q "$BREW_APP_VERSION"; then
+      if [ "$INSTALLED_VERSION_COUNT" -eq 1 ]; then
+        info "$BREW_APP_NAME $BREW_APP_VERSION is already installed."
+        return 0
+      elif [ "$INSTALLED_VERSION_COUNT" -gt 1 ]; then
+        SINGLE_LINE_INSTALLED_VERSIONS=$(echo "$INSTALLED_VERSIONS" | tr '\n' ' ')
+        info "Installed $BREW_APP_NAME versions: $SINGLE_LINE_INSTALLED_VERSIONS"
+        info "Multiple versions of $BREW_APP_NAME are installed, relink the target version."
+        echo "$INSTALLED_VERSIONS" | awk '{print $1}' | while read -r installed_version; do
+            brew unlink "$installed_version"
+        done
+
+        NEED_VERSION=$(echo "$INSTALLED_VERSIONS" | grep "$BREW_APP_VERSION" | cut -d ' ' -f 1)
+        brew link --overwrite "$NEED_VERSION"
+        return 0
+      fi
+    fi
+  fi
+
+  # Create a new Homebrew tap
+  if brew tap-info "$TAP_NAME" 2>/dev/null | grep -q "Installed"; then
+      info "Tap $TAP_NAME already exists. Skipping tap creation."
+  else
+      info "Creating a new tap: $TAP_NAME..."
+      if ! brew tap-new "$TAP_NAME"; then
+          fatal "Failed to create the tap $TAP_NAME."
+      fi
+  fi
+
+  # Extract the history version of the app
+  info "Extracting $BREW_APP_NAME version $BREW_APP_VERSION."
+  brew tap homebrew/core --force
+  brew extract --force --version="$BREW_APP_VERSION" "$BREW_APP_NAME" "$TAP_NAME"
+
+  # Install the specific version of the application
+  info "Unlinking before install $BREW_APP_NAME."
+  echo "$INSTALLED_VERSIONS" | awk '{print $1}' | while read -r installed_version; do
+    brew unlink "$installed_version" 2>/dev/null || true
+  done
+
+  info "Installing $BREW_APP_NAME version $BREW_APP_VERSION."
+  if ! brew install "$TAP_NAME/$BREW_APP_NAME_WITH_VERSION"; then
+      fatal "Failed to install $BREW_APP_NAME version $BREW_APP_VERSION."
+  fi
+
+  info "Installed and linked $BREW_APP_NAME version $BREW_APP_VERSION."
+}
+
 # Function to install dependencies
 install_dependencies() {
   DEPENDENCIES="curl sudo"
@@ -275,9 +340,9 @@ install_dependencies() {
   if [ "$INSTALL_SKIP_BUILD_DEPENDENCIES" != "1" ] && [ "$OS" = "macos" ]; then
     if ! command -v brew > /dev/null 2>&1; then
       fatal "Homebrew is required but missing. Please install Homebrew."
-    elif ! brew list openfst > /dev/null 2>&1; then
+    else
       # audio dependency library
-      brew install openfst
+      brew_install_with_version "$BREW_APP_OPENFST_NAME" "$BREW_APP_OPENFST_VERSION"
     fi
   fi
 }
@@ -576,12 +641,14 @@ install_gpustack() {
 
   # audio dependencies for macOS
   if [ "$INSTALL_SKIP_BUILD_DEPENDENCIES" != "1" ] && [ "$OS" = "macos" ]; then
-    CPLUS_INCLUDE_PATH="$(brew --prefix openfst)/include"
+    # Check current installed versions
+    NEED_VERSION=$(brew list --versions | grep "$BREW_APP_OPENFST_NAME" | grep "$BREW_APP_OPENFST_VERSION" | cut -d ' ' -f 1 || true)
+    CPLUS_INCLUDE_PATH="$(brew --prefix "$NEED_VERSION")/include"
     export CPLUS_INCLUDE_PATH
-    LIBRARY_PATH="$(brew --prefix openfst)/lib"
+    LIBRARY_PATH="$(brew --prefix "$NEED_VERSION")/lib"
     export LIBRARY_PATH
-    pipx inject gpustack pynini
-    pipx inject gpustack wetextprocessing
+    pipx inject gpustack pynini==2.1.6
+    pipx inject gpustack wetextprocessing==1.0.4.1
   fi
 }
 
