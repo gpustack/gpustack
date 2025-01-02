@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     tzdata \
     python3 \
     python3-pip \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace/gpustack
@@ -24,7 +25,8 @@ RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
     else  \
     WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]"; \
     fi && \
-    pip install $WHEEL_PACKAGE &&\
+    pip install pipx && \
+    pip install $WHEEL_PACKAGE && \
     pip cache purge && \
     rm -rf /workspace/gpustack
 
