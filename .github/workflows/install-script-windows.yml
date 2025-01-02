@@ -14,6 +14,8 @@ on:
       - "install.ps1"
       - ".github/workflows/install-script-windows.yml"
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 0 * * *" # every day at 00:00 UTC
 
 jobs:
   windows-amd64-build:
