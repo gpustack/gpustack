@@ -1,5 +1,6 @@
 import argparse
 import logging
+import sys
 
 from gpustack.cmd.start import get_gpustack_env
 from gpustack.logging import setup_logging
@@ -83,8 +84,10 @@ def run(args):
         pass
     except ValueError as e:
         logger.fatal(e)
+        sys.exit(1)
     except Exception as e:
         logger.fatal(f"Failed to download tools: {e}")
+        sys.exit(1)
 
 
 def verify(args):
