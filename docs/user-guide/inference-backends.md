@@ -121,6 +121,7 @@ The vox-box backend supports Linux, macOS and Windows platforms.
 | CosyVoice-300M-SFT              | text-to-speech | [Hugging Face](https://huggingface.co/FunAudioLLM/CosyVoice-300M-SFT), [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M-SFT)                            | Linux(ARM not supported), macOS, Windows(Not supported) |
 | CosyVoice-300M                  | text-to-speech | [Hugging Face](https://huggingface.co/FunAudioLLM/CosyVoice-300M), [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M)                                    | Linux(ARM not supported), macOS, Windows(Not supported) |
 | CosyVoice-300M-25Hz             | text-to-speech | [ModelScope](https://modelscope.cn/models/iic/CosyVoice-300M-25Hz)                                                                                                  | Linux(ARM not supported), macOS, Windows(Not supported) |
+| CosyVoice2-0.5B                 | text-to-speech | [Hugging Face](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B), [ModelScope](https://modelscope.cn/models/iic/CosyVoice2-0.5B)                                  | Linux(ARM not supported), macOS, Windows(Not supported) |
 
 ### Supported Features
 
