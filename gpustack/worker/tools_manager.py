@@ -333,7 +333,7 @@ class ToolsManager:
             and self._arch == "amd64"
             and self._device == platform.DeviceTypeEnum.ROCM.value
         ):
-            platform_name = "linux-amd64-hip-6.1"
+            platform_name = "linux-amd64-hip-6.2"
         elif self._os == "linux" and self._arch == "amd64":
             platform_name = "linux-amd64-avx2"
         elif self._os == "linux" and self._arch == "arm64":
@@ -349,7 +349,7 @@ class ToolsManager:
             and self._arch == "amd64"
             and self._device == platform.DeviceTypeEnum.ROCM.value
         ):
-            platform_name = "windows-amd64-hip-6.1"
+            platform_name = "windows-amd64-hip-6.2"
         elif self._os == "windows" and self._arch == "amd64":
             platform_name = "windows-amd64-avx2"
         elif self._os == "windows" and self._arch == "arm64":
