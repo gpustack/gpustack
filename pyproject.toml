@@ -21,7 +21,7 @@ prometheus-client = "^0.20.0"
 colorama = "^0.4.6"
 psutil = "^5.9.8"
 requests = "^2.32.3"
-huggingface-hub = "^0.23.3"
+huggingface-hub = "^0.27.0"
 attrs = "^24.2.0"
 aiosqlite = "^0.20.0"
 sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
@@ -48,7 +48,7 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = {version = "0.0.9", optional = true}
+vox-box = {version = "0.0.10", optional = true}
 
 tenacity = "^9.0.0"
 [tool.poetry.group.dev.dependencies]
