@@ -59,22 +59,44 @@ class ToolsManager:
             "https://github.com",
             "https://gpustack-1303613262.cos.ap-guangzhou.myqcloud.com",
         ]
+
+        test_path = (
+            "/gpustack/gguf-parser-go/releases/download/v0.13.6/gguf-parser-linux-amd64"
+        )
+        test_size = 512 * 1024  # 512KB
+        download_tests = []
         for url in urls:
+            test_url = f"{url}{test_path}"
             try:
-                requests.get(url, timeout=3)
-                # Set if the URL is accessible.
-                logger.debug(
-                    f"Using {url} as the base URL for downloading dependency tools"
+                start_time = time.time()
+                headers = {"Range": f"bytes=0-{test_size-1}"}
+                response = requests.get(
+                    test_url, headers=headers, timeout=5, stream=True
                 )
-                self._download_base_url = url
-                break
+                response.raise_for_status()
+
+                if "Content-Range" not in response.headers:
+                    continue
+
+                if len(response.content) == 0:
+                    continue
+
+                elapsed_time = time.time() - start_time
+                download_tests.append((url, elapsed_time))
+                logger.debug(f"Tested {url}, elapsed time {elapsed_time:.2f} seconds")
             except requests.exceptions.RequestException as e:
                 logger.debug(f"Failed to connect to {url}: {e}")
 
-        if not self._download_base_url:
+        if not download_tests:
             raise Exception(
                 f"It is required to download dependency tools from the internet, but failed to connect to any of {urls}"
             )
+
+        best_url, _ = min(download_tests, key=lambda x: x[1])
+        self._download_base_url = best_url
+        logger.debug(
+            f"Using {best_url} as the base URL for downloading dependency tools"
+        )
 
     def prepare_tools(self):
         """
