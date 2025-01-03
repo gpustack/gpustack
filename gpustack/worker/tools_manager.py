@@ -69,7 +69,7 @@ class ToolsManager:
             test_url = f"{url}{test_path}"
             try:
                 start_time = time.time()
-                headers = {"Range": f"bytes=0-{test_size-1}"}
+                headers = {"Range": f"bytes=0-{test_size - 1}"}
                 response = requests.get(
                     test_url, headers=headers, timeout=5, stream=True
                 )
