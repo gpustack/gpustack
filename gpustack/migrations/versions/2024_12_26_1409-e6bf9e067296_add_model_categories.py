@@ -40,7 +40,7 @@ def upgrade() -> None:
                 (sa.column('image_only') == True, sa.literal(json.dumps(['image']))),
                 (sa.column('speech_to_text') == True, sa.literal(json.dumps(['speech_to_text']))),
                 (sa.column('text_to_speech') == True, sa.literal(json.dumps(['text_to_speech']))),
-                else_=sa.literal(json.dumps([]))
+                else_=sa.literal(json.dumps(['llm']))
             )
         if connection.dialect.name == 'postgresql':
             categories_case = sa.case(
@@ -49,7 +49,7 @@ def upgrade() -> None:
                 (sa.column('image_only') == True, sa.func.to_json(['image'])),
                 (sa.column('speech_to_text') == True, sa.func.to_json(['speech_to_text'])),
                 (sa.column('text_to_speech') == True, sa.func.to_json(['text_to_speech'])),
-                else_=sa.literal([])
+                else_=sa.func.to_json(['llm'])
             )
 
         models_table = sa.table('models', sa.column('categories', sa.JSON))

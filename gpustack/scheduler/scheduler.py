@@ -31,6 +31,7 @@ from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import (
     BackendEnum,
+    CategoryEnum,
     DistributedServers,
     Model,
     ModelInstance,
@@ -181,18 +182,22 @@ class Scheduler:
         should_update = False
         if task_output.resource_claim_estimate.embeddingOnly and not model.categories:
             should_update = True
-            model.categories = ["embedding"]
+            model.categories = [CategoryEnum.EMBEDDING]
             model.embedding_only = True
 
         if task_output.resource_claim_estimate.imageOnly and not model.categories:
             should_update = True
-            model.categories = ["image"]
+            model.categories = [CategoryEnum.IMAGE]
             model.image_only = True
 
         if task_output.resource_claim_estimate.reranking and not model.categories:
             should_update = True
-            model.categories = ["reranker"]
+            model.categories = [CategoryEnum.RERANKER]
             model.reranker = True
+
+        if not model.categories:
+            should_update = True
+            model.categories = [CategoryEnum.LLM]
 
         if (
             task_output.resource_claim_estimate.distributable
@@ -240,8 +245,9 @@ class Scheduler:
                 break
 
         should_update = False
-        if is_embedding_model and not model.embedding_only:
+        if is_embedding_model and not model.categories:
             should_update = True
+            model.categories = [CategoryEnum.EMBEDDING]
             model.embedding_only = True
 
         if should_update:
@@ -281,14 +287,15 @@ class Scheduler:
 
         task_type = model_dict.get("task_type")
         if task_type == "tts":
-            model.categories = ["text_to_speech"]
+            model.categories = [CategoryEnum.TEXT_TO_SPEECH]
             model.text_to_speech = True
         elif task_type == "stt":
-            model.categories = ["speech_to_text"]
+            model.categories = [CategoryEnum.SPEECH_TO_TEXT]
             model.speech_to_text = True
 
         if model.categories and (
-            "text_to_speech" in model.categories or "speech_to_text" in model.categories
+            CategoryEnum.TEXT_TO_SPEECH in model.categories
+            or CategoryEnum.SPEECH_TO_TEXT in model.categories
         ):
             await model.update(session)
 

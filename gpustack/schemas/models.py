@@ -21,6 +21,15 @@ class SourceEnum(str, Enum):
     LOCAL_PATH = "local_path"
 
 
+class CategoryEnum(str, Enum):
+    LLM = "llm"
+    EMBEDDING = "embedding"
+    IMAGE = "image"
+    RERANKER = "reranker"
+    SPEECH_TO_TEXT = "speech_to_text"
+    TEXT_TO_SPEECH = "text_to_speech"
+
+
 class PlacementStrategyEnum(str, Enum):
     SPREAD = "spread"
     BINPACK = "binpack"
