@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
+import aiohttp
 from fastapi import FastAPI
 from fastapi_cdn_host import monkey_patch_for_docs_ui
-import httpx
 
 from gpustack import __version__
 from gpustack.api import exceptions, middlewares
@@ -11,9 +11,9 @@ from gpustack.routes.routes import api_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.http_client = httpx.AsyncClient()
+    app.state.http_client = aiohttp.ClientSession()
     yield
-    await app.state.http_client.aclose()
+    await app.state.http_client.close()
 
 
 app = FastAPI(
