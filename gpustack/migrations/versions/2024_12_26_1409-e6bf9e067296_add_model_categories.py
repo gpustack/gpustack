@@ -26,11 +26,15 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('categories', sa.JSON(), nullable=True))
         batch_op.add_column(sa.Column('meta', sa.JSON(), nullable=True, default={}))
 
-    with op.batch_alter_table('model_instances', schema=None) as batch_op:
-        batch_op.alter_column('state',
-                      existing_type=sa.VARCHAR(length=16),
-                      type_=sa.Enum('INITIALIZING', 'PENDING', 'STARTING', 'RUNNING', 'SCHEDULED', 'ERROR', 'DOWNLOADING', 'ANALYZING', name='modelinstancestateenum'),
-                      existing_nullable=False)
+    conn = op.get_bind()
+    if conn.dialect.name == 'postgresql':
+        existing_enum_values = conn.execute(
+            sa.text("SELECT unnest(enum_range(NULL::modelinstancestateenum))::text")
+        ).fetchall()
+        existing_enum_values = [row[0] for row in existing_enum_values]
+
+        if 'STARTING' not in existing_enum_values:
+            conn.execute(sa.text("ALTER TYPE modelinstancestateenum ADD VALUE 'STARTING'"))
 
     with op.batch_alter_table('models', schema=None) as batch_op:
         connection = batch_op.get_bind()
@@ -64,9 +68,3 @@ def downgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('categories')
         batch_op.drop_column('meta')
-
-    with op.batch_alter_table('model_instances', schema=None) as batch_op:
-        batch_op.alter_column('state',
-                      existing_type=sa.VARCHAR(length=16),
-                      type_=sa.Enum('INITIALIZING', 'PENDING', 'RUNNING', 'SCHEDULED', 'ERROR', 'DOWNLOADING', 'ANALYZING', name='modelinstancestateenum'),
-                      existing_nullable=False)
