@@ -19,7 +19,12 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.http_proxy.load_balancer import LoadBalancer
-from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    ModelInstance,
+    ModelInstanceStateEnum,
+)
 from gpustack.server.deps import SessionDep
 
 
@@ -110,19 +115,19 @@ async def list_models(
     statement = select(Model).where(Model.ready_replicas > 0)
 
     if embedding_only is not None:
-        categories.append("embedding")
+        categories.append(CategoryEnum.EMBEDDING)
 
     if image_only is not None:
-        categories.append("image")
+        categories.append(CategoryEnum.IMAGE)
 
     if reranker is not None:
-        categories.append("reranker")
+        categories.append(CategoryEnum.RERANKER)
 
     if speech_to_text is not None:
-        categories.append("speech_to_speech")
+        categories.append(CategoryEnum.SPEECH_TO_TEXT)
 
     if text_to_speech is not None:
-        categories.append("text_to_speech")
+        categories.append(CategoryEnum.TEXT_TO_SPEECH)
 
     if categories:
         statement = statement.where(
