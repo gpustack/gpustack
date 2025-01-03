@@ -1,7 +1,7 @@
 from typing import Optional
+import aiohttp
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
-import httpx
 
 from gpustack.config.config import Config
 from gpustack.worker.logs import LogOptionsDep
@@ -18,6 +18,7 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstancesPublic,
 )
+
 
 router = APIRouter()
 
@@ -85,35 +86,30 @@ async def get_serving_logs(
         f"/{model_instance.id}?{log_options.url_encode()}"
     )
 
-    timeout = httpx.Timeout(10.0, read=None)
-    client: httpx.AsyncClient = request.app.state.http_client
+    timeout = aiohttp.ClientTimeout(total=5 * 60, sock_connect=5)
+    client: aiohttp.ClientSession = request.app.state.http_client
 
     if log_options.follow:
 
         async def proxy_stream():
-            async with client.stream(
-                "GET", model_instance_log_url, timeout=timeout
-            ) as response:
-                if response.status_code != 200:
+            async with client.get(model_instance_log_url, timeout=timeout) as resp:
+                if resp.status != 200:
                     raise HTTPException(
-                        status_code=response.status_code,
+                        status_code=resp.status,
                         detail="Error fetching serving logs",
                     )
-                async for chunk in response.aiter_bytes():
+                async for chunk in resp.content.iter_any():
                     yield chunk
 
         return StreamingResponse(proxy_stream(), media_type="application/octet-stream")
     else:
-        response = await client.get(model_instance_log_url)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail="Error fetching serving logs",
-            )
-
-        return PlainTextResponse(
-            content=response.text, status_code=response.status_code
-        )
+        async with client.get(model_instance_log_url, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise HTTPException(
+                    status_code=resp.status,
+                    detail="Error fetching serving logs",
+                )
+            return PlainTextResponse(content=await resp.text(), status_code=resp.status)
 
 
 @router.post("", response_model=ModelInstancePublic)
