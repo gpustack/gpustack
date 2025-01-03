@@ -1,5 +1,7 @@
 import os
 import shutil
+from pathlib import Path
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from gpustack.utils import platform
 
@@ -26,3 +28,9 @@ def copy_owner_recursively(src, dst):
                 os.chown(os.path.join(dirpath, dirname), st.st_uid, st.st_gid)
             for filename in filenames:
                 os.chown(os.path.join(dirpath, filename), st.st_uid, st.st_gid)
+
+
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(0.5))
+def check_file_with_retries(path: Path):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Log file not found: {path}")
