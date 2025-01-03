@@ -13,7 +13,7 @@ from pathlib import Path
 from gpustack.config import Config
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
 from gpustack.server import catalog
-from gpustack.utils import platform
+from gpustack.utils import file, platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -181,8 +181,11 @@ class Worker:
         @app.get("/serveLogs/{id}")
         async def get_serve_logs(id: int, log_options: LogOptionsDep):
             path = Path(self._log_dir) / "serve" / f"{id}.log"
-            if not os.path.exists(path):
-                raise HTTPException(status_code=404, detail="Logs not found")
+
+            try:
+                file.check_file_with_retries(path)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail="Log file not found")
 
             return StreamingResponse(
                 log_generator(path, log_options), media_type="text/plain"
