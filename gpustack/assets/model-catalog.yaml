@@ -62,24 +62,7 @@
   licenses:
     - llama3.2
   release_date: "2024-09-25"
-  order: 2
   templates:
-    - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Llama-3.2-{size}B-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
-      cpu_offloading: true
-      distributed_inference_across_workers: true
-    - quantizations: *default_f16_quantizations
-      source: model_scope
-      model_scope_model_id: bartowski/Llama-3.2-{size}B-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
-      cpu_offloading: true
-      distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: unsloth/Llama-3.2-{size}B
@@ -105,6 +88,7 @@
   licenses:
     - llama3.2
   release_date: "2024-09-25"
+  order: 2
   templates:
     - quantizations: *default_f16_quantizations
       source: huggingface
@@ -210,9 +194,10 @@
     - apache-2.0
     - qwen-research
   release_date: "2024-09-19"
-  order: 1
   templates:
     - quantizations: *default_f16_quantizations
+      sizes:
+        - 3
       source: huggingface
       huggingface_repo_id: bartowski/Qwen2.5-{size}B-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -221,6 +206,8 @@
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: *default_f16_quantizations
+      sizes:
+        - 3
       source: model_scope
       model_scope_model_id: bartowski/Qwen2.5-{size}B-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
@@ -239,7 +226,7 @@
       replicas: 1
       backend: vllm
 - name: Qwen2.5 Instruct
-  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
   categories:
@@ -252,6 +239,7 @@
     - apache-2.0
     - qwen-research
   release_date: "2024-09-19"
+  order: 1
   templates:
     - quantizations: *default_f16_quantizations
       source: huggingface
@@ -453,7 +441,7 @@
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: huggingface
-      huggingface_repo_id: AI-ModelScope/Mistral-Small-Instruct-2409
+      huggingface_repo_id: mistralai/Mistral-Small-Instruct-2409
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -508,7 +496,7 @@
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: huggingface
-      huggingface_repo_id: mistral-community/Mistral-Large-Instruct-2411
+      huggingface_repo_id: mistralai/Mistral-Large-Instruct-2411
       replicas: 1
       backend: vllm
       backend_parameters:

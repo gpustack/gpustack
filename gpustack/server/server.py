@@ -50,7 +50,7 @@ class Server:
         self._run_migrations()
         await self._prepare_data()
 
-        init_model_catalog(self._config.data_dir, self._config.model_catalog_file)
+        init_model_catalog(self._config.model_catalog_file)
 
         self._start_sub_processes()
         self._start_scheduler()
