@@ -47,6 +47,7 @@ GPUStack supports the following accelerators:
 - [x] Ascend CANN
 - [x] Moore Threads MUSA
 - [x] AMD ROCm
+- [x] Hygon DTK
 
 Ensure all necessary drivers and libraries are installed on the system prior to installing GPUStack.
 
@@ -77,6 +78,13 @@ To use Moore Threads MUSA as an accelerator, ensure the following components are
 To use AMD ROCm as an accelerator, ensure the following components are installed:
 
 - [ROCm](https://rocm.docs.amd.com/en/docs-6.1.0/)
+
+### Hygon DTK
+
+To use Hygon DTK as an accelerator, ensure the following components are installed:
+
+- [Driver](https://developer.sourcefind.cn/tool/)
+- [DTK](https://developer.sourcefind.cn/tool/)
 
 ## Networking Requirements
 

@@ -102,6 +102,7 @@ nav:
       - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
       - Running Inference with Moore Threads GPUs: tutorials/running-inference-with-moorethreads-gpus.md
       - Running Inference with AMD GPUs: tutorials/running-inference-with-amd-gpus.md
+      - Running Inference with Hygon DCUs: tutorials/running-inference-with-hygon-dcus.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md

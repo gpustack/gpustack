@@ -37,7 +37,13 @@ class RocmSMI(GPUDetector):
         rocm_smi_command = self._command_rocm_smi()
         rocm_smi_result = self._run_command(rocm_smi_command)
         rocm_smi_devices = self.decode_rocm_smi(rocm_smi_result)
+        return self.inject_gpu_info(rocminfo_devices, rocm_smi_devices)
 
+    def inject_gpu_info(
+        self,
+        rocminfo_devices: Dict[str, Dict[str, str]],
+        rocm_smi_devices: GPUDevicesInfo,
+    ) -> GPUDevicesInfo:
         for device in rocm_smi_devices:
             for device_uuid, rocminfo_device in rocminfo_devices.items():
                 if device.uuid == device_uuid or device.uuid in rocminfo_device.get(
@@ -54,51 +60,86 @@ class RocmSMI(GPUDetector):
 
     def decode_rocm_smi(self, result) -> GPUDevicesInfo:
         """
-        result example:
-        $rocm-smi -i --showmeminfo vram --showpower --showserial --showuse --showtemp --showproductname --json
+        amd gpu result example:
+        $rocm-smi -i --showmeminfo vram --showpower --showserial --showuse --showtemp --showproductname --showuniqueid --json
         {
             "card0": {
+                "Device Name": "Navi 32 [Radeon RX 7700 XT / 7800 XT]",
                 "Device ID": "0x747e",
                 "Device Rev": "0xc8",
-                "Temperature (Sensor edge) (C)": "36.0",
-                "Temperature (Sensor junction) (C)": "41.0",
-                "Temperature (Sensor memory) (C)": "44.0",
-                "Average Graphics Package Power (W)": "4.0",
-                "GPU use (%)": "0",
-                "Serial Number": "5c88007d760374f3",
+                "Subsystem ID": "0x7801",
+                "GUID": "18190",
+                "Unique ID": "0x5c88007d760374f3",
+                "Temperature (Sensor edge) (C)": "45.0",
+                "Temperature (Sensor junction) (C)": "51.0",
+                "Temperature (Sensor memory) (C)": "54.0",
+                "Average Graphics Package Power (W)": "53.0",
+                "GPU use (%)": "100",
+                "Serial Number": "N/A",
                 "VRAM Total Memory (B)": "17163091968",
-                "VRAM Total Used Memory (B)": "283090944",
-                "Card series": "0x747e",
-                "Card model": "0x7801",
-                "Card vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
-                "Card SKU": "EXT94393"
+                "VRAM Total Used Memory (B)": "11615703040",
+                "Card Series": "Navi 32 [Radeon RX 7700 XT / 7800 XT]",
+                "Card Model": "0x747e",
+                "Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+                "Card SKU": "EXT94393",
+                "Node ID": "1",
+                "GFX Version": "gfx11001"
             }
         }
         """
 
         devices = []
         parsed_json = json.loads(result)
-        for key in parsed_json.keys():
+        keys = parsed_json.keys()
+        for key in keys:
             info = parsed_json.get(key)
+            is_hygon = any("dcu" in ik.lower() for ik in info.keys())
 
-            index = safe_int(key.removeprefix("card"))
-            uuid = (
-                info.get("Device ID")
-                if "N/A" in info.get("Serial Number")
-                else info.get("Serial Number")
-            )
-            name = info.get("Device Name")
+            # common
+            index = key.removeprefix("card")
 
-            memory_total = safe_int(info.get("VRAM Total Memory (B)", 0))
-            memory_used = safe_int(info.get("VRAM Total Used Memory (B)", 0))
-            utilization_gpu = safe_float(info.get("GPU use (%)", 0))
-            temperature_gpu = safe_float(info.get("Temperature (Sensor memory) (C)", 0))
-
+            if is_hygon:
+                # hygon
+                name = info.get("Card Series")
+                uuid = info.get("Unique ID")
+                memory_total = (
+                    safe_int(info.get("vram Total Memory (MiB)", 0)) * 1024 * 1024
+                )
+                memory_used = (
+                    safe_int(info.get("vram Total Used Memory (MiB)", 0)) * 1024 * 1024
+                )
+                utilization_gpu = safe_float(info.get("DCU use (%)", 0))
+                temperature_gpu = safe_float(
+                    info.get("Temperature (Sensor mem) (C)", 0)
+                )
+                vendor = VendorEnum.Hygon.value
+                device_type = platform.DeviceTypeEnum.DCU.value
+            else:
+                # amd
+                name = info.get("Device Name")
+                uuid = (
+                    info.get("Unique ID").removeprefix("0x")
+                    if info.get("Unique ID")
+                    else (
+                        info.get("Serial Number")
+                        if info.get("Serial Number")
+                        and "N/A" not in info.get("Serial Number")
+                        else info.get("Device ID")
+                    )
+                )
+                memory_total = safe_int(info.get("VRAM Total Memory (B)", 0))
+                memory_used = safe_int(info.get("VRAM Total Used Memory (B)", 0))
+                utilization_gpu = safe_float(info.get("GPU use (%)", 0))
+                temperature_gpu = safe_float(
+                    info.get("Temperature (Sensor memory) (C)", 0)
+                )
+                vendor = VendorEnum.AMD.value
+                device_type = platform.DeviceTypeEnum.ROCM.value
             device = GPUDeviceInfo(
                 index=index,
                 name=name,
                 uuid=uuid,
-                vendor=VendorEnum.AMD.value,
+                vendor=vendor,
                 memory=MemoryInfo(
                     is_unified_memory=False,
                     used=memory_used,
@@ -112,7 +153,7 @@ class RocmSMI(GPUDetector):
                     total=0,  # Total cores information is not provided by rocm-smi
                 ),
                 temperature=temperature_gpu,
-                type=platform.DeviceTypeEnum.ROCM.value,
+                type=device_type,
             )
             devices.append(device)
         return devices
@@ -316,7 +357,7 @@ class RocmSMI(GPUDetector):
                     if len(contents) < 2:
                         continue
                     key = contents[0].strip()
-                    value = contents[-1].strip()
+                    value = contents[1].strip()
                     if key == "Uuid":
                         value = value.removeprefix("GPU-")
                         uuid = value
@@ -361,6 +402,7 @@ class RocmSMI(GPUDetector):
             "--showuse",
             "--showtemp",
             "--showproductname",
+            "--showuniqueid",
             "--json",
         ]
         return executable_command

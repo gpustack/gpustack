@@ -1,0 +1,29 @@
+ARG BASE_IMAGE=gpustack/dcu-base:dtk24.04.3_ubuntu22.04_py3.10_pytorch2.3.0_vllm0.6.2
+
+FROM $BASE_IMAGE
+
+ARG TARGETPLATFORM
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    python3-venv \
+    tzdata \
+    build-essential \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY . /workspace/gpustack
+RUN cd /workspace/gpustack && make build
+
+# Install GPUStack
+RUN python3 -m pip install pipx \
+    && USER_BASE_BIN=$(python3 -m site --user-base)/bin \
+    && export PATH="$USER_BASE_BIN:$PATH" \
+    && pipx ensurepath --force \
+    && WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)" \
+    && pipx install $WHEEL_PACKAGE \
+    && rm -rf /workspace/gpustack
+
+RUN /root/.local/bin/gpustack download-tools
+
+RUN ln -s $(which vllm) /root/.local/share/pipx/venvs/gpustack/bin/vllm
+
+ENTRYPOINT [ "/root/.local/bin/gpustack", "start" ]

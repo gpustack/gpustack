@@ -147,6 +147,7 @@ def vendor_from_vendor_id(vendor_id: int) -> str:
         0x1002: VendorEnum.AMD.value,
         0x1022: VendorEnum.AMD.value,
         0x1DD8: VendorEnum.AMD.value,
+        0x1D94: VendorEnum.Hygon.value,
         0x106B: VendorEnum.Apple.value,
         0x0955: VendorEnum.NVIDIA.value,
         0x10DE: VendorEnum.NVIDIA.value,
