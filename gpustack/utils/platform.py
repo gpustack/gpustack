@@ -127,6 +127,7 @@ def device_type_from_vendor(vendor: VendorEnum) -> str:
         VendorEnum.Huawei.value: DeviceTypeEnum.NPU.value,
         VendorEnum.Apple.value: DeviceTypeEnum.MPS.value,
         VendorEnum.AMD.value: DeviceTypeEnum.ROCM.value,
+        VendorEnum.Hygon.value: DeviceTypeEnum.ROCM.value,
         VendorEnum.MTHREADS.value: DeviceTypeEnum.MUSA.value,
     }
 
