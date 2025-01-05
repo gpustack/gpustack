@@ -38,6 +38,7 @@ class DetectorFactory:
             platform.DeviceTypeEnum.MPS.value: [fastfetch],
             platform.DeviceTypeEnum.MUSA.value: [fastfetch],
             platform.DeviceTypeEnum.ROCM.value: [RocmSMI(), Regredit()],
+            platform.DeviceTypeEnum.DCU.value: [RocmSMI()],
         }
 
     def _validate_detectors(self):

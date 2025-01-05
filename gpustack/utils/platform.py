@@ -82,6 +82,7 @@ class DeviceTypeEnum(str, Enum):
     MPS = "mps"
     ROCM = "rocm"
     MUSA = "musa"
+    DCU = "dcu"
 
 
 def device() -> str:
@@ -92,6 +93,7 @@ def device() -> str:
     - npu
     - mps
     - rocm
+    - dcu
     - etc.
     """
     if (
@@ -114,10 +116,14 @@ def device() -> str:
     if system() == "darwin" and arch() == "arm64":
         return DeviceTypeEnum.MPS.value
 
+    if is_command_available("hy-smi"):
+        return "dcu"
+
     if is_command_available("rocm-smi") or os.path.exists(
         "C:\\Program Files\\AMD\\ROCm"
     ):
         return DeviceTypeEnum.ROCM.value
+
     return ""
 
 
@@ -127,6 +133,7 @@ def device_type_from_vendor(vendor: VendorEnum) -> str:
         VendorEnum.Huawei.value: DeviceTypeEnum.NPU.value,
         VendorEnum.Apple.value: DeviceTypeEnum.MPS.value,
         VendorEnum.AMD.value: DeviceTypeEnum.ROCM.value,
+        VendorEnum.Hygon.value: DeviceTypeEnum.DCU.value,
         VendorEnum.MTHREADS.value: DeviceTypeEnum.MUSA.value,
     }
 
