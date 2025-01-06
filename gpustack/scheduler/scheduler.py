@@ -250,6 +250,10 @@ class Scheduler:
             model.categories = [CategoryEnum.EMBEDDING]
             model.embedding_only = True
 
+        if not model.categories:
+            should_update = True
+            model.categories = [CategoryEnum.LLM]
+
         if should_update:
             await model.update(session)
 
