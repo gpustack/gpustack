@@ -194,6 +194,12 @@ async def _gguf_parser_command(  # noqa: C901
         execuable_command,
         "--image-max-width",
     )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["visual-max-image-size"],
+        execuable_command,
+        "--visual-max-image-size",
+    )
 
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
