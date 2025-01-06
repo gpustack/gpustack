@@ -176,6 +176,9 @@ class ActiveRecordMixin:
             ]
             count_statement = count_statement.where(or_(*fuzzy_conditions))
 
+        if extra_conditions:
+            count_statement = count_statement.where(and_(*extra_conditions))
+
         count = (await session.exec(count_statement)).one()
         total_page = math.ceil(count / per_page)
         pagination = Pagination(
