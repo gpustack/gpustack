@@ -57,6 +57,7 @@ class VendorEnum(str, Enum):
     Apple = "Apple"
     Huawei = "Huawei"
     AMD = "AMD"
+    Hygon = "Hygon"
 
 
 class MountPoint(BaseModel):

@@ -1,0 +1,17 @@
+{
+  "card0": {
+    "Device ID": "0x6210",
+    "Card Series": "DCU xxxx",
+    "Card Vendor": "Chengdu Haiguang IC Design Co., Ltd.",
+    "Serial Number": "TPXxxxx",
+    "Unique ID": "7100fa8866904061",
+    "Average Graphics Package Power (W)": "80.0",
+    "Temperature (Sensor edge) (C)": "41.0",
+    "Temperature (Sensor junction) (C)": "39.0",
+    "Temperature (Sensor mem) (C)": "44.0",
+    "": "",
+    "DCU use (%)": "0",
+    "vram Total Memory (MiB)": "65520",
+    "vram Total Used Memory (MiB)": "2"
+  }
+}
