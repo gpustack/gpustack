@@ -182,7 +182,9 @@ async def proxy_request_by_model(request: Request, session: SessionDep, endpoint
 
     try:
         if stream:
-            return await handle_streaming_request(request, url, body_json)
+            return await handle_streaming_request(
+                request, url, body_json, form_data, form_files
+            )
         else:
             return await handle_standard_request(
                 request, url, body_json, form_data, form_files
@@ -225,6 +227,10 @@ async def parse_request_body(request: Request, session: SessionDep):
             message="Missing 'model' field",
             is_openai_exception=True,
         )
+
+    if form_data and form_data.get("stream", False):
+        # stream may be set in form data, e.g., image edits.
+        stream = True
 
     model = await get_model(session, model_name)
     return model, stream, body_json, form_data, form_files
@@ -271,7 +277,11 @@ async def get_model(session: SessionDep, model_name: Optional[str]):
 
 
 async def handle_streaming_request(
-    request: Request, url: str, body_json: Optional[dict]
+    request: Request,
+    url: str,
+    body_json: Optional[dict],
+    form_data: Optional[dict],
+    form_files: Optional[list],
 ):
     timeout = 300
     headers = filter_headers(request.headers)
@@ -288,7 +298,9 @@ async def handle_streaming_request(
                     method=request.method,
                     url=url,
                     headers=headers,
-                    json=body_json,
+                    json=body_json if body_json else None,
+                    data=form_data if form_data else None,
+                    files=form_files if form_files else None,
                     timeout=timeout,
                 ) as resp:
                     if resp.status_code >= 400:
