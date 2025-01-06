@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 from fastapi.responses import JSONResponse
 import httpx
 import logging
@@ -43,14 +44,9 @@ timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy(request: Request, url: str):
-    if not url:
-        raise BadRequestException(message="Missing 'url' query parameter")
 
-    if not any(url.startswith(domain) for domain in ALLOWED_SITES):
-        raise ForbiddenException(message="This domain is not allowed")
-
-    if request.method not in ["GET", "POST", "PUT", "DELETE"]:
-        raise BadRequestException(message="Method not allowed")
+    validate_http_method(request.method)
+    validate_url(url)
 
     url = replace_hf_endpoint(url)
 
@@ -79,6 +75,35 @@ async def proxy(request: Request, url: str):
                 content={"detail": str(e)},
                 media_type="application/json",
             )
+
+
+def validate_http_method(method: str):
+    allowed_methods = ["GET", "POST", "PUT", "DELETE"]
+    if method not in allowed_methods:
+        raise BadRequestException(message=f"HTTP method '{method}' is not allowed")
+
+
+def validate_url(url: str):
+    if not url:
+        raise BadRequestException(message="Missing 'url' query parameter")
+
+    try:
+        parsed_url = urlparse(url)
+    except Exception:
+        raise BadRequestException(message="Invalid 'url' query parameter")
+
+    if not parsed_url.netloc or not parsed_url.scheme:
+        raise BadRequestException(message="Invalid 'url' query parameter")
+
+    for allowed_site in ALLOWED_SITES:
+        parsed_allowed_site_url = urlparse(allowed_site)
+        if (
+            parsed_url.netloc == parsed_allowed_site_url.netloc
+            and parsed_url.scheme == parsed_allowed_site_url.scheme
+        ):
+            return
+
+    raise ForbiddenException(message="This site is not allowed")
 
 
 def replace_hf_endpoint(url: str) -> str:
