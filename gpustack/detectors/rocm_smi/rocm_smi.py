@@ -12,6 +12,7 @@ from gpustack.schemas.workers import (
 )
 from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
+from gpustack.utils.convert import safe_float, safe_int
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class RocmSMI(GPUDetector):
                     "Chip ID"
                 ):
                     device.name = rocminfo_device.get("Marketing Name")
-                    device.core.total = int(rocminfo_device.get("Compute Unit", 0))
+                    device.core.total = safe_int(rocminfo_device.get("Compute Unit", 0))
                     device.labels = {
                         "llvm": rocminfo_device.get("LLVM Target Name", "")
                     }
@@ -80,7 +81,7 @@ class RocmSMI(GPUDetector):
         for key in parsed_json.keys():
             info = parsed_json.get(key)
 
-            index = key.removeprefix("card")
+            index = safe_int(key.removeprefix("card"))
             uuid = (
                 info.get("Device ID")
                 if "N/A" in info.get("Serial Number")
@@ -88,13 +89,13 @@ class RocmSMI(GPUDetector):
             )
             name = info.get("Device Name")
 
-            memory_total = int(info.get("VRAM Total Memory (B)", 0))
-            memory_used = int(info.get("VRAM Total Used Memory (B)", 0))
-            utilization_gpu = float(info.get("GPU use (%)", 0))
-            temperature_gpu = float(info.get("Temperature (Sensor memory) (C)", 0))
+            memory_total = safe_int(info.get("VRAM Total Memory (B)", 0))
+            memory_used = safe_int(info.get("VRAM Total Used Memory (B)", 0))
+            utilization_gpu = safe_float(info.get("GPU use (%)", 0))
+            temperature_gpu = safe_float(info.get("Temperature (Sensor memory) (C)", 0))
 
             device = GPUDeviceInfo(
-                index=int(index),
+                index=index,
                 name=name,
                 uuid=uuid,
                 vendor=VendorEnum.AMD.value,
