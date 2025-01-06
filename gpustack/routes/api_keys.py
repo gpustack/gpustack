@@ -25,9 +25,15 @@ async def get_api_keys(
     if search:
         fuzzy_fields = {"name": search}
 
+    pagination_params = {
+        "page": params.page,
+        "per_page": params.perPage,
+    }
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(session, fields=fields, fuzzy_fields=fuzzy_fields),
+            ApiKey.streaming(
+                session, fields=fields, fuzzy_fields=fuzzy_fields, **pagination_params
+            ),
             media_type="text/event-stream",
         )
 
@@ -35,8 +41,7 @@ async def get_api_keys(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
+        **pagination_params,
     )
 
 

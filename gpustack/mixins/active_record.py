@@ -350,16 +350,37 @@ class ActiveRecordMixin:
 
     @classmethod
     async def subscribe(
-        cls, session_or_engine: Union[AsyncSession, AsyncEngine]
+        cls,
+        session_or_engine: Union[AsyncSession, AsyncEngine],
+        **kargs,
     ) -> AsyncGenerator[Event, None]:
+        page = kargs.get("page")
+        per_page = kargs.get("per_page")
+        order_by = kargs.get("order_by")
+
         if isinstance(session_or_engine, AsyncSession):
-            items = await cls.all(session_or_engine)
+            if page and per_page:
+                queried_list = await cls.paginated_by_query(
+                    session_or_engine, page=page, per_page=per_page, order_by=order_by
+                )
+                items = queried_list.items
+            else:
+                items = await cls.all(session_or_engine)
             for item in items:
                 yield Event(type=EventType.CREATED, data=item)
             await session_or_engine.close()
         elif isinstance(session_or_engine, AsyncEngine):
             async with AsyncSession(session_or_engine) as session:
-                items = await cls.all(session)
+                if page and per_page:
+                    queried_list = await cls.paginated_by_query(
+                        session_or_engine,
+                        page=page,
+                        per_page=per_page,
+                        order_by=order_by,
+                    )
+                    items = queried_list.items
+                else:
+                    items = await cls.all(session)
                 for item in items:
                     yield Event(type=EventType.CREATED, data=item)
         else:
@@ -381,8 +402,9 @@ class ActiveRecordMixin:
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
+        **kargs,
     ) -> AsyncGenerator[str, None]:
-        async for event in cls.subscribe(session):
+        async for event in cls.subscribe(session, **kargs):
             skip_event = False
 
             # Check fields using AND condition

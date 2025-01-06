@@ -37,12 +37,17 @@ async def get_models(
     if search:
         fuzzy_fields = {"name": search}
 
+    pagination_params = {
+        "page": params.page,
+        "per_page": params.perPage,
+    }
     if params.watch:
         return StreamingResponse(
             Model.streaming(
                 session,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
+                **pagination_params,
             ),
             media_type="text/event-stream",
         )
@@ -63,8 +68,7 @@ async def get_models(
         session=session,
         fuzzy_fields=fuzzy_fields,
         extra_conditions=extra_conditions,
-        page=params.page,
-        per_page=params.perPage,
+        **pagination_params,
     )
 
 
@@ -97,7 +101,12 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
-            ModelInstance.streaming(session=session, fields=fields),
+            ModelInstance.streaming(
+                session=session,
+                fields=fields,
+                page=params.page,
+                per_page=params.perPage,
+            ),
             media_type="text/event-stream",
         )
 
@@ -105,10 +114,10 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
     count = len(instances)
     total_page = math.ceil(count / params.perPage)
     pagination = Pagination(
-        page=params.page,
-        perPage=params.perPage,
         total=count,
         totalPage=total_page,
+        page=params.page,
+        perPage=params.perPage,
     )
 
     return ModelInstancesPublic(items=instances, pagination=pagination)

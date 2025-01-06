@@ -20,17 +20,22 @@ async def get_gpus(session: SessionDep, params: ListParamsDep, search: str = Non
     if search:
         fuzzy_fields = {"name": search}
 
+    pagination_params = {
+        "page": params.page,
+        "per_page": params.perPage,
+    }
     if params.watch:
         return StreamingResponse(
-            GPUDevice.streaming(session, fuzzy_fields=fuzzy_fields),
+            GPUDevice.streaming(
+                session, fuzzy_fields=fuzzy_fields, **pagination_params
+            ),
             media_type="text/event-stream",
         )
 
     return await GPUDevice.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
+        **pagination_params,
     )
 
 

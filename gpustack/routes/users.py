@@ -19,17 +19,20 @@ async def get_users(session: SessionDep, params: ListParamsDep, search: str = No
     if search:
         fuzzy_fields = {"username": search, "full_name": search}
 
+    pagination_params = {
+        "page": params.page,
+        "per_page": params.perPage,
+    }
     if params.watch:
         return StreamingResponse(
-            User.streaming(session, fuzzy_fields=fuzzy_fields),
+            User.streaming(session, fuzzy_fields=fuzzy_fields, **pagination_params),
             media_type="text/event-stream",
         )
 
     return await User.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
+        **pagination_params,
     )
 
 

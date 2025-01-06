@@ -30,9 +30,15 @@ async def get_workers(
     if name:
         fields = {"name": name}
 
+    pagination_params = {
+        "page": params.page,
+        "per_page": params.perPage,
+    }
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(session, fields=fields, fuzzy_fields=fuzzy_fields),
+            Worker.streaming(
+                session, fields=fields, fuzzy_fields=fuzzy_fields, **pagination_params
+            ),
             media_type="text/event-stream",
         )
 
@@ -40,8 +46,7 @@ async def get_workers(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
+        **pagination_params,
     )
 
 

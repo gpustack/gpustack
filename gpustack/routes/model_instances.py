@@ -41,17 +41,20 @@ async def get_model_instances(
     if state:
         fields["state"] = state
 
+    pagination_params = {
+        "page": params.page,
+        "per_page": params.perPage,
+    }
     if params.watch:
         return StreamingResponse(
-            ModelInstance.streaming(session, fields=fields),
+            ModelInstance.streaming(session, fields=fields, **pagination_params),
             media_type="text/event-stream",
         )
 
     return await ModelInstance.paginated_by_query(
         session=session,
         fields=fields,
-        page=params.page,
-        per_page=params.perPage,
+        **pagination_params,
     )
 
 
