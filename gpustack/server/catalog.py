@@ -166,7 +166,26 @@ def prepare_chat_templates(data_dir: str):
 
 
 def get_builtin_model_catalog_file() -> str:
-    return str(pkg_resources.files("gpustack.assets").joinpath("model-catalog.yaml"))
+    huggingface_url = "https://huggingface.co"
+    modelscope_url = "https://modelscope.cn"
+
+    model_catalog_file_name = "model-catalog.yaml"
+    if not can_access(huggingface_url) and can_access(modelscope_url):
+        model_catalog_file_name = "model-catalog-modelscope.yaml"
+        logger.info(f"Cannot access {huggingface_url}, using ModelScope model catalog.")
+
+    return str(pkg_resources.files("gpustack.assets").joinpath(model_catalog_file_name))
+
+
+def can_access(url: str) -> bool:
+    """
+    Check if the URL is accessible
+    """
+    try:
+        response = requests.get(url, timeout=3)
+        return response.status_code >= 200 and response.status_code < 300
+    except requests.RequestException:
+        return False
 
 
 def resolve_model_template(
