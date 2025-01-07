@@ -23,16 +23,16 @@
         - Q6_K
         - Q8_0
         - f16
-      source: huggingface
-      huggingface_repo_id: bartowski/Llama-3.3-70B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Llama-3.3-70B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/Llama-3.3-70B-Instruct
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.3-70B-Instruct
       replicas: 1
       backend: vllm
 - name: Llama3.2
@@ -51,8 +51,8 @@
   release_date: "2024-09-25"
   templates:
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/Llama-3.2-{size}B
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.2-{size}B
       replicas: 1
       backend: vllm
 - name: Llama3.2 Instruct
@@ -73,16 +73,16 @@
   order: 2
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Llama-3.2-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Llama-3.2-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/Llama-3.2-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.2-{size}B-Instruct
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -113,16 +113,16 @@
         - Q6_K
         - Q8_0
         - f32
-      source: huggingface
-      huggingface_repo_id: bartowski/Meta-Llama-3.1-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Meta-Llama-3.1-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: meta-llama/Llama-3.1-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: meta-llama/Llama-3.1-{size}B-Instruct
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -146,16 +146,16 @@
     - quantizations: *default_f16_quantizations
       sizes:
         - 3
-      source: huggingface
-      huggingface_repo_id: bartowski/Qwen2.5-{size}B-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2.5-{size}B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen2.5-{size}B
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-{size}B
       replicas: 1
       backend: vllm
 - name: Qwen2.5 Instruct
@@ -175,16 +175,16 @@
   order: 1
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen2.5-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-{size}B-Instruct
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -204,16 +204,16 @@
   release_date: "2024-11-12"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen2.5-Coder-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-Coder-{size}B-Instruct
       replicas: 1
       backend: vllm
 - name: QwQ Preview
@@ -240,16 +240,16 @@
         - Q6_K
         - Q8_0
         - bf16
-      source: huggingface
-      huggingface_repo_id: bartowski/QwQ-32B-Preview-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/QwQ-32B-Preview-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/QwQ-32B-Preview
+      source: model_scope
+      model_scope_model_id: Qwen/QwQ-32B-Preview
       replicas: 1
       backend: vllm
 - name: Mistral Instruct
@@ -268,16 +268,16 @@
   release_date: "2024-05-22"
   templates:
     - quantizations: *default_f32_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Mistral-7B-Instruct-v0.3-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-7B-Instruct-v0.3-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/mistral-7b-instruct-v0.3
+      source: model_scope
+      model_scope_model_id: unsloth/mistral-7b-instruct-v0.3
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -299,16 +299,16 @@
   release_date: "2024-09-17"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Mistral-Small-Instruct-2409-GGUF
-      huggingface_filename: "-*{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-Small-Instruct-2409-GGUF
+      model_scope_file_path: "-*{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: mistralai/Mistral-Small-Instruct-2409
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/Mistral-Small-Instruct-2409
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -338,16 +338,16 @@
         - Q5_K_M
         - Q6_K
         - Q8_0
-      source: huggingface
-      huggingface_repo_id: bartowski/Mistral-Large-Instruct-2411-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-Large-Instruct-2411-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: mistralai/Mistral-Large-Instruct-2411
+      source: model_scope
+      model_scope_model_id: mistral-community/Mistral-Large-Instruct-2411
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -369,16 +369,16 @@
   release_date: "2024-07-18"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Mistral-Nemo-Instruct-2407-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Mistral-Nemo-Instruct-2407-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/Mistral-Nemo-Instruct-2407
+      source: model_scope
+      model_scope_model_id: unsloth/Mistral-Nemo-Instruct-2407
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -399,16 +399,16 @@
   release_date: "2024-05-29"
   templates:
     - quantizations: *default_f32_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Codestral-22B-v0.1-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Codestral-22B-v0.1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: mistralai/Codestral-22B-v0.1
+      source: model_scope
+      model_scope_model_id: LLM-Research/Codestral-22B-v0.1
       replicas: 1
       backend: vllm
 - name: Gemma 2 Instruct
@@ -425,16 +425,16 @@
   release_date: "2024-07-16"
   templates:
     - quantizations: *default_f32_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/gemma-2-{size}b-it-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/gemma-2-{size}b-it-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/gemma-2-{size}b-it
+      source: model_scope
+      model_scope_model_id: unsloth/gemma-2-{size}b-it
       replicas: 1
       backend: vllm
 - name: Phi3.5 Mini
@@ -452,16 +452,16 @@
   release_date: "2024-08-16"
   templates:
     - quantizations: *default_f32_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Phi-3.5-mini-instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Phi-3.5-mini-instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: microsoft/Phi-3.5-mini-instruct
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/Phi-3.5-mini-instruct
       replicas: 1
       backend: vllm
 - name: Deepseek V2.5
@@ -479,16 +479,16 @@
   release_date: "2024-12-10"
   templates:
     - quantizations: *default_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/DeepSeek-V2.5-1210-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/DeepSeek-V2.5-1210-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: deepseek-ai/DeepSeek-V2.5-1210
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V2.5-1210
       replicas: 1
       backend: vllm
 - name: Deepseek V3
@@ -506,8 +506,8 @@
   release_date: "2024-12-26"
   templates:
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: deepseek-ai/DeepSeek-V3
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V3
       replicas: 1
       backend: vllm
 - name: Yi1.5
@@ -524,16 +524,16 @@
   release_date: "2024-05-12"
   templates:
     - quantizations: *default_f32_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Yi-1.5-{size}B-Chat-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Yi-1.5-{size}B-Chat-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: 01-ai/Yi-1.5-{size}B-Chat
+      source: model_scope
+      model_scope_model_id: 01ai/Yi-1.5-{size}B-Chat
       replicas: 1
       backend: vllm
 - name: Command R
@@ -551,16 +551,16 @@
   release_date: "2024-08-20"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/c4ai-command-r-08-2024-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/c4ai-command-r-08-2024-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/c4ai-command-r-08-2024
+      source: model_scope
+      model_scope_model_id: unsloth/c4ai-command-r-08-2024
       replicas: 1
       backend: vllm
 - name: Falcon3
@@ -577,16 +577,16 @@
   release_date: "2024-12-17"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Falcon3-{size}B-Base-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Falcon3-{size}B-Base-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: tiiuae/Falcon3-{size}B-Base
+      source: model_scope
+      model_scope_model_id: tiiuae/Falcon3-{size}B-Base
       replicas: 1
       backend: vllm
 - name: Falcon3 Instruct
@@ -603,16 +603,16 @@
   release_date: "2024-12-17"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Falcon3-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Falcon3-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: tiiuae/Falcon3-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: tiiuae/Falcon3-{size}B-Instruct
       replicas: 1
       backend: vllm
 - name: Granite3.1 Instruct
@@ -630,16 +630,16 @@
   release_date: "2024-12-18"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/granite-3.1-{size}b-instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/granite-3.1-{size}b-instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: ibm-granite/granite-3.1-{size}b-instruct
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/granite-3.1-{size}b-instruct
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -662,16 +662,16 @@
   release_date: "2024-08-29"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/Qwen2-VL-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/Qwen2-VL-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen2-VL-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2-VL-{size}B-Instruct
       replicas: 1
       backend: vllm
 - name: QvQ Preview
@@ -690,16 +690,16 @@
   release_date: "2024-12-25"
   templates:
     - quantizations: *default_f16_quantizations
-      source: huggingface
-      huggingface_repo_id: bartowski/QVQ-72B-Preview-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: bartowski/QVQ-72B-Preview-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/QVQ-72B-Preview
+      source: model_scope
+      model_scope_model_id: Qwen/QVQ-72B-Preview
       replicas: 1
       backend: vllm
 - name: Llama3.2 Vision
@@ -719,8 +719,8 @@
   release_date: "2024-09-25"
   templates:
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/Llama-3.2-{size}B-Vision-Instruct
+      source: model_scope
+      model_scope_model_id: unsloth/Llama-3.2-{size}B-Vision-Instruct
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -743,8 +743,8 @@
   release_date: "2024-09-11"
   templates:
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: mistralai/Pixtral-12B-2409
+      source: model_scope
+      model_scope_model_id: AI-ModelScope/Pixtral-12B-2409
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -766,8 +766,8 @@
   release_date: "2024-08-22"
   templates:
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: microsoft/Phi-3.5-vision-instruct
+      source: model_scope
+      model_scope_model_id: LLM-Research/Phi-3.5-vision-instruct
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -795,9 +795,9 @@
         - Q6_K
         - Q8_0
         - FP16
-      source: huggingface
-      huggingface_repo_id: gpustack/bge-m3-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/bge-m3-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: BCE Embedding Base V1
@@ -814,9 +814,9 @@
   release_date: "2024-01-05"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/bce-embedding-base_v1-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/bce-embedding-base_v1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Jina Embeddings V2 Base EN
@@ -833,9 +833,9 @@
   release_date: "2024-01-25"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/jina-embeddings-v2-base-en-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/jina-embeddings-v2-base-en-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Jina Embeddings V2 Base ZH
@@ -852,9 +852,9 @@
   release_date: "2024-01-25"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/jina-embeddings-v2-base-zh-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/jina-embeddings-v2-base-zh-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 # Reranker models
@@ -869,9 +869,9 @@
   release_date: "2024-03-19"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/bge-reranker-v2-m3-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/bge-reranker-v2-m3-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: BCE Reranker Base V1
@@ -885,9 +885,9 @@
   release_date: "2023-12-29"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/bce-reranker-base_v1-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/bce-reranker-base_v1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: GTE Multilingual Reranker Base
@@ -901,9 +901,9 @@
   release_date: "2024-08-09"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/gte-multilingual-reranker-base-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/gte-multilingual-reranker-base-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Jina Reranker V2 Base Multilingual
@@ -917,9 +917,9 @@
   release_date: "2024-06-26"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/jina-reranker-v2-base-multilingual-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/jina-reranker-v2-base-multilingual-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Jina Reranker V1 Turbo EN
@@ -933,9 +933,9 @@
   release_date: "2024-04-19"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/jina-reranker-v1-turbo-en-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/jina-reranker-v1-turbo-en-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Jina Reranker V1 Tiny EN
@@ -949,9 +949,9 @@
   release_date: "2024-04-19"
   templates:
     - quantizations: *embedding_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/jina-reranker-v1-tiny-en-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/jina-reranker-v1-tiny-en-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 # Image models
@@ -970,9 +970,9 @@
         - Q4_1
         - Q8_0
         - FP16
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-GGUF
-      huggingface_filename: "*large-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-large-GGUF
+      model_scope_file_path: "*large-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v3.5 Large Turbo
@@ -986,9 +986,9 @@
   release_date: "2024-10-22"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-turbo-GGUF
-      huggingface_filename: "*turbo-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-large-turbo-GGUF
+      model_scope_file_path: "*turbo-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v3.5 Medium
@@ -1002,9 +1002,9 @@
   release_date: "2024-10-22"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v3-5-medium-GGUF
-      huggingface_filename: "*medium-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-medium-GGUF
+      model_scope_file_path: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v3 Medium
@@ -1018,9 +1018,9 @@
   release_date: "2024-06-12"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v3-medium-GGUF
-      huggingface_filename: "*medium-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-medium-GGUF
+      model_scope_file_path: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion XL
@@ -1034,9 +1034,9 @@
   release_date: "2023-07-26"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-xl-base-1.0-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-base-1.0-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion XL Turbo
@@ -1050,9 +1050,9 @@
   release_date: "2023-11-28"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-xl-1.0-turbo-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-1.0-turbo-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion XL Refiner
@@ -1066,9 +1066,9 @@
   release_date: "2023-07-26"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-xl-refiner-1.0-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-refiner-1.0-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion XL Inpainting
@@ -1082,9 +1082,9 @@
   release_date: "2023-09-01"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-xl-inpainting-1.0-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-xl-inpainting-1.0-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v2.1
@@ -1098,9 +1098,9 @@
   release_date: "2022-12-20"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v2-1-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v2-1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v2.1 Turbo
@@ -1114,9 +1114,9 @@
   release_date: "2023-12-01"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v2-1-turbo-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v2-1-turbo-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v2 Inpainting
@@ -1130,9 +1130,9 @@
   release_date: "2022-12-14"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v2-inpainting-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v2-inpainting-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v1.5 Inpainting
@@ -1146,9 +1146,9 @@
   release_date: "2022-11-24"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v1-5-inpainting-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v1-5-inpainting-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: Stable Diffusion v1.5
@@ -1162,9 +1162,9 @@
   release_date: "2022-11-24"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v1-5-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v1-5-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: FLUX.1 Dev
@@ -1178,9 +1178,9 @@
   release_date: "2024-08-02"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-dev-GGUF
-      huggingface_filename: "*dev-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-dev-GGUF
+      model_scope_file_path: "*dev-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: FLUX.1 Schnell
@@ -1194,9 +1194,9 @@
   release_date: "2024-08-02"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-schnell-GGUF
-      huggingface_filename: "*schnell-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-schnell-GGUF
+      model_scope_file_path: "*schnell-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: FLUX.1 Fill Dev
@@ -1210,9 +1210,9 @@
   release_date: "2024-11-25"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-Fill-dev-GGUF
-      huggingface_filename: "*dev-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-Fill-dev-GGUF
+      model_scope_file_path: "*dev-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: FLUX.1 Lite
@@ -1226,9 +1226,9 @@
   release_date: "2024-10-23"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-lite-GGUF
-      huggingface_filename: "*lite-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-lite-GGUF
+      model_scope_file_path: "*lite-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 - name: FLUX.1 Mini
@@ -1242,9 +1242,9 @@
   release_date: "2024-11-15"
   templates:
     - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-mini-GGUF
-      huggingface_filename: "*mini-{quantization}*.gguf"
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-mini-GGUF
+      model_scope_file_path: "*mini-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 # Audio models
@@ -1259,8 +1259,8 @@
   release_date: "2023-11-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-large-v3
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-large-v3
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Large v2
@@ -1274,8 +1274,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-large-v2
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-large-v2
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Medium
@@ -1289,8 +1289,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-medium
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-medium
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Medium EN
@@ -1304,8 +1304,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-medium.en
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-medium.en
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Small
@@ -1319,8 +1319,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-small
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-small
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Small EN
@@ -1334,8 +1334,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-small.en
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-small.en
       replicas: 1
       backend: vox-box
 - name: Faster Distil Whisper Large v3
@@ -1349,8 +1349,8 @@
   release_date: "2024-03-25"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-distil-whisper-large-v3
+      source: model_scope
+      model_scope_model_id: gpustack/faster-distil-whisper-large-v3
       replicas: 1
       backend: vox-box
 - name: Faster Distil Whisper Large v2
@@ -1364,8 +1364,8 @@
   release_date: "2024-01-19"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-distil-whisper-large-v2
+      source: model_scope
+      model_scope_model_id: gpustack/faster-distil-whisper-large-v2
       replicas: 1
       backend: vox-box
 - name: Faster Distil Whisper Medium EN
@@ -1379,8 +1379,8 @@
   release_date: "2023-01-19"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-distil-whisper-medium.en
+      source: model_scope
+      model_scope_model_id: gpustack/faster-distil-whisper-medium.en
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Tiny
@@ -1394,8 +1394,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-tiny
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-tiny
       replicas: 1
       backend: vox-box
 - name: Faster Whisper Tiny EN
@@ -1409,8 +1409,8 @@
   release_date: "2023-03-23"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: Systran/faster-whisper-tiny.en
+      source: model_scope
+      model_scope_model_id: gpustack/faster-whisper-tiny.en
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M
@@ -1424,8 +1424,8 @@
   release_date: "2024-07-05"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: FunAudioLLM/CosyVoice-300M
+      source: model_scope
+      model_scope_model_id: iic/CosyVoice-300M
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M Instruct
@@ -1439,8 +1439,8 @@
   release_date: "2024-07-05"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: FunAudioLLM/CosyVoice-300M-Instruct
+      source: model_scope
+      model_scope_model_id: iic/CosyVoice-300M-Instruct
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M SFT
@@ -1454,7 +1454,7 @@
   release_date: "2024-07-05"
   templates:
     - quantizations: ["FP16"]
-      source: huggingface
-      huggingface_repo_id: FunAudioLLM/CosyVoice-300M-SFT
+      source: model_scope
+      model_scope_model_id: iic/CosyVoice-300M-SFT
       replicas: 1
       backend: vox-box
