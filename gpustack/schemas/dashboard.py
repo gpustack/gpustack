@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
 
 
@@ -51,6 +51,7 @@ class ModelSummary(BaseModel):
     resource_claim: ResourceClaim
     instance_count: int
     token_count: int
+    categories: Optional[List[str]] = None
 
 
 class ResourceCounts(BaseModel):
