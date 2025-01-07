@@ -1,4 +1,4 @@
-- name: Llama3.3 Instruct
+- name: Llama3.3
   description: The Meta Llama 3.3 multilingual large language model (LLM) is an instruction tuned generative model in 70B (text in/text out). The Llama 3.3 instruction tuned text only model is optimized for multilingual dialogue use cases and outperforms many of the available open source and closed chat models on common industry benchmarks.
   home: https://www.llama.com/
   icon: /static/catalog_icons/meta.png
@@ -43,26 +43,6 @@
     - llm
   capabilities:
     - context/128k
-  sizes:
-    - 1
-    - 3
-  licenses:
-    - llama3.2
-  release_date: "2024-09-25"
-  templates:
-    - quantizations: ["BF16"]
-      source: model_scope
-      model_scope_model_id: unsloth/Llama-3.2-{size}B
-      replicas: 1
-      backend: vllm
-- name: Llama3.2 Instruct
-  description: The Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks.
-  home: https://www.llama.com/
-  icon: /static/catalog_icons/meta.png
-  categories:
-    - llm
-  capabilities:
-    - context/128k
     - tools
   sizes:
     - 1
@@ -89,7 +69,7 @@
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
         - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.2_json.jinja
-- name: Llama3.1 Instruct
+- name: Llama3.1
   description: The Meta Llama 3.1 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction tuned generative models in 8B, 70B and 405B sizes (text in/text out). The Llama 3.1 instruction tuned text only models (8B, 70B, 405B) are optimized for multilingual dialogue use cases and outperform many of the available open source and closed chat models on common industry benchmarks.
   home: https://www.llama.com/
   icon: /static/catalog_icons/meta.png
@@ -130,35 +110,6 @@
         - --tool-call-parser=llama3_json
         - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.1_json.jinja
 - name: Qwen2.5
-  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5 includes a number of base language models and instruction-tuned language models ranging from 0.5 to 72 billion parameters.
-  home: https://qwenlm.github.io
-  icon: /static/catalog_icons/qwen.png
-  categories:
-    - llm
-  capabilities:
-    - context/128k
-  sizes: [0.5, 1.5, 3, 7, 14, 32, 72]
-  licenses:
-    - apache-2.0
-    - qwen-research
-  release_date: "2024-09-19"
-  templates:
-    - quantizations: *default_f16_quantizations
-      sizes:
-        - 3
-      source: model_scope
-      model_scope_model_id: bartowski/Qwen2.5-{size}B-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
-      cpu_offloading: true
-      distributed_inference_across_workers: true
-    - quantizations: ["BF16"]
-      source: model_scope
-      model_scope_model_id: Qwen/Qwen2.5-{size}B
-      replicas: 1
-      backend: vllm
-- name: Qwen2.5 Instruct
   description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -252,7 +203,7 @@
       model_scope_model_id: Qwen/QwQ-32B-Preview
       replicas: 1
       backend: vllm
-- name: Mistral Instruct
+- name: Mistral
   description: The 7B model released by Mistral AI, updated to version 0.3.
   home: https://mistral.ai
   icon: /static/catalog_icons/mistral.png
@@ -283,7 +234,7 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=mistral
-- name: Mistral Small Instruct
+- name: Mistral Small
   description: Mistral Small is a lightweight model designed for cost-effective use in tasks like translation and summarization.
   home: https://mistral.ai
   icon: /static/catalog_icons/mistral.png
@@ -314,7 +265,7 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=mistral
-- name: Mistral Large Instruct
+- name: Mistral Large
   description: Mistral Large 2 is Mistral's new flagship model that is significantly more capable in code generation, mathematics, and reasoning with 128k context window and support for dozens of languages.
   home: https://mistral.ai
   icon: /static/catalog_icons/mistral.png
@@ -353,7 +304,7 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=mistral
-- name: Mistral Nemo Instruct
+- name: Mistral Nemo
   description: The Mistral-Nemo-Instruct-2407 Large Language Model (LLM) is an instruct fine-tuned version of the Mistral-Nemo-Base-2407. Trained jointly by Mistral AI and NVIDIA, it significantly outperforms existing models smaller or similar in size.
   home: https://mistral.ai
   icon: /static/catalog_icons/mistral.png
@@ -411,7 +362,7 @@
       model_scope_model_id: LLM-Research/Codestral-22B-v0.1
       replicas: 1
       backend: vllm
-- name: Gemma 2 Instruct
+- name: Gemma2
   description: Gemma is a family of lightweight, state-of-the-art open models from Google, built from the same research and technology used to create the Gemini models. They are text-to-text, decoder-only large language models, available in English, with open weights for both pre-trained variants and instruction-tuned variants. Gemma models are well-suited for a variety of text generation tasks, including question answering, summarization, and reasoning. Their relatively small size makes it possible to deploy them in environments with limited resources such as a laptop, desktop or your own cloud infrastructure, democratizing access to state of the art AI models and helping foster innovation for everyone.
   home: https://ai.google.dev/gemma
   icon: /static/catalog_icons/google.png
@@ -491,6 +442,8 @@
       model_scope_model_id: deepseek-ai/DeepSeek-V2.5-1210
       replicas: 1
       backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 - name: Deepseek V3
   description: DeepSeek-V3 is a strong Mixture-of-Experts (MoE) language model with 671B total parameters with 37B activated for each token. To achieve efficient inference and cost-effective training, DeepSeek-V3 adopts Multi-head Latent Attention (MLA) and DeepSeekMoE architectures, which were thoroughly validated in DeepSeek-V2. Furthermore, DeepSeek-V3 pioneers an auxiliary-loss-free strategy for load balancing and sets a multi-token prediction training objective for stronger performance.
   home: https://www.deepseek.com
@@ -510,6 +463,8 @@
       model_scope_model_id: deepseek-ai/DeepSeek-V3
       replicas: 1
       backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 - name: Yi1.5
   description: Yi 1.5 is a high-performing, bilingual language model.
   home: https://www.01.ai
@@ -578,32 +533,6 @@
   templates:
     - quantizations: *default_f16_quantizations
       source: model_scope
-      model_scope_model_id: bartowski/Falcon3-{size}B-Base-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
-      cpu_offloading: true
-      distributed_inference_across_workers: true
-    - quantizations: ["BF16"]
-      source: model_scope
-      model_scope_model_id: tiiuae/Falcon3-{size}B-Base
-      replicas: 1
-      backend: vllm
-- name: Falcon3 Instruct
-  description: Falcon3 family of Open Foundation Models is a set of pretrained and instruct LLMs ranging from 1B to 10B parameters.
-  home: https://www.tii.ae
-  icon: /static/catalog_icons/falcon3.png
-  categories:
-    - llm
-  capabilities:
-    - context/32k
-  sizes: [1, 3, 7, 10]
-  licenses:
-    - falcon-llm-license
-  release_date: "2024-12-17"
-  templates:
-    - quantizations: *default_f16_quantizations
-      source: model_scope
       model_scope_model_id: bartowski/Falcon3-{size}B-Instruct-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
@@ -615,7 +544,7 @@
       model_scope_model_id: tiiuae/Falcon3-{size}B-Instruct
       replicas: 1
       backend: vllm
-- name: Granite3.1 Instruct
+- name: Granite3.1
   description: Granite is a family of AI models purpose-built for business, engineered from the ground up to ensure trust and scalability in AI-driven applications.
   home: https://www.ibm.com/granite
   icon: /static/catalog_icons/ibm.png
