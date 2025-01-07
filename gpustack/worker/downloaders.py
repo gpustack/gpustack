@@ -548,12 +548,10 @@ class ModelScopeDownloader:
                         f"No file found in {model_id} that match {file_path}"
                     )
 
-                unfolder_matching_files = [Path(file).name for file in matching_files]
-
                 model_path = modelscope_snapshot_download(
                     model_id=model_id,
                     cache_dir=cache_dir,
-                    allow_patterns=unfolder_matching_files,
+                    allow_patterns=matching_files,
                 )
                 return os.path.join(model_path, matching_files[0])
 
