@@ -219,6 +219,7 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
             ModelSummary(
                 id=result.id,
                 name=result.name,
+                categories=result.categories,
                 resource_claim=ResourceClaim(
                     ram=result.total_ram_claim,
                     vram=result.total_vram_claim,
@@ -283,6 +284,7 @@ def active_model_statement() -> select:
         select(
             Model.id,
             Model.name,
+            Model.categories,
             func.count(distinct(ModelInstance.id)).label('instance_count'),
             func.coalesce(resource_claim_query.c.total_ram_claim, 0).label(
                 'total_ram_claim'
