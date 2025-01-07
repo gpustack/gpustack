@@ -117,7 +117,7 @@ def get_model_weight_size_by_pretrained_config(config: Any, total_params: int) -
 
             return int(total_weight_size)
 
-        elif quant_method in ["gptq"]:
+        elif quant_method in ["gptq", "awq"]:
             bits = quantization_config.get("bits", 4)  # Typically 4-bit
             total_weight_size = total_params * bits / 8
 
