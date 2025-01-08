@@ -212,6 +212,11 @@ async def process_chunk(
     # each chunk may contain multiple data lines
     lines = chunk.decode("utf-8").split("\n\n")
     for line in lines[:-1]:
+        if not line.startswith('data: '):
+            # skip non-data SSE messages
+            yield f"{line}\n\n".encode("utf-8")
+            continue
+
         data = line.split('data: ')[-1]
         if data.startswith('[DONE]'):
             yield "data: [DONE]\n\n".encode("utf-8")
