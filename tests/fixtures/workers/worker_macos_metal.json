@@ -35,7 +35,8 @@
                     "used": 65536,
                     "allocated": 0
                 },
-                "temperature": 48.857120513916016
+                "temperature": 48.857120513916016,
+                "type": "mps"
             }
         ]
     },

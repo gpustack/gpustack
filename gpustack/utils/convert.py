@@ -19,8 +19,5 @@ def safe_convert(value, target_type, default):
     """
     try:
         return target_type(value)
-    except Exception as e:
-        logger.debug(
-            f"Failed to convert {value} to {target_type.__name__}, returning {default}: {e}"
-        )
+    except Exception:
         return default

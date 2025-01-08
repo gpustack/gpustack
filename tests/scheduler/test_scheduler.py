@@ -17,6 +17,7 @@ from gpustack.scheduler.calculator import (
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.schemas.models import (
     ComputedResourceClaim,
+    GPUSelector,
     Model,
     ModelInstance,
     ModelInstanceRPCServer,
@@ -693,6 +694,314 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
         assert len(binpack_candidates) == 2
         assert binpack_candidate == binpack_candidates[1]
         compare_candidates(binpack_candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_manual_schedule_to_multi_worker_multi_gpu(config):
+    workers = [
+        worker_linux_nvidia_1_4090_gpu(),
+        worker_linux_nvidia_2_4080_gpu(),
+    ]
+
+    m = new_model(
+        1,
+        "test",
+        1,
+        "llama3:70b",
+        cpu_offloading=False,
+        gpu_selector=GPUSelector(
+            gpu_ids=[
+                "host4080:cuda:0",
+                "host4080:cuda:1",
+                "host4090:cuda:0",
+            ]
+        ),
+    )
+    mi_binpack = new_model_instance(1, "test_binpack", 1)
+
+    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi_binpack)
+    placement_scorer_binpack = PlacementScorer(m, mi_binpack)
+    scheduler = Scheduler(config)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            side_effect=mock_calculate_model_resource_claim,
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        # binpack
+        binpack_candidates = await resource_fit_selector_binpack.select_candidates(
+            workers
+        )
+        binpack_candidates = await placement_scorer_binpack.score(binpack_candidates)
+        binpack_candidate, _ = await scheduler.find_candidate(mi_binpack, m, workers)
+
+        expected_candidates = [
+            {
+                "offload_layers": 81,
+                "worker_id": 3,
+                "worker_name": "host4080",
+                "gpu_indexes": [0, 1],
+                "is_unified_memory": False,
+                "ram": 421610680,
+                "vram": {
+                    0: 13811322880,
+                    1: 13296406528,
+                },
+                "score": 53.10511012189776,
+                "rpc_servers": [
+                    ModelInstanceRPCServer(
+                        worker_id=2,
+                        gpu_index=0,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=False,
+                            offload_layers=33,
+                            total_layers=81,
+                            ram=0,
+                            vram={0: 19308028928},
+                        ),
+                    )
+                ],
+            },
+            {
+                "offload_layers": 81,
+                "worker_id": 2,
+                "worker_name": "host4090",
+                "gpu_indexes": [0],
+                "is_unified_memory": False,
+                "ram": 421610680,
+                "vram": {
+                    0: 19475402752,
+                },
+                "score": 65.6816841222221,
+                "rpc_servers": [
+                    ModelInstanceRPCServer(
+                        worker_id=3,
+                        gpu_index=0,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=False,
+                            offload_layers=23,
+                            total_layers=81,
+                            ram=0,
+                            vram={0: 13296406528},
+                        ),
+                    ),
+                    ModelInstanceRPCServer(
+                        worker_id=3,
+                        gpu_index=1,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=False,
+                            offload_layers=22,
+                            total_layers=81,
+                            ram=0,
+                            vram={0: 13643949056},
+                        ),
+                    ),
+                ],
+            },
+        ]
+
+        assert len(binpack_candidates) == 2
+        assert binpack_candidate == binpack_candidates[1]
+        compare_candidates(binpack_candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_manual_schedule_to_single_worker_multi_gpu(config):
+    workers = [
+        worker_linux_nvidia_1_4090_gpu(),
+        worker_linux_nvidia_2_4080_gpu(),
+        worker_linux_nvidia_4_4080_gpu(),
+    ]
+
+    m = new_model(
+        1,
+        "test",
+        1,
+        "llama3:70b",
+        PlacementStrategyEnum.BINPACK,
+        gpu_selector=GPUSelector(
+            gpu_ids=["host-4-4080:cuda:0", "host-4-4080:cuda:2", "host-4-4080:cuda:3"]
+        ),
+    )
+    mi = new_model_instance(1, "test", 1)
+
+    mis = [
+        new_model_instance(
+            10,
+            "test-1",
+            1,
+            5,
+            ModelInstanceStateEnum.RUNNING,
+            [2],
+            ComputedResourceClaim(
+                is_unified_memory=False,
+                offload_layers=10,
+                total_layers=10,
+                ram=0,
+                vram={2: 500 * 1024 * 1024},
+            ),
+        ),
+        new_model_instance(
+            11,
+            "test-1",
+            1,
+            5,
+            ModelInstanceStateEnum.RUNNING,
+            [3],
+            ComputedResourceClaim(
+                is_unified_memory=False,
+                offload_layers=10,
+                total_layers=10,
+                ram=0,
+                vram={3: 600 * 1024 * 1024},
+            ),
+        ),
+    ]
+
+    resource_fit_selector = GGUFResourceFitSelector(m, mi)
+    placement_scorer = PlacementScorer(m, mi)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=mis,
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            side_effect=mock_calculate_model_resource_claim,
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=mis,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        expected_candidates = [
+            {
+                "offload_layers": 81,
+                "worker_id": 5,
+                "worker_name": "host-4-4080",
+                "gpu_indexes": [0, 2, 3],
+                "is_unified_memory": False,
+                "ram": 471942328,
+                "vram": {
+                    0: 16733447168,
+                    2: 15703068672,
+                    3: 15703068672,
+                },
+                "score": 65.08312111378692,
+            }
+        ]
+
+        assert len(candidates) == 1
+        compare_candidates(candidates, expected_candidates)
+
+        # update gpu selecto
+        m.gpu_selector = GPUSelector(
+            gpu_ids=["host-4-4080:cuda:0", "host-4-4080:cuda:1", "host-4-4080:cuda:2"]
+        )
+
+        resource_fit_selector = GGUFResourceFitSelector(m, mi)
+        placement_scorer = PlacementScorer(m, mi)
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+        expected_candidates = [
+            {
+                "offload_layers": 81,
+                "worker_id": 5,
+                "worker_name": "host-4-4080",
+                "gpu_indexes": [0, 1, 2],
+                "is_unified_memory": False,
+                "ram": 471942328,
+                "vram": {
+                    0: 16218530816,
+                    1: 16217985024,
+                    2: 15703068672,
+                },
+                "score": 63.08188756952499,
+            }
+        ]
+
+        assert len(candidates) == 1
+        compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config):
+    workers = [
+        worker_linux_nvidia_1_4090_gpu(),
+        worker_linux_nvidia_2_4080_gpu(),
+    ]
+
+    m = new_model(
+        1,
+        "test",
+        1,
+        "llama3:70b",
+        cpu_offloading=True,
+        distributed_inference_across_workers=False,
+        gpu_selector=GPUSelector(gpu_ids=["host4080:cuda:0", "host4080:cuda:1"]),
+    )
+    mi = new_model_instance(1, "test", 1)
+
+    resource_fit_selector_binpack = GGUFResourceFitSelector(m, mi)
+    placement_scorer_binpack = PlacementScorer(m, mi)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            side_effect=mock_calculate_model_resource_claim,
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+    ):
+
+        candidates = await resource_fit_selector_binpack.select_candidates(workers)
+        candidates = await placement_scorer_binpack.score(candidates)
+
+        expected_candidates = [
+            {
+                "offload_layers": 60,
+                "worker_id": 3,
+                "worker_name": "host4080",
+                "gpu_indexes": [0, 1],
+                "is_unified_memory": False,
+                "ram": 1093245112,
+                "vram": {
+                    0: 16900820992,
+                    1: 16900820992,
+                },
+                "score": 66.15,
+            }
+        ]
+
+        assert len(candidates) == 1
+        compare_candidates(candidates, expected_candidates)
 
 
 def mock_calculate_model_resource_claim(

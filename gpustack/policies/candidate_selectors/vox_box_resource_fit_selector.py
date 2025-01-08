@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 import asyncio
 from gpustack.config.config import Config
+from gpustack.utils.convert import safe_int
 from gpustack.utils.file import get_local_file_size_in_byte
+from gpustack.utils.gpu import parse_gpu_id
 from gpustack.worker.backends.base import get_file_size as get_remote_file_size
 from typing import Dict, List
 import os
@@ -47,6 +49,14 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         self._gpu_vram_claim = 0
         self._cpu_ram_claim = 0
         self._required_os = None
+        self._selected_gpu_worker = None
+        self._selected_gpu_index = None
+
+        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
+            valid, match = parse_gpu_id(self._model.gpu_selector.gpu_ids[0])
+            if valid:
+                self._selected_gpu_worker = match.get("worker_name")
+                self._selected_gpu_index = safe_int(match.get("gpu_index"))
 
     async def select_candidates(
         self, workers: List[Worker]
@@ -114,6 +124,10 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         Find single worker single gpu candidates for the model instance with worker.
         requires: worker.status.gpu_devices is not None
         """
+
+        if self._selected_gpu_worker and worker.name != self._selected_gpu_worker:
+            return []
+
         candidates = []
 
         if (
@@ -131,6 +145,12 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
 
         if worker.status.gpu_devices:
             for _, gpu in enumerate(worker.status.gpu_devices):
+                if (
+                    self._selected_gpu_index is not None
+                    and gpu.index != self._selected_gpu_index
+                ):
+                    continue
+
                 if gpu.vendor != VendorEnum.NVIDIA.value:
                     continue
 

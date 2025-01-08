@@ -47,6 +47,7 @@ from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_model_resource_claim,
 )
+from gpustack.utils.gpu import parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_pretrained_config
 from gpustack.utils.task import run_in_thread
 
@@ -121,7 +122,7 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Failed to enqueue pending model instances: {e}")
 
-    async def _evaluate(self, instance: ModelInstance):
+    async def _evaluate(self, instance: ModelInstance):  # noqa: C901
         """
         Evaluate the model instance's metadata.
         """
@@ -147,6 +148,11 @@ class Scheduler:
 
                 if is_gguf_model(model):
                     await self._evaluate_gguf_model(session, model, instance)
+                    if await self.check_model_distributability(
+                        session, model, instance
+                    ):
+                        return
+
                 elif is_audio_model(model):
                     await self._evaluate_audio_model(session, model)
                 else:
@@ -164,6 +170,24 @@ class Scheduler:
                     logger.error(
                         f"Failed to update model instance: {ue}. Original error: {e}"
                     )
+
+    async def check_model_distributability(
+        session: AsyncSession, model: Model, instance: ModelInstance
+    ):
+        if (
+            not model.distributable
+            and model.gpu_selector
+            and model.gpu_selector.gpu_ids
+        ):
+            worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+            if len(worker_gpu_ids) > 1:
+                instance.state = ModelInstanceStateEnum.ERROR
+                instance.state_message = (
+                    "The model is not distributable to multiple workers."
+                )
+                await instance.update(session)
+                return True
+        return False
 
     async def _evaluate_gguf_model(
         self,
@@ -205,6 +229,16 @@ class Scheduler:
         ):
             should_update = True
             model.distributable = True
+
+        if model.gpu_selector and model.gpu_selector.gpu_ids:
+            worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+            if (
+                len(worker_gpu_ids) > 1
+                and model.distributable
+                and not model.distributed_inference_across_workers
+            ):
+                should_update = True
+                model.distributed_inference_across_workers = True
 
         if should_update:
             await model.update(session)
@@ -384,7 +418,10 @@ class Scheduler:
                     self._config, model, instance, self._vox_box_cache_dir
                 )
             else:
-                candidates_selector = VLLMResourceFitSelector(model, instance)
+                try:
+                    candidates_selector = VLLMResourceFitSelector(model, instance)
+                except Exception as e:
+                    return None, [f"VLLM resource fit selector init failed: {e}"]
 
             candidates = await candidates_selector.select_candidates(workers)
 

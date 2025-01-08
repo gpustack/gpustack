@@ -42,6 +42,7 @@ def new_model(
     distributed_inference_across_workers = kargs.get(
         "distributed_inference_across_workers", True
     )
+    gpu_selector = kargs.get("gpu_selector", None)
     return Model(
         id=id,
         name=name,
@@ -54,4 +55,5 @@ def new_model(
         worker_selector=worker_selector,
         cpu_offloading=cpu_offloading,
         distributed_inference_across_workers=distributed_inference_across_workers,
+        gpu_selector=gpu_selector,
     )

@@ -11,7 +11,12 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
-from gpustack.schemas.models import ModelInstance, ModelInstancesPublic, is_audio_model
+from gpustack.schemas.models import (
+    ModelInstance,
+    ModelInstancesPublic,
+    is_audio_model,
+    BackendEnum,
+)
 from gpustack.schemas.workers import VendorEnum, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
@@ -21,6 +26,7 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
+from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import parse_gpu_id
 
 router = APIRouter()
@@ -118,33 +124,60 @@ async def validate_model_in(
     session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
 ):
     if model_in.gpu_selector is not None:
-        for gpu_id in model_in.gpu_selector.gpu_ids:
-            await validate_gpu_id(session, model_in, gpu_id)
+        await validate_gpu_ids(session, model_in)
 
 
-async def validate_gpu_id(
-    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate], gpu_id: str
+async def validate_gpu_ids(  # noqa: C901
+    session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
 ):
-    is_valid, matched = parse_gpu_id(gpu_id)
-    if not is_valid:
-        raise BadRequestException(message=f"Invalid GPU ID: {gpu_id}")
+    audio_model = is_audio_model(model_in)
+    if audio_model and len(model_in.gpu_selector.gpu_ids) > 1:
+        raise BadRequestException(
+            message="Audio models are restricted to execution on a single NVIDIA GPU."
+        )
 
-    worker_name = matched.get("worker_name")
-    gpu_index = matched.get("gpu_index")
+    worker_name_set = set()
+    for gpu_id in model_in.gpu_selector.gpu_ids:
+        is_valid, matched = parse_gpu_id(gpu_id)
+        if not is_valid:
+            raise BadRequestException(message=f"Invalid GPU ID: {gpu_id}")
 
-    worker = await Worker.one_by_field(session, "name", worker_name)
-    if not worker:
-        raise BadRequestException(message=f"Worker {worker_name} not found")
+        worker_name = matched.get("worker_name")
+        gpu_index = matched.get("gpu_index")
+        worker_name_set.add(worker_name)
 
-    if is_audio_model(model_in):
-        for worker_gpu in worker.status.gpu_devices:
-            if (
-                worker_gpu.index == gpu_index
-                and worker_gpu.type != VendorEnum.NVIDIA.value
-            ):
-                raise BadRequestException(
-                    "Audio models are supported for running on NVIDIA GPUs and CPUs"
-                )
+        worker = await Worker.one_by_field(session, "name", worker_name)
+        if not worker:
+            raise BadRequestException(message=f"Worker {worker_name} not found")
+
+        if audio_model:
+            for worker_gpu in worker.status.gpu_devices:
+                if (
+                    worker_gpu.index == gpu_index
+                    and worker_gpu.type != VendorEnum.NVIDIA.value
+                ):
+                    raise BadRequestException(
+                        "Audio models are supported only on NVIDIA GPUs and CPUs."
+                    )
+
+    if model_in.backend == BackendEnum.VLLM.value:
+        if len(worker_name_set) > 1:
+            raise BadRequestException(
+                message="Model deployment with the vLLM backend is currently not supported on GPUs across different workers."
+            )
+
+        tp = find_parameter(model_in.backend_parameters, ["tensor-parallel-size", "tp"])
+        if tp:
+            raise BadRequestException(
+                message="Use tensor-parallel-size and gpu-selector at the same time is not allowed."
+            )
+
+    if model_in.backend == BackendEnum.LLAMA_BOX.value:
+        ts = find_parameter(model_in.backend_parameters, ["ts", "tensor-split"])
+        if ts:
+            raise BadRequestException(
+                message="Use tensor-split and gpu-selector at the same time is not allowed."
+            )
 
 
 @router.post("", response_model=ModelPublic)

@@ -35,7 +35,8 @@
                     "used": 650438837,
                     "allocated": null
                 },
-                "temperature": 36.0
+                "temperature": 36.0,
+                "type": "cuda"
             }
         ]
     },
