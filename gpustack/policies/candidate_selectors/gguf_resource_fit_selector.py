@@ -66,6 +66,11 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     def _has_distributed_params(self):
         return self._param_tensor_split
 
+    def _get_gpu_layers(self) -> Optional[str]:
+        return find_parameter(
+            self._model.backend_parameters, ["ngl", "gpu-layers", "n-gpu-layers"]
+        )
+
     async def select_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
@@ -111,6 +116,13 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self.find_single_worker_partial_offloading_candidates,
             self.find_single_worker_cpu_candidates,
         ]:
+            return True
+
+        if (
+            self._get_gpu_layers() == "0"
+            and candidate_func != self.find_single_worker_cpu_candidates
+        ):
+            # User specified full CPU offloading.
             return True
 
         # Skip conditions for manual scheduling.
