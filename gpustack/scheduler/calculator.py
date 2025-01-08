@@ -275,7 +275,7 @@ async def calculate_model_resource_claim(
             )
 
         cmd_output = stdout.decode()
-        claim = modelResoruceClaim.from_json(cmd_output)
+        claim: modelResoruceClaim = modelResoruceClaim.from_json(cmd_output)
 
         if offload == GPUOffloadEnum.Full:
             logger.info(
@@ -293,6 +293,7 @@ async def calculate_model_resource_claim(
                 f"Calculated resource claim for disabled offloading model instance {model_instance.name}, "
                 f"claim: {claim.estimate.items[0]}"
             )
+            clear_vram_claim(claim)
 
         return ModelInstanceResourceClaim(model_instance, claim.estimate)
 
@@ -306,6 +307,15 @@ async def calculate_model_resource_claim(
         raise Exception(
             f"Failed to parse the output of {command}, error: {e}",
         )
+
+
+def clear_vram_claim(claim: modelResoruceClaim):
+    for item in claim.estimate.items:
+        # gguf-parser provides vram claim when offloadLayers is 0 due to current llama.cpp behavior, but llama-box won't allocate such vram.
+        if item.offloadLayers == 0:
+            item.vrams = [
+                layerMemoryEstimate(uma=0, nonuma=0, handleLayers=0) for _ in item.vrams
+            ]
 
 
 async def _gguf_parser_command_args_from_source(  # noqa: C901
