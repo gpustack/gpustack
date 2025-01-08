@@ -23,6 +23,8 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
 from gpustack.utils.command import find_parameter
+from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,26 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._model_instance = model_instance
         self._cache_dir = cache_dir
+        self._max_rpc_server_count = MAX_RPC_SERVER_COUNT
 
         self._param_tensor_split = find_parameter(
             model.backend_parameters, ["ts", "tensor-split"]
         )
+
+        self._selected_gpu_ids_by_worker = {}
+        self._selected_gpu_ids = []
+        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
+            self._selected_gpu_ids_by_worker = parse_gpu_ids_by_worker(
+                self._model.gpu_selector.gpu_ids
+            )
+            self._selected_gpu_ids = sorted(self._model.gpu_selector.gpu_ids)
+            self._max_rpc_server_count = len(self._selected_gpu_ids)
+
+        if self._param_tensor_split:
+            # ignore the gpu_selector if tensor split is set.
+            logger.info(f"Model {model.name} has tensor-split, ignore the gpu_selector")
+            self._selected_gpu_ids_by_worker = {}
+            self._selected_gpu_ids = []
 
     def _has_distributed_params(self):
         return self._param_tensor_split
@@ -73,26 +91,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         ]
 
         for candidate_func in candidate_functions:
-            if (not self._model.cpu_offloading) and (
-                candidate_func == self.find_single_worker_partial_offloading_candidates
-                or candidate_func == self.find_single_worker_cpu_candidates
-            ):
-                continue
-
-            if (
-                not self._model.distributed_inference_across_workers
-            ) and candidate_func == self.find_multi_worker_multi_gpu_candidates:
-                continue
-
-            if is_image_model(self._model) and not (
-                candidate_func
-                == self.find_single_worker_single_gpu_full_offloading_candidates
-            ):
-                # Only full offloading is supported for image models.
+            if self._should_skip_candidate_func(candidate_func):
                 continue
 
             logger.debug(
-                f"model {self._model.name}, filter candidates with resource fit selector: {candidate_func.__name__}, instance {self._model_instance.name}"
+                f"model {self._model.name}, filter candidates with resource fit selector: ",
+                f"{candidate_func.__name__}, instance {self._model_instance.name}",
             )
 
             candidates = await candidate_func(workers)
@@ -100,6 +104,67 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 return candidates
 
         return []
+
+    def _should_skip_candidate_func(self, candidate_func) -> bool:
+        # Skip conditions for CPU offloading.
+        if not self._model.cpu_offloading and candidate_func in [
+            self.find_single_worker_partial_offloading_candidates,
+            self.find_single_worker_cpu_candidates,
+        ]:
+            return True
+
+        # Skip conditions for manual scheduling.
+        if self._selected_gpu_ids:
+            if candidate_func == self.find_single_worker_cpu_candidates:
+                return True
+
+            worker_num = len(self._selected_gpu_ids_by_worker)
+            if (
+                worker_num > 1
+                and candidate_func != self.find_multi_worker_multi_gpu_candidates
+            ):
+                return True
+
+            if worker_num == 1:
+                selected_worker_name = next(
+                    iter(self._selected_gpu_ids_by_worker.keys())
+                )
+                selected_gpu_count = len(
+                    self._selected_gpu_ids_by_worker.get(selected_worker_name)
+                )
+
+                if (
+                    candidate_func == self.find_multi_worker_multi_gpu_candidates
+                    or (
+                        selected_gpu_count > 1
+                        and candidate_func
+                        == self.find_single_worker_single_gpu_full_offloading_candidates
+                    )
+                    or (
+                        selected_gpu_count == 1
+                        and candidate_func
+                        == self.find_single_worker_multi_gpu_full_offloading_candidates
+                    )
+                ):
+                    return True
+
+        # Skip conditions for distributed inference.
+        if (
+            not self._model.distributed_inference_across_workers
+            and candidate_func == self.find_multi_worker_multi_gpu_candidates
+        ):
+            return True
+
+        # Skip conditions for image models.
+        if (
+            is_image_model(self._model)
+            and candidate_func
+            != self.find_single_worker_single_gpu_full_offloading_candidates
+        ):
+            # Only full offloading is supported for image models.
+            return True
+
+        return False
 
     async def find_single_worker_single_gpu_full_offloading_candidates(
         self, workers: List[Worker]
@@ -353,7 +418,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             )
         return final_candidates
 
-    async def _find_single_worker_single_gpu_partial_offloading_candidates(
+    async def _find_single_worker_single_gpu_partial_offloading_candidates(  # noqa: C901
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -362,6 +427,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         """
         if self._has_distributed_params():
             return []
+
+        if self._selected_gpu_ids_by_worker:
+            if worker.name not in self._selected_gpu_ids_by_worker:
+                return []
+            elif len(self._selected_gpu_ids_by_worker.get(worker.name)) > 1:
+                return []
 
         candidates = []
 
@@ -399,6 +470,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             )
 
         for gpu_index in allocatable.vram:
+            if self._selected_gpu_ids:
+                valid, matched = parse_gpu_id(self._selected_gpu_ids[0])
+                is_selected_gpu = valid and matched.get("gpu_index") == str(gpu_index)
+                if not is_selected_gpu:
+                    continue
+
             index = binary_search(arr, allocatable.vram[gpu_index])
             if index == -1:
                 continue
@@ -535,7 +612,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             ),
         )
 
-    async def _find_single_worker_multi_gpu_partial_offloading_candidates(
+    async def _find_single_worker_multi_gpu_partial_offloading_candidates(  # noqa: C901
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -546,6 +623,12 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         total_gpu = len(worker.status.gpu_devices) if worker.status.gpu_devices else 0
         if total_gpu < 2:
             return []
+
+        if self._selected_gpu_ids_by_worker:
+            if worker.name not in self._selected_gpu_ids_by_worker:
+                return []
+            elif len(self._selected_gpu_ids_by_worker.get(worker.name)) < 2:
+                return []
 
         allocatable = await get_worker_allocatable_resource(self._engine, worker)
         gpu_combinations = await self._generate_combinations_for_worker_gpu(
@@ -652,7 +735,6 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if not self._model.distributable:
             return []
 
-        # now single worker patial offloading has a higher priority than multi worker multi gpu.
         worker_map = {worker.id: worker for worker in workers}
         combinations, workers_allocatable, workers_gpus_allocatable = (
             await self._generate_combinations_for_worker_with_rpc_servers(workers)
@@ -699,7 +781,48 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         for i in range(2, total_gpu + 1):
             gpu_combinations[i] = list(itertools.combinations(sorted_gpus_memory, i))
 
+        if self._selected_gpu_ids_by_worker.get(worker.name):
+            filtered_gpu_combinations = (
+                self._filter_selected_combinations_for_worker_gpu(
+                    gpu_combinations, worker
+                )
+            )
+            gpu_combinations = filtered_gpu_combinations
+
+        # gpu_combinations examples:
+        # { 2: (($gpu_index, $gpu_allocatable), ($gpu_index, $gpu_allocatable))}
         return gpu_combinations
+
+    def _filter_selected_combinations_for_worker_gpu(
+        self, gpu_combinations: dict[Tuple[Tuple[int]]], worker: Worker
+    ) -> dict[Tuple[Tuple[int]]]:
+
+        index_device_type = {}
+        for device in worker.status.gpu_devices:
+            index_device_type[device.index] = device.type
+
+        filtered_gpu_combinations = {}
+        selected_worker_gpu_ids = sorted(
+            self._selected_gpu_ids_by_worker.get(worker.name)
+        )
+        selected_worker_gpu_count = len(selected_worker_gpu_ids)
+
+        filtered_gpu_combination = gpu_combinations.get(selected_worker_gpu_count)
+        if filtered_gpu_combination:
+            for fc in filtered_gpu_combination:
+                filtered_gpu_combination_ids = []
+                for gpu_vram in fc:
+                    gpu_type = index_device_type.get(gpu_vram[0])
+                    gpu_id = f"{worker.name}:{gpu_type}:{gpu_vram[0]}"
+                    filtered_gpu_combination_ids.append(gpu_id)
+
+                if selected_worker_gpu_ids == sorted(filtered_gpu_combination_ids):
+                    if selected_worker_gpu_count not in filtered_gpu_combinations:
+                        filtered_gpu_combinations[selected_worker_gpu_count] = []
+
+                    filtered_gpu_combinations[selected_worker_gpu_count].append(fc)
+
+        return filtered_gpu_combinations
 
     async def _generate_combinations_given_tensor_split(
         self,
@@ -734,6 +857,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         workers_allocatable = {}
         workers_allocatable_vram = []
         workers_gpus_allocatable = []
+
+        workers_allocatable_gpu_ids = {}
+        workers_gpu_indexes_type = {}
         for worker in workers:
             if not worker.status.gpu_devices:
                 continue
@@ -744,7 +870,11 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             if worker_allocatable_vram > 0:
                 workers_allocatable_vram.append([worker.id, worker_allocatable_vram])
 
+            workers_allocatable_gpu_ids[worker.id] = []
             for gpu_device in worker.status.gpu_devices:
+                worker_gpu_index_key = f"{worker.id}:{gpu_device.index}"
+                workers_gpu_indexes_type[worker_gpu_index_key] = gpu_device.type
+
                 if gpu_device.index is None:
                     logger.warning(
                         f"gpu index is not found for {worker.name} {gpu_device.name}"
@@ -755,6 +885,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                     workers_gpus_allocatable.append(
                         [worker.id, gpu_device.index, gpu_allocatable_vram]
                     )
+
+                    gpu_id = f"{worker.name}:{gpu_device.type}:{gpu_device.index}"
+                    workers_allocatable_gpu_ids[worker.id].append(gpu_id)
 
         sorted_workers = sorted(
             workers_allocatable_vram, key=lambda item: item[1], reverse=True
@@ -772,12 +905,58 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             ]
 
             combinations[i + 1] = [
-                r for r in c if all(r[0][0] != r[i][0] for i in range(1, len(r)))
+                r for r in c if all(r[0][0] != r[j][0] for j in range(1, len(r)))
             ]
+
+        if self._selected_gpu_ids:
+            filtered_combinations = (
+                self._filter_selected_combinations_for_worker_with_rpc_servers(
+                    combinations,
+                    workers_allocatable_gpu_ids,
+                    workers_gpu_indexes_type,
+                    workers,
+                )
+            )
+            combinations = filtered_combinations
 
         # combinations examples:
         # [( ($worker_id, $worker_allocatable_vram), ($worker_id, $gpu_index, $gpu_allocatable), ($worker_id, $gpu_index, $gpu_allocatable) )]
         return combinations, workers_allocatable, workers_gpus_allocatable
+
+    def _filter_selected_combinations_for_worker_with_rpc_servers(
+        self,
+        combinations: Dict,
+        workers_allocatable_gpu_ids,
+        workers_gpu_indexes_type,
+        workers: List[Worker],
+    ) -> Dict:
+        worker_map = {worker.id: worker for worker in workers}
+        filtered_combinations = {}
+        for count in combinations:
+            for combination in combinations[count]:
+                combination_gpu_ids = []
+
+                main_worker_id = combination[0][0]
+                main_worker_gpu_ids = workers_allocatable_gpu_ids.get(main_worker_id)
+                combination_gpu_ids.extend(main_worker_gpu_ids)
+
+                for i in range(1, len(combination)):
+                    rpc_worker_id = combination[i][0]
+                    rpc_worker_name = worker_map.get(rpc_worker_id).name
+
+                    rpc_key = f"{combination[i][0]}:{combination[i][1]}"
+                    rpc_gpu_type = workers_gpu_indexes_type.get(rpc_key)
+                    rpc_gpu_id = f"{rpc_worker_name}:{rpc_gpu_type}:{combination[i][1]}"
+
+                    combination_gpu_ids.append(rpc_gpu_id)
+
+                if sorted(combination_gpu_ids) == sorted(self._selected_gpu_ids):
+                    if count not in filtered_combinations:
+                        filtered_combinations[count] = []
+
+                    filtered_combinations[count].append(combination)
+
+        return filtered_combinations
 
     async def _check_combination_rpc_servers(
         self,

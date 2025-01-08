@@ -35,7 +35,8 @@
                     "used": 429326336,
                     "allocated": null
                 },
-                "temperature": 36.0
+                "temperature": 36.0,
+                "type": "cuda"
             },
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
@@ -53,7 +54,8 @@
                     "used": 619380736,
                     "allocated": null
                 },
-                "temperature": 38.0
+                "temperature": 38.0,
+                "type": "cuda"
             },
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c264",
@@ -71,7 +73,8 @@
                     "used": 619380736,
                     "allocated": 524288000
                 },
-                "temperature": 38.0
+                "temperature": 38.0,
+                "type": "cuda"
             },
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
@@ -89,7 +92,8 @@
                     "used": 619380736,
                     "allocated": null
                 },
-                "temperature": 38.0
+                "temperature": 38.0,
+                "type": "cuda"
             }
         ]
     },
