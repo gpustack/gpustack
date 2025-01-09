@@ -180,6 +180,11 @@ class Scheduler:
         )
 
         should_update = False
+        if task_output.resource_claim_estimate.reranking and not model.categories:
+            should_update = True
+            model.categories = [CategoryEnum.RERANKER]
+            model.reranker = True
+
         if task_output.resource_claim_estimate.embeddingOnly and not model.categories:
             should_update = True
             model.categories = [CategoryEnum.EMBEDDING]
@@ -189,11 +194,6 @@ class Scheduler:
             should_update = True
             model.categories = [CategoryEnum.IMAGE]
             model.image_only = True
-
-        if task_output.resource_claim_estimate.reranking and not model.categories:
-            should_update = True
-            model.categories = [CategoryEnum.RERANKER]
-            model.reranker = True
 
         if not model.categories:
             should_update = True
