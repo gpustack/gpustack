@@ -25,6 +25,7 @@ class MetricExporter(Collector):
     ):
         self._worker_ip = worker_ip
         self._worker_name = worker_name
+        self._worker_port = cfg.worker_port
         self._port = port
         self._clientset = clientset
         self._gpu_devices = cfg.get_gpu_devices()
@@ -118,6 +119,7 @@ class MetricExporter(Collector):
             collector = WorkerStatusCollector(
                 self._worker_ip,
                 self._worker_name,
+                self._worker_port,
                 self._clientset,
                 gpu_devices=self._gpu_devices,
             )

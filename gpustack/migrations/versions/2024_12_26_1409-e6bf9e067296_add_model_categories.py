@@ -26,15 +26,32 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('categories', sa.JSON(), nullable=True))
         batch_op.add_column(sa.Column('meta', sa.JSON(), nullable=True, default={}))
 
+    with op.batch_alter_table('workers', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('port', sa.Integer(),
+                            nullable=False, server_default="10150"))
+
     conn = op.get_bind()
     if conn.dialect.name == 'postgresql':
-        existing_enum_values = conn.execute(
+        # model_instance_state_enum
+        existing_model_instance_state_enum_values = conn.execute(
             sa.text("SELECT unnest(enum_range(NULL::modelinstancestateenum))::text")
         ).fetchall()
-        existing_enum_values = [row[0] for row in existing_enum_values]
+        existing_model_instance_state_enum_values = [
+            row[0] for row in existing_model_instance_state_enum_values]
 
-        if 'STARTING' not in existing_enum_values:
+        if 'STARTING' not in existing_model_instance_state_enum_values:
             conn.execute(sa.text("ALTER TYPE modelinstancestateenum ADD VALUE 'STARTING'"))
+
+        # worker_state_enum
+        existing_worker_state_enum_values = conn.execute(
+            sa.text("SELECT unnest(enum_range(NULL::workerstateenum))::text")
+        ).fetchall()
+        existing_worker_state_enum_values = [row[0]
+                                             for row in existing_worker_state_enum_values]
+
+        if 'UNREACHABLE' not in existing_worker_state_enum_values:
+            conn.execute(
+                sa.text("ALTER TYPE workerstateenum ADD VALUE 'UNREACHABLE'"))
 
     with op.batch_alter_table('models', schema=None) as batch_op:
         connection = batch_op.get_bind()
@@ -68,3 +85,6 @@ def downgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('categories')
         batch_op.drop_column('meta')
+
+    with op.batch_alter_table('workers', schema=None) as batch_op:
+        batch_op.drop_column('port')

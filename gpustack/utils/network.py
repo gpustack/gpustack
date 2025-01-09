@@ -1,5 +1,8 @@
+import asyncio
 import random
 import socket
+import time
+import aiohttp
 import psutil
 
 
@@ -39,3 +42,27 @@ def get_free_port(start=40000, end=41024) -> int:
                 return port
             except OSError:
                 continue
+
+
+async def is_url_reachable(
+    url: str, timeout_in_second: int = 10, retry_interval_in_second: int = 3
+) -> bool:
+    """Check if a url is reachable.
+
+    Args:
+        url (str): url to check.
+        timeout (int): timeout in seconds. Defaults to 10.
+        retry_interval_in_second (int, optional): retry inteval. Defaults to 3.
+    Returns:
+        bool: True if the url is reachable, False otherwise
+    """
+    end_time = time.time() + timeout_in_second
+    while time.time() < end_time:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=2) as response:
+                    if response.status == 200:
+                        return True
+        except Exception:
+            await asyncio.sleep(retry_interval_in_second)
+    return False

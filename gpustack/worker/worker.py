@@ -191,6 +191,10 @@ class Worker:
                 log_generator(path, log_options), media_type="text/plain"
             )
 
+        @app.get("/healthz")
+        async def healthz():
+            return "ok"
+
         config = uvicorn.Config(
             app,
             host=self._address,
