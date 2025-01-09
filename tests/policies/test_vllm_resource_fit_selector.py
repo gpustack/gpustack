@@ -1,3 +1,4 @@
+from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.config.config import set_global_config, Config
 from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
     get_hub_model_weight_size,
@@ -68,7 +69,12 @@ def test_get_hub_model_weight_size():
     set_global_config(Config(data_dir="/tmp/test_data_dir"))
 
     for model, expected_weight_size in model_to_weight_sizes:
-        computed = get_hub_model_weight_size(model)
+        computed = get_hub_model_weight_size_with_retry(model)
         assert (
             computed == expected_weight_size
         ), f"weight_size mismatch for {model}, computed: {computed}, expected: {expected_weight_size}"
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+def get_hub_model_weight_size_with_retry(model: Model) -> int:
+    return get_hub_model_weight_size(model)
