@@ -163,7 +163,7 @@ This schedule type allows users to specify which GPU to deploy the model instanc
 
 - GPU Selector
 
-  Select a GPU from the list. The model instance will attempt to deploy to this GPU if resources permit.
+  Select one or more GPUs from the list. The model instance will attempt to deploy to the selected GPU if resources permit.
 
 ### Backend
 
