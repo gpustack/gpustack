@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 import requests
 import yaml
 
+from gpustack.config.config import get_global_config
 from gpustack.schemas.models import (
     ModelBase,
 )
@@ -126,6 +127,8 @@ def sort_model_sets(model_catalog: List[ModelSet]) -> List[ModelSet]:
 
 
 def init_model_set_specs(model_sets: List[ModelSet]):
+    config = get_global_config()
+    data_dir = config.data_dir
     global model_set_specs
     model_set_specs = {}
     for model_set in model_sets:
@@ -140,7 +143,9 @@ def init_model_set_specs(model_sets: List[ModelSet]):
 
             for size in sizes:
                 for quantization in quantizations:
-                    spec = resolve_model_template(template, size, quantization)
+                    spec = resolve_model_template(
+                        template, size, quantization, data_dir
+                    )
                     specs.append(spec)
         model_set_specs[model_set.id] = specs
 
@@ -189,7 +194,10 @@ def can_access(url: str) -> bool:
 
 
 def resolve_model_template(
-    model_template: ModelTemplate, size: Optional[float], quantization: Optional[str]
+    model_template: ModelTemplate,
+    size: Optional[float],
+    quantization: Optional[str],
+    data_dir: Optional[str],
 ) -> ModelSpec:
     fields = model_template.model_dump(exclude={"sizes", "quantizations"})
 
@@ -197,13 +205,27 @@ def resolve_model_template(
     resolved_fields = {}
     for key, value in fields.items():
         if isinstance(value, str):
-            value = value.replace("{size}", format_size(size))
-            value = value.replace(
-                "{quantization}", quantization if quantization else ""
-            )
+            value = resolve_value(value, size, quantization, data_dir)
+        if isinstance(value, list):
+            value = [resolve_value(v, size, quantization, data_dir) for v in value]
         resolved_fields[key] = value
 
     return ModelSpec(**resolved_fields, size=size, quantization=quantization)
+
+
+def resolve_value(
+    value: str,
+    size: Optional[float],
+    quantization: Optional[str],
+    data_dir: Optional[str],
+) -> str:
+    if size is not None:
+        value = value.replace("{size}", format_size(size))
+    if quantization:
+        value = value.replace("{quantization}", quantization)
+    if data_dir:
+        value = value.replace("{data_dir}", data_dir)
+    return value
 
 
 def format_size(size: Optional[float]) -> str:

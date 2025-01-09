@@ -72,7 +72,7 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
-        - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.2_json.jinja
+        - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.2_json.jinja
 - name: Llama3.1
   description: The Meta Llama 3.1 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction tuned generative models in 8B, 70B and 405B sizes (text in/text out). The Llama 3.1 instruction tuned text only models (8B, 70B, 405B) are optimized for multilingual dialogue use cases and outperform many of the available open source and closed chat models on common industry benchmarks.
   home: https://www.llama.com/
@@ -110,7 +110,7 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
-        - --chat-template=/var/lib/gpustack/chat_templates/tool_chat_template_llama3.1_json.jinja
+        - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
 - name: Qwen2.5
   description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
   home: https://qwenlm.github.io
