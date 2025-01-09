@@ -78,6 +78,7 @@ nav:
           - Embedding: user-guide/playground/embedding.md
           - Rerank: user-guide/playground/rerank.md
       - Model Management: user-guide/model-management.md
+      - Model Catalog: user-guide/model-catalog.md
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md
       - Inference Backends: user-guide/inference-backends.md
