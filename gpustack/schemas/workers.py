@@ -103,6 +103,7 @@ class RPCServer(BaseModel):
 class WorkerStateEnum(str, Enum):
     NOT_READY = "not_ready"
     READY = "ready"
+    UNREACHABLE = "unreachable"
 
 
 class SystemInfo(BaseModel):
@@ -128,6 +129,7 @@ class WorkerBase(SQLModel):
     name: str = Field(index=True, unique=True)
     hostname: str
     ip: str
+    port: int
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
     system_reserved: Optional[SystemReserved] = Field(

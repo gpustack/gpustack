@@ -36,6 +36,7 @@ class WorkerManager:
         self._registration_completed = False
         self._worker_name = worker_name
         self._worker_ip = worker_ip
+        self._worker_port = cfg.worker_port
         self._clientset = clientset
         self._system_reserved = system_reserved
         self._rpc_servers: Dict[int, RPCServerProcessInfo] = {}
@@ -58,6 +59,7 @@ class WorkerManager:
         collector = WorkerStatusCollector(
             worker_ip=self._worker_ip,
             worker_name=self._worker_name,
+            worker_port=self._worker_port,
             clientset=self._clientset,
             worker_manager=self,
             gpu_devices=self._gpu_devices,
@@ -117,6 +119,7 @@ class WorkerManager:
             collector = WorkerStatusCollector(
                 worker_ip=self._worker_ip,
                 worker_name=self._worker_name,
+                worker_port=self._worker_port,
                 clientset=self._clientset,
                 worker_manager=self,
                 gpu_devices=self._gpu_devices,

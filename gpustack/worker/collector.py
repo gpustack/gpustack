@@ -20,6 +20,7 @@ class WorkerStatusCollector:
         self,
         worker_ip: str,
         worker_name: str,
+        worker_port: int,
         clientset: ClientSet = None,
         worker_manager=None,
         gpu_devices=None,
@@ -27,6 +28,7 @@ class WorkerStatusCollector:
         self._worker_name = worker_name
         self._hostname = socket.gethostname()
         self._worker_ip = worker_ip
+        self._worker_port = worker_port
         self._clientset = clientset
         self._worker_manager = worker_manager
 
@@ -80,6 +82,7 @@ class WorkerStatusCollector:
             name=self._worker_name,
             hostname=self._hostname,
             ip=self._worker_ip,
+            port=self._worker_port,
             state=WorkerStateEnum.READY,
             status=status,
         )
