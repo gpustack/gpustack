@@ -151,7 +151,10 @@ async def validate_gpu_id(
 async def create_model(session: SessionDep, model_in: ModelCreate):
     existing = await Model.one_by_field(session, "name", model_in.name)
     if existing:
-        raise AlreadyExistsException(message=f"Model f{model_in.name} already exists")
+        raise AlreadyExistsException(
+            message=f"Model '{model_in.name}' already exists. "
+            "Please choose a different name or check the existing model."
+        )
 
     await validate_model_in(session, model_in)
 
