@@ -478,6 +478,33 @@
       model_scope_model_id: AI-ModelScope/Phi-3.5-mini-instruct
       replicas: 1
       backend: vllm
+- name: Phi4
+  description: Phi-4 is a state-of-the-art open model built upon a blend of synthetic datasets, data from filtered public domain websites, and acquired academic books and Q&A datasets. The goal of this approach was to ensure that small capable models were trained with data focused on high quality and advanced reasoning.
+  home: https://azure.microsoft.com/en-us/products/phi
+  icon: /static/catalog_icons/microsoft.png
+  categories:
+    - llm
+  capabilities:
+    - context/16k
+  sizes:
+    - 14
+  licenses:
+    - mit
+  release_date: "2024-12-12"
+  templates:
+    - quantizations: *default_f16_quantizations
+      source: model_scope
+      model_scope_model_id: bartowski/phi-4-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/phi-4
+      replicas: 1
+      backend: vllm
 - name: Deepseek V2.5
   description: DeepSeek-V2.5 is an upgraded version that combines DeepSeek-V2-Chat and DeepSeek-Coder-V2-Instruct. The new model integrates the general and coding abilities of the two previous versions.
   home: https://www.deepseek.com
