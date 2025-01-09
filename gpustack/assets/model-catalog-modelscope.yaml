@@ -931,22 +931,6 @@
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: GTE Multilingual Reranker Base
-  description: The gte-multilingual-reranker-base model is the first reranker model in the GTE family of models, developed by Alibaba-NLP.
-  home: https://huggingface.co/Alibaba-NLP/gte-multilingual-reranker-base
-  icon: /static/catalog_icons/alibaba.png
-  categories:
-    - reranker
-  licenses:
-    - apache-2.0
-  release_date: "2024-08-09"
-  templates:
-    - quantizations: *embedding_quantizations
-      source: model_scope
-      model_scope_model_id: gpustack/gte-multilingual-reranker-base-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
 - name: Jina Reranker V2 Base Multilingual
   description: The Jina Reranker v2 (jina-reranker-v2-base-multilingual) is a transformer-based model that has been fine-tuned for text reranking task, which is a crucial component in many information retrieval systems. It is a cross-encoder model that takes a query and a document pair as input and outputs a score indicating the relevance of the document to the query. The model is trained on a large dataset of query-document pairs and is capable of reranking documents in multiple languages with high accuracy.
   home: https://jina.ai
