@@ -77,7 +77,7 @@ def convert_to_public(model_sets: List[ModelSet]) -> List[ModelSetPublic]:
     ]
 
 
-def init_model_catalog(model_catalog_file: Optional[str]):
+def init_model_catalog(model_catalog_file: Optional[str] = None):
     model_sets: List[ModelSet] = []
     try:
         if model_catalog_file is None:
