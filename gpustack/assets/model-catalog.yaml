@@ -14,13 +14,11 @@
   release_date: "2024-12-06"
   templates:
     - quantizations: &default_f16_quantizations
-        - Q2_K
-        - Q3_K_M
-        - Q3_K_S
-        - Q4_0
+        - Q2_K_L
+        - Q3_K_L
         - Q4_K_M
         - Q5_K_M
-        - Q6_K
+        - Q6_K_L
         - Q8_0
         - f16
       source: huggingface
@@ -52,7 +50,13 @@
   release_date: "2024-09-25"
   order: 2
   templates:
-    - quantizations: *default_f16_quantizations
+    - quantizations:
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - f16
       source: huggingface
       huggingface_repo_id: bartowski/Llama-3.2-{size}B-Instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -83,19 +87,28 @@
     - llama3.1
   release_date: "2024-07-23"
   templates:
-    - quantizations: &default_f32_quantizations
-        - Q2_K
-        - Q3_K_M
-        - Q3_K_S
-        - Q4_0
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
         - Q4_K_M
         - Q5_K_M
-        - Q6_K
+        - Q6_K_L
         - Q8_0
-        - f32
+      sizes: [8, 70]
       source: huggingface
       huggingface_repo_id: bartowski/Meta-Llama-3.1-{size}B-Instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - Q2_K
+        - Q3_K_S
+      sizes: [405]
+      source: huggingface
+      huggingface_repo_id: MaziyarPanahi/Meta-Llama-3.1-405B-Instruct-GGUF
+      huggingface_filename: "*.{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
@@ -126,6 +139,22 @@
   order: 1
   templates:
     - quantizations: *default_f16_quantizations
+      sizes: [0.5, 1.5, 3, 7, 14, 32]
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+      sizes: [72]
       source: huggingface
       huggingface_repo_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -154,7 +183,29 @@
     - apache-2.0
   release_date: "2024-11-12"
   templates:
-    - quantizations: *default_f16_quantizations
+    - quantizations:
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - f16
+      sizes: [0.5, 1.5, 3, 7, 14]
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+      sizes: [32]
       source: huggingface
       huggingface_repo_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -181,14 +232,12 @@
     - apache-2.0
   release_date: "2024-11-28"
   templates:
-    - quantizations: &default_bf16_quantizations
-        - Q2_K
-        - Q3_K_M
-        - Q3_K_S
-        - Q4_0
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
         - Q4_K_M
         - Q5_K_M
-        - Q6_K
+        - Q6_K_L
         - Q8_0
         - bf16
       source: huggingface
@@ -218,7 +267,14 @@
     - apache-2.0
   release_date: "2024-05-22"
   templates:
-    - quantizations: *default_f32_quantizations
+    - quantizations:
+        - Q2_K
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f32
       source: huggingface
       huggingface_repo_id: bartowski/Mistral-7B-Instruct-v0.3-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -252,7 +308,7 @@
     - quantizations: *default_f16_quantizations
       source: huggingface
       huggingface_repo_id: bartowski/Mistral-Small-Instruct-2409-GGUF
-      huggingface_filename: "-*{quantization}*.gguf"
+      huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
@@ -280,11 +336,9 @@
     - mrl
   release_date: "2024-11-18"
   templates:
-    - quantizations: &default_quantizations
-        - Q2_K
-        - Q3_K_M
-        - Q3_K_S
-        - Q4_0
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
         - Q4_K_M
         - Q5_K_M
         - Q6_K
@@ -349,7 +403,14 @@
     - mnpl
   release_date: "2024-05-29"
   templates:
-    - quantizations: *default_f32_quantizations
+    - quantizations:
+        - Q2_K
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f32
       source: huggingface
       huggingface_repo_id: bartowski/Codestral-22B-v0.1-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -375,7 +436,13 @@
     - gemma
   release_date: "2024-07-16"
   templates:
-    - quantizations: *default_f32_quantizations
+    - quantizations:
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - f32
       source: huggingface
       huggingface_repo_id: bartowski/gemma-2-{size}b-it-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -402,7 +469,14 @@
     - mit
   release_date: "2024-08-16"
   templates:
-    - quantizations: *default_f32_quantizations
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - f32
       source: huggingface
       huggingface_repo_id: bartowski/Phi-3.5-mini-instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -429,12 +503,20 @@
     - deepseek
   release_date: "2024-12-10"
   templates:
-    - quantizations: *default_quantizations
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
       source: huggingface
       huggingface_repo_id: bartowski/DeepSeek-V2.5-1210-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      backend_parameters:
+        - --no-context-shift
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
@@ -458,6 +540,22 @@
     - deepseek
   release_date: "2024-12-26"
   templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: unsloth/DeepSeek-V3-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --no-context-shift
+      cpu_offloading: true
+      distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: deepseek-ai/DeepSeek-V3
@@ -478,7 +576,14 @@
     - apache-2.0
   release_date: "2024-05-12"
   templates:
-    - quantizations: *default_f32_quantizations
+    - quantizations:
+        - Q2_K
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f32
       source: huggingface
       huggingface_repo_id: bartowski/Yi-1.5-{size}B-Chat-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -591,6 +696,22 @@
   release_date: "2024-08-29"
   templates:
     - quantizations: *default_f16_quantizations
+      sizes: [2, 7]
+      source: huggingface
+      huggingface_repo_id: bartowski/Qwen2-VL-{size}B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+      sizes: [72]
       source: huggingface
       huggingface_repo_id: bartowski/Qwen2-VL-{size}B-Instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -618,7 +739,13 @@
     - qwen
   release_date: "2024-12-25"
   templates:
-    - quantizations: *default_f16_quantizations
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
       source: huggingface
       huggingface_repo_id: bartowski/QVQ-72B-Preview-GGUF
       huggingface_filename: "*-{quantization}*.gguf"

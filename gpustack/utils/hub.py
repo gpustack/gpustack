@@ -56,7 +56,7 @@ def match_model_scope_file_paths(
         root = None
 
     api = HubApi()
-    files = api.get_model_files(model_id, root=root)
+    files = api.get_model_files(model_id, root=root, recursive=True)
 
     file_paths = [file["Path"] for file in files]
     matching_paths = [p for p in file_paths if fnmatch.fnmatch(p, file_path)]
