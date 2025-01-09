@@ -8,9 +8,9 @@ GPUStack supports running inference on Ascend NPUs. This tutorial will guide you
 | ----- | ------- | ------------ |
 | Linux | Support | Ubuntu 20.04 |
 
-| Device     | Status  | Verified    |
-| ---------- | ------- | ----------- |
-| Ascend 910 | Support | Ascend 910B |
+| Device      | Status  | Verified     |
+| ----------- | ------- | ------------ |
+| Ascend 910B | Support | Ascend 910B3 |
 
 ## Setup Steps
 
