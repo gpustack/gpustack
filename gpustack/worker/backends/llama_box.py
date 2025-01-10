@@ -137,7 +137,8 @@ class LlamaBoxServer(InferenceServer):
             )
 
             set_priority(proc.pid)
-            proc.wait()
+            exit_code = proc.wait()
+            self.exit_with_code(exit_code)
 
         except Exception as e:
             error_message = f"Failed to run the llama-box server: {e}"
@@ -150,6 +151,7 @@ class LlamaBoxServer(InferenceServer):
                 self._update_model_instance(self._model_instance.id, **patch_dict)
             except Exception as ue:
                 logger.error(f"Failed to update model instance: {ue}")
+            sys.exit(1)
 
     def normalize_mmproj_path(self):
         """

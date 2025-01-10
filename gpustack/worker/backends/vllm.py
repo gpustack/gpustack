@@ -73,12 +73,13 @@ class VLLMServer(InferenceServer):
             )
             logger.info("Starting vllm server")
             logger.debug(f"Run vllm with arguments: {' '.join(arguments)}")
-            subprocess.run(
+            result = subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
             )
+            self.exit_with_code(result.returncode)
         except Exception as e:
             error_message = f"Failed to run the vllm server: {e}"
             logger.error(error_message)
@@ -90,6 +91,7 @@ class VLLMServer(InferenceServer):
                 self._update_model_instance(self._model_instance.id, **patch_dict)
             except Exception as ue:
                 logger.error(f"Failed to update model instance: {ue}")
+            sys.exit(1)
 
     def _derive_max_model_len(self) -> Optional[int]:
         """
