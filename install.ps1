@@ -347,14 +347,23 @@ function Install-GPUStack {
         if (Test-Path $pipxSharedConfigPath) {
             $configContent = Get-Content -Path (Join-Path -Path $pipxSharedEnv -ChildPath "pyvenv.cfg")
             $homeValue = ""
+            $executableValue = ""
             foreach ($line in $configContent) {
                 if ($line.StartsWith("home =")) {
                     $homeValue = $line.Split("=")[1].Trim()
-                    break
+                }
+
+                if ($line.StartsWith("executable =")) {
+                    $executableValue = $line.Split("=")[1].Trim()
                 }
             }
-            if (-not (Test-Path -Path $homeValue)) {
-                Log-Warn "Current pipx config is invalid with isn't exist python path $homeValue, try to refresh shared environment..."
+
+            if ([string]::IsNullOrEmpty($executableValue)) {
+                $executableValue = Join-Path $homeValue "python.exe"
+            }
+
+            if (-not (Test-Path -Path $homeValue) -or -not (Test-Path -Path $executableValue)) {
+                Log-Warn "Current pipx config is invalid with non-existent paths: home path $homeValue or executable path $executableValue. Trying to refresh shared environment."
                 python -m venv --clear $pipxSharedEnv
                 if ($LASTEXITCODE -ne 0) {
                     throw "failed to refresh virtual environment."
