@@ -95,7 +95,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             logger.debug(
-                f"model {self._model.name}, filter candidates with resource fit selector: ",
+                f"model {self._model.name}, filter candidates with resource fit selector: "
                 f"{candidate_func.__name__}, instance {self._model_instance.name}",
             )
 
