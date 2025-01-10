@@ -1107,22 +1107,6 @@
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion XL Refiner
-  description: SDXL consists of an ensemble of experts pipeline for latent diffusion. In a first step, the base model ( https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) is used to generate (noisy) latents, which are then further processed with a refinement model specialized for the final denoising steps.
-  home: https://stability.ai
-  icon: /static/catalog_icons/stability.png
-  categories:
-    - image
-  licenses:
-    - openrail++
-  release_date: "2023-07-26"
-  templates:
-    - quantizations: *image_quantizations
-      source: model_scope
-      model_scope_model_id: gpustack/stable-diffusion-xl-refiner-1.0-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
 - name: Stable Diffusion XL Inpainting
   description: SD-XL Inpainting (0.1) is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input, with the extra capability of inpainting the pictures by using a mask.
   home: https://stability.ai
@@ -1267,22 +1251,6 @@
       model_scope_file_path: "*lite-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: FLUX.1 Mini
-  description: A 3.2B MMDiT distilled from Flux-dev for efficient text-to-image generation.
-  home: https://huggingface.co/TencentARC/flux-mini
-  icon: /static/catalog_icons/tencentARC.png
-  categories:
-    - image
-  licenses:
-    - flux-1-dev-non-commercial-license
-  release_date: "2024-11-15"
-  templates:
-    - quantizations: *image_quantizations
-      source: model_scope
-      model_scope_model_id: gpustack/FLUX.1-mini-GGUF
-      model_scope_file_path: "*mini-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
 # Audio models
 - name: Faster Whisper Large v3
   description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
@@ -1374,7 +1342,7 @@
       model_scope_model_id: gpustack/faster-whisper-small.en
       replicas: 1
       backend: vox-box
-- name: Faster Distil Whisper Large v3
+- name: Faster Distil Whisper Large v3 EN
   description: This is the third and final installment of the Distil-Whisper English series. It the knowledge distilled version of OpenAI's Whisper large-v3, the latest and most performant Whisper model to date. This is the conversion of distil-whisper/distil-large-v3 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
@@ -1389,7 +1357,7 @@
       model_scope_model_id: gpustack/faster-distil-whisper-large-v3
       replicas: 1
       backend: vox-box
-- name: Faster Distil Whisper Large v2
+- name: Faster Distil Whisper Large v2 EN
   description: It is a distilled version of the Whisper model that is 6 times faster, 49% smaller, and performs within 1% WER on out-of-distribution evaluation sets. This is the conversion of distil-whisper/distil-large-v2 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png

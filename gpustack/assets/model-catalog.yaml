@@ -1122,22 +1122,6 @@
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion XL Refiner
-  description: SDXL consists of an ensemble of experts pipeline for latent diffusion. In a first step, the base model ( https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) is used to generate (noisy) latents, which are then further processed with a refinement model specialized for the final denoising steps.
-  home: https://stability.ai
-  icon: /static/catalog_icons/stability.png
-  categories:
-    - image
-  licenses:
-    - openrail++
-  release_date: "2023-07-26"
-  templates:
-    - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-xl-refiner-1.0-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
 - name: Stable Diffusion XL Inpainting
   description: SD-XL Inpainting (0.1) is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input, with the extra capability of inpainting the pictures by using a mask.
   home: https://stability.ai
@@ -1266,22 +1250,6 @@
       huggingface_filename: "*schnell-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: FLUX.1 Fill Dev
-  description: FLUX.1 Fill [dev] is a 12 billion parameter rectified flow transformer capable of filling areas in existing images based on a text description.
-  home: https://blackforestlabs.ai
-  icon: /static/catalog_icons/blackforestlabs.png
-  categories:
-    - image
-  licenses:
-    - flux-1-dev-non-commercial-license
-  release_date: "2024-11-25"
-  templates:
-    - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-Fill-dev-GGUF
-      huggingface_filename: "*dev-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
 - name: FLUX.1 Lite
   description: Flux.1 Lite is an 8B parameter transformer model distilled from the FLUX.1-dev model. This version uses 7 GB less RAM and runs 23% faster while maintaining the same precision (bfloat16) as the original model.
   home: https://huggingface.co/Freepik/flux.1-lite-8B-alpha
@@ -1296,22 +1264,6 @@
       source: huggingface
       huggingface_repo_id: gpustack/FLUX.1-lite-GGUF
       huggingface_filename: "*lite-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
-- name: FLUX.1 Mini
-  description: A 3.2B MMDiT distilled from Flux-dev for efficient text-to-image generation.
-  home: https://huggingface.co/TencentARC/flux-mini
-  icon: /static/catalog_icons/tencentARC.png
-  categories:
-    - image
-  licenses:
-    - flux-1-dev-non-commercial-license
-  release_date: "2024-11-15"
-  templates:
-    - quantizations: *image_quantizations
-      source: huggingface
-      huggingface_repo_id: gpustack/FLUX.1-mini-GGUF
-      huggingface_filename: "*mini-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
 # Audio models
@@ -1405,7 +1357,7 @@
       huggingface_repo_id: Systran/faster-whisper-small.en
       replicas: 1
       backend: vox-box
-- name: Faster Distil Whisper Large v3
+- name: Faster Distil Whisper Large v3 EN
   description: This is the third and final installment of the Distil-Whisper English series. It the knowledge distilled version of OpenAI's Whisper large-v3, the latest and most performant Whisper model to date. This is the conversion of distil-whisper/distil-large-v3 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
@@ -1420,7 +1372,7 @@
       huggingface_repo_id: Systran/faster-distil-whisper-large-v3
       replicas: 1
       backend: vox-box
-- name: Faster Distil Whisper Large v2
+- name: Faster Distil Whisper Large v2 EN
   description: It is a distilled version of the Whisper model that is 6 times faster, 49% smaller, and performs within 1% WER on out-of-distribution evaluation sets. This is the conversion of distil-whisper/distil-large-v2 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
