@@ -217,6 +217,12 @@ class InferenceServer(ABC):
 
         self._model = model
 
+    def exit_with_code(self, exit_code: int):
+        if exit_code < 0:
+            signal_number = -exit_code
+            exit_code = 128 + signal_number
+        sys.exit(exit_code)
+
     def hijack_tqdm_progress(server_self):
         """
         Monkey patch the tqdm progress bar to update the model instance download progress.

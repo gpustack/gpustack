@@ -51,12 +51,13 @@ class VoxBoxServer(InferenceServer):
 
             logger.info("Starting vox-box server")
             logger.debug(f"Run vox-box with arguments: {' '.join(arguments)}")
-            subprocess.run(
+            result = subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
             )
+            self.exit_with_code(result.returncode)
         except Exception as e:
             error_message = f"Failed to run the vox-box server: {e}"
             logger.error(error_message)
@@ -68,3 +69,4 @@ class VoxBoxServer(InferenceServer):
                 self._update_model_instance(self._model_instance.id, **patch_dict)
             except Exception as ue:
                 logger.error(f"Failed to update model instance: {ue}")
+            sys.exit(1)
