@@ -150,7 +150,7 @@ class InferenceServer(ABC):
             self._clientset = clientset
             self._model_instance = mi
             self._config = cfg
-            self._model = self._clientset.models.get(id=mi.model_id)
+            self.get_model()
 
             model_file_size = get_model_file_size(self._model, cfg)
             if model_file_size:
@@ -208,6 +208,14 @@ class InferenceServer(ABC):
     @abstractmethod
     def start(self):
         pass
+
+    def get_model(self):
+        model = self._clientset.models.get(id=self._model_instance.model_id)
+        data_dir = self._config.data_dir
+        for i, param in enumerate(model.backend_parameters):
+            model.backend_parameters[i] = param.replace("{data_dir}", data_dir)
+
+        self._model = model
 
     def hijack_tqdm_progress(server_self):
         """
