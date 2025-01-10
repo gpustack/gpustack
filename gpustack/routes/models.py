@@ -123,7 +123,7 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
 async def validate_model_in(
     session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
 ):
-    if model_in.gpu_selector is not None:
+    if model_in.gpu_selector is not None and model_in.replicas > 0:
         await validate_gpu_ids(session, model_in)
 
 
