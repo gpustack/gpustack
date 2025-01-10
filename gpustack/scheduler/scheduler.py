@@ -172,7 +172,7 @@ class Scheduler:
                     )
 
     async def check_model_distributability(
-        session: AsyncSession, model: Model, instance: ModelInstance
+        self, session: AsyncSession, model: Model, instance: ModelInstance
     ):
         if (
             not model.distributable
