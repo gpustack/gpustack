@@ -1,20 +1,29 @@
 <br>
+
 <p align="center">
     <img alt="GPUStack" src="./docs/assets/gpustack-logo.png" width="300px"/>
 </p>
 <br>
+
 <p align="center">
     <a href="https://docs.gpustack.ai" target="_blank">
         <img alt="Documentation" src="https://img.shields.io/badge/Docs-GPUStack-blue?logo=readthedocs&logoColor=white"></a>
     <a href="./LICENSE" target="_blank">
         <img alt="License" src="https://img.shields.io/github/license/gpustack/gpustack?logo=github&logoColor=white&label=License&color=blue"></a>
     <a href="./docs/assets/wechat-assistant.png" target="_blank">
-        <img alt="WeChat" src="https://img.shields.io/badge/Wechat-GPUStack-blue?logo=wechat&logoColor=white"></a>
+        <img alt="WeChat" src="https://img.shields.io/badge/微信群-GPUStack-blue?logo=wechat&logoColor=white"></a>
     <a href="https://discord.gg/VXYJzuaqwD" target="_blank">
         <img alt="Discord" src="https://img.shields.io/badge/Discord-GPUStack-blue?logo=discord&logoColor=white"></a>
     <a href="https://twitter.com/intent/follow?screen_name=gpustack_ai" target="_blank">
         <img alt="Follow on X(Twitter)" src="https://img.shields.io/twitter/follow/gpustack_ai?logo=X"></a>
 </p>
+<br>
+
+<p align="center">
+  <a href="./README.md">English</a> |
+  <a href="./README_CN.md">简体中文</a>
+</p>
+
 <br>
 
 ![demo](docs/assets/gpustack-demo.gif)
@@ -94,7 +103,7 @@ cat /var/lib/gpustack/initial_admin_password
 Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 ```
 
-4. Click `Playground` in the navigation menu. Now you can chat with the LLM in the UI playground.
+4. Click `Playground - Chat` in the navigation menu. Now you can chat with the LLM in the UI playground.
 
 ![Playground Screenshot](docs/assets/playground-screenshot.png)
 
@@ -165,7 +174,8 @@ GPUStack uses [llama-box](https://github.com/gpustack/llama-box) (bundled [llama
 | **Large Language Models(LLMs)**  | [Qwen](https://huggingface.co/models?search=Qwen/Qwen), [LLaMA](https://huggingface.co/meta-llama), [Mistral](https://huggingface.co/mistralai), [Deepseek](https://huggingface.co/models?search=deepseek-ai/deepseek), [Phi](https://huggingface.co/models?search=microsoft/phi), [Yi](https://huggingface.co/models?search=01-ai/Yi)       |
 | **Vision Language Models(VLMs)** | [Llama3.2-Vision](https://huggingface.co/models?pipeline_tag=image-text-to-text&search=llama3.2), [Pixtral](https://huggingface.co/models?search=pixtral) , [Qwen2-VL](https://huggingface.co/models?search=Qwen/Qwen2-VL), [LLaVA](https://huggingface.co/models?search=llava), [InternVL2](https://huggingface.co/models?search=internvl2) |
 | **Diffusion Models**             | [Stable Diffusion](https://huggingface.co/models?search=gpustack/stable-diffusion), [FLUX](https://huggingface.co/models?search=gpustack/flux)                                                                                                                                                                                               |
-| **Rerankers**                    | [GTE](https://huggingface.co/gpustack/gte-multilingual-reranker-base-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina)                                                                     |
+| **Embedding Models**             | [BGE](https://huggingface.co/gpustack/bge-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-embedding-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-embeddings)                                                                                                                                                 |
+| **Reranker Models**              | [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-reranker)                                                                                                                                        |
 | **Audio Models**                 | [Whisper](https://huggingface.co/models?search=Systran/faster) (speech-to-text), [CosyVoice](https://huggingface.co/models?search=FunAudioLLM/CosyVoice) (text-to-speech)                                                                                                                                                                    |
 
 For full list of supported models, please refer to the supported models section in the [inference backends](https://docs.gpustack.ai/latest/user-guide/inference-backends/) documentation.
@@ -217,6 +227,10 @@ You can find the built wheel package in `dist` directory.
 ## Contributing
 
 Please read the [Contributing Guide](./docs/contributing.md) if you're interested in contributing to GPUStack.
+
+## Join Community
+
+Any issues or have suggestions, feel free to join our [Community](https://discord.gg/VXYJzuaqwD) for support.
 
 ## License
 
