@@ -281,6 +281,29 @@ class WorkerController:
             if not instances:
                 return
 
+            instance_names = []
+            if worker.state == WorkerStateEnum.UNREACHABLE:
+                await self.update_instance_states(
+                    session,
+                    instances,
+                    ModelInstanceStateEnum.RUNNING,
+                    ModelInstanceStateEnum.UNREACHABLE,
+                    "Worker is unreachable from the server",
+                    "worker is unreachable from the server",
+                )
+                return
+
+            if worker.state == WorkerStateEnum.READY:
+                await self.update_instance_states(
+                    session,
+                    instances,
+                    ModelInstanceStateEnum.UNREACHABLE,
+                    ModelInstanceStateEnum.RUNNING,
+                    "",
+                    "worker is ready",
+                )
+                return
+
             if (
                 worker.state == WorkerStateEnum.NOT_READY
                 or event.type == EventType.DELETED
@@ -299,3 +322,26 @@ class WorkerController:
                         f"Delete instance {', '.join(instance_names)} "
                         f"since worker {worker.name} is {state}"
                     )
+
+    async def update_instance_states(
+        self,
+        session,
+        instances,
+        old_state,
+        new_state,
+        new_state_message,
+        log_update_reason,
+    ):
+        instance_names = []
+        for instance in instances:
+            if instance.state == old_state:
+                instance_names.append(instance.name)
+
+                instance.state = new_state
+                instance.state_message = new_state_message
+                await instance.update(session)
+        if instance_names:
+            logger.debug(
+                f"Marked instance {', '.join(instance_names)} {new_state} "
+                f"since {log_update_reason}"
+            )

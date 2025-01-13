@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from pydantic import ConfigDict, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
 
@@ -168,3 +168,21 @@ class WorkerPublic(
 
 
 WorkersPublic = PaginatedList[WorkerPublic]
+
+
+def compute_state(
+    unreachable: bool, heartbeat_time: Optional[datetime], worker_offline_timeout=180
+) -> Tuple[WorkerStateEnum, Optional[str]]:
+    now = int(datetime.now(timezone.utc).timestamp())
+    heartbeat_timestamp = heartbeat_time.timestamp() if heartbeat_time else None
+
+    if (
+        heartbeat_timestamp is None
+        or now - heartbeat_timestamp > worker_offline_timeout
+    ):
+        return WorkerStateEnum.NOT_READY, "Heartbeat lost"
+
+    if unreachable:
+        return WorkerStateEnum.UNREACHABLE, "Worker is unreachable from the server"
+
+    return WorkerStateEnum.READY, None

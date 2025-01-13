@@ -1,8 +1,7 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
-from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.schemas.workers import Worker, WorkerStateEnum, compute_state
 from gpustack.server.db import get_engine
 from gpustack.utils.network import is_url_reachable
 
@@ -35,50 +34,42 @@ class WorkerSyncer:
         Mark offline workers to not_ready state.
         """
         async with AsyncSession(self._engine) as session:
-            now = datetime.now(timezone.utc)
-            three_minutes_ago = now - timedelta(seconds=self._worker_offline_timeout)
-
             workers = await Worker.all(session)
             if not workers:
                 return
 
             should_update_workers = []
-            offline_worker_names = []
-            unreachable_worker_names = []
+            state_to_worker_name = {
+                WorkerStateEnum.NOT_READY: [],
+                WorkerStateEnum.UNREACHABLE: [],
+                WorkerStateEnum.READY: [],
+            }
             for worker in workers:
-                if worker.updated_at < three_minutes_ago:
-                    worker.state = WorkerStateEnum.NOT_READY
-                    worker.state_message = "Heartbeat lost"
+                original_worker_unreachable = worker.unreachable
+                original_worker_state = worker.state
+                original_worker_state_message = worker.state_message
 
+                worker.unreachable = not await self.is_worker_reachable(worker)
+                worker.state, worker.state_message = compute_state(
+                    worker.unreachable,
+                    worker.heartbeat_time,
+                    self._worker_offline_timeout,
+                )
+
+                if (
+                    original_worker_unreachable != worker.unreachable
+                    or original_worker_state != worker.state
+                    or original_worker_state_message != worker.state_message
+                ):
                     should_update_workers.append(worker)
-                    offline_worker_names.append(worker.name)
-                else:
-                    worker_reachable = await self.is_worker_reachable(worker)
-                    if not worker_reachable:
-                        worker.state = WorkerStateEnum.UNREACHABLE
-                        worker.state_message = "Worker is unreachable"
-
-                        should_update_workers.append(worker)
-                        unreachable_worker_names.append(worker.name)
+                    state_to_worker_name[worker.state].append(worker.name)
 
             for worker in should_update_workers:
                 await worker.update(session, worker)
 
-            (
-                logger.debug(
-                    f"Marked worker {', '.join(offline_worker_names)} as not_ready"
-                )
-                if offline_worker_names
-                else None
-            )
-
-            (
-                logger.debug(
-                    f"Marked worker {', '.join(unreachable_worker_names)} as unreachable"
-                )
-                if unreachable_worker_names
-                else None
-            )
+            for state, worker_names in state_to_worker_name.items():
+                if worker_names:
+                    logger.debug(f"Marked worker {', '.join(worker_names)} as {state}")
 
     async def is_worker_reachable(
         self,
