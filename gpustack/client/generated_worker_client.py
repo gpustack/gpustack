@@ -52,14 +52,18 @@ class WorkerClient:
 
     def create(self, model_create: WorkerCreate):
         response = self._client.get_httpx_client().post(
-            self._url, json=model_create.model_dump()
+            self._url,
+            content=model_create.model_dump_json(),
+            headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)
         return WorkerPublic.model_validate(response.json())
 
     def update(self, id: int, model_update: WorkerUpdate):
         response = self._client.get_httpx_client().put(
-            f"{self._url}/{id}", json=model_update.model_dump()
+            f"{self._url}/{id}",
+            content=model_update.model_dump_json(),
+            headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)
         return WorkerPublic.model_validate(response.json())
