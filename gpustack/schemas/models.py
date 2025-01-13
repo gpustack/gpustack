@@ -192,6 +192,7 @@ class ModelInstanceStateEnum(str, Enum):
     ERROR = "error"
     DOWNLOADING = "downloading"
     ANALYZING = "analyzing"
+    UNREACHABLE = "unreachable"
 
 
 class ComputedResourceClaim(BaseModel):

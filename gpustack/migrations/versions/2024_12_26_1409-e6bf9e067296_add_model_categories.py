@@ -29,6 +29,10 @@ def upgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.add_column(sa.Column('port', sa.Integer(),
                             nullable=False, server_default="10150"))
+        batch_op.add_column(sa.Column('unreachable', sa.Boolean(),
+                            nullable=False, server_default="0"))
+        batch_op.add_column(
+            sa.Column('heartbeat_time', gpustack.schemas.common.UTCDateTime(), nullable=True))
 
     conn = op.get_bind()
     if conn.dialect.name == 'postgresql':
@@ -41,6 +45,10 @@ def upgrade() -> None:
 
         if 'STARTING' not in existing_model_instance_state_enum_values:
             conn.execute(sa.text("ALTER TYPE modelinstancestateenum ADD VALUE 'STARTING'"))
+
+        if 'UNREACHABLE' not in existing_model_instance_state_enum_values:
+            conn.execute(
+                sa.text("ALTER TYPE modelinstancestateenum ADD VALUE 'UNREACHABLE'"))
 
         # worker_state_enum
         existing_worker_state_enum_values = conn.execute(
@@ -88,3 +96,5 @@ def downgrade() -> None:
 
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.drop_column('port')
+        batch_op.drop_column('heartbeat_time')
+        batch_op.drop_column('unreachable')

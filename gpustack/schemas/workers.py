@@ -5,7 +5,7 @@ from pydantic import ConfigDict, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
 
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList, pydantic_column_type
+from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
 from typing import List
 from sqlalchemy.orm import declarative_base
 
@@ -139,6 +139,10 @@ class WorkerBase(SQLModel):
     state_message: Optional[str] = None
     status: Optional[WorkerStatus] = Field(
         sa_column=Column(pydantic_column_type(WorkerStatus))
+    )
+    unreachable: bool = False
+    heartbeat_time: Optional[datetime] = Field(
+        sa_column=Column(UTCDateTime), default=None
     )
 
 
