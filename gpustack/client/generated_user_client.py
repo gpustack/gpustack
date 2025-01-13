@@ -52,14 +52,18 @@ class UserClient:
 
     def create(self, model_create: UserCreate):
         response = self._client.get_httpx_client().post(
-            self._url, json=model_create.model_dump()
+            self._url,
+            content=model_create.model_dump_json(),
+            headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)
         return UserPublic.model_validate(response.json())
 
     def update(self, id: int, model_update: UserUpdate):
         response = self._client.get_httpx_client().put(
-            f"{self._url}/{id}", json=model_update.model_dump()
+            f"{self._url}/{id}",
+            content=model_update.model_dump_json(),
+            headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)
         return UserPublic.model_validate(response.json())
