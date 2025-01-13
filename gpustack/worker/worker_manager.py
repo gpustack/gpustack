@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import multiprocessing
 import os
 import logging
@@ -12,7 +13,10 @@ from gpustack.api.exceptions import (
 from gpustack.client import ClientSet
 from gpustack.config.config import Config
 from gpustack.detectors.custom.custom import Custom
-from gpustack.schemas.workers import SystemReserved, Worker, WorkerStateEnum
+from gpustack.schemas.workers import (
+    SystemReserved,
+    Worker,
+)
 from gpustack.utils import network
 from gpustack.utils import platform
 from gpustack.utils.process import terminate_process_tree
@@ -76,12 +80,16 @@ class WorkerManager:
             logger.error(f"Worker {self._worker_name} not found")
             return
 
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+
         current = result.items[0]
         worker.name = current.name
         worker.id = current.id
         worker.labels = current.labels
-        worker.state = WorkerStateEnum.READY
+        worker.state = current.state
+        worker.unreachable = current.unreachable
         worker.system_reserved = self._system_reserved
+        worker.heartbeat_time = now
 
         try:
             result = self._clientset.workers.update(id=current.id, model_update=worker)
