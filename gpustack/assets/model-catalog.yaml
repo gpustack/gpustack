@@ -724,6 +724,79 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=granite
+- name: Llama3.1 Nemotron
+  description: Llama-3.1-Nemotron-70B-Instruct is a large language model customized by NVIDIA to improve the helpfulness of LLM generated responses to user queries.
+  home: https://www.nvidia.com
+  icon: /static/catalog_icons/nvidia.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 70
+  licenses:
+    - llama3.1
+  release_date: "2024-10-12"
+  templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: bartowski/Llama-3.1-Nemotron-70B-Instruct-HF-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: nvidia/Llama-3.1-Nemotron-70B-Instruct-HF
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
+- name: GLM4
+  description: GLM-4-9B is the open-source version of the latest generation of pre-trained models in the GLM-4 series launched by Zhipu AI. In the evaluation of data sets in semantics, mathematics, reasoning, code, and knowledge, GLM-4-9B and its human preference-aligned version GLM-4-9B-Chat have shown superior performance beyond Llama-3-8B.
+  home: https://github.com/THUDM/GLM-4
+  icon: /static/catalog_icons/ZhipuAI.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 9
+  licenses:
+    - glm-4
+  release_date: "2024-08-26"
+  templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: bartowski/glm-4-9b-chat-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: THUDM/glm-4-9b-chat
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 # Vision language models
 - name: Qwen2 VL
   description: Qwen2-VL is the latest iteration of Qwen-VL models developed by Alibaba. Qwen2-VL achieves state-of-the-art performance on visual understanding benchmarks, including MathVista, DocVQA, RealWorldQA, MTVQA, etc.
@@ -873,6 +946,25 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: InternVL2.5 MPO
+  description: InternVL2.5-MPO is an advanced multimodal large language model (MLLM) series that demonstrates superior overall performance. This series builds upon InternVL2.5 and Mixed Preference Optimization.
+  home: https://github.com/opengvlab
+  icon: /static/catalog_icons/OpenGVLab.jpeg
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+    - vision
+  sizes: [1, 2, 4, 8, 26, 38, 78]
+  licenses:
+    - mit
+  release_date: "2024-12-20"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: OpenGVLab/InternVL2_5-{size}B-MPO
+      replicas: 1
+      backend: vllm
 # Embedding models
 - name: BGE M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
@@ -898,6 +990,52 @@
         - FP16
       source: huggingface
       huggingface_repo_id: gpustack/bge-m3-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: BGE Large ZH V1.5
+  description: BGE is short for BAAI general embedding. This is a Chinese text embedding model with more reasonable similarity distribution.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  licenses:
+    - mit
+  release_date: "2023-09-12"
+  templates:
+    - quantizations:
+        - q4_k_m
+        - q8_0
+        - f16
+        - f32
+      source: huggingface
+      huggingface_repo_id: CompendiumLabs/bge-large-zh-v1.5-gguf
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: BGE Large EN V1.5
+  description: BGE is short for BAAI general embedding. This is an English text embedding model with more reasonable similarity distribution.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  licenses:
+    - mit
+  release_date: "2023-09-12"
+  templates:
+    - quantizations:
+        - q4_k_m
+        - q8_0
+        - f16
+        - f32
+      source: huggingface
+      huggingface_repo_id: CompendiumLabs/bge-large-en-v1.5-gguf
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
@@ -955,6 +1093,34 @@
     - quantizations: *embedding_quantizations
       source: huggingface
       huggingface_repo_id: gpustack/jina-embeddings-v2-base-zh-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+- name: Nomic Embed Text V1.5
+  description: Nomic-embed-text is a large context length text encoder that surpasses OpenAI text-embedding-ada-002 and text-embedding-3-small performance on short and long context tasks.
+  home: https://nomic.ai
+  icon: /static/catalog_icons/nomic.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/768
+    - max_tokens/8192
+  licenses:
+    - apache-2.0
+  release_date: "2024-02-14"
+  templates:
+    - quantizations:
+        - Q2_K
+        - Q3_K_L
+        - Q4_0
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f16
+        - f32
+      source: huggingface
+      huggingface_repo_id: nomic-ai/nomic-embed-text-v1.5-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
