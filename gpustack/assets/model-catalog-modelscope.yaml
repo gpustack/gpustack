@@ -127,25 +127,78 @@
   release_date: "2024-09-19"
   order: 1
   templates:
-    - quantizations: *default_f16_quantizations
-      sizes: [0.5, 1.5, 3, 7, 14, 32]
+    - quantizations:
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+        - fp16
+      sizes: [0.5, 1.5, 7, 14]
       source: model_scope
-      model_scope_model_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      model_scope_model_id: Qwen/Qwen2.5-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+        - fp16
+      sizes:
+        - 3
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-3B-Instruct-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations:
-        - Q2_K_L
-        - Q3_K_L
-        - Q4_K_M
-        - Q5_K_M
-        - Q6_K
-        - Q8_0
-      sizes: [72]
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+      sizes:
+        - 32
       source: model_scope
-      model_scope_model_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      model_scope_model_id: Qwen/Qwen2.5-32B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - fp16
+      sizes:
+        - 32
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-32B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}-*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+        - fp16
+      sizes:
+        - 72
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-72B-Instruct-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
@@ -173,30 +226,59 @@
   release_date: "2024-11-12"
   templates:
     - quantizations:
-        - Q3_K_L
-        - Q4_K_M
-        - Q5_K_M
-        - Q6_K_L
-        - Q8_0
-        - f16
-      sizes: [0.5, 1.5, 3, 7, 14]
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+        - fp16
+      sizes: [0.5, 3, 7, 14]
       source: model_scope
-      model_scope_model_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
+      model_scope_model_id: Qwen/Qwen2.5-Coder-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations:
-        - Q2_K_L
-        - Q3_K_L
-        - Q4_K_M
-        - Q5_K_M
-        - Q6_K_L
-        - Q8_0
-      sizes: [32]
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+      sizes:
+        - 1.5
       source: model_scope
-      model_scope_model_id: bartowski/Qwen2.5-Coder-{size}B-Instruct-GGUF
+      model_scope_model_id: Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - q2_k
+        - q3_k_m
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+      sizes:
+        - 32
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-Coder-32B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - fp16
+      sizes:
+        - 32
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-Coder-32B-Instruct-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
