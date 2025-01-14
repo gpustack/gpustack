@@ -343,7 +343,7 @@ class ActiveRecordMixin:
     @overload
     @classmethod
     async def subscribe(
-        cls, session_or_engine: AsyncEngine
+        cls, session_or_engine: AsyncSession
     ) -> AsyncGenerator[Event, None]: ...
 
     @overload
