@@ -10,6 +10,7 @@ class EventType(Enum):
     UPDATED = 2
     DELETED = 3
     UNKNOWN = 4
+    HEARTBEAT = 5
 
 
 @dataclass

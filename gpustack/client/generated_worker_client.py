@@ -1,6 +1,7 @@
 import json
 from typing import Any, Callable, Dict, Optional
 
+import httpx
 from pydantic import BaseModel
 from gpustack.api.exceptions import raise_if_response_error
 from gpustack.server.bus import Event
@@ -34,7 +35,7 @@ class WorkerClient:
             stop_condition = lambda event: False
 
         with self._client.get_httpx_client().stream(
-            "GET", self._url, params=params, timeout=None
+            "GET", self._url, params=params, timeout=httpx.Timeout(45)
         ) as response:
             raise_if_response_error(response)
             for line in response.iter_lines():

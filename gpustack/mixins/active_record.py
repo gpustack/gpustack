@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 import importlib
 import json
 import logging
@@ -369,11 +370,23 @@ class ActiveRecordMixin:
             raise ValueError("Invalid session or engine.")
 
         subscriber = event_bus.subscribe(cls.__name__.lower())
+        heartbeat_interval = timedelta(seconds=30)
+        last_event_time = datetime.now(timezone.utc)
 
         try:
             while True:
-                event = await subscriber.receive()
-                yield event
+                try:
+                    event = await asyncio.wait_for(
+                        subscriber.receive(), timeout=heartbeat_interval.total_seconds()
+                    )
+                    yield event
+                except asyncio.TimeoutError:
+                    if (
+                        datetime.now(timezone.utc) - last_event_time
+                        >= heartbeat_interval
+                    ):
+                        yield Event(type=EventType.HEARTBEAT, data=None)
+                        last_event_time = datetime.now(timezone.utc)
         finally:
             event_bus.unsubscribe(cls.__name__.lower(), subscriber)
 
@@ -385,33 +398,48 @@ class ActiveRecordMixin:
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
     ) -> AsyncGenerator[str, None]:
+        """Stream events matching the given criteria as JSON strings."""
         async for event in cls.subscribe(session):
-            skip_event = False
-
-            # Check fields using AND condition
-            for key, value in (fields or {}).items():
-                if getattr(event.data, key) != value:
-                    skip_event = True
-                    break
-            if skip_event:
+            if event.type == EventType.HEARTBEAT:
+                yield "\n\n"
                 continue
 
-            # Check fuzzy_fields using OR condition
-            fuzzy_match = False
-            for key, value in (fuzzy_fields or {}).items():
-                if value in str(getattr(event.data, key, "")):
-                    fuzzy_match = True
-                    break
-            if fuzzy_fields and not fuzzy_match:
+            if not cls._match_fields(event, fields):
+                continue
+
+            if not cls._match_fuzzy_fields(event, fuzzy_fields):
                 continue
 
             if filter_func and not filter_func(event.data):
                 continue
 
-            # Convert the current instance to the corresponding Public class if exists
-            class_module = importlib.import_module(cls.__module__)
-            public_class = getattr(class_module, f"{cls.__name__}Public", None)
-            if public_class:
-                event.data = public_class.model_validate(event.data)
+            event.data = cls._convert_to_public_class(event.data)
+            yield cls._format_event(event)
 
-            yield json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
+    @classmethod
+    def _match_fields(cls, event: Any, fields: Optional[dict]) -> bool:
+        """Match fields using AND condition."""
+        for key, value in (fields or {}).items():
+            if getattr(event.data, key, None) != value:
+                return False
+        return True
+
+    @classmethod
+    def _match_fuzzy_fields(cls, event: Any, fuzzy_fields: Optional[dict]) -> bool:
+        """Match fuzzy fields using OR condition."""
+        for key, value in (fuzzy_fields or {}).items():
+            if value in str(getattr(event.data, key, "")):
+                return True
+        return not fuzzy_fields
+
+    @classmethod
+    def _convert_to_public_class(cls, data: Any) -> Any:
+        """Convert the instance to the corresponding Public class if it exists."""
+        class_module = importlib.import_module(cls.__module__)
+        public_class = getattr(class_module, f"{cls.__name__}Public", None)
+        return public_class.model_validate(data) if public_class else data
+
+    @staticmethod
+    def _format_event(event: Any) -> str:
+        """Format the event as a JSON string."""
+        return json.dumps(jsonable_encoder(event), separators=(",", ":")) + "\n\n"
