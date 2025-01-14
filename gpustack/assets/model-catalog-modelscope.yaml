@@ -1173,22 +1173,6 @@
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion XL Turbo
-  description: SDXL-Turbo is a fast generative text-to-image model that can synthesize photorealistic images from a text prompt in a single network evaluation.
-  home: https://stability.ai
-  icon: /static/catalog_icons/stability.png
-  categories:
-    - image
-  licenses:
-    - sai-nc-community
-  release_date: "2023-11-28"
-  templates:
-    - quantizations: *image_quantizations
-      source: model_scope
-      model_scope_model_id: gpustack/stable-diffusion-xl-1.0-turbo-GGUF
-      model_scope_file_path: "*-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
 - name: Stable Diffusion XL Inpainting
   description: SD-XL Inpainting (0.1) is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input, with the extra capability of inpainting the pictures by using a mask.
   home: https://stability.ai
