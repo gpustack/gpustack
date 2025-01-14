@@ -48,7 +48,7 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = {version = "0.0.10", optional = true}
+vox-box = {version = "0.0.11", optional = true}
 
 tenacity = "^9.0.0"
 aiofiles = "^23.2.1"
