@@ -111,6 +111,16 @@
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
         - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
+    - quantizations: ["GPTQ-INT4"]
+      sizes: [405]
+      source: model_scope
+      model_scope_model_id: LLM-Research/Meta-Llama-3.1-405B-Instruct-GPTQ-INT4
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
 - name: Qwen2.5
   description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
   home: https://qwenlm.github.io
@@ -212,6 +222,14 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=hermes
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-{size}B-Instruct-{quantization}
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
 - name: Qwen2.5 Coder
   description: Qwen2.5-Coder is the latest series of Code-Specific Qwen large language models (formerly known as CodeQwen). As of now, Qwen2.5-Coder has covered six mainstream model sizes, 0.5, 1.5, 3, 7, 14, 32 billion parameters, to meet the needs of different developers.
   home: https://qwenlm.github.io
@@ -287,6 +305,11 @@
     - quantizations: ["BF16"]
       source: model_scope
       model_scope_model_id: Qwen/Qwen2.5-Coder-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-Coder-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
 - name: QwQ Preview
@@ -889,6 +912,11 @@
     - quantizations: ["BF16"]
       source: model_scope
       model_scope_model_id: Qwen/Qwen2-VL-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2-VL-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
 - name: QvQ Preview
