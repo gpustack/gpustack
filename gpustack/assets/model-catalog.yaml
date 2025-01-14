@@ -122,6 +122,16 @@
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
         - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
+    - quantizations: ["GPTQ-INT4"]
+      sizes: [405]
+      source: huggingface
+      huggingface_repo_id: hugging-quants/Meta-Llama-3.1-405B-Instruct-GPTQ-INT4
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=llama3_json
+        - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
 - name: Qwen2.5
   description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
   home: https://qwenlm.github.io
@@ -172,6 +182,14 @@
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: Qwen/Qwen2.5-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
       backend_parameters:
@@ -234,6 +252,11 @@
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: Qwen/Qwen2.5-Coder-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-Coder-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
 - name: QwQ Preview
@@ -797,6 +820,13 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: huggingface
+      huggingface_repo_id: model-scope/glm-4-9b-chat-{quantization}
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 # Vision language models
 - name: Qwen2 VL
   description: Qwen2-VL is the latest iteration of Qwen-VL models developed by Alibaba. Qwen2-VL achieves state-of-the-art performance on visual understanding benchmarks, including MathVista, DocVQA, RealWorldQA, MTVQA, etc.
@@ -840,6 +870,11 @@
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: Qwen/Qwen2-VL-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["GPTQ-Int4", "GPTQ-Int8"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2-VL-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
 - name: QvQ Preview
