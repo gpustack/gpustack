@@ -68,7 +68,7 @@ docker run -d --name gpustack-server \
 To retrieve the token, run the following command on the GPUStack server host:
 
 ```shell
-docker run -it gpustack-server cat /var/lib/gpustack/token
+docker exec -it gpustack-server cat /var/lib/gpustack/token
 ```
 
 To start a GPUStack worker and **register it with the GPUStack server**, run the following command on the current host or another host. Replace your specific URL, token, and IP address accordingly:
@@ -127,7 +127,7 @@ docker run -d --name gpustack-server \
 To retrieve the token, run the following command on the GPUStack server host:
 
 ```shell
-docker run -it gpustack-server cat /var/lib/gpustack/token
+docker exec -it gpustack-server cat /var/lib/gpustack/token
 ```
 
 To start a GPUStack worker and **register it with the GPUStack server**, run the following command on the current host or another host. Replace your specific URL, token, and IP address accordingly:
@@ -187,7 +187,7 @@ docker run -d --name gpustack-server \
 To retrieve the token, run the following command on the GPUStack server host:
 
 ```shell
-docker run -it gpustack-server cat /var/lib/gpustack/token
+docker exec -it gpustack-server cat /var/lib/gpustack/token
 ```
 
 To start a GPUStack worker and **register it with the GPUStack server**, run the following command on the current host or another host. Replace your specific URL, token, and IP address accordingly:
@@ -243,7 +243,7 @@ docker run -d --name gpustack-server \
 To retrieve the token, run the following command on the GPUStack server host:
 
 ```shell
-docker run -it gpustack-server cat /var/lib/gpustack/token
+docker exec -it gpustack-server cat /var/lib/gpustack/token
 ```
 
 To start a GPUStack worker and **register it with the GPUStack server**, run the following command on the current host or another host. Replace your specific URL, token, and IP address accordingly:
