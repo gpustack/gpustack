@@ -171,7 +171,7 @@ WorkersPublic = PaginatedList[WorkerPublic]
 
 
 def compute_state(
-    unreachable: bool, heartbeat_time: Optional[datetime], worker_offline_timeout=180
+    unreachable: bool, heartbeat_time: Optional[datetime], worker_offline_timeout=60
 ) -> Tuple[WorkerStateEnum, Optional[str]]:
     now = int(datetime.now(timezone.utc).timestamp())
     heartbeat_timestamp = heartbeat_time.timestamp() if heartbeat_time else None

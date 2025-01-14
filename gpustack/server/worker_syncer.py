@@ -14,7 +14,7 @@ class WorkerSyncer:
     """
 
     def __init__(
-        self, interval=60, worker_offline_timeout=180, worker_unreachable_timeout=10
+        self, interval=15, worker_offline_timeout=60, worker_unreachable_timeout=10
     ):
         self._engine = get_engine()
         self._interval = interval
