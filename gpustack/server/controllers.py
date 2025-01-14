@@ -38,6 +38,9 @@ class ModelController:
         """
 
         async for event in Model.subscribe(self._engine):
+            if event.type == EventType.HEARTBEAT:
+                continue
+
             await self._reconcile(event)
 
     async def _reconcile(self, event: Event):
@@ -67,6 +70,9 @@ class ModelInstanceController:
         """
 
         async for event in ModelInstance.subscribe(self._engine):
+            if event.type == EventType.HEARTBEAT:
+                continue
+
             await self._reconcile(event)
 
     async def _reconcile(self, event: Event):
