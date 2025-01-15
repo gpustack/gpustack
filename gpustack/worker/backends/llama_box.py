@@ -77,7 +77,8 @@ class LlamaBoxServer(InferenceServer):
             arguments.append("--rerank")
 
         if is_image_model(self._model):
-            arguments.extend(["--images", "--image-vae-tiling"])
+            # TODO support multi-GPU for image models
+            arguments.extend(["--images", "--image-vae-tiling", "--tensor-split", "1"])
 
         mmproj = find_parameter(self._model.backend_parameters, ["mmproj"])
         default_mmproj = get_mmproj_file(self._model_path)
