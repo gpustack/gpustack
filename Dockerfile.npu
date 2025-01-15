@@ -1,4 +1,4 @@
-ARG CANN_VERSION=8.0.rc3.beta1
+ARG CANN_VERSION=8.0.rc2.beta1
 
 FROM ascendai/cann:ubuntu-python3.10-cann$CANN_VERSION
 
