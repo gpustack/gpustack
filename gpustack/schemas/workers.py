@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from pydantic import ConfigDict, BaseModel
 from sqlmodel import Field, SQLModel, JSON, Column
 
@@ -145,6 +145,35 @@ class WorkerBase(SQLModel):
         sa_column=Column(UTCDateTime), default=None
     )
 
+    def compute_state(self, worker_offline_timeout=60):
+        now = int(datetime.now(timezone.utc).timestamp())
+        heartbeat_timestamp = (
+            self.heartbeat_time.timestamp() if self.heartbeat_time else None
+        )
+
+        if (
+            heartbeat_timestamp is None
+            or now - heartbeat_timestamp > worker_offline_timeout
+        ):
+            self.state = WorkerStateEnum.NOT_READY
+            self.state_message = "Heartbeat lost"
+            return
+
+        if self.unreachable:
+            healthz_url = f"http://{self.ip}:{self.port}/healthz"
+            msg = (
+                "Server cannot access the "
+                f"worker's health check endpoint at {healthz_url}. "
+                "Please verify the port requirements in the "
+                "<a href='https://docs.gpustack.ai/latest/installation/installation-requirements/'>documentation</a>"
+            )
+            self.state = WorkerStateEnum.UNREACHABLE
+            self.state_message = msg
+            return
+
+        self.state = WorkerStateEnum.READY
+        self.state_message = None
+
 
 class Worker(WorkerBase, BaseModelMixin, table=True):
     __tablename__ = 'workers'
@@ -168,21 +197,3 @@ class WorkerPublic(
 
 
 WorkersPublic = PaginatedList[WorkerPublic]
-
-
-def compute_state(
-    unreachable: bool, heartbeat_time: Optional[datetime], worker_offline_timeout=60
-) -> Tuple[WorkerStateEnum, Optional[str]]:
-    now = int(datetime.now(timezone.utc).timestamp())
-    heartbeat_timestamp = heartbeat_time.timestamp() if heartbeat_time else None
-
-    if (
-        heartbeat_timestamp is None
-        or now - heartbeat_timestamp > worker_offline_timeout
-    ):
-        return WorkerStateEnum.NOT_READY, "Heartbeat lost"
-
-    if unreachable:
-        return WorkerStateEnum.UNREACHABLE, "Worker is unreachable from the server"
-
-    return WorkerStateEnum.READY, None

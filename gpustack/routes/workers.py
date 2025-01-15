@@ -13,7 +13,6 @@ from gpustack.schemas.workers import (
     WorkerUpdate,
     WorkersPublic,
     Worker,
-    compute_state,
 )
 
 router = APIRouter()
@@ -62,9 +61,7 @@ async def create_worker(session: SessionDep, worker_in: WorkerCreate):
         raise AlreadyExistsException(message=f"worker f{worker_in.name} already exists")
 
     try:
-        worker_in.state, worker_in.state_message = compute_state(
-            worker_in.unreachable, worker_in.heartbeat_time
-        )
+        worker_in.compute_state()
         worker = await Worker.create(session, worker_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create worker: {e}")
@@ -79,9 +76,7 @@ async def update_worker(session: SessionDep, id: int, worker_in: WorkerUpdate):
         raise NotFoundException(message="worker not found")
 
     try:
-        worker_in.state, worker_in.state_message = compute_state(
-            worker_in.unreachable, worker_in.heartbeat_time
-        )
+        worker_in.compute_state()
         await worker.update(session, worker_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update worker: {e}")

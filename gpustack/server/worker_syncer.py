@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
-from gpustack.schemas.workers import Worker, WorkerStateEnum, compute_state
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import get_engine
 from gpustack.utils.network import is_url_reachable
 
@@ -50,11 +50,7 @@ class WorkerSyncer:
                 original_worker_state_message = worker.state_message
 
                 worker.unreachable = not await self.is_worker_reachable(worker)
-                worker.state, worker.state_message = compute_state(
-                    worker.unreachable,
-                    worker.heartbeat_time,
-                    self._worker_offline_timeout,
-                )
+                worker.compute_state(self._worker_offline_timeout)
 
                 if (
                     original_worker_unreachable != worker.unreachable
