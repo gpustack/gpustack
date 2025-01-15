@@ -13,7 +13,7 @@ from modelscope.hub.api import HubApi
     os.getenv("HF_TOKEN") is None,
     reason="Skipped by default unless HF_TOKEN is set. Unauthed requests are rate limited.",
 )
-def no_test_model_catalog():
+def test_model_catalog():
     init_model_catalog()
 
     model_set_specs = get_model_set_specs()
