@@ -330,6 +330,15 @@ def is_image_model(model: Model):
     return "image" in model.categories
 
 
+def is_embedding_model(model: Model):
+    """
+    Check if the model is an embedding model.
+    Args:
+        model: Model to check.
+    """
+    return "embedding" in model.categories
+
+
 def is_renaker_model(model: Model):
     """
     Check if the model is a reranker model.
