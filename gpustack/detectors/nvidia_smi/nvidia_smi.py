@@ -41,6 +41,9 @@ class NvidiaSMI(GPUDetector):
             index, name, memory_total, memory_used, utilization_gpu, temperature_gpu = (
                 row
             )
+
+            index = safe_int(index)
+            name = name.strip()
             # Convert MiB to bytes
             memory_total = safe_int(memory_total.split()[0]) * 1024 * 1024
             # Convert MiB to bytes
@@ -51,7 +54,7 @@ class NvidiaSMI(GPUDetector):
             temperature_gpu = safe_float(temperature_gpu)
 
             device = GPUDeviceInfo(
-                index=int(index),
+                index=index,
                 name=name,
                 vendor=VendorEnum.NVIDIA.value,
                 memory=MemoryInfo(
