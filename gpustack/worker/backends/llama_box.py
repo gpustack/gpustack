@@ -10,6 +10,7 @@ from gpustack.utils import platform
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
+    is_embedding_model,
     is_image_model,
     is_renaker_model,
 )
@@ -53,6 +54,10 @@ class LlamaBoxServer(InferenceServer):
             self._model_instance, worker_map
         )
 
+        default_parallel = "4"
+        if is_renaker_model(self._model) or is_embedding_model(self._model):
+            default_parallel = "1"
+
         arguments = [
             "--host",
             "0.0.0.0",
@@ -60,7 +65,7 @@ class LlamaBoxServer(InferenceServer):
             "--gpu-layers",
             str(layers),
             "--parallel",
-            "4",
+            default_parallel,
             "--ctx-size",
             "8192",
             "--port",
