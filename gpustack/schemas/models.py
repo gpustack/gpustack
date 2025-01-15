@@ -352,9 +352,10 @@ def get_backend(model: Model) -> str:
     return BackendEnum.VLLM
 
 
-def get_extra_filename(model: Model) -> Optional[str]:
+def get_mmproj_filename(model: Model) -> Optional[str]:
     """
-    Get extra filename for the model. Currently mainly used for grabbing the mmproj file for VLMs.
+    Get the mmproj filename for the model. If the mmproj is not provided in the model's
+    backend parameters, it will try to find the default mmproj file.
     """
     if get_backend(model) != BackendEnum.LLAMA_BOX:
         return None

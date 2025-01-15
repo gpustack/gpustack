@@ -17,7 +17,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     ModelInstanceStateEnum,
     get_backend,
-    get_extra_filename,
+    get_mmproj_filename,
 )
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo
 from gpustack.utils import platform
@@ -79,7 +79,7 @@ def download_model(
         return HfDownloader.download(
             repo_id=model.huggingface_repo_id,
             filename=model.huggingface_filename,
-            extra_filename=get_extra_filename(model),
+            extra_filename=get_mmproj_filename(model),
             token=huggingface_token,
             cache_dir=os.path.join(cache_dir, "huggingface"),
         )
@@ -95,7 +95,7 @@ def download_model(
         return ModelScopeDownloader.download(
             model_id=model.model_scope_model_id,
             file_path=model.model_scope_file_path,
-            extra_file_path=get_extra_filename(model),
+            extra_file_path=get_mmproj_filename(model),
             cache_dir=os.path.join(cache_dir, "model_scope"),
         )
     elif model.source == SourceEnum.LOCAL_PATH:
