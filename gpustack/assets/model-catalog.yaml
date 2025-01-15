@@ -1270,7 +1270,7 @@
       replicas: 1
       backend: llama-box
 # Image models
-- name: Stable Diffusion v3.5 Large
+- name: Stable Diffusion V3.5 Large
   description: Stable Diffusion 3.5 Large is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1290,7 +1290,7 @@
       huggingface_filename: "*large-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v3.5 Large Turbo
+- name: Stable Diffusion V3.5 Large Turbo
   description: Stable Diffusion 3.5 Large Turbo is a Multimodal Diffusion Transformer (MMDiT) text-to-image model with Adversarial Diffusion Distillation (ADD) that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency, with a focus on fewer inference steps.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1306,7 +1306,7 @@
       huggingface_filename: "*turbo-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v3.5 Medium
+- name: Stable Diffusion V3.5 Medium
   description: Stable Diffusion 3.5 Medium is a Multimodal Diffusion Transformer with improvements (MMDiT-X) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1322,7 +1322,7 @@
       huggingface_filename: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v3 Medium
+- name: Stable Diffusion V3 Medium
   description: Stable Diffusion 3 Medium is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features greatly improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1370,7 +1370,7 @@
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v2.1
+- name: Stable Diffusion V2.1
   description: This stable-diffusion-2-1 model is fine-tuned from stable-diffusion-2 (768-v-ema.ckpt) with an additional 55k steps on the same dataset (with punsafe=0.1), and then fine-tuned for another 155k extra steps with punsafe=0.98.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1386,7 +1386,7 @@
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v2.1 Turbo
+- name: Stable Diffusion V2.1 Turbo
   description: SD-Turbo is a fast generative text-to-image model that can synthesize photorealistic images from a text prompt in a single network evaluation. We release SD-Turbo as a research artifact, and to study small, distilled text-to-image models. For increased quality and prompt understanding, we recommend SDXL-Turbo.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1402,7 +1402,7 @@
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v2 Inpainting
+- name: Stable Diffusion V2 Inpainting
   description: This stable-diffusion-2-inpainting model is resumed from stable-diffusion-2-base (512-base-ema.ckpt) and trained for another 200k steps. Follows the mask-generation strategy presented in LAMA which, in combination with the latent VAE representations of the masked image, are used as an additional conditioning.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1418,7 +1418,7 @@
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v1.5 Inpainting
+- name: Stable Diffusion V1.5 Inpainting
   description: Stable Diffusion Inpainting is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input, with the extra capability of inpainting the pictures by using a mask.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1434,7 +1434,7 @@
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
-- name: Stable Diffusion v1.5
+- name: Stable Diffusion V1.5
   description: Stable Diffusion is a latent text-to-image diffusion model capable of generating photo-realistic images given any text input.
   home: https://stability.ai
   icon: /static/catalog_icons/stability.png
@@ -1499,7 +1499,7 @@
       replicas: 1
       backend: llama-box
 # Audio models
-- name: Faster Whisper Large v3
+- name: Faster Whisper Large V3
   description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
@@ -1514,7 +1514,7 @@
       huggingface_repo_id: Systran/faster-whisper-large-v3
       replicas: 1
       backend: vox-box
-- name: Faster Whisper Large v2
+- name: Faster Whisper Large V2
   description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-large-v2 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
@@ -1589,7 +1589,7 @@
       huggingface_repo_id: Systran/faster-whisper-small.en
       replicas: 1
       backend: vox-box
-- name: Faster Distil Whisper Large v3 EN
+- name: Faster Distil Whisper Large V3 EN
   description: This is the third and final installment of the Distil-Whisper English series. It the knowledge distilled version of OpenAI's Whisper large-v3, the latest and most performant Whisper model to date. This is the conversion of distil-whisper/distil-large-v3 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
@@ -1604,7 +1604,7 @@
       huggingface_repo_id: Systran/faster-distil-whisper-large-v3
       replicas: 1
       backend: vox-box
-- name: Faster Distil Whisper Large v2 EN
+- name: Faster Distil Whisper Large V2 EN
   description: It is a distilled version of the Whisper model that is 6 times faster, 49% smaller, and performs within 1% WER on out-of-distribution evaluation sets. This is the conversion of distil-whisper/distil-large-v2 to the CTranslate2 model format.
   home: https://huggingface.co/Systran
   icon: /static/catalog_icons/systran.png
