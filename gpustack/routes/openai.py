@@ -19,6 +19,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.http_proxy.load_balancer import LoadBalancer
+from gpustack.routes.models import build_pg_category_condition
 from gpustack.schemas.models import (
     CategoryEnum,
     Model,
@@ -130,18 +131,24 @@ async def list_models(
         categories.append(CategoryEnum.TEXT_TO_SPEECH)
 
     if categories:
-        statement = statement.where(
-            or_(
-                *[
-                    (
-                        col(Model.categories) == []
-                        if category == ""
-                        else col(Model.categories).contains(category)
-                    )
-                    for category in categories
-                ]
+        if session.bind.dialect.name == "sqlite":
+            statement = statement.where(
+                or_(
+                    *[
+                        (
+                            col(Model.categories) == []
+                            if category == ""
+                            else col(Model.categories).contains(category)
+                        )
+                        for category in categories
+                    ]
+                )
             )
-        )
+        else:  # For PostgreSQL
+            category_conditions = [
+                build_pg_category_condition(category) for category in categories
+            ]
+            statement = statement.where(or_(*category_conditions))
 
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")

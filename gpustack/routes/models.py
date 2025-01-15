@@ -2,6 +2,8 @@ import math
 from typing import List, Optional, Union
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import bindparam, cast
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import col, or_
 
 from gpustack.api.exceptions import (
@@ -55,15 +57,21 @@ async def get_models(
 
     extra_conditions = []
     if categories:
-        category_conditions = [
-            (
-                col(Model.categories) == []
-                if category == ""
-                else col(Model.categories).contains(category)
-            )
-            for category in categories
-        ]
-        extra_conditions.append(or_(*category_conditions))
+        if session.bind.dialect.name == "sqlite":
+            category_conditions = [
+                (
+                    col(Model.categories) == []
+                    if category == ""
+                    else col(Model.categories).contains(category)
+                )
+                for category in categories
+            ]
+            extra_conditions.append(or_(*category_conditions))
+        else:  # For PostgreSQL
+            category_conditions = [
+                build_pg_category_condition(category) for category in categories
+            ]
+            extra_conditions.append(or_(*category_conditions))
 
     return await Model.paginated_by_query(
         session=session,
@@ -71,6 +79,14 @@ async def get_models(
         extra_conditions=extra_conditions,
         page=params.page,
         per_page=params.perPage,
+    )
+
+
+def build_pg_category_condition(category: str):
+    if category == "":
+        return cast(Model.categories, JSONB).op('@>')(cast('[]', JSONB))
+    return cast(Model.categories, JSONB).op('?')(
+        bindparam(f"category_{category}", category)
     )
 
 
