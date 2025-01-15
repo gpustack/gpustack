@@ -9,7 +9,12 @@ from dataclasses_json import dataclass_json
 
 
 from gpustack.config.config import get_global_config
-from gpustack.schemas.models import Model, ModelInstance, SourceEnum
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    SourceEnum,
+    get_mmproj_filename,
+)
 from gpustack.utils.command import find_bool_parameter, find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
@@ -355,6 +360,16 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                 )
                 args.extend(["-hf-file", model_filename])
 
+                mmproj_filename = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        hf_mmproj_filename,
+                        model,
+                    ),
+                    timeout=fetch_file_timeout_in_seconds,
+                )
+                if mmproj_filename:
+                    args.extend(["--hf-mmproj-file", mmproj_filename])
+
             global_config = get_global_config()
             if global_config.huggingface_token:
                 args.extend(["-hf-token", global_config.huggingface_token])
@@ -369,7 +384,19 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                 ),
                 timeout=fetch_file_timeout_in_seconds,
             )
-            return ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
+            args = ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
+
+            mmproj_file_path = await asyncio.wait_for(
+                asyncio.to_thread(
+                    model_scope_mmproj_file_path,
+                    model,
+                ),
+                timeout=fetch_file_timeout_in_seconds,
+            )
+            if mmproj_file_path:
+                args.extend(["--ms-mmproj-file", mmproj_file_path])
+
+            return args
         elif model.source == SourceEnum.LOCAL_PATH:
             return ["--path", model.local_path]
     except asyncio.TimeoutError:
@@ -378,7 +405,7 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
         raise Exception(f"Failed to get the file for model {model.name}, error: {e}")
 
 
-def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> str | None:
+def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> Optional[str]:
     if filename is None:
         return None
     else:
@@ -389,8 +416,34 @@ def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> str | Non
         return matching_files[0]
 
 
+def hf_mmproj_filename(model: Model) -> Optional[str]:
+    mmproj_filename = get_mmproj_filename(model)
+    matching_files = match_hugging_face_files(
+        model.huggingface_repo_id, mmproj_filename
+    )
+    if len(matching_files) == 0:
+        return None
+
+    matching_files = sorted(matching_files, reverse=True)
+
+    return matching_files[0]
+
+
 def model_scope_file_path(model_id: str, file_path: str) -> str:
     file_paths = match_model_scope_file_paths(model_id, file_path)
     if len(file_paths) == 0:
         raise ValueError(f"File {file_path} not found in {model_id}")
+    return file_paths[0]
+
+
+def model_scope_mmproj_file_path(model: Model) -> Optional[str]:
+    mmproj_filename = get_mmproj_filename(model)
+    file_paths = match_model_scope_file_paths(
+        model.model_scope_model_id, mmproj_filename
+    )
+    if len(file_paths) == 0:
+        return None
+
+    file_paths = sorted(file_paths, reverse=True)
+
     return file_paths[0]

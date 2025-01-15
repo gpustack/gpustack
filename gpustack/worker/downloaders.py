@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
-from gpustack.schemas.models import Model, get_extra_filename
+from gpustack.schemas.models import Model, get_mmproj_filename
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ class HfDownloader:
         return HfDownloader.get_file_size(
             repo_id=model.huggingface_repo_id,
             filename=model.huggingface_filename,
-            extra_filename=get_extra_filename(model),
+            extra_filename=get_mmproj_filename(model),
             token=token,
         )
 
@@ -508,7 +508,7 @@ class ModelScopeDownloader:
         return ModelScopeDownloader.get_file_size(
             model_id=model.model_scope_model_id,
             file_path=model.model_scope_file_path,
-            extra_file_path=get_extra_filename(model),
+            extra_file_path=get_mmproj_filename(model),
         )
 
     @classmethod
