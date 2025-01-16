@@ -1,3 +1,4 @@
+import asyncio
 import multiprocessing
 import psutil
 import requests
@@ -67,15 +68,19 @@ class ServeManager:
         if not hasattr(self, "_worker_id"):
             raise Exception("Failed to get current worker id.")
 
-    def watch_model_instances(self):
+    async def watch_model_instances(self):
         if not hasattr(self, "_worker_id"):
             self._get_current_worker_id()
 
-        logger.debug("Started watching model instances.")
-
-        self._clientset.model_instances.watch(
-            callback=self._handle_model_instance_event
-        )
+        while True:
+            await asyncio.sleep(5)
+            logger.debug("Started watching model instances.")
+            try:
+                await self._clientset.model_instances.awatch(
+                    callback=self._handle_model_instance_event
+                )
+            except Exception as e:
+                logger.error(f"Failed watching model instances: {e}")
 
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance(**event.data)

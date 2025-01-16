@@ -165,8 +165,8 @@ class Worker:
         run_periodically_in_thread(
             self._serve_manager.health_check_serving_instances, 3
         )
-        # Watch model instances with retry.
-        run_periodically_in_thread(self._serve_manager.watch_model_instances, 5)
+
+        asyncio.create_task(self._serve_manager.watch_model_instances())
 
         # Start the worker server to expose APIs.
         await self._serve_apis()
