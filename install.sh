@@ -231,6 +231,9 @@ check_python_tools() {
     fi
   fi
 
+  USER_BASE_BIN=$(python3 -m site --user-base)/bin
+  export PATH="$USER_BASE_BIN:$PATH"
+
   if ! command -v pipx > /dev/null 2>&1; then
     info "Pipx could not be found. Attempting to install..."
     if [ -z "$PYTHON_EXTERNALLY_MANAGED" ]; then
@@ -249,10 +252,7 @@ check_python_tools() {
     check_python_tools
   fi
 
-  USER_BASE_BIN=$(python3 -m site --user-base)/bin
-  export PATH="$USER_BASE_BIN:$PATH"
   pipx ensurepath --force
-
   PIPX_BIN_DIR=$(pipx environment --value PIPX_BIN_DIR)
   export PATH="$PIPX_BIN_DIR:$PATH"
 }
