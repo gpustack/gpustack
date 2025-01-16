@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import List
 from fastapi import APIRouter
-from sqlalchemy import BigInteger
+from sqlalchemy import JSON, BigInteger, case, cast, text
 from sqlmodel import distinct, select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -249,11 +249,23 @@ def active_model_statement() -> select:
         )
     elif dialect == 'postgresql':
         vram_values = func.json_each_text(
-            ModelInstance.computed_resource_claim['vram']
+            case(
+                (
+                    func.json_typeof(ModelInstance.computed_resource_claim['vram'])
+                    == text("'object'"),
+                    ModelInstance.computed_resource_claim['vram'],
+                ),
+                else_=cast({"0": 0}, JSON),
+            )
         ).table_valued('value')
 
         ram_claim = func.cast(
-            func.json_extract_path_text(ModelInstance.computed_resource_claim, 'ram'),
+            func.coalesce(
+                func.json_extract_path_text(
+                    ModelInstance.computed_resource_claim, 'ram'
+                ),
+                '0',
+            ),
             BigInteger,
         )
     else:
