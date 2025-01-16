@@ -370,7 +370,7 @@ class ActiveRecordMixin:
             raise ValueError("Invalid session or engine.")
 
         subscriber = event_bus.subscribe(cls.__name__.lower())
-        heartbeat_interval = timedelta(seconds=30)
+        heartbeat_interval = timedelta(seconds=15)
         last_event_time = datetime.now(timezone.utc)
 
         try:
