@@ -137,6 +137,10 @@ That's it! You can now deploy the model `llama3` from `Ollama Library` source in
 
 GPUStack supports tailored configurations for model deployment.
 
+### Model Category
+
+The model category helps you organize and filter models. By default, GPUStack automatically detects the model category based on the model's metadata. You can also customize the category by selecting it from the dropdown list.
+
 ### Schedule Type
 
 #### Auto
