@@ -61,6 +61,19 @@ def upgrade() -> None:
             conn.execute(
                 sa.text("ALTER TYPE workerstateenum ADD VALUE 'UNREACHABLE'"))
 
+        # model_usage_operation_enum
+        existing_model_usage_operation_enum_values = conn.execute(
+            sa.text("SELECT unnest(enum_range(NULL::operationenum))::text")
+        ).fetchall()
+        existing_model_usage_operation_enum_values = [row[0]
+                                                      for row in existing_model_usage_operation_enum_values]
+        if 'AUDIO_TRANSCRIPTION' not in existing_model_usage_operation_enum_values:
+            conn.execute(
+                sa.text("ALTER TYPE operationenum ADD VALUE 'AUDIO_TRANSCRIPTION'"))
+        if 'AUDIO_SPEECH' not in existing_model_usage_operation_enum_values:
+            conn.execute(
+                sa.text("ALTER TYPE operationenum ADD VALUE 'AUDIO_SPEECH'"))
+
         conn.execute(
             sa.text("""
                 UPDATE workers
