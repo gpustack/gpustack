@@ -45,6 +45,25 @@ Open your browser and navigate to `http://<your-server-ip>`. Replace `<your-serv
 
 ## Step 3: Deploy Vision Language Models
 
+### Deoloy from Catalog
+
+Vision language models in the catalog are marked with the `vision` capability. When you select a vision language model from the catalog, the default configurations should work as long as you have enough GPU resources and the backend is compatible with your setup(e.g., vLLM backend requires an amd64 Linux worker).
+
+![catalog-vlm](../assets/tutorials/using-vision-language-models/catalog-vlm.png)
+
+### Example of Custom Deployment Using llama-box
+
+When deploying GGUF VLM models with llama-box, GPUStack automatically handles the multi-modal projector file and it should work out of the box.
+
+1. Navigate to the `Models` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
+2. Enable the `GGUF` checkbox to filter models by GGUF format.
+3. Use the search bar to find the `bartowski/Qwen2-VL-2B-Instruct-GGUF` model.
+4. Click the `Save` button to deploy the model.
+
+![Deploy GGUF Model](../assets/tutorials/inference-with-tool-calling/deploy-model-gguf.png)
+
+### Example of Custom Deployment Using vLLM
+
 ### Deploy Llama3.2-Vision
 
 1. Navigate to the `Models` page in the GPUStack UI.

@@ -19,25 +19,32 @@ You can customize the Model Catalog by providing a YAML file via GPUStack server
 The following is an example model set in the model catalog file:
 
 ```yaml
-- name: Qwen2.5
-  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
-  home: https://qwenlm.github.io
-  icon: /static/catalog_icons/qwen.png
+- name: Llama3.2
+  description: The Llama 3.2 collection of multilingual large language models (LLMs) is a collection of pretrained and instruction-tuned generative models in 1B and 3B sizes (text in/text out). The Llama 3.2 instruction-tuned text only models are optimized for multilingual dialogue use cases, including agentic retrieval and summarization tasks. They outperform many of the available open source and closed chat models on common industry benchmarks.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
   categories:
     - llm
   capabilities:
     - context/128k
     - tools
-  sizes: [0.5, 1.5, 3, 7, 14, 32, 72]
+  sizes:
+    - 1
+    - 3
   licenses:
-    - apache-2.0
-    - qwen-research
-  release_date: "2024-09-19"
-  order: 1
+    - llama3.2
+  release_date: "2024-09-25"
+  order: 2
   templates:
-    - quantizations: *default_f16_quantizations
+    - quantizations:
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - f16
       source: huggingface
-      huggingface_repo_id: bartowski/Qwen2.5-{size}B-Instruct-GGUF
+      huggingface_repo_id: bartowski/Llama-3.2-{size}B-Instruct-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
@@ -45,12 +52,13 @@ The following is an example model set in the model catalog file:
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: huggingface
-      huggingface_repo_id: Qwen/Qwen2.5-{size}B-Instruct
+      huggingface_repo_id: unsloth/Llama-3.2-{size}B-Instruct
       replicas: 1
       backend: vllm
       backend_parameters:
         - --enable-auto-tool-choice
-        - --tool-call-parser=hermes
+        - --tool-call-parser=llama3_json
+        - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.2_json.jinja
 ```
 
 ### Template Variables
