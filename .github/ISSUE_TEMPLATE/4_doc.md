@@ -2,8 +2,9 @@
 name: Documentation update
 about: Request to make a documentation update
 title: ""
-labels: "documentation"
+labels: ""
 assignees: ""
+type: "Documentation"
 ---
 
 **Is your doc request related to a problem? Please describe or add related issue ID.**

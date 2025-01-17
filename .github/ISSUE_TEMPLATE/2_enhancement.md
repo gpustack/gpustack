@@ -2,8 +2,9 @@
 name: Enhancement request
 about: Issues that improve or augment existing functionality
 title: ""
-labels: "enhancement"
+labels: ""
 assignees: ""
+type: "Enhancement"
 ---
 
 **Is your enhancement related to a problem? Please describe.**
