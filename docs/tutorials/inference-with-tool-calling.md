@@ -19,9 +19,11 @@ Before proceeding, ensure the following:
 
 ## Step 1: Deploy the Model
 
-You can deploy the model using either llama-box or vLLM. Choose one of the following methods according to your preference:
+### Deploy from Catalog
 
-### Example Using llama-box
+LLMs that support tool calling are marked with the `tools` capability in the catalog. When you select such a model from the catalog, tool calling is enabled by default.
+
+### Example of Custom Deployment Using llama-box
 
 When you deploy GGUF models using llama-box, tool calling is enabled by default for models that support it.
 
@@ -32,7 +34,7 @@ When you deploy GGUF models using llama-box, tool calling is enabled by default 
 
 ![Deploy GGUF Model](../assets/tutorials/inference-with-tool-calling/deploy-model-gguf.png)
 
-### Example Using vLLM
+### Example of Custom Deployment Using vLLM
 
 When you deploy models using vLLM, you need to enable tool calling with additional parameters.
 
