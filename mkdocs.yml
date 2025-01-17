@@ -92,6 +92,7 @@ nav:
       - Using Vision Language Models: tutorials/using-vision-language-models.md
       - Using Image Generation Models: tutorials/using-image-generation-models.md
       - Recommended Parameters for Image Generation Models: tutorials/recommended-parameters-for-image-generation-models.md
+      - Editing Images: tutorials/editing-images.md
       - Using Audio Models: tutorials/using-audio-models.md
       - Using Reranker Models: tutorials/using-reranker-models.md
       - Inference on CPUs: tutorials/inference-on-cpus.md
