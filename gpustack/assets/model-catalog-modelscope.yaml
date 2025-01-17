@@ -1363,12 +1363,26 @@
     - stabilityai-ai-community
   release_date: "2024-10-22"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
       source: model_scope
       model_scope_model_id: gpustack/stable-diffusion-v3-5-medium-GGUF
       model_scope_file_path: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+    - quantizations:
+        - FP16
+      source: model_scope
+      model_scope_model_id: gpustack/stable-diffusion-v3-5-medium-GGUF
+      model_scope_file_path: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3 Medium
   description: Stable Diffusion 3 Medium is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features greatly improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
   home: https://stability.ai
