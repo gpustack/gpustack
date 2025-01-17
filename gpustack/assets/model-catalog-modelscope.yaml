@@ -1543,6 +1543,22 @@
       model_scope_file_path: "*schnell-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+- name: FLUX.1 Fill Dev
+  description: FLUX.1 Fill [dev] is a 12 billion parameter rectified flow transformer capable of filling areas in existing images based on a text description.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  categories:
+    - image
+  licenses:
+    - flux-1-dev-non-commercial-license
+  release_date: "2024-11-25"
+  templates:
+    - quantizations: *image_quantizations
+      source: model_scope
+      model_scope_model_id: gpustack/FLUX.1-Fill-dev-GGUF
+      model_scope_file_path: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
 - name: FLUX.1 Lite
   description: Flux.1 Lite is an 8B parameter transformer model distilled from the FLUX.1-dev model. This version uses 7 GB less RAM and runs 23% faster while maintaining the same precision (bfloat16) as the original model.
   home: https://huggingface.co/Freepik/flux.1-lite-8B-alpha
