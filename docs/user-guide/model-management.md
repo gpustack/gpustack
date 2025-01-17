@@ -82,6 +82,21 @@ To deploy a local path model:
 
     After editing the model, the configuration will not be applied to existing model instances. You need to delete the existing model instances. GPUStack will recreate new instances based on the updated model configuration.
 
+## Stop Model
+
+Stopping a model will delete all model instances and release the resources. It is equivalent to scaling down the model to zero replicas.
+
+1. Find the model you want to stop on the model list page.
+2. Click the ellipsis button in the `Operations` column, then select `Stop`.
+3. Confirm the operation.
+
+## Start Model
+
+Starting a model is equivalent to scaling up the model to one replica.
+
+1. Find the model you want to start on the model list page.
+2. Click the ellipsis button in the `Operations` column, then select `Start`.
+
 ## Delete Model
 
 1. Find the model you want to delete on the model list page.
