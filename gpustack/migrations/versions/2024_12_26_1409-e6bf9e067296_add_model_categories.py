@@ -61,6 +61,65 @@ def upgrade() -> None:
             conn.execute(
                 sa.text("ALTER TYPE workerstateenum ADD VALUE 'UNREACHABLE'"))
 
+        conn.execute(
+            sa.text("""
+                UPDATE workers
+                SET status = (
+                    SELECT jsonb_set(
+                        status::jsonb,
+                        '{gpu_devices}',
+                        (
+                            SELECT jsonb_agg(
+                                jsonb_set(
+                                    jsonb_set(
+                                        gpu_device,
+                                        '{labels}',
+                                        '{}'::jsonb
+                                    ),
+                                    '{type}',
+                                    CASE
+                                        WHEN gpu_device->>'vendor' = 'NVIDIA' THEN '"cuda"'
+                                        WHEN gpu_device->>'vendor' = 'Moore Threads' THEN '"musa"'
+                                        WHEN gpu_device->>'vendor' = 'Apple' THEN '"mps"'
+                                        WHEN gpu_device->>'vendor' = 'Huawei' THEN '"npu"'
+                                        WHEN gpu_device->>'vendor' = 'AMD' THEN '"rocm"'
+                                        ELSE '"unknown"'::jsonb
+                                    END
+                                )
+                            )
+                            FROM jsonb_array_elements(status::jsonb->'gpu_devices') AS gpu_device
+                        )::jsonb
+                    )::json
+                )
+            """)
+        )
+
+    elif conn.dialect.name == 'sqlite':
+        rows = conn.execute(sa.text("SELECT id, status FROM workers")).fetchall()
+        for row in rows:
+            id = row[0]
+            status_content = row[1]
+            status = json.loads(status_content)
+            if 'gpu_devices' in status:
+                for device in status.get('gpu_devices', []):
+                    device['labels'] = {}
+                    if device.get('vendor') == 'NVIDIA':
+                        device['type'] = 'cuda'
+                    elif device.get('vendor') == 'Moore Threads':
+                        device['type'] = 'musa'
+                    elif device.get('vendor') == 'Apple':
+                        device['type'] = 'mps'
+                    elif device.get('vendor') == 'Huawei':
+                        device['type'] = 'npu'
+                    elif device.get('vendor') == 'AMD':
+                        device['type'] = 'rocm'
+                    else:
+                        device['type'] = 'unknown'
+                conn.execute(
+                    sa.text("UPDATE workers SET status = :status WHERE id = :id"),
+                    {'status': json.dumps(status), 'id': id}
+                )
+
     with op.batch_alter_table('models', schema=None) as batch_op:
         connection = batch_op.get_bind()
         categories_case = sa.case(
