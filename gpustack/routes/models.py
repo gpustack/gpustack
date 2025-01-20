@@ -29,6 +29,7 @@ from gpustack.schemas.models import (
     ModelsPublic,
 )
 from gpustack.utils.command import find_parameter
+from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
 
 router = APIRouter()
@@ -159,7 +160,7 @@ async def validate_gpu_ids(  # noqa: C901
             raise BadRequestException(message=f"Invalid GPU ID: {gpu_id}")
 
         worker_name = matched.get("worker_name")
-        gpu_index = matched.get("gpu_index")
+        gpu_index = safe_int(matched.get("gpu_index"), -1)
         worker_name_set.add(worker_name)
 
         worker = await Worker.one_by_field(session, "name", worker_name)
@@ -170,7 +171,7 @@ async def validate_gpu_ids(  # noqa: C901
             for worker_gpu in worker.status.gpu_devices:
                 if (
                     worker_gpu.index == gpu_index
-                    and worker_gpu.type != VendorEnum.NVIDIA.value
+                    and worker_gpu.vendor != VendorEnum.NVIDIA.value
                 ):
                     raise BadRequestException(
                         "Audio models are supported only on NVIDIA GPUs and CPUs."
