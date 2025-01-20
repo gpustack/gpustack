@@ -168,11 +168,10 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             return True
 
         # Skip conditions for image models.
-        if (
-            is_image_model(self._model)
-            and candidate_func
-            != self.find_single_worker_single_gpu_full_offloading_candidates
-        ):
+        if is_image_model(self._model) and candidate_func not in [
+            self.find_single_worker_single_gpu_full_offloading_candidates,
+            self.find_single_worker_cpu_candidates,
+        ]:
             # Only full offloading is supported for image models.
             return True
 
