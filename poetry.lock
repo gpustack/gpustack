@@ -8159,13 +8159,13 @@ test = ["covdefaults (>=2.3)", "coverage (>=7.2.7)", "coverage-enable-subprocess
 
 [[package]]
 name = "vllm"
-version = "0.6.6"
+version = "0.6.6.post1"
 description = "A high-throughput and memory-efficient inference and serving engine for LLMs"
 optional = true
 python-versions = ">=3.9"
 files = [
-    {file = "vllm-0.6.6-cp38-abi3-manylinux1_x86_64.whl", hash = "sha256:67391737826703bb50f8a3e610b8518e063ee8062026be2b030b7812f5d0765d"},
-    {file = "vllm-0.6.6.tar.gz", hash = "sha256:745bd11d3a1892100c08ec333c6e5bf20c9415a9e9dcbc5b70e9e8de066c77db"},
+    {file = "vllm-0.6.6.post1-cp38-abi3-manylinux1_x86_64.whl", hash = "sha256:07cd8b4bc6368b5ce37ea14936d6941021ac2ac032e2731f1de108a1e499cab4"},
+    {file = "vllm-0.6.6.post1.tar.gz", hash = "sha256:d9035954a2028fd7efb2c37e137d69b568d80f193b6a8748f885676292a43a95"},
 ]
 
 [package.dependencies]
@@ -8929,4 +8929,4 @@ vllm = ["mistral_common", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "ee97ac49cbc4919b97fe7e8bf1654a1850b1e23b0733bebf5601b438d8f229f2"
+content-hash = "9c7a30af8509b0e5149230718c580e2e9b041f0de02a245a0c62fe398a25337a"
