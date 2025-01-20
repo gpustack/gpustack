@@ -4,7 +4,8 @@ You can upgrade GPUStack using the installation script or by manually installing
 
 !!! note
 
-    When upgrading, upgrade the GPUStack server first, then upgrade the workers.
+    1. When upgrading, upgrade the GPUStack server first, then upgrade the workers.
+    2. Please **DO NOT** upgrade from/to the main(dev) version or a release candidate(rc) version, as they may contain breaking changes. Use a fresh installation if you want to try the main or rc versions.
 
 ## Upgrade GPUStack Using the Installation Script
 
