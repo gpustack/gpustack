@@ -318,7 +318,7 @@ def active_model_statement() -> select:
             resource_claim_query.c.total_ram_claim,
             resource_claim_query.c.total_vram_claim,
         )
-        .order_by(usage_sum_query.c.total_token_count.desc())
+        .order_by(func.coalesce(usage_sum_query.c.total_token_count, 0).desc())
         .limit(10)
     )
 
