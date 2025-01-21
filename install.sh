@@ -221,7 +221,15 @@ check_python_tools() {
 
     if ! command -v pip3 > /dev/null 2>&1; then
       info "Pip3 could not be found. Attempting to ensure pip..."
-      python3 -m ensurepip --upgrade
+      if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+        if python3 -m ensurepip 2>&1 | grep -q "ensurepip is disabled"; then
+            $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip
+        else
+            python3 -m ensurepip --upgrade
+        fi
+      else
+        python3 -m ensurepip --upgrade
+      fi
     fi
 
     PIP_PYTHON_VERSION_READABLE=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}')
