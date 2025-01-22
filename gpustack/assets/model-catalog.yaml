@@ -1446,10 +1446,16 @@
     - stabilityai-ai-community
   release_date: "2024-10-22"
   templates:
-    - quantizations: &image_quantizations
+    - quantizations:
         - Q4_0
         - Q4_1
         - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-GGUF
+      huggingface_filename: "*large-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
         - FP16
       source: huggingface
       huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-GGUF
@@ -1457,6 +1463,7 @@
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3.5 Large Turbo
@@ -1469,13 +1476,24 @@
     - stabilityai-ai-community
   release_date: "2024-10-22"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-turbo-GGUF
+      huggingface_filename: "*turbo-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/stable-diffusion-v3-5-large-turbo-GGUF
       huggingface_filename: "*turbo-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3.5 Medium
@@ -1488,13 +1506,24 @@
     - stabilityai-ai-community
   release_date: "2024-10-22"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-5-medium-GGUF
+      huggingface_filename: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/stable-diffusion-v3-5-medium-GGUF
       huggingface_filename: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3 Medium
@@ -1507,13 +1536,24 @@
     - stabilityai-ai-community
   release_date: "2024-06-12"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/stable-diffusion-v3-medium-GGUF
+      huggingface_filename: "*medium-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/stable-diffusion-v3-medium-GGUF
       huggingface_filename: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: Stable Diffusion XL
@@ -1526,7 +1566,11 @@
     - openrail++
   release_date: "2023-07-26"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations: &image_quantizations
+        - Q4_0
+        - Q4_1
+        - Q8_0
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/stable-diffusion-xl-base-1.0-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
@@ -1638,13 +1682,24 @@
     - flux-1-dev-non-commercial-license
   release_date: "2024-08-02"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-dev-GGUF
+      huggingface_filename: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/FLUX.1-dev-GGUF
       huggingface_filename: "*dev-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: FLUX.1 Schnell
@@ -1657,13 +1712,24 @@
     - apache-2.0
   release_date: "2024-08-02"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-schnell-GGUF
+      huggingface_filename: "*schnell-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/FLUX.1-schnell-GGUF
       huggingface_filename: "*schnell-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: FLUX.1 Fill Dev
@@ -1676,13 +1742,24 @@
     - flux-1-dev-non-commercial-license
   release_date: "2024-11-25"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-Fill-dev-GGUF
+      huggingface_filename: "*dev-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/FLUX.1-Fill-dev-GGUF
       huggingface_filename: "*dev-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: FLUX.1 Lite
@@ -1695,13 +1772,24 @@
     - flux-1-dev-non-commercial-license
   release_date: "2024-10-23"
   templates:
-    - quantizations: *image_quantizations
+    - quantizations:
+        - Q4_0
+        - Q4_1
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: gpustack/FLUX.1-lite-GGUF
+      huggingface_filename: "*lite-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+    - quantizations:
+        - FP16
       source: huggingface
       huggingface_repo_id: gpustack/FLUX.1-lite-GGUF
       huggingface_filename: "*lite-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 # Audio models
