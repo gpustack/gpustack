@@ -25,11 +25,11 @@ class WorkerSyncer:
         while True:
             await asyncio.sleep(self._interval)
             try:
-                await self._sync_worker_connectivity()
+                await self._sync_workers_connectivity()
             except Exception as e:
                 logger.error(f"Failed to sync workers: {e}")
 
-    async def _sync_worker_connectivity(self):
+    async def _sync_workers_connectivity(self):
         """
         Mark offline workers to not_ready state.
         """
@@ -38,25 +38,19 @@ class WorkerSyncer:
             if not workers:
                 return
 
+            tasks = [
+                self._check_worker_connectivity(worker, session) for worker in workers
+            ]
+            results = await asyncio.gather(*tasks)
+
             should_update_workers = []
             state_to_worker_name = {
                 WorkerStateEnum.NOT_READY: [],
                 WorkerStateEnum.UNREACHABLE: [],
                 WorkerStateEnum.READY: [],
             }
-            for worker in workers:
-                original_worker_unreachable = worker.unreachable
-                original_worker_state = worker.state
-                original_worker_state_message = worker.state_message
-
-                worker.unreachable = not await self.is_worker_reachable(worker)
-                worker.compute_state(self._worker_offline_timeout)
-
-                if (
-                    original_worker_unreachable != worker.unreachable
-                    or original_worker_state != worker.state
-                    or original_worker_state_message != worker.state_message
-                ):
+            for worker in results:
+                if worker:
                     should_update_workers.append(worker)
                     state_to_worker_name[worker.state].append(worker.name)
 
@@ -66,6 +60,25 @@ class WorkerSyncer:
             for state, worker_names in state_to_worker_name.items():
                 if worker_names:
                     logger.debug(f"Marked worker {', '.join(worker_names)} as {state}")
+
+    async def _check_worker_connectivity(self, worker: Worker, session: AsyncSession):
+        original_worker_unreachable = worker.unreachable
+        original_worker_state = worker.state
+        original_worker_state_message = worker.state_message
+
+        unreachable = not await self.is_worker_reachable(worker)
+        worker = await Worker.one_by_id(session, worker.id)
+        worker.unreachable = unreachable
+        worker.compute_state(self._worker_offline_timeout)
+
+        if (
+            original_worker_unreachable != worker.unreachable
+            or original_worker_state != worker.state
+            or original_worker_state_message != worker.state_message
+        ):
+            return worker
+
+        return None
 
     async def is_worker_reachable(
         self,
