@@ -1306,6 +1306,9 @@
       huggingface_filename: "*large-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3.5 Large Turbo
   description: Stable Diffusion 3.5 Large Turbo is a Multimodal Diffusion Transformer (MMDiT) text-to-image model with Adversarial Diffusion Distillation (ADD) that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency, with a focus on fewer inference steps.
   home: https://stability.ai
@@ -1322,6 +1325,9 @@
       huggingface_filename: "*turbo-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3.5 Medium
   description: Stable Diffusion 3.5 Medium is a Multimodal Diffusion Transformer with improvements (MMDiT-X) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
   home: https://stability.ai
@@ -1332,24 +1338,13 @@
     - stabilityai-ai-community
   release_date: "2024-10-22"
   templates:
-    - quantizations:
-        - Q4_0
-        - Q4_1
-        - Q8_0
-      source: huggingface
-      huggingface_repo_id: gpustack/stable-diffusion-v3-5-medium-GGUF
-      huggingface_filename: "*medium-{quantization}*.gguf"
-      replicas: 1
-      backend: llama-box
-    - quantizations:
-        - FP16
+    - quantizations: *image_quantizations
       source: huggingface
       huggingface_repo_id: gpustack/stable-diffusion-v3-5-medium-GGUF
       huggingface_filename: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
-      # After the issue is fixed, merge the FP16 quantization with the other quantizations
       backend_parameters:
         - --image-no-text-encoder-model-offload
 - name: Stable Diffusion V3 Medium
@@ -1368,6 +1363,9 @@
       huggingface_filename: "*medium-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: Stable Diffusion XL
   description: SDXL is a model that can be used to generate and modify images based on text prompts. It is a Latent Diffusion Model that uses two fixed, pretrained text encoders (OpenCLIP-ViT/G and CLIP-ViT/L).
   home: https://stability.ai
@@ -1496,6 +1494,9 @@
       huggingface_filename: "*dev-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: FLUX.1 Schnell
   description: FLUX.1 [schnell] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
   home: https://blackforestlabs.ai
@@ -1512,6 +1513,9 @@
       huggingface_filename: "*schnell-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: FLUX.1 Fill Dev
   description: FLUX.1 Fill [dev] is a 12 billion parameter rectified flow transformer capable of filling areas in existing images based on a text description.
   home: https://blackforestlabs.ai
@@ -1528,6 +1532,9 @@
       huggingface_filename: "*dev-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 - name: FLUX.1 Lite
   description: Flux.1 Lite is an 8B parameter transformer model distilled from the FLUX.1-dev model. This version uses 7 GB less RAM and runs 23% faster while maintaining the same precision (bfloat16) as the original model.
   home: https://huggingface.co/Freepik/flux.1-lite-8B-alpha
@@ -1544,6 +1551,9 @@
       huggingface_filename: "*lite-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      # This is a workaround for https://github.com/gpustack/gpustack/issues/1036
+      backend_parameters:
+        - --image-no-text-encoder-model-offload
 # Audio models
 - name: Faster Whisper Large V3
   description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
