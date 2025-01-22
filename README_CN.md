@@ -153,7 +153,7 @@ curl http://myserver/v1-openai/chat/completions \
 
 我们计划在未来的版本中支持以下加速框架：
 
-- [ ] 海光 DTK
+- [ ] 海光 DCU
 - [ ] Intel oneAPI
 - [ ] Qualcomm AI Engine
 
