@@ -680,6 +680,117 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: Deepseek R1
+  description: DeepSeek's first-generation reasoning model that delivers superior performance in math, code, and reasoning tasks. It effectively overcomes reasoning challenges and achieves performance comparable to OpenAI-o1 across various benchmarks. This includes six dense models distilled from DeepSeek-R1 based on Llama and Qwen.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 1.5
+    - 7
+    - 8
+    - 14
+    - 32
+    - 70
+    - 671
+  licenses:
+    - deepseek
+  release_date: "2025-01-20"
+  templates:
+    - quantizations: ["BF16"]
+      sizes:
+        - 671
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - F16
+      sizes:
+        - 7
+        - 14
+        - 32
+      source: model_scope
+      model_scope_model_id: unsloth/DeepSeek-R1-Distill-Qwen-{size}B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --temp=0.6 # recommended temperature for R1 is between 0.5 and 0.7
+        - --ctx-size=32768
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+      sizes:
+        - 1.5
+      source: model_scope
+      model_scope_model_id: unsloth/DeepSeek-R1-Distill-Qwen-{size}B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --temp=0.6
+        - --ctx-size=32768
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      sizes:
+        - 1.5
+        - 7
+        - 14
+        - 32
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1-Distill-Qwen-{size}B
+      replicas: 1
+      backend: vllm
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - F16
+      sizes:
+        - 8
+      source: model_scope
+      model_scope_model_id: unsloth/DeepSeek-R1-Distill-Llama-{size}B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --temp=0.6
+        - --ctx-size=32768
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      sizes:
+        - 8
+        - 70
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1-Distill-Llama-{size}B
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --max-model-len=32768
 - name: Yi1.5
   description: Yi 1.5 is a high-performing, bilingual language model.
   home: https://www.01.ai
