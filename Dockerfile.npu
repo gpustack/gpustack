@@ -12,12 +12,15 @@ RUN apt-get update && apt-get install -y \
     tzdata \
     iproute2 \
     python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+    python3-venv \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
     make build && \
-    pip install /workspace/gpustack/dist/*.whl &&\
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \
+    pip install pipx && \
+    pip install $WHEEL_PACKAGE && \
     pip cache purge && \
     rm -rf /workspace/gpustack
 
