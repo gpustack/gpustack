@@ -84,8 +84,10 @@ class Scheduler:
             asyncio.create_task(self._schedule_cycle())
 
             # scheduler job trigger by time interval.
-            trigger = IntervalTrigger(seconds=self._check_interval)
-            scheduler = AsyncIOScheduler()
+            trigger = IntervalTrigger(
+                seconds=self._check_interval, timezone=timezone.utc
+            )
+            scheduler = AsyncIOScheduler(timezone=timezone.utc)
             scheduler.add_job(
                 self._enqueue_pending_instances,
                 trigger=trigger,
