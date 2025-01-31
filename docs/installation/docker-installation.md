@@ -47,9 +47,25 @@ docker run -d --name gpustack \
     --restart=unless-stopped \
     --gpus all \
     -p 80:80 \
+    --network=host \
     --ipc=host \
     -v gpustack-data:/var/lib/gpustack \
     gpustack/gpustack
+```
+
+or
+
+```shell
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --gpus all \
+    -p 80:80 \
+    -p 10150:10150 \
+    -p 40000-41024:40000-41024 \
+    -p 50000-51024:50000-51024 \
+    --ipc=host \
+    -v gpustack-data:/var/lib/gpustack \
+    gpustack/gpustack --worker-ip your_host_ip
 ```
 
 (**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
