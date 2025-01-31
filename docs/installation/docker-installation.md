@@ -46,7 +46,6 @@ Run the following command to start the GPUStack server **and built-in worker**:
 docker run -d --name gpustack \
     --restart=unless-stopped \
     --gpus all \
-    -p 80:80 \
     --network=host \
     --ipc=host \
     -v gpustack-data:/var/lib/gpustack \
