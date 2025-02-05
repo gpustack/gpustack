@@ -38,6 +38,7 @@ HEADER_SKIPPED = [
     "x-forwarded-server",
 ]
 HF_ENDPOINT = os.getenv("HF_ENDPOINT")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 
@@ -50,7 +51,7 @@ async def proxy(request: Request, url: str):
 
     url = replace_hf_endpoint(url)
 
-    forwarded_headers = process_headers(request.headers)
+    forwarded_headers = process_headers(request.headers, url)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -115,7 +116,7 @@ def replace_hf_endpoint(url: str) -> str:
     return url
 
 
-def process_headers(headers):
+def process_headers(headers, url: str):
     processed_headers = {}
     for key, value in headers.items():
         if key.lower() in HEADER_SKIPPED:
@@ -130,5 +131,8 @@ def process_headers(headers):
             processed_headers[key] = "identity"
         else:
             processed_headers[key] = value
+
+    if HF_TOKEN and (url.startswith("https://huggingface.co") or HF_ENDPOINT):
+        processed_headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
     return processed_headers
