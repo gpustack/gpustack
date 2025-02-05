@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=gpustack/rocm-base:rocm6.2_ubuntu20.04_py3.10_pytorch2.6.0_vllm0.6.5
+ARG BASE_IMAGE=gpustack/rocm-base:rocm6.2_ubuntu20.04_py3.10_pytorch2.6.0_vllm0.6.6.post1
 
 FROM $BASE_IMAGE
 

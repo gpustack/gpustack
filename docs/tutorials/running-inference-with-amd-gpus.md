@@ -73,7 +73,7 @@ Follow the [Docker Installation Guide](https://docs.docker.com/desktop/install/l
 To set up an isolated environment for GPUStack, we recommend using Docker.
 
 ```bash
-docker run -it \
+docker run -itd \
    --network=host \
    --ipc=host \
    --group-add=video \
