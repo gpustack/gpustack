@@ -156,7 +156,7 @@ class ToolsManager:
             )
 
     def download_llama_box(self):
-        version = "v0.0.112"
+        version = "v0.0.114"
         target_dir = self.third_party_bin_path / "llama-box"
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / file_name
@@ -332,6 +332,12 @@ class ToolsManager:
             and self._device == platform.DeviceTypeEnum.CUDA.value
         ):
             platform_name = "linux-amd64-cuda-12.4"
+        elif (
+            self._os == "linux"
+            and self._arch == "arm64"
+            and self._device == platform.DeviceTypeEnum.CUDA.value
+        ):
+            platform_name = "linux-arm64-cuda-12.4"
         elif (
             self._os == "linux"
             and self._arch == "amd64"
