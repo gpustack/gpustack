@@ -63,10 +63,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         *"rocm-6.2"*) \
             python3 -m pip uninstall -y torch torchvision \
             && python3 -m pip install --pre \
-                torch==2.6.0.dev20241113+rocm6.2 \
+                torch==2.6.0+rocm6.2.4 \
                 'setuptools-scm>=8' \
-                torchvision==0.20.0.dev20241113+rocm6.2 \
-                --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2 \
+                torchvision==0.21.0+rocm6.2.4 \
+                --extra-index-url https://download.pytorch.org/whl/rocm6.2.4 \
                 --debug --verbose --timeout 120 --retries 3;; \
         *) ;; esac
 
@@ -138,7 +138,7 @@ ENV RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1
 # Silences the HF Tokenizers warning
 ENV TOKENIZERS_PARALLELISM=false
 
-ARG VLLM_VERSION=v0.6.5
+ARG VLLM_VERSION=v0.6.6.post1
 # Package upgrades for useful functionality or to avoid dependency issues
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install --upgrade numba scipy huggingface-hub[cli] pytest-shard cmake
