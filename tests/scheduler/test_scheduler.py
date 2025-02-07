@@ -244,6 +244,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
                 "ram": 455165112,
                 "vram": {0: 22912443392, 1: 22911897600},
                 "score": 58.828511417553905,
+                "tensor_split": [26015170560, 26015170560],
             },
         ]
 
@@ -316,6 +317,16 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
                     7: 21244001280,
                 },
                 "score": 100,
+                "tensor_split": [
+                    25769803776,
+                    25769803776,
+                    25769803776,
+                    25769803776,
+                    25769803776,
+                    25769803776,
+                    25769803776,
+                    25769803776,
+                ],
             },
         ]
 
@@ -415,6 +426,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
                     2: 15703068672,
                 },
                 "score": 63.08188756952499,
+                "tensor_split": [17171480576, 17171480576, 16647192576],
             },
             {
                 "offload_layers": 81,
@@ -429,6 +441,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
                     3: 15703068672,
                 },
                 "score": 63.40144801834418,
+                "tensor_split": [17171480576, 17171480576, 16542334976],
             },
             {
                 "offload_layers": 81,
@@ -443,6 +456,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
                     3: 15703068672,
                 },
                 "score": 65.08312111378692,
+                "tensor_split": [17171480576, 16647192576, 16542334976],
             },
             {
                 "offload_layers": 81,
@@ -457,6 +471,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
                     3: 15703068672,
                 },
                 "score": 65.08312111378692,
+                "tensor_split": [17171480576, 16647192576, 16542334976],
             },
         ]
 
@@ -476,18 +491,22 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
             {
                 "gpu_indexes": [0, 1, 2],
                 "score": 85.0,
+                "tensor_split": [17171480576, 17171480576, 16647192576],
             },
             {
                 "gpu_indexes": [0, 1, 3],
                 "score": 85.0,
+                "tensor_split": [17171480576, 17171480576, 16542334976],
             },
             {
                 "gpu_indexes": [0, 2, 3],
                 "score": 84.0,
+                "tensor_split": [17171480576, 16647192576, 16542334976],
             },
             {
                 "gpu_indexes": [1, 2, 3],
                 "score": 84.0,
+                "tensor_split": [17171480576, 16647192576, 16542334976],
             },
         ]
 
@@ -552,6 +571,7 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
                     1: 16900820992,
                 },
                 "score": 66.15,
+                "tensor_split": [17171480576, 17171480576],
             }
         ]
 
@@ -742,6 +762,7 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
                     1: 13296406528,
                 },
                 "score": 53.10511012189776,
+                "tensor_split": [26015170560, 17171480576, 17171480576],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=2,
@@ -767,6 +788,7 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
                     0: 19475402752,
                 },
                 "score": 65.6816841222221,
+                "tensor_split": [17171480576, 17171480576, 26015170560],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=3,
@@ -866,6 +888,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
                     1: 13296406528,
                 },
                 "score": 53.10511012189776,
+                "tensor_split": [26015170560, 17171480576, 17171480576],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=2,
@@ -891,6 +914,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
                     0: 19475402752,
                 },
                 "score": 65.6816841222221,
+                "tensor_split": [17171480576, 17171480576, 26015170560],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=3,
@@ -995,6 +1019,14 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                     1: 68910751744,
                 },
                 "score": 100,
+                "tensor_split": [
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                ],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=9,
@@ -1054,6 +1086,14 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                     1: 68910751744,
                 },
                 "score": 100,
+                "tensor_split": [
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                ],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=8,
@@ -1113,6 +1153,14 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                     1: 68910751744,
                 },
                 "score": 100,
+                "tensor_split": [
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                ],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=8,
@@ -1235,6 +1283,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
                     0: 16503328768,
                 },
                 "score": 100,
+                "tensor_split": [24683479040, 16106143744, 17163091968],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
                         worker_id=12,
@@ -1355,13 +1404,14 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
                     3: 15703068672,
                 },
                 "score": 65.08312111378692,
+                "tensor_split": [17171480576, 16647192576, 16542334976],
             }
         ]
 
         assert len(candidates) == 1
         compare_candidates(candidates, expected_candidates)
 
-        # update gpu selecto
+        # update gpu selector
         m.gpu_selector = GPUSelector(
             gpu_ids=["host-4-4080:cuda:0", "host-4-4080:cuda:1", "host-4-4080:cuda:2"]
         )
@@ -1385,6 +1435,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
                     2: 15703068672,
                 },
                 "score": 63.08188756952499,
+                "tensor_split": [17171480576, 17171480576, 16647192576],
             }
         ]
 
@@ -1444,6 +1495,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config
                     1: 16900820992,
                 },
                 "score": 66.15,
+                "tensor_split": [17171480576, 17171480576],
             }
         ]
 
@@ -1759,3 +1811,9 @@ def compare_candidates(  # noqa: C901
                     rpc_server.computed_resource_claim
                     == expected["rpc_servers"][i].computed_resource_claim
                 )
+
+        if "tensor_split" in expected:
+            assert (
+                candidate.computed_resource_claim.tensor_split
+                == expected["tensor_split"]
+            )

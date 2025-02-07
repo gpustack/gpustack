@@ -201,6 +201,7 @@ class ComputedResourceClaim(BaseModel):
     total_layers: Optional[int] = None
     ram: Optional[int] = Field(default=None)  # in bytes
     vram: Optional[Dict[int, int]] = Field(default=None)  # in bytes
+    tensor_split: Optional[List[int]] = Field(default=None)
 
 
 class ModelInstanceRPCServer(RPCServer):

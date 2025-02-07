@@ -46,6 +46,20 @@ class memoryEstimate:
     vrams: List[layerMemoryEstimate]
     offloadLayers: Optional[int] = None  # Not available for diffusion models
 
+    def to_log_string(self) -> str:
+        vram_strings = ', '.join(
+            [
+                f"(uma:{vram.uma}, non-uma:{vram.nonuma}, layers:{vram.handleLayers})"
+                for vram in self.vrams
+            ]
+        )
+        return (
+            f"layers: {self.offloadLayers}, "
+            f"{'full offloaded, ' if self.fullOffloaded else ''}"
+            f"ram: (uma:{self.ram.uma}, non-uma:{self.ram.nonuma}, layers:{self.ram.handleLayers}), "
+            f"vrams: [{vram_strings}]"
+        )
+
 
 @dataclass_json
 @dataclass
@@ -261,7 +275,7 @@ async def calculate_model_resource_claim(
             estimate = _get_empty_estimate(n_gpu=len(tensor_split))
         return ModelInstanceResourceClaim(model_instance, estimate)
 
-    logger.info(f"Calculating resource claim for model instance {model_instance.name}")
+    logger.debug(f"Calculating resource claim for model instance {model_instance.name}")
 
     command = await _gguf_parser_command(model, offload, **kwargs)
     try:
@@ -285,18 +299,18 @@ async def calculate_model_resource_claim(
         if offload == GPUOffloadEnum.Full:
             logger.info(
                 f"Calculated resource claim for full offload model instance {model_instance.name}, "
-                f"claim: {claim.estimate.items[0]}"
+                f"{claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Partial:
             logger.info(
-                f"Calculated resource claim for partial offloading model instance {model_instance.name}, "
-                f"least claim: {claim.estimate.items[1]}, "
-                f"most claim: {claim.estimate.items[len(claim.estimate.items) - 2]}"
+                f"Calculated resource claim for partial offloading model instance {model_instance.name}, \n"
+                f"  Least: {claim.estimate.items[1].to_log_string()} \n"
+                f"  Most: {claim.estimate.items[len(claim.estimate.items) - 2].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Disable:
             logger.info(
                 f"Calculated resource claim for disabled offloading model instance {model_instance.name}, "
-                f"claim: {claim.estimate.items[0]}"
+                f"{claim.estimate.items[0].to_log_string()}"
             )
             clear_vram_claim(claim)
 

@@ -395,6 +395,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                             vram=vram_claim,
                             ram=ram_claim,
                             total_layers=total_layers,
+                            tensor_split=tensor_splitting,
                         ),
                     )
                 )
@@ -626,6 +627,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 vram=final_gpu_claims,
                 ram=final_ram_claim,
                 total_layers=total_layers,
+                tensor_split=tensor_splitting,
             ),
         )
 
@@ -1121,6 +1123,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                     vram=main_worker_vram_claim,
                     ram=main_worker_ram_claim,
                     total_layers=total_layers,
+                    tensor_split=flag_tensor_spliting,
                 ),
                 rpc_servers=rpc_servers,
             )
