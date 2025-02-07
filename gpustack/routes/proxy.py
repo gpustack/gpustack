@@ -10,6 +10,7 @@ from gpustack.api.exceptions import (
     BadRequestException,
     ForbiddenException,
 )
+from gpustack.config.config import get_global_config
 
 router = APIRouter()
 
@@ -38,7 +39,6 @@ HEADER_SKIPPED = [
     "x-forwarded-server",
 ]
 HF_ENDPOINT = os.getenv("HF_ENDPOINT")
-HF_TOKEN = os.getenv("HF_TOKEN")
 
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 
@@ -132,7 +132,15 @@ def process_headers(headers, url: str):
         else:
             processed_headers[key] = value
 
-    if HF_TOKEN and (url.startswith("https://huggingface.co") or HF_ENDPOINT):
-        processed_headers["Authorization"] = f"Bearer {HF_TOKEN}"
+    hf_token = _get_huggingface_token()
+    if hf_token and (url.startswith("https://huggingface.co") or HF_ENDPOINT):
+        processed_headers["Authorization"] = f"Bearer {hf_token}"
 
     return processed_headers
+
+
+def _get_huggingface_token() -> str:
+    env_hf_token = os.getenv("HF_TOKEN")
+    _global_config = get_global_config()
+    config_hf_token = _global_config.huggingface_token
+    return env_hf_token or config_hf_token
