@@ -1,0 +1,4363 @@
+{
+  "estimate": {
+    "items": [
+      {
+        "offloadLayers": 0,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 61,
+          "handleLastLayer": 60,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 206455584360,
+          "nonuma": 206612870760
+        },
+        "vrams": [
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 1287104512
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 291504128
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 291504128
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 291504128
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 291504128
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 291504128
+          }
+        ]
+      },
+      {
+        "offloadLayers": 1,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 60,
+          "handleLastLayer": 59,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 202996008040,
+          "nonuma": 203153294440
+        },
+        "vrams": [
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 3488936448,
+            "nonuma": 4794919424
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          }
+        ]
+      },
+      {
+        "offloadLayers": 2,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 59,
+          "handleLastLayer": 58,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 199507071592,
+          "nonuma": 199664357992
+        },
+        "vrams": [
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 3488936448,
+            "nonuma": 4794919424
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          }
+        ]
+      },
+      {
+        "offloadLayers": 3,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 58,
+          "handleLastLayer": 57,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 196018135144,
+          "nonuma": 196175421544
+        },
+        "vrams": [
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 3488936448,
+            "nonuma": 4794919424
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          }
+        ]
+      },
+      {
+        "offloadLayers": 4,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 57,
+          "handleLastLayer": 56,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 192529198696,
+          "nonuma": 192686485096
+        },
+        "vrams": [
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 3488936448,
+            "nonuma": 4794919424
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          }
+        ]
+      },
+      {
+        "offloadLayers": 5,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 56,
+          "handleLastLayer": 55,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 189040262248,
+          "nonuma": 189197548648
+        },
+        "vrams": [
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 3488936448,
+            "nonuma": 4794919424
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 310382592
+          }
+        ]
+      },
+      {
+        "offloadLayers": 6,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 55,
+          "handleLastLayer": 54,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 185551325800,
+          "nonuma": 185708612200
+        },
+        "vrams": [
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 3488936448,
+            "nonuma": 4794919424
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          }
+        ]
+      },
+      {
+        "offloadLayers": 7,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 54,
+          "handleLastLayer": 53,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 182062389352,
+          "nonuma": 182219675752
+        },
+        "vrams": [
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 6977872896,
+            "nonuma": 8283855872
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          }
+        ]
+      },
+      {
+        "offloadLayers": 8,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 53,
+          "handleLastLayer": 52,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 178573452904,
+          "nonuma": 178730739304
+        },
+        "vrams": [
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 6977872896,
+            "nonuma": 8283855872
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          }
+        ]
+      },
+      {
+        "offloadLayers": 9,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 52,
+          "handleLastLayer": 51,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 175084516456,
+          "nonuma": 175241802856
+        },
+        "vrams": [
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 6977872896,
+            "nonuma": 8283855872
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          }
+        ]
+      },
+      {
+        "offloadLayers": 10,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 51,
+          "handleLastLayer": 50,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 171595580008,
+          "nonuma": 171752866408
+        },
+        "vrams": [
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 6977872896,
+            "nonuma": 8283855872
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          }
+        ]
+      },
+      {
+        "offloadLayers": 11,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 50,
+          "handleLastLayer": 49,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 168106643560,
+          "nonuma": 168263929960
+        },
+        "vrams": [
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 6977872896,
+            "nonuma": 8283855872
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 59,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 1,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 3488936448,
+            "nonuma": 3799319040
+          }
+        ]
+      },
+      {
+        "offloadLayers": 12,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 49,
+          "handleLastLayer": 48,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 164617707112,
+          "nonuma": 164774993512
+        },
+        "vrams": [
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 6977872896,
+            "nonuma": 8283855872
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          }
+        ]
+      },
+      {
+        "offloadLayers": 13,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 48,
+          "handleLastLayer": 47,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 161128770664,
+          "nonuma": 161286057064
+        },
+        "vrams": [
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 10466809344,
+            "nonuma": 11772792320
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          }
+        ]
+      },
+      {
+        "offloadLayers": 14,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 47,
+          "handleLastLayer": 46,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 157639834216,
+          "nonuma": 157797120616
+        },
+        "vrams": [
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 10466809344,
+            "nonuma": 11772792320
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          }
+        ]
+      },
+      {
+        "offloadLayers": 15,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 46,
+          "handleLastLayer": 45,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 154150897768,
+          "nonuma": 154308184168
+        },
+        "vrams": [
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 10466809344,
+            "nonuma": 11772792320
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          }
+        ]
+      },
+      {
+        "offloadLayers": 16,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 45,
+          "handleLastLayer": 44,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 150661961320,
+          "nonuma": 150819247720
+        },
+        "vrams": [
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 10466809344,
+            "nonuma": 11772792320
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          }
+        ]
+      },
+      {
+        "offloadLayers": 17,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 44,
+          "handleLastLayer": 43,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 147173024872,
+          "nonuma": 147330311272
+        },
+        "vrams": [
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 10466809344,
+            "nonuma": 11772792320
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 58,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 2,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 6977872896,
+            "nonuma": 7288255488
+          }
+        ]
+      },
+      {
+        "offloadLayers": 18,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 43,
+          "handleLastLayer": 42,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 143684088424,
+          "nonuma": 143841374824
+        },
+        "vrams": [
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 10466809344,
+            "nonuma": 11772792320
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          }
+        ]
+      },
+      {
+        "offloadLayers": 19,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 42,
+          "handleLastLayer": 41,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 140195151976,
+          "nonuma": 140352438376
+        },
+        "vrams": [
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 13955745792,
+            "nonuma": 15261728768
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          }
+        ]
+      },
+      {
+        "offloadLayers": 20,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 41,
+          "handleLastLayer": 40,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 136706215528,
+          "nonuma": 136863501928
+        },
+        "vrams": [
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 13955745792,
+            "nonuma": 15261728768
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          }
+        ]
+      },
+      {
+        "offloadLayers": 21,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 40,
+          "handleLastLayer": 39,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 133217279080,
+          "nonuma": 133374565480
+        },
+        "vrams": [
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 13955745792,
+            "nonuma": 15261728768
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          }
+        ]
+      },
+      {
+        "offloadLayers": 22,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 39,
+          "handleLastLayer": 38,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 129728342632,
+          "nonuma": 129885629032
+        },
+        "vrams": [
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 13955745792,
+            "nonuma": 15261728768
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          }
+        ]
+      },
+      {
+        "offloadLayers": 23,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 38,
+          "handleLastLayer": 37,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 126239406184,
+          "nonuma": 126396692584
+        },
+        "vrams": [
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 13955745792,
+            "nonuma": 15261728768
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 57,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 3,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 10466809344,
+            "nonuma": 10777191936
+          }
+        ]
+      },
+      {
+        "offloadLayers": 24,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 37,
+          "handleLastLayer": 36,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 122750469736,
+          "nonuma": 122907756136
+        },
+        "vrams": [
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 13955745792,
+            "nonuma": 15261728768
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          }
+        ]
+      },
+      {
+        "offloadLayers": 25,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 36,
+          "handleLastLayer": 35,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 119261533288,
+          "nonuma": 119418819688
+        },
+        "vrams": [
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 17444682240,
+            "nonuma": 18750665216
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          }
+        ]
+      },
+      {
+        "offloadLayers": 26,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 35,
+          "handleLastLayer": 34,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 115772596840,
+          "nonuma": 115929883240
+        },
+        "vrams": [
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 39,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 17444682240,
+            "nonuma": 18750665216
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          }
+        ]
+      },
+      {
+        "offloadLayers": 27,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 34,
+          "handleLastLayer": 33,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 112283660392,
+          "nonuma": 112440946792
+        },
+        "vrams": [
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 38,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 17444682240,
+            "nonuma": 18750665216
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          }
+        ]
+      },
+      {
+        "offloadLayers": 28,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 33,
+          "handleLastLayer": 32,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 108794723944,
+          "nonuma": 108952010344
+        },
+        "vrams": [
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 17444682240,
+            "nonuma": 18750665216
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          }
+        ]
+      },
+      {
+        "offloadLayers": 29,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 32,
+          "handleLastLayer": 31,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 105305787496,
+          "nonuma": 105463073896
+        },
+        "vrams": [
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 17444682240,
+            "nonuma": 18750665216
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 56,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 4,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 13955745792,
+            "nonuma": 14266128384
+          }
+        ]
+      },
+      {
+        "offloadLayers": 30,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 31,
+          "handleLastLayer": 30,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 101816851048,
+          "nonuma": 101974137448
+        },
+        "vrams": [
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 17444682240,
+            "nonuma": 18750665216
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          }
+        ]
+      },
+      {
+        "offloadLayers": 31,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 30,
+          "handleLastLayer": 29,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 98327914600,
+          "nonuma": 98485201000
+        },
+        "vrams": [
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 20933618688,
+            "nonuma": 22239601664
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          }
+        ]
+      },
+      {
+        "offloadLayers": 32,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 29,
+          "handleLastLayer": 28,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 94838978152,
+          "nonuma": 94996264552
+        },
+        "vrams": [
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 20933618688,
+            "nonuma": 22239601664
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 39,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          }
+        ]
+      },
+      {
+        "offloadLayers": 33,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 28,
+          "handleLastLayer": 27,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 91350041704,
+          "nonuma": 91507328104
+        },
+        "vrams": [
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 33,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 20933618688,
+            "nonuma": 22239601664
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 38,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          }
+        ]
+      },
+      {
+        "offloadLayers": 34,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 27,
+          "handleLastLayer": 26,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 87861105256,
+          "nonuma": 88018391656
+        },
+        "vrams": [
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 32,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 20933618688,
+            "nonuma": 22239601664
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 38,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          }
+        ]
+      },
+      {
+        "offloadLayers": 35,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 26,
+          "handleLastLayer": 25,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 84372168808,
+          "nonuma": 84529455208
+        },
+        "vrams": [
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 31,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 20933618688,
+            "nonuma": 22239601664
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 55,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 5,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 17444682240,
+            "nonuma": 17755064832
+          }
+        ]
+      },
+      {
+        "offloadLayers": 36,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 25,
+          "handleLastLayer": 24,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 80883232360,
+          "nonuma": 81040518760
+        },
+        "vrams": [
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 20933618688,
+            "nonuma": 22239601664
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          }
+        ]
+      },
+      {
+        "offloadLayers": 37,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 24,
+          "handleLastLayer": 23,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 77394295912,
+          "nonuma": 77551582312
+        },
+        "vrams": [
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 24422555136,
+            "nonuma": 25728538112
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          }
+        ]
+      },
+      {
+        "offloadLayers": 38,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 23,
+          "handleLastLayer": 22,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 73905359464,
+          "nonuma": 74062645864
+        },
+        "vrams": [
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 29,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 24422555136,
+            "nonuma": 25728538112
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 48,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          }
+        ]
+      },
+      {
+        "offloadLayers": 39,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 22,
+          "handleLastLayer": 21,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 70416423016,
+          "nonuma": 70573709416
+        },
+        "vrams": [
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 28,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 24422555136,
+            "nonuma": 25728538112
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          }
+        ]
+      },
+      {
+        "offloadLayers": 40,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 21,
+          "handleLastLayer": 20,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 66927486568,
+          "nonuma": 67084772968
+        },
+        "vrams": [
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 27,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 24422555136,
+            "nonuma": 25728538112
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          }
+        ]
+      },
+      {
+        "offloadLayers": 41,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 20,
+          "handleLastLayer": 19,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 63438550120,
+          "nonuma": 63595836520
+        },
+        "vrams": [
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 26,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 24422555136,
+            "nonuma": 25728538112
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 33,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 47,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 54,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 6,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 20933618688,
+            "nonuma": 21244001280
+          }
+        ]
+      },
+      {
+        "offloadLayers": 42,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 19,
+          "handleLastLayer": 18,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 59949613672,
+          "nonuma": 60106900072
+        },
+        "vrams": [
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 25,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 24422555136,
+            "nonuma": 25728538112
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 32,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 39,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          }
+        ]
+      },
+      {
+        "offloadLayers": 43,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 18,
+          "handleLastLayer": 17,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 56460677224,
+          "nonuma": 56617963624
+        },
+        "vrams": [
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 25,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 27911491584,
+            "nonuma": 29217474560
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 32,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 39,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          }
+        ]
+      },
+      {
+        "offloadLayers": 44,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 17,
+          "handleLastLayer": 16,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 52971740776,
+          "nonuma": 53129027176
+        },
+        "vrams": [
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 24,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 27911491584,
+            "nonuma": 29217474560
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 31,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 38,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 46,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          }
+        ]
+      },
+      {
+        "offloadLayers": 45,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 16,
+          "handleLastLayer": 15,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 49482804328,
+          "nonuma": 49640090728
+        },
+        "vrams": [
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 23,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 27911491584,
+            "nonuma": 29217474560
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 38,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          }
+        ]
+      },
+      {
+        "offloadLayers": 46,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 15,
+          "handleLastLayer": 14,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 45993867880,
+          "nonuma": 46151154280
+        },
+        "vrams": [
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 22,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 27911491584,
+            "nonuma": 29217474560
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          }
+        ]
+      },
+      {
+        "offloadLayers": 47,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 14,
+          "handleLastLayer": 13,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 42504931432,
+          "nonuma": 42662217832
+        },
+        "vrams": [
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 21,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 27911491584,
+            "nonuma": 29217474560
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 29,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 45,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 53,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 7,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 24422555136,
+            "nonuma": 24732937728
+          }
+        ]
+      },
+      {
+        "offloadLayers": 48,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 13,
+          "handleLastLayer": 12,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 39015994984,
+          "nonuma": 39173281384
+        },
+        "vrams": [
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 27911491584,
+            "nonuma": 29217474560
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 28,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          }
+        ]
+      },
+      {
+        "offloadLayers": 49,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 12,
+          "handleLastLayer": 11,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 35527058536,
+          "nonuma": 35684344936
+        },
+        "vrams": [
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 31400428032,
+            "nonuma": 32706411008
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 28,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 36,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          }
+        ]
+      },
+      {
+        "offloadLayers": 50,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 11,
+          "handleLastLayer": 10,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 32038122088,
+          "nonuma": 32195408488
+        },
+        "vrams": [
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 19,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 31400428032,
+            "nonuma": 32706411008
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 27,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 44,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          }
+        ]
+      },
+      {
+        "offloadLayers": 51,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 10,
+          "handleLastLayer": 9,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 28549185640,
+          "nonuma": 28706472040
+        },
+        "vrams": [
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 18,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 31400428032,
+            "nonuma": 32706411008
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 26,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 35,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          }
+        ]
+      },
+      {
+        "offloadLayers": 52,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 9,
+          "handleLastLayer": 8,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 25060249192,
+          "nonuma": 25217535592
+        },
+        "vrams": [
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 17,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 31400428032,
+            "nonuma": 32706411008
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 26,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          }
+        ]
+      },
+      {
+        "offloadLayers": 53,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 8,
+          "handleLastLayer": 7,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 21571312744,
+          "nonuma": 21728599144
+        },
+        "vrams": [
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 16,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 31400428032,
+            "nonuma": 32706411008
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 25,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 34,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 43,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 52,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 8,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 27911491584,
+            "nonuma": 28221874176
+          }
+        ]
+      },
+      {
+        "offloadLayers": 54,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 7,
+          "handleLastLayer": 6,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 18082376296,
+          "nonuma": 18239662696
+        },
+        "vrams": [
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 15,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 31400428032,
+            "nonuma": 32706411008
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 24,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 33,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          }
+        ]
+      },
+      {
+        "offloadLayers": 55,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 6,
+          "handleLastLayer": 5,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 14593439848,
+          "nonuma": 14750726248
+        },
+        "vrams": [
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 15,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 34889364480,
+            "nonuma": 36195347456
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 24,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 33,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          }
+        ]
+      },
+      {
+        "offloadLayers": 56,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 5,
+          "handleLastLayer": 4,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 10722821736,
+          "nonuma": 10880108136
+        },
+        "vrams": [
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 14,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 35271046144,
+            "nonuma": 36577029120
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 23,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 32,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 42,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          }
+        ]
+      },
+      {
+        "offloadLayers": 57,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 4,
+          "handleLastLayer": 3,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 6852203624,
+          "nonuma": 7009490024
+        },
+        "vrams": [
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 13,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 35652727808,
+            "nonuma": 36958710784
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 22,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 32,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          }
+        ]
+      },
+      {
+        "offloadLayers": 58,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 3,
+          "handleLastLayer": 2,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 2981585512,
+          "nonuma": 3138871912
+        },
+        "vrams": [
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 12,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 36034409472,
+            "nonuma": 37340392448
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 22,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 31,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          }
+        ]
+      },
+      {
+        "offloadLayers": 59,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 2,
+          "handleLastLayer": 1,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 2446095464,
+          "nonuma": 2603381864
+        },
+        "vrams": [
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 11,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 33080963072,
+            "nonuma": 34386946048
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 21,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 31,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 31400428032,
+            "nonuma": 31710810624
+          }
+        ]
+      },
+      {
+        "offloadLayers": 60,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 1,
+          "handleLastLayer": 0,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 1910605416,
+          "nonuma": 2067891816
+        },
+        "vrams": [
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 10,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 30127516672,
+            "nonuma": 31433499648
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          }
+        ]
+      },
+      {
+        "offloadLayers": 61,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 0,
+          "handleLastLayer": -1,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 1375115368,
+          "nonuma": 1532401768
+        },
+        "vrams": [
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 10,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 30663006720,
+            "nonuma": 31968989696
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 40,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 50,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 60,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 5,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          }
+        ]
+      },
+      {
+        "offloadLayers": 62,
+        "fullOffloaded": true,
+        "ram": {
+          "handleLayers": 0,
+          "handleLastLayer": -1,
+          "handleOutputLayer": false,
+          "remote": false,
+          "position": 0,
+          "uma": 1374569576,
+          "nonuma": 1531855976
+        },
+        "vrams": [
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 10,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 30663006720,
+            "nonuma": 30973389312
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 38378300928,
+            "nonuma": 38688683520
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 34889364480,
+            "nonuma": 35199747072
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": true,
+            "remote": false,
+            "position": 5,
+            "uma": 32161168896,
+            "nonuma": 32706956800
+          }
+        ]
+      }
+    ],
+    "type": "model",
+    "architecture": "deepseek2",
+    "contextSize": 2048,
+    "flashAttention": false,
+    "noMMap": true,
+    "embeddingOnly": false,
+    "reranking": false,
+    "distributable": true,
+    "logicalBatchSize": 2048,
+    "physicalBatchSize": 512
+  }
+}

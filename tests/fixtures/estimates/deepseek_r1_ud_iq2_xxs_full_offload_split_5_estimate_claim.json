@@ -1,0 +1,76 @@
+{
+  "estimate": {
+    "items": [
+      {
+        "offloadLayers": 62,
+        "fullOffloaded": true,
+        "ram": {
+          "handleLayers": 0,
+          "handleLastLayer": -1,
+          "handleOutputLayer": false,
+          "remote": false,
+          "position": 0,
+          "uma": 1387152488,
+          "nonuma": 1544438888
+        },
+        "vrams": [
+          {
+            "handleLayers": 13,
+            "handleLastLayer": 12,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 44183993856,
+            "nonuma": 44506959360
+          },
+          {
+            "handleLayers": 12,
+            "handleLastLayer": 24,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 47907035136,
+            "nonuma": 48230000640
+          },
+          {
+            "handleLayers": 13,
+            "handleLastLayer": 37,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 51899288064,
+            "nonuma": 52222253568
+          },
+          {
+            "handleLayers": 12,
+            "handleLastLayer": 49,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 47907035136,
+            "nonuma": 48230000640
+          },
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 60,
+            "handleOutputLayer": true,
+            "remote": false,
+            "position": 4,
+            "uma": 44675523072,
+            "nonuma": 45233893888
+          }
+        ]
+      }
+    ],
+    "type": "model",
+    "architecture": "deepseek2",
+    "contextSize": 8192,
+    "flashAttention": false,
+    "noMMap": true,
+    "embeddingOnly": false,
+    "reranking": false,
+    "distributable": true,
+    "logicalBatchSize": 2048,
+    "physicalBatchSize": 512
+  }
+}

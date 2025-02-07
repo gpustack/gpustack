@@ -1,0 +1,121 @@
+{
+    "name": "host-2-4090",
+    "hostname": "host-2-4090",
+    "ip": "192.168.50.4",
+    "port": 10150,
+    "labels": {
+        "os": "linux",
+        "arch": "amd64",
+        "test": "1"
+    },
+    "system_reserved": {
+        "ram": 2147483648,
+        "vram": 1073741824
+    },
+    "state": "ready",
+    "state_message": null,
+    "status": {
+        "cpu": {
+            "total": 20,
+            "utilization_rate": 0.23809523809523808
+        },
+        "memory": {
+            "total": 67145945088,
+            "utilization_rate": 6.198290214763534,
+            "is_unified_memory": false,
+            "used": 4161900544,
+            "allocated": 0
+        },
+        "swap": {
+            "total": 2051010560,
+            "utilization_rate": 23.5194264431286,
+            "used": 482385920
+        },
+        "filesystem": [
+            {
+                "name": "",
+                "mount_point": "/",
+                "mount_from": "/dev/mapper/vgubuntu-root",
+                "total": 980799373312,
+                "used": 713479704576,
+                "free": 267319668736,
+                "available": 217422344192
+            },
+            {
+                "name": "",
+                "mount_point": "/boot/efi",
+                "mount_from": "/dev/nvme1n1p2",
+                "total": 536854528,
+                "used": 34467840,
+                "free": 502386688,
+                "available": 502386688
+            },
+            {
+                "name": "",
+                "mount_point": "/data",
+                "mount_from": "/dev/mapper/datavg-datalv",
+                "total": 8127832666112,
+                "used": 1299169718272,
+                "free": 6828662947840,
+                "available": 6418965852160
+            },
+            {
+                "name": "",
+                "mount_point": "/var/snap/firefox/common/host-hunspell",
+                "mount_from": "/dev/mapper/vgubuntu-root",
+                "total": 980799373312,
+                "used": 713479704576,
+                "free": 267319668736,
+                "available": 217422344192
+            }
+        ],
+        "os": {
+            "name": "Ubuntu",
+            "version": "22.04.4 LTS (Jammy Jellyfish)"
+        },
+        "kernel": {
+            "name": "Linux",
+            "release": "6.8.0-52-generic",
+            "version": "#53~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 15 19:18:46 UTC 2",
+            "architecture": ""
+        },
+        "uptime": {
+            "uptime": 186270610.0,
+            "boot_time": "2025-02-05T09:25:24.427+0800"
+        },
+        "gpu_devices": [
+            {
+                "name": "NVIDIA GeForce RTX 4090 D",
+                "uuid": "",
+                "vendor": "NVIDIA",
+                "index": 0,
+                "core": {
+                    "total": 0,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 25757220864,
+                    "utilization_rate": 78.70867936818108,
+                    "is_unified_memory": false,
+                    "used": 20273168384,
+                    "allocated": null
+                },
+                "temperature": 37.0,
+                "labels": {},
+                "type": "cuda"
+            }
+        ],
+        "rpc_servers": {
+            "0": {
+                "pid": 492309,
+                "port": 50082,
+                "gpu_index": 0
+            }
+        }
+    },
+    "unreachable": false,
+    "heartbeat_time": "2025-02-07T05:09:55Z",
+    "id": 12,
+    "created_at": "2025-01-17T11:59:56.514073Z",
+    "updated_at": "2025-02-07T05:09:55.290198Z"
+}

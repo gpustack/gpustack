@@ -1,0 +1,49 @@
+{
+  "estimate": {
+    "items": [
+      {
+        "offloadLayers": 62,
+        "fullOffloaded": true,
+        "ram": {
+          "handleLayers": 0,
+          "handleLastLayer": -1,
+          "handleOutputLayer": false,
+          "remote": false,
+          "position": 0,
+          "uma": 1387152488,
+          "nonuma": 1544438888
+        },
+        "vrams": [
+          {
+            "handleLayers": 31,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 116044546560,
+            "nonuma": 116367512064
+          },
+          {
+            "handleLayers": 30,
+            "handleLastLayer": 60,
+            "handleOutputLayer": true,
+            "remote": false,
+            "position": 1,
+            "uma": 120528328704,
+            "nonuma": 121086699520
+          }
+        ]
+      }
+    ],
+    "type": "model",
+    "architecture": "deepseek2",
+    "contextSize": 8192,
+    "flashAttention": false,
+    "noMMap": true,
+    "embeddingOnly": false,
+    "reranking": false,
+    "distributable": true,
+    "logicalBatchSize": 2048,
+    "physicalBatchSize": 512
+  }
+}
