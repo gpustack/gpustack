@@ -1,0 +1,104 @@
+{
+    "name": "host01-7800",
+    "hostname": "host01-7800",
+    "ip": "192.168.50.30",
+    "port": 10150,
+    "labels": {
+        "os": "linux",
+        "arch": "amd64"
+    },
+    "system_reserved": {
+        "ram": 2147483648,
+        "vram": 0
+    },
+    "state": "ready",
+    "state_message": null,
+    "status": {
+        "cpu": {
+            "total": 20,
+            "utilization_rate": 0.25
+        },
+        "memory": {
+            "total": 67191529472,
+            "utilization_rate": 44.237737669577186,
+            "is_unified_memory": false,
+            "used": 29724012544,
+            "allocated": 26843236920
+        },
+        "swap": {
+            "total": 1023406080,
+            "utilization_rate": 0.9989794080566728,
+            "used": 10223616
+        },
+        "filesystem": [
+            {
+                "name": "",
+                "mount_point": "/",
+                "mount_from": "/dev/mapper/vgubuntu-root",
+                "total": 981810135040,
+                "used": 551972564992,
+                "free": 429837570048,
+                "available": 379888865280
+            },
+            {
+                "name": "",
+                "mount_point": "/boot/efi",
+                "mount_from": "/dev/nvme0n1p1",
+                "total": 535805952,
+                "used": 38793216,
+                "free": 497012736,
+                "available": 497012736
+            }
+        ],
+        "os": {
+            "name": "Ubuntu",
+            "version": "22.04.5 LTS (Jammy Jellyfish)"
+        },
+        "kernel": {
+            "name": "Linux",
+            "release": "6.8.0-51-generic",
+            "version": "#52~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon Dec  9 15:00:52 UTC 2",
+            "architecture": ""
+        },
+        "uptime": {
+            "uptime": 329615880.0,
+            "boot_time": "2025-02-03T17:35:33.333+0800"
+        },
+        "gpu_devices": [
+            {
+                "name": "AMD Radeon RX 7800 XT",
+                "uuid": "0x747e",
+                "vendor": "AMD",
+                "index": 0,
+                "core": {
+                    "total": 60,
+                    "utilization_rate": 1.0
+                },
+                "memory": {
+                    "total": 17163091968,
+                    "utilization_rate": 88.45307917888563,
+                    "is_unified_memory": false,
+                    "used": 15181283328,
+                    "allocated": 16503328768
+                },
+                "temperature": 48.0,
+                "labels": {
+                    "llvm": "gfx1101"
+                },
+                "type": "rocm"
+            }
+        ],
+        "rpc_servers": {
+            "0": {
+                "pid": 653482,
+                "port": 50339,
+                "gpu_index": 0
+            }
+        }
+    },
+    "unreachable": false,
+    "heartbeat_time": "2025-02-07T05:09:09Z",
+    "id": 13,
+    "created_at": "2025-02-07T03:04:33.070659Z",
+    "updated_at": "2025-02-07T05:09:09.563738Z"
+}

@@ -9,19 +9,17 @@ from gpustack.schemas.workers import (
 )
 
 
-def worker_macos_metal(reserved=False):
-    return load_worker_from_file("worker_macos_metal.json", reserved=reserved)
+def worker_macos_metal_1(reserved=False):
+    return load_worker_from_file("worker_macos_metal_1.json", reserved=reserved)
+
+
+def worker_macos_metal_2(reserved=True):
+    return load_worker_from_file("worker_macos_metal_2.json", reserved=reserved)
 
 
 def worker_linux_nvidia_1_4090_gpu(reserved=False):
     return load_worker_from_file(
         "worker_linux_nvidia_1_4090_gpu.json", reserved=reserved
-    )
-
-
-def worker_linux_nvidia_2_4080_gpu(reserved=False):
-    return load_worker_from_file(
-        "worker_linux_nvidia_2_4080_gpu.json", reserved=reserved
     )
 
 
@@ -31,10 +29,50 @@ def worker_linux_nvidia_2_4090_gpu(reserved=False):
     )
 
 
+def worker_linux_nvidia_3_4090_gpu(reserved=True):
+    return load_worker_from_file(
+        "worker_linux_nvidia_3_4090_gpu.json", reserved=reserved
+    )
+
+
+def worker_linux_nvidia_2_4080_gpu(reserved=False):
+    return load_worker_from_file(
+        "worker_linux_nvidia_2_4080_gpu.json", reserved=reserved
+    )
+
+
 def worker_linux_nvidia_4_4080_gpu(reserved=False):
     return load_worker_from_file(
         "worker_linux_nvidia_4_4080_gpu.json", reserved=reserved
     )
+
+
+def worker_linux_nvidia_5_a100_gpu(reserved=True):
+    return load_worker_from_file(
+        "worker_linux_nvidia_5_A100_gpu.json", reserved=reserved
+    )
+
+
+def worker_linux_nvidia_6_a100_gpu(reserved=True):
+    return load_worker_from_file(
+        "worker_linux_nvidia_6_A100_gpu.json", reserved=reserved
+    )
+
+
+def worker_linux_nvidia_7_a100_gpu(reserved=True):
+    return load_worker_from_file(
+        "worker_linux_nvidia_7_A100_gpu.json", reserved=reserved
+    )
+
+
+def worker_linux_nvidia_8_3090_gpu(reserved=True):
+    return load_worker_from_file(
+        "worker_linux_nvidia_8_3090_gpu.json", reserved=reserved
+    )
+
+
+def worker_linux_rocm_1_7800_gpu(reserved=True):
+    return load_worker_from_file("worker_linux_rocm_1_7800_gpu.json", reserved=reserved)
 
 
 def worker_linux_cpu_1(reserved=False):
@@ -66,6 +104,13 @@ def load_worker_from_file(file_name, reserved=False) -> Worker:
 
         if reserved:
             system_reserved_dict = worker_dict.get("system_reserved")
-            system_reserved = SystemReserved(**system_reserved_dict)
+            system_reserved = SystemReserved(
+                ram=system_reserved_dict.get("memory")
+                or system_reserved_dict.get("ram")
+                or 0,
+                vram=system_reserved_dict.get("gpu_memory")
+                or system_reserved_dict.get("vram")
+                or 0,
+            )
             worker.system_reserved = system_reserved
     return worker

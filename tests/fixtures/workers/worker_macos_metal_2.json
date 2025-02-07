@@ -1,0 +1,175 @@
+{
+    "name": "host02-metal",
+    "hostname": "host02-metal",
+    "ip": "192.168.50.140",
+    "port": 10150,
+    "labels": {
+        "os": "darwin",
+        "arch": "arm64",
+        "test": "1"
+    },
+    "system_reserved": {
+        "ram": 2147483648,
+        "vram": 1073741824
+    },
+    "state": "ready",
+    "state_message": null,
+    "status": {
+        "cpu": {
+            "total": 8,
+            "utilization_rate": 6.0626750700280105
+        },
+        "memory": {
+            "total": 25769803776,
+            "utilization_rate": 61.54162089029948,
+            "is_unified_memory": true,
+            "used": 15859154944,
+            "allocated": 0
+        },
+        "swap": {
+            "total": 2147483648,
+            "utilization_rate": 55.5633544921875,
+            "used": 1193213952
+        },
+        "filesystem": [
+            {
+                "name": "Macintosh HD",
+                "mount_point": "/",
+                "mount_from": "/dev/disk3s3s1",
+                "total": 994662584320,
+                "used": 525999738880,
+                "free": 468662845440,
+                "available": 468662845440
+            },
+            {
+                "name": "Data",
+                "mount_point": "/System/Volumes/Data",
+                "mount_from": "/dev/disk3s1",
+                "total": 994662584320,
+                "used": 525999738880,
+                "free": 468662845440,
+                "available": 468662845440
+            },
+            {
+                "name": "Hardware",
+                "mount_point": "/System/Volumes/Hardware",
+                "mount_from": "/dev/disk2s3",
+                "total": 524288000,
+                "used": 18829312,
+                "free": 505458688,
+                "available": 505458688
+            },
+            {
+                "name": "Preboot",
+                "mount_point": "/System/Volumes/Preboot",
+                "mount_from": "/dev/disk3s4",
+                "total": 994662584320,
+                "used": 525993660416,
+                "free": 468668923904,
+                "available": 468668923904
+            },
+            {
+                "name": "Update",
+                "mount_point": "/System/Volumes/Update",
+                "mount_from": "/dev/disk3s2",
+                "total": 994662584320,
+                "used": 525981560832,
+                "free": 468681023488,
+                "available": 468681023488
+            },
+            {
+                "name": "mnt1",
+                "mount_point": "/System/Volumes/Update/SFR/mnt1",
+                "mount_from": "/dev/disk1s1",
+                "total": 5368664064,
+                "used": 1890914304,
+                "free": 3477749760,
+                "available": 3477749760
+            },
+            {
+                "name": "mnt1",
+                "mount_point": "/System/Volumes/Update/mnt1",
+                "mount_from": "/dev/disk3s3",
+                "total": 994662584320,
+                "used": 525842460672,
+                "free": 468820123648,
+                "available": 468820123648
+            },
+            {
+                "name": "VM",
+                "mount_point": "/System/Volumes/VM",
+                "mount_from": "/dev/disk3s6",
+                "total": 994662584320,
+                "used": 525991919616,
+                "free": 468670664704,
+                "available": 468670664704
+            },
+            {
+                "name": "iSCPreboot",
+                "mount_point": "/System/Volumes/iSCPreboot",
+                "mount_from": "/dev/disk2s1",
+                "total": 524288000,
+                "used": 18829312,
+                "free": 505458688,
+                "available": 505458688
+            },
+            {
+                "name": "xarts",
+                "mount_point": "/System/Volumes/xarts",
+                "mount_from": "/dev/disk2s2",
+                "total": 524288000,
+                "used": 18829312,
+                "free": 505458688,
+                "available": 505458688
+            }
+        ],
+        "os": {
+            "name": "macOS",
+            "version": "15.1.1"
+        },
+        "kernel": {
+            "name": "Darwin",
+            "release": "24.1.0",
+            "version": "Darwin Kernel Version 24.1.0: Thu Oct 10 21:02:45 PDT 2024; root:xnu-11215.41.3~2/RELEASE_ARM64_T8112",
+            "architecture": ""
+        },
+        "uptime": {
+            "uptime": 1539358624.0,
+            "boot_time": "2025-01-20T17:34:19.874+0800"
+        },
+        "gpu_devices": [
+            {
+                "name": "Apple M2",
+                "uuid": null,
+                "vendor": "Apple",
+                "index": 0,
+                "core": {
+                    "total": 10,
+                    "utilization_rate": 10.0
+                },
+                "memory": {
+                    "total": 17179885568,
+                    "utilization_rate": 1.061629236574901,
+                    "is_unified_memory": true,
+                    "used": 182386688,
+                    "allocated": null
+                },
+                "temperature": 35.55470275878906,
+                "labels": {},
+                "type": "mps"
+            }
+        ],
+        "rpc_servers": {
+            "0": {
+                "pid": 92801,
+                "port": 50683,
+                "gpu_index": 0
+            }
+        }
+    },
+    "unreachable": false,
+    "heartbeat_time": "2025-02-07T05:10:19Z",
+    "id": 14,
+    "created_at": "2025-01-17T12:18:41.342449Z",
+    "updated_at": "2025-02-07T05:10:21.214104Z"
+}

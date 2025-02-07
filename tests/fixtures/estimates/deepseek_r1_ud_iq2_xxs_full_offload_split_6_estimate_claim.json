@@ -1,0 +1,85 @@
+{
+  "estimate": {
+    "items": [
+      {
+        "offloadLayers": 62,
+        "fullOffloaded": true,
+        "ram": {
+          "handleLayers": 0,
+          "handleLastLayer": -1,
+          "handleOutputLayer": false,
+          "remote": false,
+          "position": 0,
+          "uma": 1387152488,
+          "nonuma": 1544438888
+        },
+        "vrams": [
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 10,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 36199488000,
+            "nonuma": 36522453504
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 1,
+            "uma": 39922529280,
+            "nonuma": 40245494784
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 2,
+            "uma": 39922529280,
+            "nonuma": 40245494784
+          },
+          {
+            "handleLayers": 11,
+            "handleLastLayer": 41,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 3,
+            "uma": 43914782208,
+            "nonuma": 44237747712
+          },
+          {
+            "handleLayers": 10,
+            "handleLastLayer": 51,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 4,
+            "uma": 39922529280,
+            "nonuma": 40245494784
+          },
+          {
+            "handleLayers": 9,
+            "handleLastLayer": 60,
+            "handleOutputLayer": true,
+            "remote": false,
+            "position": 5,
+            "uma": 36691017216,
+            "nonuma": 37249388032
+          }
+        ]
+      }
+    ],
+    "type": "model",
+    "architecture": "deepseek2",
+    "contextSize": 8192,
+    "flashAttention": false,
+    "noMMap": true,
+    "embeddingOnly": false,
+    "reranking": false,
+    "distributable": true,
+    "logicalBatchSize": 2048,
+    "physicalBatchSize": 512
+  }
+}

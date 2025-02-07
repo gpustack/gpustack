@@ -33,7 +33,7 @@
                     "utilization_rate": 2.500228993649243,
                     "is_unified_memory": false,
                     "used": 650438837,
-                    "allocated": null
+                    "allocated": 0
                 },
                 "temperature": 36.0,
                 "type": "cuda"
