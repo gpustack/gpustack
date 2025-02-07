@@ -40,14 +40,6 @@ class LlamaBoxServer(InferenceServer):
         if claim is not None and claim.get("offload_layers") is not None:
             layers = claim.get("offload_layers")
 
-        main_worker_tensor_split = []
-        if (
-            self._model_instance.gpu_indexes
-            and len(self._model_instance.gpu_indexes) > 0
-        ):
-            vram_claims = claim.get("vram").values()
-            main_worker_tensor_split = vram_claims
-
         workers = self._clientset.workers.list()
         worker_map = {worker.id: worker for worker in workers.items}
         rpc_servers, rpc_server_tensor_split = get_rpc_servers(
@@ -94,19 +86,34 @@ class LlamaBoxServer(InferenceServer):
             rpc_servers_argument = ",".join(rpc_servers)
             arguments.extend(["--rpc", rpc_servers_argument])
 
-        final_tensor_split = []
+        # legacy support for tensor split field is empty
+        main_worker_tensor_split = []
+        if (
+            self._model_instance.gpu_indexes
+            and len(self._model_instance.gpu_indexes) > 0
+        ):
+            vram_claims = claim.get("vram").values()
+            main_worker_tensor_split = vram_claims
+
+        legacy_tensor_split = []
         if rpc_server_tensor_split:
-            final_tensor_split.extend(rpc_server_tensor_split)
-            final_tensor_split.extend(main_worker_tensor_split)
+            legacy_tensor_split.extend(rpc_server_tensor_split)
+            legacy_tensor_split.extend(main_worker_tensor_split)
         elif len(main_worker_tensor_split) > 1:
-            final_tensor_split.extend(main_worker_tensor_split)
+            legacy_tensor_split.extend(main_worker_tensor_split)
+
+        tensor_split = legacy_tensor_split
+        if self._model_instance.computed_resource_claim.get("tensor_split"):
+            tensor_split = self._model_instance.computed_resource_claim.get(
+                "tensor_split"
+            )
 
         user_tensor_split = find_parameter(
             self._model.backend_parameters, ["ts", "tensor-split"]
         )
-        if user_tensor_split is None and final_tensor_split:
+        if user_tensor_split is None and tensor_split:
             tensor_split_argument = ",".join(
-                [str(int(tensor / (1024 * 1024))) for tensor in final_tensor_split]
+                [str(int(tensor / (1024 * 1024))) for tensor in tensor_split]
             )  # convert to MiB to prevent overflow
 
             arguments.extend(["--tensor-split", tensor_split_argument])
