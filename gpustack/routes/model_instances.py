@@ -1,6 +1,6 @@
 from typing import Optional
 import aiohttp
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from gpustack.config.config import Config
@@ -8,6 +8,8 @@ from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
+    OpenAIAPIException,
+    OpenAIAPIError,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.server.deps import ListParamsDep, SessionDep
@@ -18,7 +20,7 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstancesPublic,
 )
-
+from gpustack.api.responses import StreamingResponseWithStatusCode
 
 router = APIRouter()
 
@@ -63,53 +65,77 @@ async def get_model_instance(session: SessionDep, id: int):
     return model_instance
 
 
+async def fetch_model_instance(session, id):
+    model_instance = await ModelInstance.one_by_id(session, id)
+    if not model_instance:
+        raise NotFoundException(message="Model instance not found")
+    if not model_instance.worker_id:
+        raise NotFoundException(message="Model instance not assigned to a worker")
+    return model_instance
+
+
+async def fetch_worker(session, worker_id):
+    worker = await Worker.one_by_id(session, worker_id)
+    if not worker:
+        raise NotFoundException(message="Model instance's worker not found")
+    return worker
+
+
 @router.get("/{id}/logs")
 async def get_serving_logs(
     request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
 ):
-    model_instance = await ModelInstance.one_by_id(session, id)
-    if not model_instance:
-        raise NotFoundException(message="Model instance not found")
+    model_instance = await fetch_model_instance(session, id)
 
-    if not model_instance.worker_id:
-        raise NotFoundException(message="Model instance not assigned to a worker")
-
-    # proxy to worker's model_instance logs endpoint
-    worker = await Worker.one_by_id(session, model_instance.worker_id)
-    if not worker:
-        raise NotFoundException(message="Model instance's worker not found")
-
+    worker = await fetch_worker(session, model_instance.worker_id)
     server_config: Config = request.app.state.server_config
 
-    model_instance_log_url = (
-        f"http://{worker.ip}:{server_config.worker_port}/serveLogs"
-        f"/{model_instance.id}?{log_options.url_encode()}"
-    )
+    model_instance_log_url = f"http://{worker.ip}:{server_config.worker_port}/serveLogs/{model_instance.id}?{log_options.url_encode()}"
 
     timeout = aiohttp.ClientTimeout(total=5 * 60, sock_connect=5)
+
     client: aiohttp.ClientSession = request.app.state.http_client
 
-    if log_options.follow:
+    try:
+        if log_options.follow:
 
-        async def proxy_stream():
+            async def proxy_stream():
+                try:
+                    async with client.get(
+                        model_instance_log_url, timeout=timeout
+                    ) as resp:
+                        if resp.status != 200:
+                            raise HTTPException(
+                                status_code=resp.status,
+                                detail=f"Error fetching serving logs:{resp.reason}",
+                            )
+                        async for chunk in resp.content.iter_any():
+                            yield chunk, resp.headers, resp.status_code
+                except Exception as e:
+                    error_response = OpenAIAPIException(
+                        error=OpenAIAPIError(
+                            message=f"Internal server error: {e}",
+                            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            type="InternalServerError",
+                        ),
+                    )
+                    yield error_response.model_dump_json(), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
+
+            return StreamingResponseWithStatusCode(
+                proxy_stream(), media_type="application/octet-stream"
+            )
+        else:
             async with client.get(model_instance_log_url, timeout=timeout) as resp:
                 if resp.status != 200:
                     raise HTTPException(
                         status_code=resp.status,
-                        detail="Error fetching serving logs",
+                        detail=f"Error fetching serving logs:{resp.reason}",
                     )
-                async for chunk in resp.content.iter_any():
-                    yield chunk
-
-        return StreamingResponse(proxy_stream(), media_type="application/octet-stream")
-    else:
-        async with client.get(model_instance_log_url, timeout=timeout) as resp:
-            if resp.status != 200:
-                raise HTTPException(
-                    status_code=resp.status,
-                    detail="Error fetching serving logs",
+                return PlainTextResponse(
+                    content=await resp.text(), status_code=resp.status
                 )
-            return PlainTextResponse(content=await resp.text(), status_code=resp.status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
 @router.post("", response_model=ModelInstancePublic)
@@ -122,7 +148,6 @@ async def create_model_instance(
         raise InternalServerErrorException(
             message=f"Failed to create model instance: {e}"
         )
-
     return model_instance
 
 
@@ -140,7 +165,6 @@ async def update_model_instance(
         raise InternalServerErrorException(
             message=f"Failed to update model instance: {e}"
         )
-
     return model_instance
 
 
