@@ -13,11 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 def match_hugging_face_files(
-    repo_id: str, filename: str, extra_filename: Optional[str] = None
+    repo_id: str,
+    filename: str,
+    extra_filename: Optional[str] = None,
+    token: Optional[str] = None,
 ) -> List[str]:
     validate_repo_id(repo_id)
 
-    hffs = HfFileSystem()
+    hffs = HfFileSystem(token=token)
 
     files = [
         file["name"] if isinstance(file, dict) else file

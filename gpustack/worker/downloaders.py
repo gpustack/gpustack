@@ -145,7 +145,9 @@ class HfDownloader:
             The path to the downloaded model.
         """
 
-        matching_files = match_hugging_face_files(repo_id, filename, extra_filename)
+        matching_files = match_hugging_face_files(
+            repo_id, filename, extra_filename, token
+        )
 
         if len(matching_files) == 0:
             raise ValueError(f"No file found in {repo_id} that match {filename}")
