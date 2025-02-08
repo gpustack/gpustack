@@ -132,15 +132,10 @@ def process_headers(headers, url: str):
         else:
             processed_headers[key] = value
 
-    hf_token = _get_huggingface_token()
-    if hf_token and (url.startswith("https://huggingface.co") or HF_ENDPOINT):
-        processed_headers["Authorization"] = f"Bearer {hf_token}"
+    global_config = get_global_config()
+    if global_config.huggingface_token and (
+        url.startswith("https://huggingface.co") or HF_ENDPOINT
+    ):
+        processed_headers["Authorization"] = f"Bearer {global_config.huggingface_token}"
 
     return processed_headers
-
-
-def _get_huggingface_token() -> str:
-    env_hf_token = os.getenv("HF_TOKEN")
-    _global_config = get_global_config()
-    config_hf_token = _global_config.huggingface_token
-    return env_hf_token or config_hf_token

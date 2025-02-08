@@ -362,6 +362,8 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                 args.extend(["-ol-base-url", ol_base_url])
             return args
         elif model.source == SourceEnum.HUGGING_FACE:
+            global_config = get_global_config()
+
             args = ["-hf-repo", model.huggingface_repo_id]
             if model.huggingface_filename:
                 model_filename = await asyncio.wait_for(
@@ -369,6 +371,7 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                         hf_model_filename,
                         model.huggingface_repo_id,
                         model.huggingface_filename,
+                        global_config.huggingface_token,
                     ),
                     timeout=fetch_file_timeout_in_seconds,
                 )
@@ -378,13 +381,13 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                     asyncio.to_thread(
                         hf_mmproj_filename,
                         model,
+                        global_config.huggingface_token,
                     ),
                     timeout=fetch_file_timeout_in_seconds,
                 )
                 if mmproj_filename:
                     args.extend(["--hf-mmproj-file", mmproj_filename])
 
-            global_config = get_global_config()
             if global_config.huggingface_token:
                 args.extend(["-hf-token", global_config.huggingface_token])
 
@@ -419,21 +422,23 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
         raise Exception(f"Failed to get the file for model {model.name}, error: {e}")
 
 
-def hf_model_filename(repo_id: str, filename: Optional[str] = None) -> Optional[str]:
+def hf_model_filename(
+    repo_id: str, filename: Optional[str] = None, token: Optional[str] = None
+) -> Optional[str]:
     if filename is None:
         return None
     else:
-        matching_files = match_hugging_face_files(repo_id, filename)
+        matching_files = match_hugging_face_files(repo_id, filename, None, token)
         if len(matching_files) == 0:
             raise ValueError(f"File {filename} not found in {repo_id}")
 
         return matching_files[0]
 
 
-def hf_mmproj_filename(model: Model) -> Optional[str]:
+def hf_mmproj_filename(model: Model, token: Optional[str] = None) -> Optional[str]:
     mmproj_filename = get_mmproj_filename(model)
     matching_files = match_hugging_face_files(
-        model.huggingface_repo_id, mmproj_filename
+        model.huggingface_repo_id, mmproj_filename, None, token
     )
     if len(matching_files) == 0:
         return None
