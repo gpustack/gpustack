@@ -60,7 +60,7 @@ cat /var/lib/gpustack/initial_admin_password
 Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 ```
 
-3. Click `Playground` in the navigation menu. Now you can chat with the LLM in the UI playground.
+3. Click `Playground - Chat` in the navigation menu. Now you can chat with the LLM in the UI playground.
 
 ![Playground Screenshot](assets/playground-screenshot.png)
 

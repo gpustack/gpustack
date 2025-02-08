@@ -146,9 +146,9 @@ curl http://myserver/v1-openai/chat/completions \
 
 - [x] Apple Metal (M-series chips)
 - [x] NVIDIA CUDA ([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
+- [x] AMD ROCm
 - [x] Ascend CANN
 - [x] Moore Threads MUSA
-- [x] AMD ROCm
 
 We plan to support the following accelerators in future releases.
 
