@@ -67,6 +67,13 @@ docker run -d --name gpustack \
     gpustack/gpustack --worker-ip your_host_ip
 ```
 
+To retrieve the default admin password, run the following command:
+
+```shell
+docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
+
+```
+
 (**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
 
 ```shell
@@ -124,6 +131,13 @@ docker run -d --name gpustack \
     --device /dev/dri \
     -v gpustack-data:/var/lib/gpustack \
     gpustack/gpustack:latest-rocm
+```
+
+To retrieve the default admin password, run the following command:
+
+```shell
+docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
+
 ```
 
 (**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
@@ -186,6 +200,13 @@ docker run -d --name gpustack \
     gpustack/gpustack:latest-npu
 ```
 
+To retrieve the default admin password, run the following command:
+
+```shell
+docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
+
+```
+
 (**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
 
 ```shell
@@ -240,6 +261,13 @@ docker run -d --name gpustack \
     --ipc=host \
     -v gpustack-data:/var/lib/gpustack \
     gpustack/gpustack:latest-musa
+```
+
+To retrieve the default admin password, run the following command:
+
+```shell
+docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
+
 ```
 
 (**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
