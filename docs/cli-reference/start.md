@@ -51,7 +51,7 @@ gpustack start [OPTIONS]
 | `--metrics-port` value              | `10151`                                | Port to expose metrics.                                                                                                                                                                                                                           |
 | `--worker-port` value               | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                                                                               |
 | `--log-dir` value                   | (empty)                                | Directory to store logs.                                                                                                                                                                                                                          |
-| `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 0}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 0}' is also supported, but it is deprecated and will be removed in future releases. |
+| `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases. |
 | `--tools-download-base-url` value   |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                        |
 
 ### Available Environment Variables
@@ -98,6 +98,6 @@ worker_port: 10150
 log_dir: /path/to/log_dir
 system_reserved:
   ram: 2
-  vram: 0
+  vram: 1
 tools_download_base_url: https://mirror.mycompany.com
 ```
