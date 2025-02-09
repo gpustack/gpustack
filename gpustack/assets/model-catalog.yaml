@@ -672,6 +672,10 @@
         - Q4_K_M
         - Q5_K_M
         - Q8_0
+        - UD-IQ1_M
+        - UD-IQ1_S
+        - UD-IQ2_XXS
+        - UD-Q2_K_XL
       sizes:
         - 671
       source: huggingface

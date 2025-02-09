@@ -700,16 +700,27 @@
     - deepseek
   release_date: "2025-01-20"
   templates:
-    - quantizations: ["BF16"]
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q8_0
+        - UD-IQ1_M
+        - UD-IQ1_S
+        - UD-IQ2_XXS
+        - UD-Q2_K_XL
       sizes:
         - 671
       source: model_scope
-      model_scope_model_id: deepseek-ai/DeepSeek-R1
+      model_scope_model_id: unsloth/DeepSeek-R1-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
-      backend: vllm
+      backend: llama-box
       backend_parameters:
-        - --trust-remote-code
-        - --max-model-len=32768
+        - --ctx-size=32768 # give R1 more default context to think
+      cpu_offloading: true
+      distributed_inference_across_workers: true
     - quantizations:
         - Q2_K_L
         - Q3_K_M
