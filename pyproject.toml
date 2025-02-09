@@ -53,6 +53,7 @@ vox-box = {version = "0.0.11", optional = true}
 tenacity = "^9.0.0"
 aiofiles = "^23.2.1"
 aiohttp = "^3.11.2"
+bitsandbytes = {version = "^0.45.2", optional = true}
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
@@ -84,9 +85,9 @@ force-exclude = '''
 '''
 
 [tool.poetry.extras]
-vllm = ["vllm", "mistral_common"]
+vllm = ["vllm", "mistral_common", "bitsandbytes"]
 audio = ["vox-box"]
-all = ["vllm", "mistral_common", "vox-box"]
+all = ["vllm", "mistral_common", "bitsandbytes", "vox-box"]
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
