@@ -1,7 +1,7 @@
 <br>
 
 <p align="center">
-    <img alt="GPUStack" src="./docs/assets/gpustack-logo.png" width="300px"/>
+    <img alt="GPUStack" src="https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-logo.png" width="300px"/>
 </p>
 <br>
 
@@ -26,7 +26,7 @@
 
 <br>
 
-![demo](docs/assets/gpustack-demo.gif)
+![demo](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-demo.gif)
 
 GPUStack is an open-source GPU cluster manager for running AI models.
 
@@ -87,7 +87,7 @@ gpustack draw hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:stable-diffu
 
 Once the command completes, the generated image will appear in the default viewer. You can experiment with the prompt and CLI options to customize the output.
 
-![Generated Image](docs/assets/quickstart-minion.png)
+![Generated Image](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/quickstart-minion.png)
 
 3. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
@@ -105,7 +105,7 @@ Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 
 4. Click `Playground - Chat` in the navigation menu. Now you can chat with the LLM in the UI playground.
 
-![Playground Screenshot](docs/assets/playground-screenshot.png)
+![Playground Screenshot](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/playground-screenshot.png)
 
 5. Click `API Keys` in the navigation menu, then click the `New API Key` button.
 

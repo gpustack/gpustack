@@ -1,7 +1,7 @@
 <br>
 
 <p align="center">
-    <img alt="GPUStack" src="./docs/assets/gpustack-logo.png" width="300px"/>
+    <img alt="GPUStack" src="https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-logo.png" width="300px"/>
 </p>
 <br>
 
@@ -26,7 +26,7 @@
 
 <br>
 
-![demo](docs/assets/gpustack-demo.gif)
+![demo](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-demo.gif)
 
 GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。
 
@@ -88,7 +88,7 @@ gpustack draw hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:stable-diffu
 
 命令完成后，生成的图像将出现在默认查看器中。你可以尝试修改 prompt 和 CLI 参数来定制输出。
 
-![Generated Image](docs/assets/quickstart-minion.png)
+![Generated Image](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/quickstart-minion.png)
 
 3. 在浏览器中打开 `http://myserver`，访问 GPUStack 界面。使用“admin”用户名和默认密码登录 GPUStack。可以执行以下命令获取默认密码：
 
@@ -106,7 +106,7 @@ Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 
 4. 在菜单中点击“试验场 - 对话”，现在你可以在试验场中与 LLM 进行对话。
 
-![Playground Screenshot](docs/assets/playground-screenshot.png)
+![Playground Screenshot](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/playground-screenshot.png)
 
 5. 在菜单中点击“API 秘钥”，然后点击“新建 API 秘钥”按钮。
 
