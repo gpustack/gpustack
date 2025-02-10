@@ -108,15 +108,15 @@ After installation, you can deploy models and run inference. Refer to the [model
 | Linux   | x86_64       | Support | Ubuntu 20.04/22.04 |
 | Windows | x86_64       | Support | Windows 11         |
 
-| Device                                                      | Supported Backends                      | Verified |
-| ----------------------------------------------------------- | --------------------------------------- | -------- |
-| gfx1101: AMD Radeon RX 7800                                 | llama-box, vLLM(Linux Only)             | Yes      |
-| gfx1100: AMD Radeon RX 7900/7700/7600                       | llama-box, vLLM(Linux Only)             |          |
-| gfx90a: AMD Instinct accelerators MI250X/MI250/MI210/MI200s | llama-box(Linux Only), vLLM(Linux Only) |          |
-| gfx942: AMD Instinct accelerators MI325X/MI300X/MI300A      | llama-box(Linux Only), vLLM(Linux Only) |          |
-| gfx1030: AMD Radeon RX 6950 XT/6900 XT/6800 XT/6800         | llama-box                               |          |
-| gfx908: AMD Instinct accelerators MI100                     | llama-box(Linux Only)                   |          |
-| gfx906: AMD Instinct accelerators MI60/MI50                 | llama-box(Linux Only)                   |          |
+| Device                                                      | Supported Backends    | Verified |
+| ----------------------------------------------------------- | --------------------- | -------- |
+| gfx1101: AMD Radeon RX 7800                                 | llama-box             | Yes      |
+| gfx1100: AMD Radeon RX 7900/7700/7600                       | llama-box             |          |
+| gfx90a: AMD Instinct accelerators MI250X/MI250/MI210/MI200s | llama-box(Linux Only) |          |
+| gfx942: AMD Instinct accelerators MI325X/MI300X/MI300A      | llama-box(Linux Only) |          |
+| gfx1030: AMD Radeon RX 6950 XT/6900 XT/6800 XT/6800         | llama-box             |          |
+| gfx908: AMD Instinct accelerators MI100                     | llama-box(Linux Only) |          |
+| gfx906: AMD Instinct accelerators MI60/MI50                 | llama-box(Linux Only) |          |
 
 ### Setup Instructions
 
