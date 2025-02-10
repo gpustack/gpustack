@@ -700,6 +700,16 @@
     - deepseek
   release_date: "2025-01-20"
   templates:
+    - quantizations: ["BF16"]
+      sizes:
+        - 671
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
     - quantizations:
         - Q2_K_L
         - Q3_K_M
