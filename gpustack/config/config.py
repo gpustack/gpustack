@@ -188,7 +188,7 @@ class Config(BaseSettings):
 
             if type not in DeviceTypeEnum.__members__.values():
                 raise Exception(
-                    "Unsupported GPU type, supported type are: cuda, musa, npu, mps, rocm"
+                    "Unsupported GPU type, supported type are: cuda, musa, npu, mps, rocm, dcu"
                 )
 
             memory_total = memory.get("total")
