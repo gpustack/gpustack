@@ -201,6 +201,13 @@ async def _gguf_parser_command(  # noqa: C901
         execuable_command,
         "--image-no-vae-tiling",
     )
+    add_bool_flag(
+        model.backend_parameters,
+        ["flash-attention", "flash-attn", "fa", "diffusion-fa"],
+        execuable_command,
+        "--flash-attention",
+    )
+
     add_parameter_with_value(
         model.backend_parameters,
         ["image-max-height"],
@@ -218,6 +225,18 @@ async def _gguf_parser_command(  # noqa: C901
         ["visual-max-image-size"],
         execuable_command,
         "--visual-max-image-size",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["cache-type-k", "ctk"],
+        execuable_command,
+        "--cache-type-k",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["cache-type-v", "ctv"],
+        execuable_command,
+        "--cache-type-v",
     )
 
     cache_dir = kwargs.get("cache_dir")
