@@ -18,7 +18,7 @@ RUN python3 -m pip install pipx \
     && USER_BASE_BIN=$(python3 -m site --user-base)/bin \
     && export PATH="$USER_BASE_BIN:$PATH" \
     && pipx ensurepath --force \
-    && WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)" \
+    && WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio])" \
     && pipx install $WHEEL_PACKAGE \
     && rm -rf /workspace/gpustack
 
