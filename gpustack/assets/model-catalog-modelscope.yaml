@@ -728,6 +728,7 @@
       replicas: 1
       backend: llama-box
       backend_parameters:
+        - --temp=0.6 # recommended temperature for R1 is between 0.5 and 0.7
         - --ctx-size=32768 # give R1 more default context to think
       cpu_offloading: true
       distributed_inference_across_workers: true
