@@ -25,63 +25,63 @@ from gpustack.schemas.models import (
     PlacementStrategyEnum,
 )
 from tests.fixtures.workers.fixtures import (
-    worker_linux_nvidia_2_4090_gpu,
-    worker_linux_nvidia_3_4090_gpu,
-    worker_linux_nvidia_4_4080_gpu,
-    worker_linux_nvidia_5_a100_gpu,
-    worker_linux_nvidia_6_a100_gpu,
-    worker_linux_nvidia_7_a100_gpu,
-    worker_linux_nvidia_8_3090_gpu,
-    worker_linux_rocm_1_7800_gpu,
-    worker_macos_metal_1,
-    worker_linux_nvidia_2_4080_gpu,
-    worker_linux_nvidia_1_4090_gpu,
-    worker_linux_cpu_1,
-    worker_linux_cpu_2,
-    worker_macos_metal_2,
+    linux_nvidia_2_4090x2,
+    linux_nvidia_3_4090x1,
+    linux_nvidia_4_4080x4,
+    linux_nvidia_5_a100x2,
+    linux_nvidia_6_a100x2,
+    linux_nvidia_7_a100x2,
+    linux_nvidia_8_3090x8,
+    linux_rocm_1_7800x1,
+    macos_metal_1_m1pro,
+    linux_nvidia_2_4080x2,
+    linux_nvidia_1_4090x1,
+    linux_cpu_1,
+    linux_cpu_2,
+    macos_metal_2_m2,
 )
 
 from tests.fixtures.estimates.fixtures import (
-    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_1_estimate_claim,
-    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_2_estimate_claim,
-    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3_estimate_claim,
-    deepseek_r1_q4_k_m_full_offload_estimate_claim,
-    deepseek_r1_q4_k_m_partial_offload_estimate_claim,
-    deepseek_r1_q4_k_m_partial_offload_split_6_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_2_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_3_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_4_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_5_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_6_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_7_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_8_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_2_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_3_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_4_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_5_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_6_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_7_estimate_claim,
-    deepseek_r1_ud_iq2_xxs_partial_offload_split_8_estimate_claim,
-    llama3_70b_disable_offload_estimate_claim,
-    llama3_70b_full_offload_estimate_claim,
-    llama3_70b_full_offload_split_2_4080_estimate_claim,
-    llama3_70b_full_offload_split_2_4080_estimate_claim_2,
-    llama3_70b_full_offload_split_2_4080_estimate_claim_3,
-    llama3_70b_full_offload_split_2_4090_estimate_claim,
-    llama3_70b_full_offload_split_3_4080_estimate_claim,
-    llama3_70b_full_offload_split_3_4080_estimate_claim_2,
-    llama3_70b_full_offload_split_3_4080_estimate_claim_3,
-    llama3_70b_full_offload_split_4_4080_estimate_claim,
-    llama3_70b_partial_offload_estimate_claim,
-    llama3_70b_partial_offload_split_2_4080_4090_estimate_claim,
-    llama3_70b_partial_offload_split_2_4080_estimate_claim,
-    llama3_70b_partial_offload_split_3_4080_4090_estimate_claim,
-    llama3_70b_partial_offload_split_3_4080_4090_estimate_claim_2,
-    llama3_8b_disable_offload_estimate_claim,
-    llama3_8b_full_offload_estimate_claim,
-    llama3_8b_partial_offload_estimate_claim,
+    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_1,
+    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_2,
+    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3,
+    deepseek_r1_q4_k_m_full_offload,
+    deepseek_r1_q4_k_m_partial_offload,
+    deepseek_r1_q4_k_m_partial_offload_split_6,
+    deepseek_r1_ud_iq2_xxs_full_offload,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_2,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_3,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_4,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_5,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_6,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_7,
+    deepseek_r1_ud_iq2_xxs_full_offload_split_8,
+    deepseek_r1_ud_iq2_xxs_partial_offload,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_2,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_3,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_4,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_5,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_6,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_7,
+    deepseek_r1_ud_iq2_xxs_partial_offload_split_8,
+    llama3_70b_disable_offload,
+    llama3_70b_full_offload,
+    llama3_70b_full_offload_split_2_4080,
+    llama3_70b_full_offload_split_2_4080_2,
+    llama3_70b_full_offload_split_2_4080_3,
+    llama3_70b_full_offload_split_2_4090,
+    llama3_70b_full_offload_split_3_4080,
+    llama3_70b_full_offload_split_3_4080_2,
+    llama3_70b_full_offload_split_3_4080_3,
+    llama3_70b_full_offload_split_4_4080,
+    llama3_70b_partial_offload,
+    llama3_70b_partial_offload_split_2_4080_4090,
+    llama3_70b_partial_offload_split_2_4080,
+    llama3_70b_partial_offload_split_3_4080_4090,
+    llama3_70b_partial_offload_split_3_4080_4090_2,
+    llama3_8b_disable_offload,
+    llama3_8b_full_offload,
+    llama3_8b_partial_offload,
 )
 
 from unittest.mock import patch, AsyncMock
@@ -106,9 +106,9 @@ def config(temp_dir):
 @pytest.mark.asyncio
 async def test_label_matching_filter():
     workers = [
-        worker_macos_metal_1(),
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
+        macos_metal_1_m1pro(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
     ]
 
     labels = {"os": "Darwin"}
@@ -125,9 +125,9 @@ async def test_label_matching_filter():
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_single_gpu(config):
     workers = [
-        worker_macos_metal_1(),
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
+        macos_metal_1_m1pro(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
     ]
 
     m = new_model(1, "test", 1, "llama3:8b")
@@ -205,10 +205,10 @@ async def test_schedule_to_single_worker_single_gpu(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
-        worker_linux_nvidia_2_4090_gpu(),
-        worker_linux_nvidia_4_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
+        linux_nvidia_2_4090x2(),
+        linux_nvidia_4_4080x4(),
     ]
 
     m = new_model(1, "test", 1, "llama3:70b")
@@ -256,7 +256,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
     workers = [
-        worker_linux_nvidia_8_3090_gpu(),
+        linux_nvidia_8_3090x8(),
     ]
 
     m = new_model(
@@ -338,9 +338,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
-        worker_linux_nvidia_4_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
+        linux_nvidia_4_4080x4(),
     ]
 
     m = new_model(
@@ -518,8 +518,8 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
     ]
 
     m = new_model(
@@ -583,8 +583,8 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
 @pytest.mark.asyncio
 async def test_schedule_to_cpu_with_binpack_spread(config):
     workers = [
-        worker_linux_cpu_1(),
-        worker_linux_cpu_2(),
+        linux_cpu_1(),
+        linux_cpu_2(),
     ]
 
     m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=True)
@@ -711,8 +711,8 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
 @pytest.mark.asyncio
 async def test_schedule_to_multi_worker_multi_gpu(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
     ]
 
     m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=False)
@@ -824,8 +824,8 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
 @pytest.mark.asyncio
 async def test_manual_schedule_to_multi_worker_multi_gpu(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
     ]
 
     m = new_model(
@@ -950,9 +950,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
 @pytest.mark.asyncio
 async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config):
     workers = [
-        worker_linux_nvidia_5_a100_gpu(),
-        worker_linux_nvidia_6_a100_gpu(),
-        worker_linux_nvidia_7_a100_gpu(),
+        linux_nvidia_5_a100x2(),
+        linux_nvidia_6_a100x2(),
+        linux_nvidia_7_a100x2(),
     ]
 
     m = new_model(
@@ -1220,9 +1220,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
     config,
 ):
     workers = [
-        worker_linux_nvidia_3_4090_gpu(),
-        worker_macos_metal_2(),
-        worker_linux_rocm_1_7800_gpu(),
+        linux_nvidia_3_4090x1(),
+        macos_metal_2_m2(),
+        linux_rocm_1_7800x1(),
     ]
 
     m = new_model(
@@ -1319,9 +1319,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 @pytest.mark.asyncio
 async def test_manual_schedule_to_single_worker_multi_gpu(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
-        worker_linux_nvidia_4_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
+        linux_nvidia_4_4080x4(),
     ]
 
     m = new_model(
@@ -1446,8 +1446,8 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
 @pytest.mark.asyncio
 async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config):
     workers = [
-        worker_linux_nvidia_1_4090_gpu(),
-        worker_linux_nvidia_2_4080_gpu(),
+        linux_nvidia_1_4090x1(),
+        linux_nvidia_2_4080x2(),
     ]
 
     m = new_model(
@@ -1512,92 +1512,92 @@ def mock_calculate_model_resource_claim(
     mock_estimate = AsyncMock()
     tensor_split = kwargs.get("tensor_split")
     if offload == GPUOffloadEnum.Full:
-        mock_estimate = llama3_70b_full_offload_estimate_claim()
+        mock_estimate = llama3_70b_full_offload()
         if tensor_split:
             mapping = {
                 (
                     17171480576,
                     17171480576,
-                ): llama3_70b_full_offload_split_2_4080_estimate_claim,
+                ): llama3_70b_full_offload_split_2_4080,
                 (
                     17171480576,
                     16647192576,
-                ): llama3_70b_full_offload_split_2_4080_estimate_claim_2,
+                ): llama3_70b_full_offload_split_2_4080_2,
                 (
                     17171480576,
                     16542334976,
-                ): llama3_70b_full_offload_split_2_4080_estimate_claim_2,
+                ): llama3_70b_full_offload_split_2_4080_2,
                 (
                     16647192576,
                     16542334976,
-                ): llama3_70b_full_offload_split_2_4080_estimate_claim_3,
+                ): llama3_70b_full_offload_split_2_4080_3,
                 (
                     26015170560,
                     26015170560,
-                ): llama3_70b_full_offload_split_2_4090_estimate_claim,
+                ): llama3_70b_full_offload_split_2_4090,
                 (
                     17171480576,
                     17171480576,
                     17171480576,
-                ): llama3_70b_full_offload_split_3_4080_estimate_claim_3,
+                ): llama3_70b_full_offload_split_3_4080_3,
                 (
                     17171480576,
                     17171480576,
                     16647192576,
-                ): llama3_70b_full_offload_split_3_4080_estimate_claim,
+                ): llama3_70b_full_offload_split_3_4080,
                 (
                     17171480576,
                     17171480576,
                     16542334976,
-                ): llama3_70b_full_offload_split_3_4080_estimate_claim,
+                ): llama3_70b_full_offload_split_3_4080,
                 (
                     17171480576,
                     16647192576,
                     16542334976,
-                ): llama3_70b_full_offload_split_3_4080_estimate_claim_2,
+                ): llama3_70b_full_offload_split_3_4080_2,
                 (
                     17171480576,
                     17171480576,
                     17171480576,
                     17171480576,
-                ): llama3_70b_full_offload_split_4_4080_estimate_claim,
+                ): llama3_70b_full_offload_split_4_4080,
             }
 
             mock_estimate = mapping[tuple(tensor_split)]()
 
         if model.ollama_library_model_name == "llama3:8b":
-            mock_estimate = llama3_8b_full_offload_estimate_claim()
+            mock_estimate = llama3_8b_full_offload()
     elif offload == GPUOffloadEnum.Partial:
-        mock_estimate = llama3_70b_partial_offload_estimate_claim()
+        mock_estimate = llama3_70b_partial_offload()
         if tensor_split:
             mapping = {
                 (
                     17171480576,
                     17171480576,
-                ): llama3_70b_partial_offload_split_2_4080_estimate_claim,
+                ): llama3_70b_partial_offload_split_2_4080,
                 (
                     17171480576,
                     26015170560,
-                ): llama3_70b_partial_offload_split_2_4080_4090_estimate_claim,
+                ): llama3_70b_partial_offload_split_2_4080_4090,
                 (
                     26015170560,
                     17171480576,
                     17171480576,
-                ): llama3_70b_partial_offload_split_3_4080_4090_estimate_claim,
+                ): llama3_70b_partial_offload_split_3_4080_4090,
                 (
                     17171480576,
                     17171480576,
                     26015170560,
-                ): llama3_70b_partial_offload_split_3_4080_4090_estimate_claim_2,
+                ): llama3_70b_partial_offload_split_3_4080_4090_2,
             }
             mock_estimate = mapping[tuple(tensor_split)]()
 
         if model.ollama_library_model_name == "llama3:8b":
-            mock_estimate = llama3_8b_partial_offload_estimate_claim()
+            mock_estimate = llama3_8b_partial_offload()
     elif offload == GPUOffloadEnum.Disable:
-        mock_estimate = llama3_70b_disable_offload_estimate_claim()
+        mock_estimate = llama3_70b_disable_offload()
         if model.ollama_library_model_name == "llama3:8b":
-            return llama3_8b_disable_offload_estimate_claim()
+            return llama3_8b_disable_offload()
     return ModelInstanceResourceClaim(
         model_instance=model_instance, resource_claim_estimate=mock_estimate.estimate
     )
@@ -1613,42 +1613,34 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
     tensor_split = kwargs.get("tensor_split")
     if offload == GPUOffloadEnum.Full:
         if "deepseek-r1-q4_k_m" in model.huggingface_filename.lower():
-            mock_estimate = deepseek_r1_q4_k_m_full_offload_estimate_claim()
+            mock_estimate = deepseek_r1_q4_k_m_full_offload()
 
         if "deepseek-r1-ud-iq2_xxs" in model.huggingface_filename.lower():
-            mock_estimate = deepseek_r1_ud_iq2_xxs_full_offload_estimate_claim()
+            mock_estimate = deepseek_r1_ud_iq2_xxs_full_offload()
             if tensor_split:
                 mapping = {
                     (
                         25769803776,
                         25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_2_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_2,
                     (
                         25769803776,
                         25769803776,
                         25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_3_estimate_claim,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_4_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_3,
                     (
                         25769803776,
                         25769803776,
                         25769803776,
                         25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_5_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_4,
                     (
                         25769803776,
                         25769803776,
                         25769803776,
                         25769803776,
                         25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_6_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_5,
                     (
                         25769803776,
                         25769803776,
@@ -1656,8 +1648,7 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                         25769803776,
                         25769803776,
                         25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_7_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_6,
                     (
                         25769803776,
                         25769803776,
@@ -1666,14 +1657,23 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                         25769803776,
                         25769803776,
                         25769803776,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_7,
+                    (
                         25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_8_estimate_claim,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_8,
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
 
     elif offload == GPUOffloadEnum.Partial:
         if "deepseek-r1-q4_k_m" in model.huggingface_filename.lower():
-            mock_estimate = deepseek_r1_q4_k_m_partial_offload_estimate_claim()  # TODO
+            mock_estimate = deepseek_r1_q4_k_m_partial_offload()  # TODO
             if tensor_split:
                 mapping = {
                     (
@@ -1683,44 +1683,36 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                         85899345920,
                         85899345920,
                         85899345920,
-                    ): deepseek_r1_q4_k_m_partial_offload_split_6_estimate_claim,
+                    ): deepseek_r1_q4_k_m_partial_offload_split_6,
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
 
         if "deepseek-r1-ud-iq2_xxs" in model.huggingface_filename.lower():
-            mock_estimate = deepseek_r1_ud_iq2_xxs_partial_offload_estimate_claim()
+            mock_estimate = deepseek_r1_ud_iq2_xxs_partial_offload()
             if tensor_split:
                 mapping = {
                     (
                         25769803776,
                         25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_2_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_2,
                     (
                         25769803776,
                         25769803776,
                         25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_3_estimate_claim,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_4_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_3,
                     (
                         25769803776,
                         25769803776,
                         25769803776,
                         25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_5_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_4,
                     (
                         25769803776,
                         25769803776,
                         25769803776,
                         25769803776,
                         25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_6_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_5,
                     (
                         25769803776,
                         25769803776,
@@ -1728,8 +1720,7 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                         25769803776,
                         25769803776,
                         25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_7_estimate_claim,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_6,
                     (
                         25769803776,
                         25769803776,
@@ -1738,8 +1729,17 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                         25769803776,
                         25769803776,
                         25769803776,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_7,
+                    (
                         25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_8_estimate_claim,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                        25769803776,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_8,
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
 
@@ -1750,17 +1750,17 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                         17163091968,
                         16106143744,
                         24683479040,
-                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_1_estimate_claim,
+                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_1,
                     (
                         24683479040,
                         16106143744,
                         17163091968,
-                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_2_estimate_claim,
+                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_2,
                     (
                         24683479040,
                         17163091968,
                         16106143744,
-                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3_estimate_claim,
+                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3,
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
     return ModelInstanceResourceClaim(
