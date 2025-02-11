@@ -238,6 +238,24 @@ async def _gguf_parser_command(  # noqa: C901
         execuable_command,
         "--cache-type-v",
     )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["batch-size", "b"],
+        execuable_command,
+        "--batch-size",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["ubatch-size", "ub"],
+        execuable_command,
+        "--ubatch-size",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["split-mode", "sm"],
+        execuable_command,
+        "--split-mode",
+    )
 
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
