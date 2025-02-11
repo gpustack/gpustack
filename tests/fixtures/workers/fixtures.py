@@ -54,7 +54,11 @@ def linux_nvidia_8_3090x8(reserved=True):
 
 
 def linux_nvidia_9_3090x8(reserved=True):
-    return load_from_file("linux_nvidia_8_3090x8.json", reserved=reserved)
+    return load_from_file("linux_nvidia_9_3090x8.json", reserved=reserved)
+
+
+def linux_nvidia_10_3090x8(reserved=True):
+    return load_from_file("linux_nvidia_10_3090x8.json", reserved=reserved)
 
 
 def linux_rocm_1_7800x1(reserved=True):

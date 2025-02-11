@@ -316,18 +316,18 @@ async def calculate_model_resource_claim(
         claim: modelResoruceClaim = modelResoruceClaim.from_json(cmd_output)
 
         if offload == GPUOffloadEnum.Full:
-            logger.info(
+            logger.debug(
                 f"Calculated resource claim for full offload model instance {model_instance.name}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Partial:
-            logger.info(
+            logger.debug(
                 f"Calculated resource claim for partial offloading model instance {model_instance.name}, \n"
                 f"  Least: {claim.estimate.items[1].to_log_string()} \n"
                 f"  Most: {claim.estimate.items[len(claim.estimate.items) - 2].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Disable:
-            logger.info(
+            logger.debug(
                 f"Calculated resource claim for disabled offloading model instance {model_instance.name}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
