@@ -9,9 +9,9 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server.controllers import find_scale_down_candidates
 from tests.fixtures.workers.fixtures import (
-    worker_linux_nvidia_2_4090_gpu,
-    worker_linux_nvidia_2_4080_gpu,
-    worker_linux_cpu_1,
+    linux_nvidia_2_4090x2,
+    linux_nvidia_2_4080x2,
+    linux_cpu_1,
 )
 
 from unittest.mock import patch, AsyncMock
@@ -21,12 +21,12 @@ from tests.utils.model import new_model, new_model_instance
 
 @pytest.mark.asyncio
 async def test_find_scale_down_candidates():
-    w1 = worker_linux_nvidia_2_4090_gpu()
+    w1 = linux_nvidia_2_4090x2()
     w1.state = WorkerStateEnum.NOT_READY
     workers = [
         w1,
-        worker_linux_nvidia_2_4080_gpu(),
-        worker_linux_cpu_1(),
+        linux_nvidia_2_4080x2(),
+        linux_cpu_1(),
     ]
 
     m = new_model(1, "test", 3, "llama3:70b")
