@@ -173,6 +173,8 @@ async def _gguf_parser_command(  # noqa: C901
         "--image-vae-tiling",
         "--cache-expiration",
         "168h0m0s",
+        "--platform-footprint",
+        "150,500",
         "--no-mmap",
         "--json",
     ]
@@ -255,6 +257,12 @@ async def _gguf_parser_command(  # noqa: C901
         ["split-mode", "sm"],
         execuable_command,
         "--split-mode",
+    )
+    add_parameter_with_value(
+        model.backend_parameters,
+        ["platform-footprint"],
+        execuable_command,
+        "--platform-footprint",
     )
 
     cache_dir = kwargs.get("cache_dir")
