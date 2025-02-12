@@ -793,6 +793,7 @@
         - F16
       sizes:
         - 8
+        - 70
       source: model_scope
       model_scope_model_id: unsloth/DeepSeek-R1-Distill-Llama-{size}B-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
