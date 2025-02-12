@@ -149,10 +149,10 @@ curl http://myserver/v1-openai/chat/completions \
 - [x] AMD ROCm
 - [x] Ascend CANN
 - [x] Moore Threads MUSA
+- [x] Hygon DTK
 
 We plan to support the following accelerators in future releases.
 
-- [ ] Hygon DCU
 - [ ] Intel oneAPI
 - [ ] Qualcomm AI Engine
 

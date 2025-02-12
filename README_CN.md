@@ -150,10 +150,10 @@ curl http://myserver/v1-openai/chat/completions \
 - [x] AMD ROCm
 - [x] 昇腾 CANN
 - [x] 摩尔线程 MUSA
+- [x] 海光 DTK
 
 我们计划在未来的版本中支持以下加速框架：
 
-- [ ] 海光 DCU
 - [ ] Intel oneAPI
 - [ ] Qualcomm AI Engine
 
