@@ -1,4 +1,4 @@
-# Inference on CPUs
+# Running Inference on CPUs
 
 GPUStack supports inference on CPUs, offering flexibility when GPU resources are limited or when model sizes exceed available GPU memory. The following CPU inference modes are available:
 
