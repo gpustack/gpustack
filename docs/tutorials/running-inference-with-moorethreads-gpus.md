@@ -23,7 +23,7 @@ GPUStack supports running inference on Moore Threads GPUs. This tutorial provide
 Follow these links to install and configure the container runtime:
 
 - Install Docker: [Docker Installation Guide](https://docs.docker.com/desktop/install/linux/)
-- Install the latest drivers for MTT S80/S3000/S4000 (currently rc3.1.0): [MUSA SDK Download](https://developer.mthreads.com/sdk/download/musa)
+- Install the latest drivers for MTT S80/S3000/S4000 (currently rc3.1.1): [MUSA SDK Download](https://developer.mthreads.com/sdk/download/musa)
 - Install the MT Container Toolkits (currently v1.9.0): [MT CloudNative Toolkits Download](https://developer.mthreads.com/sdk/download/CloudNative)
 
 ### Verify Container Runtime Configuration
