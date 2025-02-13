@@ -26,7 +26,7 @@ class UserCreate(UserBase):
             raise ValueError('Password must contain at least one lowercase letter')
         if not re.search(r'[0-9]', value):
             raise ValueError('Password must contain at least one digit')
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', value):
+        if not re.search(r'[!@#$%^&*_+]', value):
             raise ValueError('Password must contain at least one special character')
         return value
 
@@ -47,7 +47,7 @@ class UpdatePassword(SQLModel):
             raise ValueError('Password must contain at least one lowercase letter')
         if not re.search(r'[0-9]', value):
             raise ValueError('Password must contain at least one digit')
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', value):
+        if not re.search(r'[!@#$%^&*_+]', value):
             raise ValueError('Password must contain at least one special character')
         return value
 
