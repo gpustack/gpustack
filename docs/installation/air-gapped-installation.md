@@ -48,13 +48,26 @@ gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
 
 Optional: Additional Dependencies for macOS.
 
+Download save and load dependencies scripts:
+
+- [load_macos_dependencies.sh](../assets/installation/air-gapped-installation/load_macos_dependencies.sh)
+- [save_macos_dependencies.sh](../assets/installation/air-gapped-installation/save_macos_dependencies.sh)
+
 ```bash
 # Deploying the speech-to-text CosyVoice model on macOS requires additional dependencies.
-brew install openfst
-CPLUS_INCLUDE_PATH=$(brew --prefix openfst)/include
-LIBRARY_PATH=$(brew --prefix openfst)/lib
+./save_macos_dependencies.sh
+```
 
-AUDIO_DEPENDENCY_PACKAGE_SPEC="wetextprocessing"
+After running the script, will generate two files in the current directory:
+
+- `local-openfst-1.8.3.tar.gz`
+- `c9d6de4616377b76b6c6c71920a0b24f1b19aeed734fe12dbd2a169d0893b541--openfst-1.8.3.tar.gz`
+
+```bash
+export AUDIO_DEPENDENCY_PACKAGE_SPEC="wetextprocessing==1.0.4.1"
+export CPLUS_INCLUDE_PATH=$(brew --prefix openfst@1.8.3)/include
+export LIBRARY_PATH=$(brew --prefix openfst@1.8.3)/lib
+
 pip wheel $AUDIO_DEPENDENCY_PACKAGE_SPEC -w gpustack_audio_dependency_offline_packages
 mv gpustack_audio_dependency_offline_packages/* gpustack_offline_packages/ && rm -rf gpustack_audio_dependency_offline_packages
 ```
@@ -84,9 +97,16 @@ gpustack download-tools --load-archive gpustack_offline_tools.tar.gz
 
 Optional: Additional Dependencies for macOS.
 
+Transfer the following files from the online environment to the air-gapped environment.
+
+- `load_macos_dependencies.sh` file.
+- `local-openfst-1.8.3.tar.gz` file.
+- `c9d6de4616377b76b6c6c71920a0b24f1b19aeed734fe12dbd2a169d0893b541--openfst-1.8.3.tar.gz` file.
+
 ```bash
 # Install the additional dependencies for speech-to-text CosyVoice model on macOS.
-brew install openfst
+# load-dir is the directory include local-openfst-1.8.3.tar.gz and c9d6de4616377b76b6c6c71920a0b24f1b19aeed734fe12dbd2a169d0893b541--openfst-1.8.3.tar.gz
+./load_macos_dependencies.sh --load-dir ./
 
 pip install --no-index --find-links=gpustack_offline_packages wetextprocessing
 ```
