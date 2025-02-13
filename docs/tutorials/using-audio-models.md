@@ -30,7 +30,7 @@ After deployment, you can monitor the model's status on the `Models` page.
 
 ![Model List](../assets/tutorials/using-audio-models/stt-model-list.png)
 
-### Step 2: Interact with Speech-to-Text Model Models
+### Step 2: Interact with Speech-to-Text Model
 
 1. Navigate to the `Playground` > `Audio` page in the GPUStack UI.
 2. Select the `Speech to Text` Tab.
@@ -58,7 +58,7 @@ After deployment, you can monitor the model's status on the `Models` page.
 
 ![Model List](../assets/tutorials/using-audio-models/tts-model-list.png)
 
-### Step 2: Interact with Text to Speech Model Models
+### Step 2: Interact with Text to Speech Model
 
 1. Navigate to the `Playground` > `Audio` page in the GPUStack UI.
 2. Select the `Text to Speech` Tab.
