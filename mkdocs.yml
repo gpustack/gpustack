@@ -107,6 +107,7 @@ nav:
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
+  - FAQ: faq.md
   - API Reference: api-reference.md
   - CLI Reference:
       - Start: cli-reference/start.md
