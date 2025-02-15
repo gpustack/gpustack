@@ -239,7 +239,7 @@ check_python_tools() {
     fi
   fi
 
-  USER_BASE_BIN=$(python3 -m site --user-base)/bin
+  USER_BASE_BIN=$(python3 -m site --user-base || true)/bin
   export PATH="$USER_BASE_BIN:$PATH"
 
   if ! command -v pipx > /dev/null 2>&1; then
