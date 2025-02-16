@@ -639,7 +639,7 @@
         - --no-context-shift
       cpu_offloading: true
       distributed_inference_across_workers: true
-    - quantizations: ["BF16"]
+    - quantizations: ["FP8"]
       source: huggingface
       huggingface_repo_id: deepseek-ai/DeepSeek-V3
       replicas: 1
@@ -688,7 +688,7 @@
         - --temp=0.6 # recommended temperature for R1 is between 0.5 and 0.7
       cpu_offloading: true
       distributed_inference_across_workers: true
-    - quantizations: ["BF16"]
+    - quantizations: ["FP8"]
       sizes:
         - 671
       source: huggingface

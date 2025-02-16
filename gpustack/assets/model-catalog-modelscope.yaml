@@ -673,7 +673,7 @@
         - --no-context-shift
       cpu_offloading: true
       distributed_inference_across_workers: true
-    - quantizations: ["BF16"]
+    - quantizations: ["FP8"]
       source: model_scope
       model_scope_model_id: deepseek-ai/DeepSeek-V3
       replicas: 1
@@ -700,7 +700,7 @@
     - deepseek
   release_date: "2025-01-20"
   templates:
-    - quantizations: ["BF16"]
+    - quantizations: ["FP8"]
       sizes:
         - 671
       source: model_scope
