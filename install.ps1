@@ -16,6 +16,8 @@
     You can add additional workers to form a GPUStack cluster by running the command on worker nodes.
 #>
 
+# Script updated at: 2025-02-17T06:06:38Z
+
 $ErrorActionPreference = "Stop"
 
 $INSTALL_PACKAGE_SPEC = if ($env:INSTALL_PACKAGE_SPEC) { $env:INSTALL_PACKAGE_SPEC } else { "gpustack[audio]" }
@@ -127,6 +129,56 @@ function Get-Arg-Value {
     }
 
     return ""
+}
+
+# Function to check if a port is available
+function Check-PortAvailability {
+    param([int]$Port)
+
+    $connection = Get-NetTCPConnection -LocalPort $Port -LocalAddress '0.0.0.0' -State 'Listen' -ErrorAction SilentlyContinue
+
+    if ($connection) {
+        return $false  # Port is in use
+    }
+    else {
+        return $true   # Port is available
+    }
+}
+
+# Function to check if the server and worker ports are available
+function Check-Port {
+    param (
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ScriptArgs
+    )
+
+    $configFile = Get-Arg-Value -ArgName "config-file" @ScriptArgs
+    if ($configFile) {
+        return
+    }
+
+    $serverPort = Get-Arg-Value -ArgName "port" @ScriptArgs
+    $workerPort = Get-Arg-Value -ArgName "worker-port" @ScriptArgs
+    $sslEnabled = Get-Arg-Value -ArgName "ssl-keyfile" @ScriptArgs
+
+    if (-not $serverPort) {
+        $serverPort = 80
+        if ($sslEnabled) {
+            $serverPort = 443
+        }
+    }
+
+    if (-not $workerPort) {
+        $workerPort = 10150
+    }
+
+    if (-not (Check-PortAvailability -Port $serverPort)) {
+        throw "Server port $serverPort is already in use! Please specify a different port by using --port <YOUR_PORT>."
+    }
+
+    if (-not (Check-PortAvailability -Port $workerPort)) {
+        throw "Worker port $workerPort is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+    }
 }
 
 # Function to print completion message.
@@ -760,6 +812,7 @@ try {
     Check-AdminPrivilege
     Check-OS
     Check-CUDA
+    Check-Port @args
     Install-Chocolatey
     Install-Python
     Install-NSSM
