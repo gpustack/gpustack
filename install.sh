@@ -1,4 +1,5 @@
 #!/bin/sh
+# Script updated at: 2025-02-17T06:06:38Z
 set -e
 set -o noglob
 
@@ -180,6 +181,46 @@ detect_device() {
   fi
 }
 
+# Function to check if a port is available
+check_port() {
+  port=$1
+  if $SUDO lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+# Function to check if the server and worker ports are available
+check_ports() {
+  config_file=$(get_param_value "config-file" "$@")
+  if [ -n "$config_file" ]; then
+    return
+  fi
+
+  server_port=$(get_param_value "port" "$@")
+  worker_port=$(get_param_value "worker-port" "$@")
+  ssl_enabled=$(get_param_value "ssl-keyfile" "$@")
+
+  if [ -z "$server_port" ]; then
+    server_port="80"
+    if [ -n "$ssl_enabled" ]; then
+      server_port="443"
+    fi
+  fi
+
+  if [ -z "$worker_port" ]; then
+    worker_port="10150"
+  fi
+
+  if ! check_port "$server_port"; then
+    fatal "Server port $server_port is already in use! Please specify a different port by using --port <YOUR_PORT>."
+  fi
+
+  if ! check_port "$worker_port"; then
+    fatal "Worker port $worker_port is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+  fi
+}
+
 # Function to check and install Python tools
 PYTHONPATH=""
 check_python_tools() {
@@ -329,7 +370,7 @@ brew_install_with_version() {
 
 # Function to install dependencies
 install_dependencies() {
-  DEPENDENCIES="curl sudo"
+  DEPENDENCIES="curl sudo lsof"
   for dep in $DEPENDENCIES; do
     if ! command -v "$dep" > /dev/null 2>&1; then
       fatal "$dep is required but missing. Please install $dep."
@@ -668,6 +709,7 @@ install_gpustack() {
   verify_system
   install_dependencies
   check_python_tools
+  check_ports "$@"
   install_gpustack
   create_uninstall_script
   disable_service
