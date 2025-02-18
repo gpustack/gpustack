@@ -1,5 +1,5 @@
 #!/bin/sh
-# Script updated at: 2025-02-17T06:06:38Z
+# Script updated at: 2025-02-18T06:32:42Z
 set -e
 set -o noglob
 
@@ -82,7 +82,6 @@ ACTION="Install"
 print_complete_message()
 {
     usage_hint=""
-    path_hint=""
     if [ "$ACTION" = "Install" ]; then
         data_dir=$(get_param_value "data-dir" "$@")
         if [ -z "$data_dir" ]; then
@@ -115,16 +114,14 @@ print_complete_message()
             password_hint=""
             bootstrap_password=$(get_param_value "bootstrap-password" "$@")
             if [ -z "$bootstrap_password" ]; then
-                password_hint="To get the default password, run 'cat $data_dir/initial_admin_password'.\n"
+                password_hint="To get the default password, run 'cat $data_dir/initial_admin_password'."
             fi
 
             usage_hint="\n\nGPUStack UI is available at $server_url.\nDefault username is 'admin'.\n${password_hint}\n"
         fi
 
-
-        path_hint="CLI \"gpustack\" is available from the command line. (You may need to open a new terminal or re-login for the PATH changes to take effect.)"
     fi
-    info "$ACTION complete. ${usage_hint}${path_hint}"
+    info "$ACTION complete. ${usage_hint}"
 }
 
 # --- fatal if no systemd or launchd ---
