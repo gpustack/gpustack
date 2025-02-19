@@ -52,6 +52,7 @@ gpustack start [OPTIONS]
 | `--metrics-port` value              | `10151`                                | Port to expose metrics.                                                                                                                                                                                                                                          |
 | `--worker-port` value               | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                                                                                              |
 | `--log-dir` value                   | (empty)                                | Directory to store logs.                                                                                                                                                                                                                                         |
+| `--rpc-server-args` value           | (empty)                                | Arguments to pass to the RPC servers. Use `=` to avoid the CLI recognizing rpc-server-args as a server argument. This can be used multiple times to pass a list of arguments. Example: `--rpc-server-args=--verbose --rpc-server-args=--log-colors`              |
 | `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases. |
 | `--tools-download-base-url` value   |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                                       |
 
@@ -98,6 +99,7 @@ disable_rpc_servers: false
 metrics_port: 10151
 worker_port: 10150
 log_dir: /path/to/log_dir
+rpc_server_args: ["--verbose"]
 system_reserved:
   ram: 2
   vram: 1

@@ -185,6 +185,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("WORKER_NAME"),
     )
     group.add_argument(
+        "--worker-port",
+        type=int,
+        help="Port to bind the worker to.",
+        default=get_gpustack_env("WORKER_PORT"),
+    )
+    group.add_argument(
         "--disable-metrics",
         action=OptionalBoolAction,
         help="Disable metrics.",
@@ -207,16 +213,15 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("METRICS_PORT"),
     )
     group.add_argument(
-        "--worker-port",
-        type=int,
-        help="Port to bind the worker to.",
-        default=get_gpustack_env("WORKER_PORT"),
-    )
-    group.add_argument(
         "--log-dir",
         type=str,
         help="Directory to store logs.",
         default=get_gpustack_env("LOG_DIR"),
+    )
+    group.add_argument(
+        "--rpc-server-args",
+        action='append',
+        help="Arguments to pass to the RPC servers.",
     )
     group.add_argument(
         "--system-reserved",
@@ -356,6 +361,7 @@ def set_worker_options(args, config_data: dict):
         "disable_rpc_servers",
         "metrics_port",
         "log_dir",
+        "rpc_server_args",
         "system_reserved",
         "tools_download_base_url",
     ]

@@ -45,6 +45,7 @@ class WorkerManager:
         self._system_reserved = system_reserved
         self._rpc_servers: Dict[int, RPCServerProcessInfo] = {}
         self._rpc_server_log_dir = f"{cfg.log_dir}/rpc_server"
+        self._rpc_server_args = cfg.rpc_server_args
         self._gpu_devices = cfg.get_gpu_devices()
 
         os.makedirs(self._rpc_server_log_dir, exist_ok=True)
@@ -195,7 +196,13 @@ class WorkerManager:
             port = network.get_free_port(start=50000, end=51024)
             process = multiprocessing.Process(
                 target=RPCServer.start,
-                args=(port, gpu_device.index, gpu_device.vendor, log_file_path),
+                args=(
+                    port,
+                    gpu_device.index,
+                    gpu_device.vendor,
+                    log_file_path,
+                    self._rpc_server_args,
+                ),
             )
 
             process.daemon = True
