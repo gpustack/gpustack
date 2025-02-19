@@ -1198,6 +1198,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 main_worker_gpu_index,
                 main_worker_gpu_allocatable,
             ) in workers_allocatable.get(main_worker_id).vram.items():
+                if main_worker_gpu_index not in main_worker_gpu_indexes:
+                    continue
+
                 # vrams: [rpc_server1, rpc_server2, ..., main_worker]
                 position = len(flag_rpc_servers) + main_worker_gpu_indexes.index(
                     main_worker_gpu_index
