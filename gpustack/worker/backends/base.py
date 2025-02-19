@@ -11,6 +11,7 @@ from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import (
+    BackendEnum,
     Model,
     ModelInstance,
     ModelInstanceUpdate,
@@ -317,17 +318,19 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    @staticmethod
-    def get_inference_running_env(
-        gpu_indexes: List[int] = None, gpu_devices: GPUDevicesInfo = None, backend=None
-    ):
+    def get_inference_running_env(self):
+        gpu_indexes = self._model_instance.gpu_indexes
+
         env = os.environ.copy()
         system = platform.system()
 
-        if system == "darwin":
-            return None
-        elif (system == "linux" or system == "windows") and gpu_indexes:
+        if (system == "linux" or system == "windows") and gpu_indexes:
             vendor = None
+            gpu_devices = None
+            worker = self._clientset.workers.get(self._model_instance.worker_id)
+            if worker and worker.status.gpu_devices:
+                gpu_devices = worker.status.gpu_devices
+
             if gpu_devices:
                 # Now use the first GPU index to get the vendor
                 first_index = gpu_indexes[0]
@@ -338,18 +341,18 @@ class InferenceServer(ABC):
 
             env_name = get_env_name_by_vendor(vendor)
             env[env_name] = ",".join([str(i) for i in gpu_indexes])
-            set_vllm_env(env, vendor, backend, gpu_indexes, gpu_devices)
 
-            return env
-        else:
-            # TODO: support more.
-            return None
+            if get_backend(self._model) == BackendEnum.VLLM:
+                set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
+
+        env.update(self._model.env or {})
+
+        return env
 
 
 def set_vllm_env(
     env: Dict[str, str],
     vendor: VendorEnum,
-    backend: str,
     gpu_indexes: List[int] = None,
     gpu_devices: GPUDevicesInfo = None,
 ):
@@ -358,7 +361,7 @@ def set_vllm_env(
     if not gpu_indexes or not gpu_devices:
         return
 
-    if system != "linux" or vendor != VendorEnum.AMD or backend != "vllm":
+    if system != "linux" or vendor != VendorEnum.AMD:
         return
 
     llvm = None
