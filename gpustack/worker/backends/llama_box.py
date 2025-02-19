@@ -128,20 +128,17 @@ class LlamaBoxServer(InferenceServer):
                     key, value = param.split('=', 1)
                     arguments.extend([key, value])
 
-        worker_gpu_devices = None
-        worker = worker_map.get(self._model_instance.worker_id)
-        if worker and worker.status.gpu_devices:
-            worker_gpu_devices = worker.status.gpu_devices
-
-        env = self.get_inference_running_env(
-            self._model_instance.gpu_indexes, worker_gpu_devices
-        )
         try:
             logger.info("Starting llama-box server")
             logger.debug(
                 f"Run llama-box: {command_path} with arguments: {' '.join(arguments)}"
             )
+            if self._model.env:
+                logger.debug(
+                    f"Model environment variables: {', '.join(f'{key}={value}' for key, value in self._model.env.items())}"
+                )
 
+            env = self.get_inference_running_env()
             proc = subprocess.Popen(
                 [command_path] + arguments,
                 stdout=sys.stdout,

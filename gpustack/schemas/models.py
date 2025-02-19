@@ -127,6 +127,8 @@ class ModelBase(SQLModel, ModelSource):
     backend_version: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
 
+    env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
+
     @model_validator(mode="after")
     def validate(self):
         backend = get_backend(self)
