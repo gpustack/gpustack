@@ -1,6 +1,6 @@
 import os
 import secrets
-from typing import Optional
+from typing import List, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
@@ -90,6 +90,7 @@ class Config(BaseSettings):
     bin_dir: Optional[str] = None
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
+    rpc_server_args: Optional[List[str]] = None
 
     def __init__(self, **values):
         super().__init__(**values)

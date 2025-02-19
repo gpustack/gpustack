@@ -4,6 +4,7 @@ import multiprocessing
 import os
 import subprocess
 import sys
+from typing import List, Optional
 
 import setproctitle
 
@@ -29,15 +30,23 @@ class RPCServer:
         pass
 
     @staticmethod
-    def start(port: int, gpu_index: int, vendor: str, log_file_path: str):
+    def start(
+        port: int,
+        gpu_index: int,
+        vendor: str,
+        log_file_path: str,
+        args: Optional[List[str]] = None,
+    ):
         setproctitle.setproctitle(f"gpustack_rpc_server_process: gpu_{gpu_index}")
         add_signal_handlers()
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                RPCServer._start(port, gpu_index, vendor)
+                RPCServer._start(port, gpu_index, vendor, args)
 
-    def _start(port: int, gpu_index: int, vendor: str):
+    def _start(
+        port: int, gpu_index: int, vendor: str, args: Optional[List[str]] = None
+    ):
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
         ).joinpath(get_llama_box_command())
@@ -54,6 +63,9 @@ class RPCServer:
             "--origin-rpc-server-main-gpu",
             str(gpu_index),
         ]
+
+        if args:
+            arguments.extend(args)
 
         env_name = get_env_name_by_vendor(vendor)
         env = os.environ.copy()
