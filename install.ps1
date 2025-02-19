@@ -16,7 +16,7 @@
     You can add additional workers to form a GPUStack cluster by running the command on worker nodes.
 #>
 
-# Script updated at: 2025-02-18T06:32:42Z
+# Script updated at: 2025-02-19T08:16:49Z
 
 $ErrorActionPreference = "Stop"
 
@@ -151,6 +151,10 @@ function Check-Port {
         [Parameter(ValueFromRemainingArguments = $true)]
         [string[]]$ScriptArgs
     )
+    if (Get-Command gpustack -ErrorAction SilentlyContinue) {
+        # skip on upgrade
+        return
+    }
 
     $configFile = Get-Arg-Value -ArgName "config-file" @ScriptArgs
     if ($configFile) {
