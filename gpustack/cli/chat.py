@@ -30,11 +30,12 @@ def print_error(message):
     print(f"{Fore.RED}{message}{Style.RESET_ALL}")
 
 
-class ChatCLIClient(BaseCLIClient):
+class Client(BaseCLIClient):
     def __init__(self, cfg: CLIConfig) -> None:
         super().__init__(cfg)
-
-        self._prompt = cfg.prompt
+        self._prompt = cfg.prompt 
+        self._system_prompt = cfg.system_prompt
+        self._user_prompt = cfg.user_prompt
         self._history: List[ChatCompletionMessageParam] = []
 
     def run(self):  # noqa: C901
@@ -43,7 +44,15 @@ class ChatCLIClient(BaseCLIClient):
         except HTTPException as e:
             raise Exception(f"Request to server failed: {e}")
 
-        if self._prompt:
+        if self._system_prompt:
+            self._history.append(
+                ChatCompletionUserMessageParam(role="system", content=self._system_prompt)
+            )
+
+        if self._user_prompt:
+            self.chat_completion(self._user_prompt)
+            return
+        elif self._prompt:
             self.chat_completion(self._prompt)
             return
 
