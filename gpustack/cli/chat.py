@@ -33,7 +33,7 @@ def print_error(message):
 class Client(BaseCLIClient):
     def __init__(self, cfg: CLIConfig) -> None:
         super().__init__(cfg)
-        self._prompt = cfg.prompt 
+        self._prompt = cfg.prompt
         self._system_prompt = cfg.system_prompt
         self._user_prompt = cfg.user_prompt
         self._history: List[ChatCompletionMessageParam] = []
@@ -46,7 +46,9 @@ class Client(BaseCLIClient):
 
         if self._system_prompt:
             self._history.append(
-                ChatCompletionUserMessageParam(role="system", content=self._system_prompt)
+                ChatCompletionUserMessageParam(
+                    role="system", content=self._system_prompt
+                )
             )
 
         if self._user_prompt:
