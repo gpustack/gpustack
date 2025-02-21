@@ -89,6 +89,10 @@ class ServeManager:
             # Ignore model instances that are not assigned to this worker node.
             return
 
+        logger.debug(
+            f"Received model instance event: {event.type} {mi.name} {mi.state}"
+        )
+
         if mi.state == ModelInstanceStateEnum.ERROR:
             return
 
