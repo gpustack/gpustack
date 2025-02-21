@@ -107,7 +107,6 @@ def init_model_catalog(model_catalog_file: Optional[str] = None):
         global model_catalog
         model_catalog = convert_to_public(model_sets)
         init_model_set_specs(model_sets)
-        prepare_static_catalog_icons()
     except Exception as e:
         raise Exception(f"Failed to load model catalog: {e}")
 
@@ -143,16 +142,6 @@ def init_model_set_specs(model_sets: List[ModelSet]):
                     spec = resolve_model_template(template, size, quantization)
                     specs.append(spec)
         model_set_specs[model_set.id] = specs
-
-
-def prepare_static_catalog_icons():
-    source_dir = pkg_resources.files("gpustack").joinpath("assets/catalog_icons")
-    target_dir = pkg_resources.files("gpustack").joinpath("ui/static/catalog_icons")
-
-    if not os.path.exists(source_dir):
-        return
-
-    file.copy_with_owner(source_dir, target_dir)
 
 
 def prepare_chat_templates(data_dir: str):
