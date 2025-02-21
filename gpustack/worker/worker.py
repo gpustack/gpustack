@@ -11,6 +11,7 @@ import uvicorn
 from pathlib import Path
 
 from gpustack.config import Config
+from gpustack.routes import debug, probes
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
 from gpustack.server import catalog
 from gpustack.utils import file, platform
@@ -191,9 +192,8 @@ class Worker:
                 log_generator(path, log_options), media_type="text/plain"
             )
 
-        @app.get("/healthz")
-        async def healthz():
-            return "ok"
+        app.include_router(debug.router, prefix="/debug")
+        app.include_router(probes.router)
 
         config = uvicorn.Config(
             app,
