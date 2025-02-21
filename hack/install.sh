@@ -47,6 +47,14 @@ function download_ui() {
   rm -rf "${tmp_ui_path}"
 }
 
+# Copy extra static files to ui including catalog icons
+function copy_extra_static() {
+  local extra_static_path="${ROOT_DIR}/static"
+  local ui_static_path="${ROOT_DIR}/gpustack/ui/static"
+  if [ -d "${extra_static_path}" ]; then
+    cp -a "${extra_static_path}/." "${ui_static_path}"
+  fi
+}
 
 #
 # main
@@ -55,4 +63,5 @@ function download_ui() {
 gpustack::log::info "+++ DEPENDENCIES +++"
 download_deps
 download_ui
+copy_extra_static
 gpustack::log::info "--- DEPENDENCIES ---"
