@@ -19,6 +19,20 @@ def setup_chat_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="The prompt to send to the model",
     )
+    parser.add_argument(
+        "--system-prompt",
+        nargs="?",
+        type=str,
+        default=None,
+        help="The system prompt to send to the model",
+    )
+    parser.add_argument(
+        "--user-prompt",
+        nargs="?",
+        type=str,
+        default=None,
+        help="The user prompt to send to the model",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode.")
 
     parser.set_defaults(func=run)
