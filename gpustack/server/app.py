@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 import aiohttp
 from fastapi import FastAPI
-from fastapi_cdn_host import monkey_patch_for_docs_ui
+from fastapi_cdn_host import patch_docs
 
 from gpustack import __version__
 from gpustack.api import exceptions, middlewares
@@ -22,7 +23,7 @@ app = FastAPI(
     response_model_exclude_unset=True,
     version=__version__,
 )
-monkey_patch_for_docs_ui(app)
+patch_docs(app, Path(__file__).parents[1] / "ui" / "static")
 app.add_middleware(middlewares.RequestTimeMiddleware)
 app.add_middleware(middlewares.ModelUsageMiddleware)
 app.add_middleware(middlewares.RefreshTokenMiddleware)
