@@ -18,13 +18,21 @@ If you installed GPUStack using the installation script, you can view GPUStack l
 
 ## Configure Log Level
 
-You can enable the DEBUG log level on `gpustack start` by setting the `--debug` parameter.
+You can enable the DEBUG log level for `gpustack start` by setting the `--debug` parameter.
 
-You can configure log level of GPUStack server at runtime by running the following command on the server node:
+You can configure log level of the GPUStack server at runtime by running the following command on the server node:
 
 ```bash
 curl -X PUT http://localhost/debug/log_level -d "debug"
 ```
+
+The same applies to GPUStack workers:
+
+```bash
+curl -X PUT http://localhost:10150/debug/log_level -d "debug"
+```
+
+The available log levels are: `debug`, `info`, `warning`, `error`, `critical`.
 
 ## Reset Admin Password
 
