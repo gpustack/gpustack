@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass
+import time
 from typing import List, Optional
 from dataclasses_json import dataclass_json
 
@@ -320,10 +321,10 @@ async def calculate_model_resource_claim(
             estimate = _get_empty_estimate(n_gpu=len(tensor_split))
         return ModelInstanceResourceClaim(model_instance, estimate)
 
-    logger.debug(f"Calculating resource claim for model instance {model_instance.name}")
-
     command = await _gguf_parser_command(model, offload, **kwargs)
     try:
+        start_time = time.time()
+
         process = await asyncio.create_subprocess_exec(
             *command,
             env=os.environ.copy(),
@@ -340,21 +341,21 @@ async def calculate_model_resource_claim(
 
         cmd_output = stdout.decode()
         claim: modelResoruceClaim = modelResoruceClaim.from_json(cmd_output)
+        latency = time.time() - start_time
 
         if offload == GPUOffloadEnum.Full:
             logger.debug(
-                f"Calculated resource claim for full offload model instance {model_instance.name}, "
+                f"Finished running parser for full offload model instance {model_instance.name}, latency: {latency}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Partial:
             logger.debug(
-                f"Calculated resource claim for partial offloading model instance {model_instance.name}, \n"
-                f"  Least: {claim.estimate.items[1].to_log_string()} \n"
-                f"  Most: {claim.estimate.items[len(claim.estimate.items) - 2].to_log_string()}"
+                f"Finished running parser for partial offloading model instance {model_instance.name}, latency: {latency}, at least: "
+                f"{claim.estimate.items[1].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Disable:
             logger.debug(
-                f"Calculated resource claim for disabled offloading model instance {model_instance.name}, "
+                f"Finished running parser for disabled offloading model instance {model_instance.name}, latency: {latency}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
             clear_vram_claim(claim)
