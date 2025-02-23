@@ -28,6 +28,40 @@ class ModelInstanceScheduleCandidate:
     # for rpc server scheduling
     rpc_servers: Optional[List[ModelInstanceRPCServer]] = None
 
+    def to_log_string(self) -> str:
+        log_dict = {
+            "worker": f"worker: {self.worker.name}",
+            "gpu_indexes": (
+                f"gpu_indexes: {self.gpu_indexes}"
+                if self.gpu_indexes is not None
+                else None
+            ),
+            "offload_layers": (
+                f"offload layers: {self.computed_resource_claim.offload_layers}"
+                if self.computed_resource_claim.offload_layers is not None
+                else None
+            ),
+            "tensor_split": (
+                f"tensor_split: {self.computed_resource_claim.tensor_split}"
+                if self.computed_resource_claim.tensor_split is not None
+                else None
+            ),
+            "rpcs": None,
+        }
+
+        if self.rpc_servers:
+            rpcs_string = ', '.join(
+                [
+                    f"(worker_id: {rpc.worker_id}, gpu_index:{rpc.gpu_index}, offload layers:{rpc.computed_resource_claim.offload_layers})"
+                    for rpc in self.rpc_servers
+                ]
+            )
+            log_dict["rpcs"] = f"rpcs: [{rpcs_string}]"
+
+        log_parts = [value for value in log_dict.values() if value is not None]
+
+        return ', '.join(log_parts)
+
 
 @dataclass
 class AllocationResource:
