@@ -1,0 +1,179 @@
+{
+    "name": "host04-4090_24gx4_4080_16gx4",
+    "hostname": "hhost04-4090_24gx4_4080_16gx4",
+    "ip": "192.168.50.80",
+    "labels": {
+        "os": "Linux"
+    },
+    "state": "ready",
+    "system_reserved": {
+        "memory": 1073741824,
+        "gpu_memory": 1073741824
+    },
+    "status": {
+        "memory": {
+            "total": 1649267441664,
+            "utilization_rate": 5.905919020930682,
+            "is_unified_memory": false,
+            "used": 3967795200,
+            "allocated": 0
+        },
+        "gpu_devices": [
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
+                "name": "NVIDIA RTX 4090 ",
+                "vendor": "NVIDIA",
+                "index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 25769803776,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
+                "name": "NVIDIA RTX 4090 ",
+                "vendor": "NVIDIA",
+                "index": 1,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 25769803776,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c264",
+                "name": "NVIDIA RTX 4090 ",
+                "vendor": "NVIDIA",
+                "index": 2,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 25769803776,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": 524288000
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "NVIDIA RTX 4090 ",
+                "vendor": "NVIDIA",
+                "index": 3,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 25769803776,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "NVIDIA RTX 4080",
+                "vendor": "NVIDIA",
+                "index": 4,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 17179869184,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "NVIDIA RTX 4080",
+                "vendor": "NVIDIA",
+                "index": 5,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 17179869184,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "NVIDIA RTX 4080",
+                "vendor": "NVIDIA",
+                "index": 6,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 17179869184,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "NVIDIA RTX 4080",
+                "vendor": "NVIDIA",
+                "index": 7,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 17179869184,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            }
+        ]
+    },
+    "id": 24,
+    "created_at": "2024-07-05T02:17:42",
+    "updated_at": "2024-07-05T10:36:21"
+}

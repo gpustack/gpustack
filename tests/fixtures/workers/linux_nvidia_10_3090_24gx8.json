@@ -12,7 +12,7 @@
     },
     "status": {
         "memory": {
-            "total": 68719476736,
+            "total": 1610612736000,
             "utilization_rate": 5.905919020930682,
             "is_unified_memory": false,
             "used": 3967795200,
