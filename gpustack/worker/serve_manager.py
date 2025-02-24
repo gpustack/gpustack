@@ -228,11 +228,20 @@ class ServeManager:
                     pass
                 except Exception:
                     logger.error(f"Failed to update model instance {id} state.")
+
+                mi = self._starting_model_instances[id]
+                logger.debug(
+                    f"Model instance {mi.name} is not running. Removing from health checker."
+                )
+
                 self._serving_model_instances.pop(id)
                 self._starting_model_instances.pop(id, None)
             elif id in self._starting_model_instances:
                 # health check for starting model instances
                 mi = self._starting_model_instances[id]
+
+                logger.debug(f"Checking if model instance {mi.name} is running.")
+
                 if is_running(mi):
                     mi = self._clientset.model_instances.get(id=id)
                     if mi.state != ModelInstanceStateEnum.ERROR:
@@ -240,6 +249,10 @@ class ServeManager:
                             id, state=ModelInstanceStateEnum.RUNNING
                         )
                     self._starting_model_instances.pop(id, None)
+
+                    logger.debug(
+                        f"Health check completed. Model instance {mi.name} is running."
+                    )
 
 
 def is_running(mi: ModelInstance) -> bool:
