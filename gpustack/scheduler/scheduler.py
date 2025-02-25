@@ -30,14 +30,12 @@ from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import (
-    BackendEnum,
     CategoryEnum,
     DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
     SourceEnum,
-    get_backend,
     is_gguf_model,
     is_audio_model,
 )
@@ -433,9 +431,10 @@ class Scheduler:
             candidate = self.pick_highest_score_candidate(candidates)
 
             if candidate is None and len(workers) > 0:
-                resource_fit_message = "No workers meet the resource requirements."
-                if get_backend(model) == BackendEnum.VLLM:
-                    resource_fit_message += " Consider adjusting parameters such as --gpu-memory-utilization (default: 0.9), --max-model-len, or --enforce-eager to lower the resource demands."
+                resource_fit_message = (
+                    candidates_selector.get_message()
+                    or "No workers meet the resource requirements."
+                )
                 messages.append(resource_fit_message)
             return candidate, messages
         except Exception as e:

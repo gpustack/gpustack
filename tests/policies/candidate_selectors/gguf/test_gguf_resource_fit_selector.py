@@ -25,37 +25,31 @@ from gpustack.schemas.models import (
     PlacementStrategyEnum,
 )
 from tests.fixtures.workers.fixtures import (
-    linux_nvidia_2_4090x2,
-    linux_nvidia_3_4090x1,
-    linux_nvidia_4_4080x4,
-    linux_nvidia_5_a100x2,
-    linux_nvidia_6_a100x2,
-    linux_nvidia_7_a100x2,
-    linux_nvidia_8_3090x8,
-    linux_rocm_1_7800x1,
-    macos_metal_1_m1pro,
-    linux_nvidia_2_4080x2,
-    linux_nvidia_1_4090x1,
+    linux_nvidia_19_4090_24gx2,
+    linux_nvidia_3_4090_24gx1,
+    linux_nvidia_4_4080_16gx4,
+    linux_nvidia_5_a100_80gx2,
+    linux_nvidia_6_a100_80gx2,
+    linux_nvidia_7_a100_80gx2,
+    linux_nvidia_8_3090_24gx8,
+    linux_rocm_1_7800_16gx1,
+    macos_metal_1_m1pro_21g,
+    linux_nvidia_2_4080_16gx2,
+    linux_nvidia_1_4090_24gx1,
     linux_cpu_1,
     linux_cpu_2,
-    macos_metal_2_m2,
+    macos_metal_2_m2_24g,
 )
 
 from tests.fixtures.estimates.fixtures import (
+    deepseek_r1_distill_qwen_32b_bf16_partial_offload,
+    deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_1main_1rpc,
     deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_1,
     deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_2,
     deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3,
-    deepseek_r1_q4_k_m_full_offload,
     deepseek_r1_q4_k_m_partial_offload,
+    deepseek_r1_q4_k_m_partial_offload_split_1main_1rpc,
     deepseek_r1_q4_k_m_partial_offload_split_6,
-    deepseek_r1_ud_iq2_xxs_full_offload,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_2,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_3,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_4,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_5,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_6,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_7,
-    deepseek_r1_ud_iq2_xxs_full_offload_split_8,
     deepseek_r1_ud_iq2_xxs_partial_offload,
     deepseek_r1_ud_iq2_xxs_partial_offload_split_2,
     deepseek_r1_ud_iq2_xxs_partial_offload_split_3,
@@ -65,23 +59,19 @@ from tests.fixtures.estimates.fixtures import (
     deepseek_r1_ud_iq2_xxs_partial_offload_split_7,
     deepseek_r1_ud_iq2_xxs_partial_offload_split_8,
     llama3_70b_disable_offload,
-    llama3_70b_full_offload,
-    llama3_70b_full_offload_split_2_4080,
-    llama3_70b_full_offload_split_2_4080_2,
-    llama3_70b_full_offload_split_2_4080_3,
-    llama3_70b_full_offload_split_2_4090,
-    llama3_70b_full_offload_split_3_4080,
-    llama3_70b_full_offload_split_3_4080_2,
-    llama3_70b_full_offload_split_3_4080_3,
-    llama3_70b_full_offload_split_4_4080,
     llama3_70b_partial_offload,
     llama3_70b_partial_offload_split_2_4080_4090,
     llama3_70b_partial_offload_split_2_4080,
+    llama3_70b_partial_offload_split_2_4090,
+    llama3_70b_partial_offload_split_3_4080,
+    llama3_70b_partial_offload_split_3_4080_2,
+    llama3_70b_partial_offload_split_3_4080_3,
+    llama3_70b_partial_offload_split_3_4080_4,
     llama3_70b_partial_offload_split_3_4080_4090,
     llama3_70b_partial_offload_split_3_4080_4090_2,
     llama3_8b_disable_offload,
-    llama3_8b_full_offload,
     llama3_8b_partial_offload,
+    llama3_8b_partial_offload_split_1main_1rpc,
 )
 
 from unittest.mock import patch, AsyncMock
@@ -106,9 +96,9 @@ def config(temp_dir):
 @pytest.mark.asyncio
 async def test_label_matching_filter():
     workers = [
-        macos_metal_1_m1pro(),
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
+        macos_metal_1_m1pro_21g(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
     ]
 
     labels = {"os": "Darwin"}
@@ -125,9 +115,9 @@ async def test_label_matching_filter():
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_single_gpu(config):
     workers = [
-        macos_metal_1_m1pro(),
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
+        macos_metal_1_m1pro_21g(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
     ]
 
     m = new_model(1, "test", 1, "llama3:8b")
@@ -153,28 +143,7 @@ async def test_schedule_to_single_worker_single_gpu(config):
         candidate, _ = await scheduler.find_candidate(mi, m, workers)
 
         expected_candidates = [
-            # uma
-            {
-                "offload_layers": 33,
-                "worker_id": 1,
-                "worker_name": "hostmacosmetal",
-                "gpu_indexes": [0],
-                "is_unified_memory": True,
-                "ram": 179951576,
-                "vram": {0: 1074271232},
-                "score": 3.3011152944948687,
-            },
             # non uma
-            {
-                "offload_layers": 33,
-                "worker_id": 2,
-                "worker_name": "host4090",
-                "gpu_indexes": [0],
-                "is_unified_memory": False,
-                "ram": 337237976,
-                "vram": {0: 6315049984},
-                "score": 16.350315512573545,
-            },
             {
                 "offload_layers": 33,
                 "worker_id": 3,
@@ -195,20 +164,41 @@ async def test_schedule_to_single_worker_single_gpu(config):
                 "vram": {1: 6315049984},
                 "score": 24.68491284676514,
             },
+            {
+                "offload_layers": 33,
+                "worker_id": 2,
+                "worker_name": "host4090",
+                "gpu_indexes": [0],
+                "is_unified_memory": False,
+                "ram": 337237976,
+                "vram": {0: 6315049984},
+                "score": 16.350315512573545,
+            },
+            # uma
+            {
+                "offload_layers": 33,
+                "worker_id": 1,
+                "worker_name": "hostmacosmetal",
+                "gpu_indexes": [0],
+                "is_unified_memory": True,
+                "ram": 179951576,
+                "vram": {0: 1074271232},
+                "score": 3.3011152944948687,
+            },
         ]
 
         assert len(candidates) == 4
-        assert candidate == candidates[2]
+        assert candidate == candidates[0]
         compare_candidates(candidates, expected_candidates)
 
 
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
-        linux_nvidia_2_4090x2(),
-        linux_nvidia_4_4080x4(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
+        linux_nvidia_4_4080_16gx4(),
+        linux_nvidia_19_4090_24gx2(),
     ]
 
     m = new_model(1, "test", 1, "llama3:70b")
@@ -241,9 +231,9 @@ async def test_schedule_to_single_worker_multi_gpu(config):
                 "worker_name": "host-2-4090",
                 "gpu_indexes": [0, 1],
                 "is_unified_memory": False,
-                "ram": 455165112,
-                "vram": {0: 22912443392, 1: 22911897600},
-                "score": 58.828511417553905,
+                "ram": 421610680,
+                "vram": {0: 22564900864, 1: 22397527040},
+                "score": 57.92957229698279,
                 "tensor_split": [26015170560, 26015170560],
             },
         ]
@@ -256,7 +246,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
     workers = [
-        linux_nvidia_8_3090x8(),
+        linux_nvidia_8_3090_24gx8(),
     ]
 
     m = new_model(
@@ -338,9 +328,9 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
-        linux_nvidia_4_4080x4(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
+        linux_nvidia_4_4080_16gx4(),
     ]
 
     m = new_model(
@@ -518,8 +508,8 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
 @pytest.mark.asyncio
 async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
     ]
 
     m = new_model(
@@ -711,8 +701,8 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
 @pytest.mark.asyncio
 async def test_schedule_to_multi_worker_multi_gpu(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
     ]
 
     m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=False)
@@ -777,55 +767,18 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
                     )
                 ],
             },
-            {
-                "offload_layers": 81,
-                "worker_id": 2,
-                "worker_name": "host4090",
-                "gpu_indexes": [0],
-                "is_unified_memory": False,
-                "ram": 421610680,
-                "vram": {
-                    0: 19475402752,
-                },
-                "score": 65.6816841222221,
-                "tensor_split": [17171480576, 17171480576, 26015170560],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
-                        worker_id=3,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=23,
-                            total_layers=81,
-                            ram=0,
-                            vram={0: 13296406528},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=3,
-                        gpu_index=1,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=22,
-                            total_layers=81,
-                            ram=0,
-                            vram={0: 13643949056},
-                        ),
-                    ),
-                ],
-            },
         ]
 
-        assert len(binpack_candidates) == 2
-        assert binpack_candidate == binpack_candidates[1]
+        assert len(binpack_candidates) == 1
+        assert binpack_candidate == binpack_candidates[0]
         compare_candidates(binpack_candidates, expected_candidates)
 
 
 @pytest.mark.asyncio
 async def test_manual_schedule_to_multi_worker_multi_gpu(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
     ]
 
     m = new_model(
@@ -903,56 +856,19 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
                     )
                 ],
             },
-            {
-                "offload_layers": 81,
-                "worker_id": 2,
-                "worker_name": "host4090",
-                "gpu_indexes": [0],
-                "is_unified_memory": False,
-                "ram": 421610680,
-                "vram": {
-                    0: 19475402752,
-                },
-                "score": 65.6816841222221,
-                "tensor_split": [17171480576, 17171480576, 26015170560],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
-                        worker_id=3,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=23,
-                            total_layers=81,
-                            ram=0,
-                            vram={0: 13296406528},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=3,
-                        gpu_index=1,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=22,
-                            total_layers=81,
-                            ram=0,
-                            vram={0: 13643949056},
-                        ),
-                    ),
-                ],
-            },
         ]
 
-        assert len(binpack_candidates) == 2
-        assert binpack_candidate == binpack_candidates[1]
+        assert len(binpack_candidates) == 1
+        assert binpack_candidate == binpack_candidates[0]
         compare_candidates(binpack_candidates, expected_candidates)
 
 
 @pytest.mark.asyncio
 async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config):
     workers = [
-        linux_nvidia_5_a100x2(),
-        linux_nvidia_6_a100x2(),
-        linux_nvidia_7_a100x2(),
+        linux_nvidia_5_a100_80gx2(),
+        linux_nvidia_6_a100_80gx2(),
+        linux_nvidia_7_a100_80gx2(),
     ]
 
     m = new_model(
@@ -1074,143 +990,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                     ),
                 ],
             },
-            {
-                "offload_layers": 62,
-                "worker_id": 9,
-                "worker_name": "llm02-A100",
-                "gpu_indexes": [0, 1],
-                "is_unified_memory": False,
-                "ram": 1531856328,
-                "vram": {
-                    0: 70670915584,
-                    1: 68910751744,
-                },
-                "score": 100,
-                "tensor_split": [
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                ],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
-                        worker_id=8,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=11,
-                            total_layers=62,
-                            ram=0,
-                            vram={0: 59939913728},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=8,
-                        gpu_index=1,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=10,
-                            total_layers=62,
-                            ram=0,
-                            vram={1: 69698246656},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=10,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=10,
-                            total_layers=62,
-                            ram=0,
-                            vram={0: 70670915584},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=10,
-                        gpu_index=1,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=11,
-                            total_layers=62,
-                            ram=0,
-                            vram={1: 76345232384},
-                        ),
-                    ),
-                ],
-            },
-            {
-                "offload_layers": 62,
-                "worker_id": 10,
-                "worker_name": "llm03-A100",
-                "gpu_indexes": [0, 1],
-                "is_unified_memory": False,
-                "ram": 1531856328,
-                "vram": {
-                    0: 70670915584,
-                    1: 68910751744,
-                },
-                "score": 100,
-                "tensor_split": [
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                    85899345920,
-                ],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
-                        worker_id=8,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=11,
-                            total_layers=62,
-                            ram=0,
-                            vram={0: 59939913728},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=8,
-                        gpu_index=1,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=10,
-                            total_layers=62,
-                            ram=0,
-                            vram={1: 69698246656},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=9,
-                        gpu_index=0,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=11,
-                            total_layers=62,
-                            ram=0,
-                            vram={0: 59939913728},
-                        ),
-                    ),
-                    ModelInstanceRPCServer(
-                        worker_id=9,
-                        gpu_index=1,
-                        computed_resource_claim=ComputedResourceClaim(
-                            is_unified_memory=False,
-                            offload_layers=10,
-                            total_layers=62,
-                            ram=0,
-                            vram={1: 69698246656},
-                        ),
-                    ),
-                ],
-            },
         ]
 
-        assert len(spread_candidates) == 3
+        assert len(spread_candidates) == 1
         assert spread_candidate == spread_candidates[0]
         compare_candidates(spread_candidates, expected_candidates)
 
@@ -1220,9 +1002,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
     config,
 ):
     workers = [
-        linux_nvidia_3_4090x1(),
-        macos_metal_2_m2(),
-        linux_rocm_1_7800x1(),
+        linux_nvidia_3_4090_24gx1(),
+        macos_metal_2_m2_24g(),
+        linux_rocm_1_7800_16gx1(),
     ]
 
     m = new_model(
@@ -1273,27 +1055,27 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 
         expected_candidates = [
             {
-                "offload_layers": 43,
-                "worker_id": 13,
-                "worker_name": "host01-7800",
+                "offload_layers": 40,
+                "worker_id": 12,
+                "worker_name": "host-2-4090",
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
-                "ram": 26843236920,
+                "ram": 30171626040,
                 "vram": {
-                    0: 16503328768,
+                    0: 22050643968,
                 },
                 "score": 100,
-                "tensor_split": [24683479040, 16106143744, 17163091968],
+                "tensor_split": [17163091968, 16106143744, 24683479040],
                 "rpc_servers": [
                     ModelInstanceRPCServer(
-                        worker_id=12,
+                        worker_id=13,
                         gpu_index=0,
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
-                            offload_layers=19,
+                            offload_layers=12,
                             total_layers=65,
                             ram=0,
-                            vram={0: 24269570048},
+                            vram={0: 16503328768},
                         ),
                     ),
                     ModelInstanceRPCServer(
@@ -1301,10 +1083,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
                         gpu_index=0,
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=True,
-                            offload_layers=12,
+                            offload_layers=11,
                             total_layers=65,
                             ram=0,
-                            vram={0: 13313556480},
+                            vram={0: 12204093440},
                         ),
                     ),
                 ],
@@ -1319,9 +1101,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 @pytest.mark.asyncio
 async def test_manual_schedule_to_single_worker_multi_gpu(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
-        linux_nvidia_4_4080x4(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
+        linux_nvidia_4_4080_16gx4(),
     ]
 
     m = new_model(
@@ -1405,7 +1187,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
                 },
                 "score": 65.08312111378692,
                 "tensor_split": [17171480576, 16647192576, 16542334976],
-            }
+            },
         ]
 
         assert len(candidates) == 1
@@ -1446,8 +1228,8 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
 @pytest.mark.asyncio
 async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config):
     workers = [
-        linux_nvidia_1_4090x1(),
-        linux_nvidia_2_4080x2(),
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_2_4080_16gx2(),
     ]
 
     m = new_model(
@@ -1511,89 +1293,69 @@ def mock_calculate_model_resource_claim(
 ) -> ModelInstanceResourceClaim:
     mock_estimate = AsyncMock()
     tensor_split = kwargs.get("tensor_split")
-    if offload == GPUOffloadEnum.Full:
-        mock_estimate = llama3_70b_full_offload()
-        if tensor_split:
-            mapping = {
-                (
-                    17171480576,
-                    17171480576,
-                ): llama3_70b_full_offload_split_2_4080,
-                (
-                    17171480576,
-                    16647192576,
-                ): llama3_70b_full_offload_split_2_4080_2,
-                (
-                    17171480576,
-                    16542334976,
-                ): llama3_70b_full_offload_split_2_4080_2,
-                (
-                    16647192576,
-                    16542334976,
-                ): llama3_70b_full_offload_split_2_4080_3,
-                (
-                    26015170560,
-                    26015170560,
-                ): llama3_70b_full_offload_split_2_4090,
-                (
-                    17171480576,
-                    17171480576,
-                    17171480576,
-                ): llama3_70b_full_offload_split_3_4080_3,
-                (
-                    17171480576,
-                    17171480576,
-                    16647192576,
-                ): llama3_70b_full_offload_split_3_4080,
-                (
-                    17171480576,
-                    17171480576,
-                    16542334976,
-                ): llama3_70b_full_offload_split_3_4080,
-                (
-                    17171480576,
-                    16647192576,
-                    16542334976,
-                ): llama3_70b_full_offload_split_3_4080_2,
-                (
-                    17171480576,
-                    17171480576,
-                    17171480576,
-                    17171480576,
-                ): llama3_70b_full_offload_split_4_4080,
-            }
-
-            mock_estimate = mapping[tuple(tensor_split)]()
-
-        if model.ollama_library_model_name == "llama3:8b":
-            mock_estimate = llama3_8b_full_offload()
-    elif offload == GPUOffloadEnum.Partial:
-        mock_estimate = llama3_70b_partial_offload()
-        if tensor_split:
-            mapping = {
-                (
-                    17171480576,
-                    17171480576,
-                ): llama3_70b_partial_offload_split_2_4080,
-                (
-                    17171480576,
-                    26015170560,
-                ): llama3_70b_partial_offload_split_2_4080_4090,
-                (
-                    26015170560,
-                    17171480576,
-                    17171480576,
-                ): llama3_70b_partial_offload_split_3_4080_4090,
-                (
-                    17171480576,
-                    17171480576,
-                    26015170560,
-                ): llama3_70b_partial_offload_split_3_4080_4090_2,
-            }
-            mock_estimate = mapping[tuple(tensor_split)]()
-
-        if model.ollama_library_model_name == "llama3:8b":
+    if offload == GPUOffloadEnum.Partial:
+        if model.ollama_library_model_name == "llama3:70b":
+            mock_estimate = llama3_70b_partial_offload()
+            if tensor_split:
+                mapping = {
+                    (
+                        1,
+                        1,
+                    ): llama3_70b_partial_offload_split_2_4080,
+                    (
+                        17171480576,
+                        17171480576,
+                    ): llama3_70b_partial_offload_split_2_4080,
+                    (
+                        26015170560,
+                        26015170560,
+                    ): llama3_70b_partial_offload_split_2_4090,
+                    (
+                        17171480576,
+                        26015170560,
+                    ): llama3_70b_partial_offload_split_2_4080_4090,
+                    (
+                        17171480576,
+                        17171480576,
+                        16647192576,
+                    ): llama3_70b_partial_offload_split_3_4080_2,
+                    (
+                        17171480576,
+                        17171480576,
+                        16542334976,
+                    ): llama3_70b_partial_offload_split_3_4080_3,
+                    (
+                        17171480576,
+                        16647192576,
+                        16542334976,
+                    ): llama3_70b_partial_offload_split_3_4080_4,
+                    (
+                        26015170560,
+                        17171480576,
+                        17171480576,
+                    ): llama3_70b_partial_offload_split_3_4080_4090,
+                    (
+                        17171480576,
+                        17171480576,
+                        26015170560,
+                    ): llama3_70b_partial_offload_split_3_4080_4090_2,
+                    (
+                        17171480576,
+                        17171480576,
+                        17171480576,
+                    ): llama3_70b_partial_offload_split_3_4080,
+                }
+                mock_estimate = mapping[tuple(tensor_split)]()
+        elif model.ollama_library_model_name == "llama3:8b":
             mock_estimate = llama3_8b_partial_offload()
+            if tensor_split:
+                mapping = {
+                    (
+                        1,
+                        1,
+                    ): llama3_8b_partial_offload_split_1main_1rpc,
+                }
+                mock_estimate = mapping[tuple(tensor_split)]()
     elif offload == GPUOffloadEnum.Disable:
         mock_estimate = llama3_70b_disable_offload()
         if model.ollama_library_model_name == "llama3:8b":
@@ -1611,71 +1373,15 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
 ) -> ModelInstanceResourceClaim:
     mock_estimate = AsyncMock()
     tensor_split = kwargs.get("tensor_split")
-    if offload == GPUOffloadEnum.Full:
-        if "deepseek-r1-q4_k_m" in model.huggingface_filename.lower():
-            mock_estimate = deepseek_r1_q4_k_m_full_offload()
-
-        if "deepseek-r1-ud-iq2_xxs" in model.huggingface_filename.lower():
-            mock_estimate = deepseek_r1_ud_iq2_xxs_full_offload()
-            if tensor_split:
-                mapping = {
-                    (
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_2,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_3,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_4,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_5,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_6,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_7,
-                    (
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                        25769803776,
-                    ): deepseek_r1_ud_iq2_xxs_full_offload_split_8,
-                }
-                mock_estimate = mapping[tuple(tensor_split)]()
-
-    elif offload == GPUOffloadEnum.Partial:
+    if offload == GPUOffloadEnum.Partial:
         if "deepseek-r1-q4_k_m" in model.huggingface_filename.lower():
             mock_estimate = deepseek_r1_q4_k_m_partial_offload()  # TODO
             if tensor_split:
                 mapping = {
+                    (
+                        1,
+                        1,
+                    ): deepseek_r1_q4_k_m_partial_offload_split_1main_1rpc,
                     (
                         85899345920,
                         85899345920,
@@ -1691,6 +1397,10 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
             mock_estimate = deepseek_r1_ud_iq2_xxs_partial_offload()
             if tensor_split:
                 mapping = {
+                    (
+                        1,
+                        1,
+                    ): deepseek_r1_ud_iq2_xxs_partial_offload_split_2,
                     (
                         25769803776,
                         25769803776,
@@ -1744,8 +1454,13 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                 mock_estimate = mapping[tuple(tensor_split)]()
 
         if "deepseek-r1-distill-qwen-32b-bf16" in model.huggingface_filename.lower():
+            mock_estimate = deepseek_r1_distill_qwen_32b_bf16_partial_offload()
             if tensor_split:
                 mapping = {
+                    (
+                        1,
+                        1,
+                    ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_1main_1rpc,
                     (
                         17163091968,
                         16106143744,

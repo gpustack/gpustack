@@ -44,6 +44,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._model_instance = model_instance
         self._cache_dir = cache_dir
+        self._message = ""
 
         self._gpu_ram_claim = 0
         self._gpu_vram_claim = 0
@@ -57,6 +58,12 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
             if valid:
                 self._selected_gpu_worker = match.get("worker_name")
                 self._selected_gpu_index = safe_int(match.get("gpu_index"))
+
+    def _set_message(self):
+        self._message = "No workers meet the resource requirements."
+
+    def get_message(self) -> str:
+        return self._message
 
     async def select_candidates(
         self, workers: List[Worker]
@@ -97,6 +104,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
             if candidates:
                 return candidates
 
+        self._set_message()
         return []
 
     async def find_single_worker_single_gpu_candidates(

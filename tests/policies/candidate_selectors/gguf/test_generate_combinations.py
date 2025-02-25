@@ -9,9 +9,9 @@ from gpustack.schemas.models import (
     PlacementStrategyEnum,
 )
 from tests.fixtures.workers.fixtures import (
-    linux_nvidia_10_3090x8,
-    linux_nvidia_8_3090x8,
-    linux_nvidia_9_3090x8,
+    linux_nvidia_10_3090_24gx8,
+    linux_nvidia_8_3090_24gx8,
+    linux_nvidia_9_3090_24gx8,
 )
 
 from tests.utils.model import new_model, new_model_instance
@@ -21,7 +21,7 @@ from unittest.mock import patch
 @pytest.mark.asyncio
 async def test_generate_combinations_for_single_worker_gpus():
     workers = [
-        linux_nvidia_8_3090x8(),
+        linux_nvidia_8_3090_24gx8(),
     ]
 
     m = new_model(1, "test", 1, "llama3:70b")
@@ -39,11 +39,13 @@ async def test_generate_combinations_for_single_worker_gpus():
         allocatable = await resource_fit_selector._get_worker_allocatable_resource(
             workers[0]
         )
-        combinations = (
-            await resource_fit_selector._generate_combinations_for_single_worker_gpus(
-                allocatable, workers[0]
+
+        actual_combinations_count = {}
+        for i in range(2, 9):
+            combinations = await resource_fit_selector._generate_combinations_for_single_worker_multi_gpus(
+                allocatable, workers[0], i
             )
-        )
+            actual_combinations_count[i] = combinations
 
         expected_total = 247
         expected_combinations = {
@@ -57,16 +59,20 @@ async def test_generate_combinations_for_single_worker_gpus():
             8: 1,
         }
 
-    compare_combinations(combinations, expected_combinations, expected_total)
+    compare_combinations(
+        actual_combinations_count, expected_combinations, expected_total
+    )
 
 
 @pytest.mark.asyncio
 async def test_generate_combinations_for_worker_with_rpc_servers_with_manual_selected_gpus():
     workers = [
-        linux_nvidia_8_3090x8(),
-        linux_nvidia_9_3090x8(),
-        linux_nvidia_10_3090x8(),
+        linux_nvidia_8_3090_24gx8(),
+        linux_nvidia_9_3090_24gx8(),
+        linux_nvidia_10_3090_24gx8(),
     ]
+
+    worker_map = {worker.id: worker for worker in workers}
 
     m = new_model(
         1,
@@ -119,15 +125,15 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_manual_sel
     ):
 
         combinations, _, _ = (
-            await resource_fit_selector._generate_combinations_for_worker_with_rpc_servers(
-                workers
+            await resource_fit_selector._generate_combinations_for_worker_with_rpcs(
+                workers, worker_map
             )
         )
 
-        expected_total = 3
+        expected_total = 1
         expected_combinations = {
             # key: gpu count, value: combinations number
-            17: 3,
+            17: 1,
         }
 
     compare_combinations(combinations, expected_combinations, expected_total)
@@ -136,10 +142,11 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_manual_sel
 @pytest.mark.asyncio
 async def test_generate_combinations_for_worker_with_rpc_servers_with_auto_selected_gpus():
     workers = [
-        linux_nvidia_8_3090x8(),
-        linux_nvidia_9_3090x8(),
-        linux_nvidia_10_3090x8(),
+        linux_nvidia_8_3090_24gx8(),
+        linux_nvidia_9_3090_24gx8(),
+        linux_nvidia_10_3090_24gx8(),
     ]
+    worker_map = {worker.id: worker for worker in workers}
 
     m = new_model(
         1,
@@ -161,22 +168,22 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_auto_selec
     ):
 
         combinations, _, _ = (
-            await resource_fit_selector._generate_combinations_for_worker_with_rpc_servers(
-                workers
+            await resource_fit_selector._generate_combinations_for_worker_with_rpcs(
+                workers, worker_map
             )
         )
 
-        expected_total = 117606
+        expected_total = 39202
         expected_combinations = {
             # key: gpu count, value: combinations number
-            2: 48,
-            3: 360,
-            4: 1680,
-            5: 5460,
-            6: 13104,
-            7: 24024,
-            8: 34320,
-            9: 38610,
+            2: 16,
+            3: 120,
+            4: 560,
+            5: 1820,
+            6: 4368,
+            7: 8008,
+            8: 11440,
+            9: 12870,
         }
 
     compare_combinations(combinations, expected_combinations, expected_total)

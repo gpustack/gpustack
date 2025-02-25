@@ -1,0 +1,25 @@
+{
+    "name": "host-cpu-3",
+    "hostname": "host-cpu-3",
+    "ip": "192.168.50.8",
+    "labels": {
+        "os": "Linux"
+    },
+    "system_reserved": {
+        "memory": 1073741824,
+        "gpu_memory": 1073741824
+    },
+    "state": "ready",
+    "status": {
+        "memory": {
+            "total": 2199023255552,
+            "utilization_rate": 5.905919020930682,
+            "is_unified_memory": false,
+            "used": 3967795200,
+            "allocated": 0
+        }
+    },
+    "id": 27,
+    "created_at": "2024-07-05T02:17:42",
+    "updated_at": "2024-07-05T10:36:21"
+}

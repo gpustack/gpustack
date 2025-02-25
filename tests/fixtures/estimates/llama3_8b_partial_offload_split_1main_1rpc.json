@@ -9,8 +9,9 @@
           "handleLastLayer": 31,
           "handleOutputLayer": true,
           "remote": false,
-          "uma": 1245834200,
-          "nonuma": 1403120600
+          "position": 0,
+          "uma": 1170336728,
+          "nonuma": 1327623128
         },
         "vrams": [
           {
@@ -18,8 +19,18 @@
             "handleLastLayer": -1,
             "handleOutputLayer": false,
             "remote": false,
+            "position": 0,
             "uma": 0,
-            "nonuma": 964157440
+            "nonuma": 955768832
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 857735168
           }
         ]
       },
@@ -31,6 +42,7 @@
           "handleLastLayer": 30,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1212279768,
           "nonuma": 1369566168
         },
@@ -39,9 +51,19 @@
             "handleLayers": 1,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 156270592,
+            "nonuma": 1137209344
+          },
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
             "remote": false,
-            "uma": 33554432,
-            "nonuma": 1145597952
+            "position": 0,
+            "uma": 0,
+            "nonuma": 882905088
           }
         ]
       },
@@ -53,17 +75,28 @@
           "handleLastLayer": 29,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1178725336,
           "nonuma": 1336011736
         },
         "vrams": [
           {
-            "handleLayers": 2,
+            "handleLayers": 1,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 156270592,
+            "nonuma": 1137209344
+          },
+          {
+            "handleLayers": 1,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 67108864,
-            "nonuma": 1301868544
+            "position": 0,
+            "uma": 33554432,
+            "nonuma": 1039175680
           }
         ]
       },
@@ -75,17 +108,28 @@
           "handleLastLayer": 28,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1145170904,
           "nonuma": 1302457304
         },
         "vrams": [
           {
-            "handleLayers": 3,
+            "handleLayers": 2,
+            "handleLastLayer": 30,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 312541184,
+            "nonuma": 1293479936
+          },
+          {
+            "handleLayers": 1,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 100663296,
-            "nonuma": 1458139136
+            "position": 0,
+            "uma": 33554432,
+            "nonuma": 1039175680
           }
         ]
       },
@@ -97,17 +141,28 @@
           "handleLastLayer": 27,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1111616472,
           "nonuma": 1268902872
         },
         "vrams": [
           {
-            "handleLayers": 4,
+            "handleLayers": 2,
+            "handleLastLayer": 29,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 312541184,
+            "nonuma": 1293479936
+          },
+          {
+            "handleLayers": 2,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 134217728,
-            "nonuma": 1614409728
+            "position": 0,
+            "uma": 67108864,
+            "nonuma": 1195446272
           }
         ]
       },
@@ -119,17 +174,28 @@
           "handleLastLayer": 26,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1078062040,
           "nonuma": 1235348440
         },
         "vrams": [
           {
-            "handleLayers": 5,
+            "handleLayers": 3,
+            "handleLastLayer": 29,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 468811776,
+            "nonuma": 1449750528
+          },
+          {
+            "handleLayers": 2,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 167772160,
-            "nonuma": 1770680320
+            "position": 0,
+            "uma": 67108864,
+            "nonuma": 1195446272
           }
         ]
       },
@@ -141,17 +207,28 @@
           "handleLastLayer": 25,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1044507608,
           "nonuma": 1201794008
         },
         "vrams": [
           {
-            "handleLayers": 6,
+            "handleLayers": 3,
+            "handleLastLayer": 28,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 468811776,
+            "nonuma": 1449750528
+          },
+          {
+            "handleLayers": 3,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 201326592,
-            "nonuma": 1926950912
+            "position": 0,
+            "uma": 100663296,
+            "nonuma": 1351716864
           }
         ]
       },
@@ -163,17 +240,28 @@
           "handleLastLayer": 24,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 1010953176,
           "nonuma": 1168239576
         },
         "vrams": [
           {
-            "handleLayers": 7,
+            "handleLayers": 4,
+            "handleLastLayer": 28,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 625082368,
+            "nonuma": 1606021120
+          },
+          {
+            "handleLayers": 3,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 234881024,
-            "nonuma": 2083221504
+            "position": 0,
+            "uma": 100663296,
+            "nonuma": 1351716864
           }
         ]
       },
@@ -185,17 +273,28 @@
           "handleLastLayer": 23,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 977398744,
           "nonuma": 1134685144
         },
         "vrams": [
           {
-            "handleLayers": 8,
+            "handleLayers": 4,
+            "handleLastLayer": 27,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 625082368,
+            "nonuma": 1606021120
+          },
+          {
+            "handleLayers": 4,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 268435456,
-            "nonuma": 2239492096
+            "position": 0,
+            "uma": 134217728,
+            "nonuma": 1507987456
           }
         ]
       },
@@ -207,17 +306,28 @@
           "handleLastLayer": 22,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 943844312,
           "nonuma": 1101130712
         },
         "vrams": [
           {
-            "handleLayers": 9,
+            "handleLayers": 5,
+            "handleLastLayer": 27,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 781352960,
+            "nonuma": 1762291712
+          },
+          {
+            "handleLayers": 4,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 301989888,
-            "nonuma": 2395762688
+            "position": 0,
+            "uma": 134217728,
+            "nonuma": 1507987456
           }
         ]
       },
@@ -229,17 +339,28 @@
           "handleLastLayer": 21,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 910289880,
           "nonuma": 1067576280
         },
         "vrams": [
           {
-            "handleLayers": 10,
+            "handleLayers": 5,
+            "handleLastLayer": 26,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 781352960,
+            "nonuma": 1762291712
+          },
+          {
+            "handleLayers": 5,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 335544320,
-            "nonuma": 2552033280
+            "position": 0,
+            "uma": 167772160,
+            "nonuma": 1664258048
           }
         ]
       },
@@ -251,17 +372,28 @@
           "handleLastLayer": 20,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 876735448,
           "nonuma": 1034021848
         },
         "vrams": [
           {
-            "handleLayers": 11,
+            "handleLayers": 6,
+            "handleLastLayer": 26,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 937623552,
+            "nonuma": 1918562304
+          },
+          {
+            "handleLayers": 5,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 369098752,
-            "nonuma": 2708303872
+            "position": 0,
+            "uma": 167772160,
+            "nonuma": 1664258048
           }
         ]
       },
@@ -273,17 +405,28 @@
           "handleLastLayer": 19,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 843181016,
           "nonuma": 1000467416
         },
         "vrams": [
           {
-            "handleLayers": 12,
+            "handleLayers": 6,
+            "handleLastLayer": 25,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 937623552,
+            "nonuma": 1918562304
+          },
+          {
+            "handleLayers": 6,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 402653184,
-            "nonuma": 2864574464
+            "position": 0,
+            "uma": 201326592,
+            "nonuma": 1820528640
           }
         ]
       },
@@ -295,17 +438,28 @@
           "handleLastLayer": 18,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 809626584,
           "nonuma": 966912984
         },
         "vrams": [
           {
-            "handleLayers": 13,
+            "handleLayers": 7,
+            "handleLastLayer": 25,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1093894144,
+            "nonuma": 2074832896
+          },
+          {
+            "handleLayers": 6,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 436207616,
-            "nonuma": 3020845056
+            "position": 0,
+            "uma": 201326592,
+            "nonuma": 1820528640
           }
         ]
       },
@@ -317,17 +471,28 @@
           "handleLastLayer": 17,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 776072152,
           "nonuma": 933358552
         },
         "vrams": [
           {
-            "handleLayers": 14,
+            "handleLayers": 7,
+            "handleLastLayer": 24,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1093894144,
+            "nonuma": 2074832896
+          },
+          {
+            "handleLayers": 7,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 469762048,
-            "nonuma": 3177115648
+            "position": 0,
+            "uma": 234881024,
+            "nonuma": 1976799232
           }
         ]
       },
@@ -339,17 +504,28 @@
           "handleLastLayer": 16,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 742517720,
           "nonuma": 899804120
         },
         "vrams": [
           {
-            "handleLayers": 15,
+            "handleLayers": 8,
+            "handleLastLayer": 24,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1250164736,
+            "nonuma": 2231103488
+          },
+          {
+            "handleLayers": 7,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 503316480,
-            "nonuma": 3333386240
+            "position": 0,
+            "uma": 234881024,
+            "nonuma": 1976799232
           }
         ]
       },
@@ -361,17 +537,28 @@
           "handleLastLayer": 15,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 708963288,
           "nonuma": 866249688
         },
         "vrams": [
           {
-            "handleLayers": 16,
+            "handleLayers": 8,
+            "handleLastLayer": 23,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1250164736,
+            "nonuma": 2231103488
+          },
+          {
+            "handleLayers": 8,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 536870912,
-            "nonuma": 3489656832
+            "position": 0,
+            "uma": 268435456,
+            "nonuma": 2133069824
           }
         ]
       },
@@ -383,17 +570,28 @@
           "handleLastLayer": 14,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 675408856,
           "nonuma": 832695256
         },
         "vrams": [
           {
-            "handleLayers": 17,
+            "handleLayers": 9,
+            "handleLastLayer": 23,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1406435328,
+            "nonuma": 2387374080
+          },
+          {
+            "handleLayers": 8,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 570425344,
-            "nonuma": 3645927424
+            "position": 0,
+            "uma": 268435456,
+            "nonuma": 2133069824
           }
         ]
       },
@@ -405,17 +603,28 @@
           "handleLastLayer": 13,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 641854424,
           "nonuma": 799140824
         },
         "vrams": [
           {
-            "handleLayers": 18,
+            "handleLayers": 9,
+            "handleLastLayer": 22,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1406435328,
+            "nonuma": 2387374080
+          },
+          {
+            "handleLayers": 9,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 603979776,
-            "nonuma": 3802198016
+            "position": 0,
+            "uma": 301989888,
+            "nonuma": 2289340416
           }
         ]
       },
@@ -427,17 +636,28 @@
           "handleLastLayer": 12,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 608299992,
           "nonuma": 765586392
         },
         "vrams": [
           {
-            "handleLayers": 19,
+            "handleLayers": 10,
+            "handleLastLayer": 22,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1562705920,
+            "nonuma": 2543644672
+          },
+          {
+            "handleLayers": 9,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 637534208,
-            "nonuma": 3958468608
+            "position": 0,
+            "uma": 301989888,
+            "nonuma": 2289340416
           }
         ]
       },
@@ -449,17 +669,28 @@
           "handleLastLayer": 11,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 574745560,
           "nonuma": 732031960
         },
         "vrams": [
           {
-            "handleLayers": 20,
+            "handleLayers": 10,
+            "handleLastLayer": 21,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1562705920,
+            "nonuma": 2543644672
+          },
+          {
+            "handleLayers": 10,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 671088640,
-            "nonuma": 4114739200
+            "position": 0,
+            "uma": 335544320,
+            "nonuma": 2445611008
           }
         ]
       },
@@ -471,17 +702,28 @@
           "handleLastLayer": 10,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 541191128,
           "nonuma": 698477528
         },
         "vrams": [
           {
-            "handleLayers": 21,
+            "handleLayers": 11,
+            "handleLastLayer": 21,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1718976512,
+            "nonuma": 2699915264
+          },
+          {
+            "handleLayers": 10,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 704643072,
-            "nonuma": 4271009792
+            "position": 0,
+            "uma": 335544320,
+            "nonuma": 2445611008
           }
         ]
       },
@@ -493,17 +735,28 @@
           "handleLastLayer": 9,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 507636696,
           "nonuma": 664923096
         },
         "vrams": [
           {
-            "handleLayers": 22,
+            "handleLayers": 11,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1718976512,
+            "nonuma": 2699915264
+          },
+          {
+            "handleLayers": 11,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 738197504,
-            "nonuma": 4427280384
+            "position": 0,
+            "uma": 369098752,
+            "nonuma": 2601881600
           }
         ]
       },
@@ -515,17 +768,28 @@
           "handleLastLayer": 8,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 474082264,
           "nonuma": 631368664
         },
         "vrams": [
           {
-            "handleLayers": 23,
+            "handleLayers": 12,
+            "handleLastLayer": 20,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1875247104,
+            "nonuma": 2856185856
+          },
+          {
+            "handleLayers": 11,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 771751936,
-            "nonuma": 4583550976
+            "position": 0,
+            "uma": 369098752,
+            "nonuma": 2601881600
           }
         ]
       },
@@ -537,17 +801,28 @@
           "handleLastLayer": 7,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 440527832,
           "nonuma": 597814232
         },
         "vrams": [
           {
-            "handleLayers": 24,
+            "handleLayers": 12,
+            "handleLastLayer": 19,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 1875247104,
+            "nonuma": 2856185856
+          },
+          {
+            "handleLayers": 12,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 805306368,
-            "nonuma": 4739821568
+            "position": 0,
+            "uma": 402653184,
+            "nonuma": 2758152192
           }
         ]
       },
@@ -559,17 +834,28 @@
           "handleLastLayer": 6,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 406973400,
           "nonuma": 564259800
         },
         "vrams": [
           {
-            "handleLayers": 25,
+            "handleLayers": 13,
+            "handleLastLayer": 19,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2031517696,
+            "nonuma": 3012456448
+          },
+          {
+            "handleLayers": 12,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 838860800,
-            "nonuma": 4896092160
+            "position": 0,
+            "uma": 402653184,
+            "nonuma": 2758152192
           }
         ]
       },
@@ -581,17 +867,28 @@
           "handleLastLayer": 5,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 373418968,
           "nonuma": 530705368
         },
         "vrams": [
           {
-            "handleLayers": 26,
+            "handleLayers": 13,
+            "handleLastLayer": 18,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2031517696,
+            "nonuma": 3012456448
+          },
+          {
+            "handleLayers": 13,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 872415232,
-            "nonuma": 5052362752
+            "position": 0,
+            "uma": 436207616,
+            "nonuma": 2914422784
           }
         ]
       },
@@ -603,17 +900,28 @@
           "handleLastLayer": 4,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 339864536,
           "nonuma": 497150936
         },
         "vrams": [
           {
-            "handleLayers": 27,
+            "handleLayers": 14,
+            "handleLastLayer": 18,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2187788288,
+            "nonuma": 3168727040
+          },
+          {
+            "handleLayers": 13,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 905969664,
-            "nonuma": 5208633344
+            "position": 0,
+            "uma": 436207616,
+            "nonuma": 2914422784
           }
         ]
       },
@@ -625,17 +933,28 @@
           "handleLastLayer": 3,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 306310104,
           "nonuma": 463596504
         },
         "vrams": [
           {
-            "handleLayers": 28,
+            "handleLayers": 14,
+            "handleLastLayer": 17,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2187788288,
+            "nonuma": 3168727040
+          },
+          {
+            "handleLayers": 14,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 939524096,
-            "nonuma": 5364903936
+            "position": 0,
+            "uma": 469762048,
+            "nonuma": 3070693376
           }
         ]
       },
@@ -647,17 +966,28 @@
           "handleLastLayer": 2,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 272755672,
           "nonuma": 430042072
         },
         "vrams": [
           {
-            "handleLayers": 29,
+            "handleLayers": 15,
+            "handleLastLayer": 17,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2344058880,
+            "nonuma": 3324997632
+          },
+          {
+            "handleLayers": 14,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 973078528,
-            "nonuma": 5521174528
+            "position": 0,
+            "uma": 469762048,
+            "nonuma": 3070693376
           }
         ]
       },
@@ -669,17 +999,28 @@
           "handleLastLayer": 1,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 239201240,
           "nonuma": 396487640
         },
         "vrams": [
           {
-            "handleLayers": 30,
+            "handleLayers": 15,
+            "handleLastLayer": 16,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2344058880,
+            "nonuma": 3324997632
+          },
+          {
+            "handleLayers": 15,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 1006632960,
-            "nonuma": 5677445120
+            "position": 0,
+            "uma": 503316480,
+            "nonuma": 3226963968
           }
         ]
       },
@@ -691,17 +1032,28 @@
           "handleLastLayer": 0,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 205646808,
           "nonuma": 362933208
         },
         "vrams": [
           {
-            "handleLayers": 31,
+            "handleLayers": 16,
+            "handleLastLayer": 16,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2500329472,
+            "nonuma": 3481268224
+          },
+          {
+            "handleLayers": 15,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 1040187392,
-            "nonuma": 5833715712
+            "position": 0,
+            "uma": 503316480,
+            "nonuma": 3226963968
           }
         ]
       },
@@ -713,17 +1065,28 @@
           "handleLastLayer": -1,
           "handleOutputLayer": true,
           "remote": false,
+          "position": 0,
           "uma": 172092376,
           "nonuma": 329378776
         },
         "vrams": [
           {
-            "handleLayers": 32,
+            "handleLayers": 16,
+            "handleLastLayer": 15,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2500329472,
+            "nonuma": 3481268224
+          },
+          {
+            "handleLayers": 16,
             "handleLastLayer": 31,
             "handleOutputLayer": false,
             "remote": false,
-            "uma": 1073741824,
-            "nonuma": 5989986304
+            "position": 0,
+            "uma": 536870912,
+            "nonuma": 3383234560
           }
         ]
       },
@@ -735,17 +1098,28 @@
           "handleLastLayer": -1,
           "handleOutputLayer": false,
           "remote": false,
-          "uma": 179951576,
-          "nonuma": 337237976
+          "position": 0,
+          "uma": 171562968,
+          "nonuma": 328849368
         },
         "vrams": [
           {
-            "handleLayers": 32,
+            "handleLayers": 17,
+            "handleLastLayer": 16,
+            "handleOutputLayer": false,
+            "remote": true,
+            "position": 0,
+            "uma": 2656600064,
+            "nonuma": 3539505152
+          },
+          {
+            "handleLayers": 15,
             "handleLastLayer": 31,
             "handleOutputLayer": true,
             "remote": false,
-            "uma": 1074271232,
-            "nonuma": 6315049984
+            "position": 0,
+            "uma": 503845888,
+            "nonuma": 3658449920
           }
         ]
       }
