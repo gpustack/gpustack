@@ -4,9 +4,10 @@ import psutil
 import requests
 import setproctitle
 import os
-import time
 from typing import Dict
 import logging
+
+import tenacity
 
 
 from gpustack.api.exceptions import NotFoundException
@@ -50,32 +51,34 @@ class ServeManager:
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_fixed(2),
+        reraise=True,
+        before_sleep=lambda retry_state: logger.debug(
+            f"Retrying to get worker ID (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
+        ),
+    )
     def _get_current_worker_id(self):
-        for _ in range(3):
-            workers = None
-            try:
-                workers = self._clientset.workers.list()
-            except Exception as e:
-                logger.debug(f"Failed to get workers: {e}")
+        workers = self._clientset.workers.list()
 
-            if workers:
-                for worker in workers.items:
-                    if worker.name == self._worker_name:
-                        self._worker_id = worker.id
-                        break
-            time.sleep(1)
+        if workers and workers.items:
+            for worker in workers.items:
+                if worker.name == self._worker_name:
+                    self._worker_id = worker.id
+                    logger.debug(f"Successfully found worker ID: {worker.id}")
+                    return
 
-        if not hasattr(self, "_worker_id"):
-            raise Exception("Failed to get current worker id.")
+        raise Exception(f"Worker {self._worker_name} not found.")
 
     async def watch_model_instances(self):
-        if not hasattr(self, "_worker_id"):
-            self._get_current_worker_id()
-
         while True:
-            await asyncio.sleep(5)
-            logger.debug("Started watching model instances.")
             try:
+                if not hasattr(self, "_worker_id"):
+                    self._get_current_worker_id()
+
+                await asyncio.sleep(5)
+                logger.debug("Started watching model instances.")
                 await self._clientset.model_instances.awatch(
                     callback=self._handle_model_instance_event
                 )
