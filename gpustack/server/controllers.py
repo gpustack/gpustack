@@ -27,6 +27,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
+from gpustack.server.services import ModelInstanceService, ModelService
 
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ async def set_default_worker_selector(session: AsyncSession, model: Model):
     ):
         # vLLM models are only supported on Linux
         model.worker_selector = {"os": "linux"}
-        await model.update(session)
+        await ModelService(session).update(model)
 
 
 async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
@@ -162,7 +163,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 state=ModelInstanceStateEnum.PENDING,
             )
 
-            await ModelInstance.create(session, instance)
+            await ModelInstanceService(session).create(instance)
             logger.debug(f"Created model instance for model {model.name}")
 
     elif len(instances) > model.replicas:
@@ -172,7 +173,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
         if scale_down_count > 0:
             for candidate in candidates[:scale_down_count]:
                 instance = candidate.model_instance
-                await instance.delete(session)
+                await ModelInstanceService(session).delete(instance)
                 logger.debug(f"Deleted model instance {instance.name}")
 
 
@@ -346,7 +347,7 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
 
     if model.ready_replicas != ready_replicas:
         model.ready_replicas = ready_replicas
-        await model.update(session)
+        await ModelService(session).update(model)
 
 
 async def get_meta_from_running_instance(mi: ModelInstance) -> Dict[str, Any]:
@@ -434,7 +435,7 @@ class WorkerController:
             ):
                 instance_names = [instance.name for instance in instances]
                 for instance in instances:
-                    await instance.delete(session)
+                    await ModelInstanceService(session).delete(instance)
 
                 if instance_names:
                     state = (
@@ -474,7 +475,7 @@ class WorkerController:
 
                 instance.state = new_state
                 instance.state_message = new_state_message
-                await instance.update(session)
+                await ModelInstanceService(session).update(instance)
         if instance_names:
             logger.debug(
                 f"Marked instance {', '.join(instance_names)} {new_state} "
@@ -544,6 +545,7 @@ async def sync_main_model_file_state(
         f"progress: {file.download_progress}, message: {file.state_message}, instance state: {instance.state}"
     )
 
+    need_update = False
     if (
         file.state == ModelFileStateEnum.DOWNLOADING
         and instance.state == ModelInstanceStateEnum.INITIALIZING
@@ -551,7 +553,8 @@ async def sync_main_model_file_state(
         # Download started
         instance.state = ModelInstanceStateEnum.DOWNLOADING
         instance.download_progress = 0
-        await instance.update(session)
+        instance.state_message = ""
+        need_update = True
     elif (
         file.state == ModelFileStateEnum.DOWNLOADING
         and instance.state == ModelInstanceStateEnum.DOWNLOADING
@@ -559,7 +562,7 @@ async def sync_main_model_file_state(
     ):
         # Update the download progress
         instance.download_progress = file.download_progress
-        await instance.update(session)
+        need_update = True
 
     elif file.state == ModelFileStateEnum.READY and (
         instance.state == ModelInstanceStateEnum.DOWNLOADING
@@ -571,12 +574,15 @@ async def sync_main_model_file_state(
         if model_instance_download_completed(instance):
             # All files are downloaded
             instance.state = ModelInstanceStateEnum.STARTING
-        await instance.update(session)
+        need_update = True
     elif file.state == ModelFileStateEnum.ERROR:
         # Download failed
         instance.state = ModelInstanceStateEnum.ERROR
         instance.state_message = file.state_message
-        await instance.update(session)
+        need_update = True
+
+    if need_update:
+        await ModelInstanceService(session).update(instance)
 
 
 async def sync_distributed_model_file_state(
@@ -623,7 +629,7 @@ async def sync_distributed_model_file_state(
     if need_update:
         instance.distributed_servers.ray_actors = ray_actors
         flag_modified(instance, "distributed_servers")
-        await instance.update(session)
+        await ModelInstanceService(session).update(instance)
 
 
 def model_instance_download_completed(instance: ModelInstance):

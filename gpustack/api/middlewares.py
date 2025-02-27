@@ -27,6 +27,8 @@ from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.server.db import get_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.server.services import ModelUsageService
+
 logger = logging.getLogger(__name__)
 
 
@@ -169,14 +171,14 @@ async def record_model_usage(
         request_count=1,
     )
     async with AsyncSession(get_engine()) as session:
-        current_model_usage = await ModelUsage.one_by_fields(session, fields)
+        model_usage_service = ModelUsageService(session)
+        current_model_usage = await model_usage_service.get_by_fields(fields)
         if current_model_usage:
-            current_model_usage.completion_token_count += completion_tokens
-            current_model_usage.prompt_token_count += prompt_tokens
-            current_model_usage.request_count += 1
-            await current_model_usage.update(session)
+            await model_usage_service.update(
+                current_model_usage, completion_tokens, prompt_tokens
+            )
         else:
-            await ModelUsage.create(session, model_usage)
+            await model_usage_service.create(model_usage)
 
 
 async def handle_streaming_response(

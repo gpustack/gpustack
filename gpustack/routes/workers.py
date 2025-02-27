@@ -14,6 +14,7 @@ from gpustack.schemas.workers import (
     WorkersPublic,
     Worker,
 )
+from gpustack.server.services import WorkerService
 
 router = APIRouter()
 
@@ -77,7 +78,7 @@ async def update_worker(session: SessionDep, id: int, worker_in: WorkerUpdate):
 
     try:
         worker_in.compute_state()
-        await worker.update(session, worker_in)
+        await WorkerService(session).update(worker, worker_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update worker: {e}")
 
@@ -91,6 +92,6 @@ async def delete_worker(session: SessionDep, id: int):
         raise NotFoundException(message="worker not found")
 
     try:
-        await worker.delete(session)
+        await WorkerService(session).delete(worker)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete worker: {e}")

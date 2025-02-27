@@ -24,11 +24,10 @@ from gpustack.routes.models import build_pg_category_condition
 from gpustack.schemas.models import (
     CategoryEnum,
     Model,
-    ModelInstance,
-    ModelInstanceStateEnum,
 )
-from gpustack.schemas.workers import Worker
+from gpustack.server.db import get_session_context
 from gpustack.server.deps import SessionDep
+from gpustack.server.services import ModelInstanceService, ModelService, WorkerService
 
 
 logger = logging.getLogger(__name__)
@@ -40,38 +39,38 @@ aliasable_router = APIRouter()
 
 
 @aliasable_router.post("/chat/completions")
-async def chat_completions(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "chat/completions")
+async def chat_completions(request: Request):
+    return await proxy_request_by_model(request, "chat/completions")
 
 
 @aliasable_router.post("/completions")
-async def completions(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "completions")
+async def completions(request: Request):
+    return await proxy_request_by_model(request, "completions")
 
 
 @aliasable_router.post("/embeddings")
-async def embeddings(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "embeddings")
+async def embeddings(request: Request):
+    return await proxy_request_by_model(request, "embeddings")
 
 
 @aliasable_router.post("/images/generations")
-async def images_generations(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "images/generations")
+async def images_generations(request: Request):
+    return await proxy_request_by_model(request, "images/generations")
 
 
 @aliasable_router.post("/images/edits")
-async def images_edits(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "images/edits")
+async def images_edits(request: Request):
+    return await proxy_request_by_model(request, "images/edits")
 
 
 @aliasable_router.post("/audio/speech")
-async def audio_speech(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "audio/speech")
+async def audio_speech(request: Request):
+    return await proxy_request_by_model(request, "audio/speech")
 
 
 @aliasable_router.post("/audio/transcriptions")
-async def audio_transcriptions(session: SessionDep, request: Request):
-    return await proxy_request_by_model(request, session, "audio/transcriptions")
+async def audio_transcriptions(request: Request):
+    return await proxy_request_by_model(request, "audio/transcriptions")
 
 
 router = APIRouter()
@@ -167,31 +166,32 @@ async def list_models(
     return result
 
 
-async def proxy_request_by_model(request: Request, session: SessionDep, endpoint: str):
+async def proxy_request_by_model(request: Request, endpoint: str):
     """
     Proxy the request to the model instance that is running the model specified in the
     request body.
     """
-    model, stream, body_json, form_data, form_files = await parse_request_body(
-        request, session
-    )
-
-    if not model:
-        raise NotFoundException(
-            message="Model not found",
-            is_openai_exception=True,
+    async with get_session_context() as session:
+        model, stream, body_json, form_data, form_files = await parse_request_body(
+            request, session
         )
 
-    request.state.model = model
-    request.state.stream = stream
+        if not model:
+            raise NotFoundException(
+                message="Model not found",
+                is_openai_exception=True,
+            )
 
-    instance = await get_running_instance(session, model.id)
-    worker = await Worker.one_by_id(session, instance.worker_id)
-    if not worker:
-        raise InternalServerErrorException(
-            message=f"Worker with ID {instance.worker_id} not found",
-            is_openai_exception=True,
-        )
+        request.state.model = model
+        request.state.stream = stream
+
+        instance = await get_running_instance(session, model.id)
+        worker = await WorkerService(session).get_by_id(instance.worker_id)
+        if not worker:
+            raise InternalServerErrorException(
+                message=f"Worker with ID {instance.worker_id} not found",
+                is_openai_exception=True,
+            )
 
     url = f"http://{instance.worker_ip}:{worker.port}/proxy/v1/{endpoint}"
     token = request.app.state.server_config.token
@@ -254,7 +254,7 @@ async def parse_request_body(request: Request, session: SessionDep):
         # stream may be set in form data, e.g., image edits.
         stream = True
 
-    model = await get_model(session, model_name)
+    model = await ModelService(session).get_by_name(model_name)
     return model, stream, body_json, form_data, form_files
 
 
@@ -292,10 +292,6 @@ async def parse_json_body(request: Request):
             message=f"We could not parse the JSON body of your request: {e}",
             is_openai_exception=True,
         )
-
-
-async def get_model(session: SessionDep, model_name: Optional[str]):
-    return await Model.one_by_field(session=session, field="name", value=model_name)
 
 
 async def handle_streaming_request(
@@ -405,12 +401,9 @@ def filter_headers(headers):
 
 
 async def get_running_instance(session: AsyncSession, model_id: int):
-    model_instances = await ModelInstance.all_by_field(
-        session=session, field="model_id", value=model_id
+    running_instances = await ModelInstanceService(session).get_running_instances(
+        model_id
     )
-    running_instances = [
-        inst for inst in model_instances if inst.state == ModelInstanceStateEnum.RUNNING
-    ]
     if not running_instances:
         raise ServiceUnavailableException(
             message="No running instances available",

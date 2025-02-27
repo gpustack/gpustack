@@ -51,6 +51,7 @@ psycopg2-binary = "^2.9.10"
 vox-box = {version = "0.0.11", optional = true}
 
 tenacity = "^9.0.0"
+aiocache = "^0.12.3"
 aiofiles = "^23.2.1"
 aiohttp = "^3.11.2"
 bitsandbytes = {version = "^0.45.2", optional = true}

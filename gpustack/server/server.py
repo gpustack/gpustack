@@ -23,6 +23,7 @@ from gpustack.scheduler.scheduler import Scheduler
 from gpustack.ray.manager import RayManager
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
+from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.process import add_signal_handlers_in_loop
 
@@ -65,6 +66,7 @@ class Server:
         self._start_system_load_collector()
         self._start_worker_syncer()
         self._start_update_checker()
+        self._start_model_usage_flusher()
         self._start_ray()
 
         port = 80
@@ -169,6 +171,11 @@ class Server:
         self._create_async_task(worker_syncer.start())
 
         logger.debug("Worker syncer started.")
+
+    def _start_model_usage_flusher(self):
+        self._create_async_task(flush_usage_to_db())
+
+        logger.debug("Model usage flusher started.")
 
     def _start_update_checker(self):
         if self._config.disable_update_check:
