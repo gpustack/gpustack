@@ -54,7 +54,7 @@ class VoxBoxServer(InferenceServer):
                     f"Model environment variables: {', '.join(f'{key}={value}' for key, value in self._model.env.items())}"
                 )
 
-            env = self.get_inference_running_env(self._model_instance.gpu_indexes)
+            env = self.get_inference_running_env()
             result = subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,
