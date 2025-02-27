@@ -145,7 +145,9 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ):
             return []
 
-        allocatable = await get_worker_allocatable_resource(self._engine, worker)
+        allocatable = await get_worker_allocatable_resource(
+            self._engine, worker, self._model_instance
+        )
         is_unified_memory = worker.status.memory.is_unified_memory
 
         if self._gpu_ram_claim > allocatable.ram:
@@ -212,7 +214,9 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ):
             return []
 
-        allocatable = await get_worker_allocatable_resource(self._engine, worker)
+        allocatable = await get_worker_allocatable_resource(
+            self._engine, worker, self._model_instance
+        )
         is_unified_memory = worker.status.memory.is_unified_memory
 
         if self._cpu_ram_claim > allocatable.ram:

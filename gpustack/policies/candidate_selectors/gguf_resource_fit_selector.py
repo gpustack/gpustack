@@ -137,7 +137,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if self._workers_allocatable_resource.get(worker.id):
             return self._workers_allocatable_resource.get(worker.id)
 
-        return await get_worker_allocatable_resource(self._engine, worker)
+        return await get_worker_allocatable_resource(
+            self._engine, worker, self._model_instance
+        )
 
     def _get_vram_claim_with_layers(self, layers: int, is_uma: bool = False) -> int:
         vram_claim = 0
@@ -193,7 +195,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     async def _set_workers_allocatable_resource(self, workers: List[Worker]):
         for worker in workers:
             self._workers_allocatable_resource[worker.id] = (
-                await get_worker_allocatable_resource(self._engine, worker)
+                await get_worker_allocatable_resource(
+                    self._engine, worker, self._model_instance
+                )
             )
 
     def _set_single_layer_vram(
