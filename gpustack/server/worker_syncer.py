@@ -3,6 +3,7 @@ import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import get_engine
+from gpustack.server.services import WorkerService
 from gpustack.utils.network import is_url_reachable
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ class WorkerSyncer:
                     state_to_worker_name[worker.state].append(worker.name)
 
             for worker in should_update_workers:
-                await worker.update(session, worker)
+                await WorkerService(session).update(worker)
 
             for state, worker_names in state_to_worker_name.items():
                 if worker_names:

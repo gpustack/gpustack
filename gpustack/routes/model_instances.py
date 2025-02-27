@@ -3,6 +3,7 @@ import aiohttp
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
+from gpustack.server.services import ModelInstanceService
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -136,7 +137,7 @@ async def update_model_instance(
         raise NotFoundException(message="Model instance not found")
 
     try:
-        await model_instance.update(session, model_instance_in)
+        await ModelInstanceService(session).update(model_instance, model_instance_in)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update model instance: {e}"
@@ -152,7 +153,7 @@ async def delete_model_instance(session: SessionDep, id: int):
         raise NotFoundException(message="Model instance not found")
 
     try:
-        await model_instance.delete(session)
+        await ModelInstanceService(session).delete(model_instance)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to delete model instance: {e}"

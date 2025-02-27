@@ -50,6 +50,7 @@ from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_model_resource_claim,
 )
+from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.gpu import parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_pretrained_config
 from gpustack.utils.task import run_in_thread
@@ -142,7 +143,7 @@ class Scheduler:
                 if instance.state != ModelInstanceStateEnum.ANALYZING:
                     instance.state = ModelInstanceStateEnum.ANALYZING
                     instance.state_message = "Evaluating resource requirements"
-                    await instance.update(session)
+                    await ModelInstanceService(session).update(instance)
 
                 if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
                     model.local_path
@@ -166,14 +167,14 @@ class Scheduler:
                     should_update_model = await evaluate_pretrained_config(model)
 
                 if should_update_model:
-                    await model.update(session)
+                    await ModelService(session).update(model)
 
                 await self._queue.put(instance)
             except Exception as e:
                 try:
                     instance.state = ModelInstanceStateEnum.ERROR
                     instance.state_message = str(e)
-                    await instance.update(session)
+                    await ModelInstanceService(session).update(instance)
                 except Exception as ue:
                     logger.error(
                         f"Failed to update model instance: {ue}. Original error: {e}"
@@ -193,7 +194,7 @@ class Scheduler:
                 instance.state_message = (
                     "The model is not distributable to multiple workers."
                 )
-                await instance.update(session)
+                await ModelInstanceService(session).update(instance)
                 return True
         return False
 
@@ -282,7 +283,7 @@ class Scheduler:
                 if state_message != "":
                     model_instance.state_message = state_message
 
-                await model_instance.update(session, model_instance)
+                await ModelInstanceService(session).update(model_instance)
                 logger.debug(
                     f"No suitable workers for model instance {model_instance.name}, state: {model_instance.state}"
                 )
@@ -302,7 +303,7 @@ class Scheduler:
                     ray_actors=candidate.ray_actors,
                 )
 
-                await model_instance.update(session, model_instance)
+                await ModelInstanceService(session).update(model_instance)
 
                 logger.debug(
                     f"Scheduled model instance {model_instance.name} to worker "

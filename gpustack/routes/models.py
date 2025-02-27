@@ -31,6 +31,7 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
+from gpustack.server.services import ModelService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
@@ -281,7 +282,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
     await validate_model_in(session, model_in)
 
     try:
-        await model.update(session, model_in)
+        await ModelService(session).update(model, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update model: {e}")
 
@@ -295,6 +296,6 @@ async def delete_model(session: SessionDep, id: int):
         raise NotFoundException(message="Model not found")
 
     try:
-        await model.delete(session)
+        await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
+import logging
 from fastapi import Depends, Request
 from gpustack.config.config import Config
-from gpustack.schemas.api_keys import ApiKey
 from gpustack.server.db import get_session
 from typing import Annotated, Optional
 from fastapi.security import (
@@ -12,13 +12,20 @@ from fastapi.security import (
     HTTPBearer,
 )
 from sqlmodel.ext.asyncio.session import AsyncSession
-from gpustack.api.exceptions import ForbiddenException, UnauthorizedException
+from gpustack.api.exceptions import (
+    ForbiddenException,
+    InternalServerErrorException,
+    UnauthorizedException,
+)
 from gpustack.schemas.users import User
 from gpustack.security import (
     API_KEY_PREFIX,
     JWTManager,
     verify_hashed_secret,
 )
+from gpustack.server.services import APIKeyService, UserService
+
+logger = logging.getLogger(__name__)
 
 SESSION_COOKIE_NAME = "gpustack_session"
 SYSTEM_USER_PREFIX = "system/"
@@ -58,8 +65,10 @@ async def get_current_user(
     if user is None and request.client.host == "127.0.0.1":
         server_config: Config = request.app.state.server_config
         if not server_config.force_auth_localhost:
-            user = await User.first_by_field(session, "is_admin", True)
-
+            try:
+                user = await User.first_by_field(session, "is_admin", True)
+            except Exception as e:
+                raise InternalServerErrorException(message=f"Failed to get user: {e}")
     if user:
         request.state.user = user
         return user
@@ -124,14 +133,17 @@ async def get_user_from_jwt_token(
         payload = jwt_manager.decode_jwt_token(access_token)
         username = payload.get("sub")
     except Exception:
+        logger.error("Failed to decode JWT token")
         return None
 
     if username is None:
         return None
 
-    user = await User.one_by_field(session, "username", username)
-    if not user:
-        return None
+    try:
+        user = await UserService(session).get_by_username(username)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to get user: {e}")
+
     return user
 
 
@@ -143,7 +155,7 @@ async def get_user_from_bearer_token(
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
-            api_key = await ApiKey.one_by_field(session, "access_key", access_key)
+            api_key = await APIKeyService(session).get_by_access_key(access_key)
             if (
                 api_key is not None
                 and verify_hashed_secret(api_key.hashed_secret_key, secret_key)
@@ -152,11 +164,11 @@ async def get_user_from_bearer_token(
                     or api_key.expires_at > datetime.now(timezone.utc)
                 )
             ):
-                user = await User.one_by_id(session, api_key.user_id)
+                user = await UserService(session).get_by_id(api_key.user_id)
                 if user is not None:
                     return user
-    except Exception:
-        return None
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
     return None
 
@@ -164,7 +176,7 @@ async def get_user_from_bearer_token(
 async def authenticate_user(
     session: AsyncSession, username: str, password: str
 ) -> User:
-    user = await User.one_by_field(session, "username", username)
+    user = await UserService(session).get_by_username(username)
     if not user:
         raise UnauthorizedException(message="Incorrect username or password")
 
