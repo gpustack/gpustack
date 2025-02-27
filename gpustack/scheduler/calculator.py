@@ -324,9 +324,6 @@ async def calculate_model_resource_claim(
     command = await _gguf_parser_command(model, offload, **kwargs)
     try:
         start_time = time.time()
-        logger.trace(
-            f"Running parser for model instance {model_instance.name} with command: {' '.join(map(str, command))}"
-        )
 
         process = await asyncio.create_subprocess_exec(
             *command,
