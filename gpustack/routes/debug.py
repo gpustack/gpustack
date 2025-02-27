@@ -18,7 +18,7 @@ async def get_log_level():
 async def set_log_level(request: Request):
     level = await request.body()
     level_str = level.decode("utf-8").upper().strip()
-    numeric_level = getattr(logging, level_str, None)
+    numeric_level = logging._nameToLevel.get(level_str)
     if not isinstance(numeric_level, int):
         raise InvalidException(message="Invalid log level")
 

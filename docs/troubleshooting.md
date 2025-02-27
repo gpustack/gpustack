@@ -32,7 +32,7 @@ The same applies to GPUStack workers:
 curl -X PUT http://localhost:10150/debug/log_level -d "debug"
 ```
 
-The available log levels are: `debug`, `info`, `warning`, `error`, `critical`.
+The available log levels are:`trace`, `debug`, `info`, `warning`, `error`, `critical`.
 
 ## Reset Admin Password
 
