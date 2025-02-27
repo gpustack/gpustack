@@ -1264,6 +1264,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                     claim = e.vrams[position].uma
 
                 if claim > main_worker_gpu_allocatable:
+                    main_worker_satisfied = False
                     break
 
                 main_worker_satisfied = True

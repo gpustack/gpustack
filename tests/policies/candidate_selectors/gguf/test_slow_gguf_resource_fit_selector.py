@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import uuid
 import pytest
 from gpustack.config.config import Config, set_global_config
+from gpustack.logging import setup_logging
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
     GGUFResourceFitSelector,
@@ -63,10 +64,7 @@ from tests.policies.candidate_selectors.gguf.test_gguf_resource_fit_selector imp
 )
 from tests.utils.model import new_model, new_model_instance
 
-level_str = 'DEBUG'
-numeric_level = getattr(logging, level_str, None)
-logging.getLogger().setLevel(numeric_level)
-
+setup_logging(debug=True)
 
 # Required: gguf-parser 0.13.10
 # Set GGUF_PARSER_PATH environment variable to the path of gguf-parser executable
@@ -708,6 +706,146 @@ async def test_schedule_with_deepseek_r1_bf16_with_end_in_no_candidate(temp_dir)
             == "No workers meet the resource requirements. The system attempted full offloading (using one or multiple GPUs), distributed deployments across multiple workers, but none were suitable. For distributed deployments, the high number of GPUs makes automatic evaluation too slow, manual GPU selection is recommended."
         )
         candidates = await placement_scorer_spread.score(candidates)
+
+
+@pytest.mark.asyncio
+async def test_schedule_with_deepseek_r1_q8_0_with_end_with_workerx2x80gx8(temp_dir):
+    cache_dir = os.path.join(
+        os.path.dirname(__file__),
+        "../../../fixtures/estimates/unsloth_DeepSeek-R1-GGUF_DeepSeek-R1-Q8_0",
+    )
+    config = Config(
+        token="test",
+        jwt_secret_key="test",
+        data_dir=temp_dir,
+        cache_dir=cache_dir,
+        huggingface_token="",
+    )
+    set_global_config(config)
+
+    if not check_parser():
+        pytest.skip("parser path is not available or version mismatch, skipping.")
+
+    workers = create_workers_with_gpu_step(2, 1, 2000, 8, 80, 0)
+
+    m = new_model(
+        1,
+        "DeepSeek-R1-GGUF",
+        1,
+        huggingface_repo_id="unsloth/DeepSeek-R1-GGUF",
+        placement_strategy=PlacementStrategyEnum.SPREAD,
+        huggingface_filename="DeepSeek-R1-Q8_0/DeepSeek-R1.Q8_0-00001-of-00015.gguf",
+        cpu_offloading=True,
+        distributable=True,
+        backend_parameters=[],
+    )
+
+    mi = new_model_instance(1, "test", 1)
+
+    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
+    placement_scorer_spread = PlacementScorer(m, mi)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.scheduler.calculator._gguf_parser_command',
+            side_effect=mock_gguf_parser_command,
+        ),
+        patch(
+            'gpustack.scheduler.calculator.hf_model_filename',
+            return_value="DeepSeek-R1-Q8_0/DeepSeek-R1.Q8_0-00001-of-00015.gguf",
+        ),
+        patch(
+            'gpustack.scheduler.calculator.hf_mmproj_filename',
+            return_value=None,
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer_spread.score(candidates)
+        expected_candidates = [
+            {
+                "offload_layers": 62,
+                "worker_id": 1,
+                "worker_name": "host01",
+                "is_unified_memory": False,
+                "ram": 2232209448,
+                "vram": {
+                    0: 78003226624,
+                    1: 78003226624,
+                    2: 65100207104,
+                    3: 78003226624,
+                    4: 78003226624,
+                    5: 65100207104,
+                    6: 78003226624,
+                    7: 53417763840,
+                },
+                "score": 100,
+                "gpu_indexes": [0, 1, 2, 3, 4, 5, 6, 7],
+                "tensor_split": [
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                    85899345920,
+                ],
+                "rpc_servers": [
+                    ModelInstanceRPCServer(
+                        worker_id=2,
+                        gpu_index=0,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=False,
+                            offload_layers=6,
+                            total_layers=62,
+                            ram=0,
+                            vram={0: 43167431680},
+                        ),
+                    ),
+                    ModelInstanceRPCServer(
+                        worker_id=2,
+                        gpu_index=1,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=False,
+                            offload_layers=6,
+                            total_layers=62,
+                            ram=0,
+                            vram={0: 78003226624},
+                        ),
+                    ),
+                    ModelInstanceRPCServer(
+                        worker_id=2,
+                        gpu_index=2,
+                        computed_resource_claim=ComputedResourceClaim(
+                            is_unified_memory=False,
+                            offload_layers=5,
+                            total_layers=62,
+                            ram=0,
+                            vram={0: 65100207104},
+                        ),
+                    ),
+                ],
+            },
+        ]
+
+        compare_candidates([candidates[0]], expected_candidates)
 
 
 async def mock_gguf_parser_command(
