@@ -70,7 +70,7 @@ class Worker:
 
         self._clientset = ClientSet(
             base_url=cfg.server_url,
-            username=f"system/worker/{self._worker_name}",
+            username=f"system/worker/{self._worker_ip}",
             password=cfg.token,
         )
         self._worker_manager = WorkerManager(
