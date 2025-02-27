@@ -153,7 +153,9 @@ def register_handlers(app: FastAPI):
         return JSONResponse(
             status_code=exc.status_code,
             content=ErrorResponse(
-                code=exc.status_code, reason=exc.reason, message=exc.message
+                code=exc.status_code,
+                reason=exc.reason,
+                message=exc.message,
             ).model_dump(),
         )
 
@@ -174,11 +176,12 @@ def register_handlers(app: FastAPI):
         )
 
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request, exc: RequestValidationError):
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
         message = f"{len(exc.errors())} validation errors:\n"
         for err in exc.errors():
             message += f"  {err}\n"
-
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=ErrorResponse(
