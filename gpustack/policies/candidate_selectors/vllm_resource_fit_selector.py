@@ -331,7 +331,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         candidates = []
 
-        allocatable = await get_worker_allocatable_resource(self._engine, worker)
+        allocatable = await get_worker_allocatable_resource(
+            self._engine, worker, self._model_instance
+        )
 
         if worker.status.gpu_devices:
             for _, gpu in enumerate(worker.status.gpu_devices):
@@ -411,7 +413,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if total_gpu < 2:
             return None
 
-        allocatable = await get_worker_allocatable_resource(self._engine, worker)
+        allocatable = await get_worker_allocatable_resource(
+            self._engine, worker, self._model_instance
+        )
         sorted_gpu_devices: GPUDevicesInfo = sorted(
             [
                 gpu

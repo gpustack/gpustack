@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 from gpustack.policies.base import (
     Allocatable,
     Allocated,
@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 async def get_worker_allocatable_resource(  # noqa: C901
-    engine: AsyncEngine, worker: Worker
+    engine: AsyncEngine,
+    worker: Worker,
+    instance: Optional[ModelInstance] = None,
 ) -> Allocatable:
     """
     Get the worker with the latest allocatable resources.
@@ -84,6 +86,7 @@ async def get_worker_allocatable_resource(  # noqa: C901
         f"reserved gpu memory: {worker.system_reserved.vram}, "
         f"allocatable memory: {allocatable.ram}, "
         f"allocatable gpu memory: {allocatable.vram}"
+        f"{', model: ' + instance.model_name + ', instance: ' + instance.name if instance else ''}"
     )
     return allocatable
 

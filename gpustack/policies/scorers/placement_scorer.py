@@ -126,7 +126,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         """
         for candidate in candidates:
             allocatable = await get_worker_allocatable_resource(
-                self._engine, candidate.worker
+                self._engine, candidate.worker, self._model_instance
             )
 
             final_score = 0
@@ -174,7 +174,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
 
             worker = worker_map.get(instance.worker_id)
 
-            allocatable = await get_worker_allocatable_resource(self._engine, worker)
+            allocatable = await get_worker_allocatable_resource(
+                self._engine, worker, self._model_instance
+            )
 
             final_score = 0
             score = await self._score_binpack_item(
@@ -464,7 +466,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             score = 0
             for rpc_server in rpc_servers:
                 allocatable = await get_worker_allocatable_resource(
-                    self._engine, worker_map.get(rpc_server.worker_id)
+                    self._engine,
+                    worker_map.get(rpc_server.worker_id),
+                    self._model_instance,
                 )
 
                 score += await self._score_binpack_item(

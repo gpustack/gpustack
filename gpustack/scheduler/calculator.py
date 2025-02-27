@@ -324,6 +324,9 @@ async def calculate_model_resource_claim(
     command = await _gguf_parser_command(model, offload, **kwargs)
     try:
         start_time = time.time()
+        logger.trace(
+            f"Running parser for model instance {model_instance.name} with command: {' '.join(map(str, command))}"
+        )
 
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -344,18 +347,18 @@ async def calculate_model_resource_claim(
         latency = time.time() - start_time
 
         if offload == GPUOffloadEnum.Full:
-            logger.debug(
-                f"Finished running parser for full offload model instance {model_instance.name}, latency: {latency}, "
+            logger.trace(
+                f"Finished running parser for full offload model instance {model_instance.name}, latency: {latency:.2f}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Partial:
-            logger.debug(
-                f"Finished running parser for partial offloading model instance {model_instance.name}, latency: {latency}, at least: "
+            logger.trace(
+                f"Finished running parser for partial offloading model instance {model_instance.name}, latency: {latency:.2f}, at least: "
                 f"{claim.estimate.items[1].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Disable:
-            logger.debug(
-                f"Finished running parser for disabled offloading model instance {model_instance.name}, latency: {latency}, "
+            logger.trace(
+                f"Finished running parser for disabled offloading model instance {model_instance.name}, latency: {latency:.2f}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
             clear_vram_claim(claim)
