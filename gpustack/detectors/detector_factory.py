@@ -21,8 +21,9 @@ class DetectorFactory:
         self,
         device: Optional[str] = None,
         gpu_detectors: Optional[Dict[str, List[GPUDetector]]] = None,
+        system_info_detector: Optional[SystemInfo] = None,
     ):
-        self.system_info_detector = Fastfetch()
+        self.system_info_detector = system_info_detector or Fastfetch()
         self.device = device if device else platform.device()
         if self.device:
             all_gpu_detectors = gpu_detectors or self._get_builtin_gpu_detectors()
@@ -66,7 +67,8 @@ class DetectorFactory:
         for detector in self.gpu_detectors:
             if detector.is_available():
                 gpus = detector.gather_gpu_info()
-                return self._filter_gpu_devices(gpus)
+                if gpus:
+                    return self._filter_gpu_devices(gpus)
 
         return []
 

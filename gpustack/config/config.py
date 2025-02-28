@@ -5,8 +5,16 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
+    CPUInfo,
+    FileSystemInfo,
     GPUDeviceInfo,
+    KernelInfo,
     MemoryInfo,
+    MountPoint,
+    OperatingSystemInfo,
+    SwapInfo,
+    SystemInfo,
+    UptimeInfo,
     VendorEnum,
     GPUDevicesInfo,
 )
@@ -141,8 +149,132 @@ class Config(BaseSettings):
 
         if self.resources:
             self.get_gpu_devices()
+            self.get_system_info()
 
         return self
+
+    def get_system_info(self) -> SystemInfo:  # noqa: C901
+        """get system info from resources
+        resource example:
+        ```yaml
+        resources:
+            cpu:
+              total: 10
+            memory:
+              total: 34359738368
+              is_unified_memory: true
+            swap:
+              total: 3221225472
+            filesystem:
+              - name: Macintosh HD
+                mount_point: /
+                mount_from: /dev/disk3s1s1
+                total: 994662584320
+            os:
+              name: macOS
+              version: "14.5"
+            kernel:
+              name: Darwin
+              release: 23.5.0
+              version: "Darwin Kernel Version 23.5.0: Wed May  1 20:12:58 PDT 2024;"
+              architecture: ""
+            uptime:
+              uptime: 355250885
+              boot_time: 2025-02-24T09:17:51.337+0800
+        ```
+        """
+        system_info: SystemInfo = SystemInfo()
+        if not self.resources:
+            return None
+
+        cpu_dict = self.resources.get("cpu")
+        if cpu_dict and cpu_dict.get("total"):
+            system_info.cpu = CPUInfo(total=cpu_dict.get("total"))
+
+        memory_dict = self.resources.get("memory")
+        if memory_dict and memory_dict.get("total"):
+            system_info.memory = MemoryInfo(total=memory_dict.get("total"))
+
+        swap_dict = self.resources.get("swap")
+        if swap_dict and swap_dict.get("total"):
+            system_info.swap = SwapInfo(total=swap_dict.get("total"))
+
+        filesystem_dict = self.resources.get("filesystem")
+        if filesystem_dict:
+            filesystem: FileSystemInfo = []
+            for fs in filesystem_dict:
+                name = fs.get("name")
+                mount_point = fs.get("mount_point")
+                mount_from = fs.get("mount_from")
+                total = fs.get("total")
+                if not name:
+                    raise Exception("Filesystem name is required")
+                if not mount_point:
+                    raise Exception("Filesystem mount_point is required")
+                if not mount_from:
+                    raise Exception("Filesystem mount_from is required")
+                if total is None:
+                    raise Exception("Filesystem total is required")
+                filesystem.append(
+                    MountPoint(
+                        name=name,
+                        mount_point=mount_point,
+                        mount_from=mount_from,
+                        total=total,
+                    )
+                )
+            system_info.filesystem = filesystem
+
+        os_dict = self.resources.get("os")
+        if os_dict:
+            name = os_dict.get("name")
+            version = os_dict.get("version")
+            if not name:
+                raise Exception("OS name is required")
+            if not version:
+                raise Exception("OS version is required")
+            system_info.os = OperatingSystemInfo(name=name, version=version)
+
+        kernel_dict = self.resources.get("kernel")
+        if kernel_dict:
+            name = kernel_dict.get("name")
+            release = kernel_dict.get("release")
+            version = kernel_dict.get("version")
+            architecture = kernel_dict.get("architecture")
+            if not name:
+                raise Exception("Kernel name is required")
+            if not release:
+                raise Exception("Kernel release is required")
+            if not version:
+                raise Exception("Kernel version is required")
+            system_info.kernel = KernelInfo(
+                name=name, release=release, version=version, architecture=architecture
+            )
+
+        uptime_dict = self.resources.get("uptime")
+        if uptime_dict:
+            uptime = uptime_dict.get("uptime")
+            boot_time = uptime_dict.get("boot_time")
+            if uptime is None:
+                raise Exception("Uptime is required")
+            if not boot_time:
+                raise Exception("Boot time is required")
+            system_info.uptime = UptimeInfo(uptime=uptime, boot_time=boot_time)
+
+        if not any(
+            [
+                system_info.cpu,
+                system_info.memory,
+                system_info.swap,
+                system_info.filesystem,
+                system_info.os,
+                system_info.kernel,
+                system_info.uptime,
+            ]
+        ):
+            return None
+
+        return system_info
 
     def get_gpu_devices(self) -> GPUDevicesInfo:
         """get gpu devices from resources

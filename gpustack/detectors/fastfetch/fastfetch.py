@@ -2,7 +2,7 @@ import json
 import logging
 import platform
 import subprocess
-from gpustack.detectors.base import GPUDetector
+from gpustack.detectors.base import GPUDetector, SystemInfoDetector
 from gpustack.schemas.workers import (
     CPUInfo,
     GPUCoreInfo,
@@ -23,7 +23,7 @@ from gpustack.utils.platform import device_type_from_vendor
 logger = logging.getLogger(__name__)
 
 
-class Fastfetch(GPUDetector):
+class Fastfetch(GPUDetector, SystemInfoDetector):
     def is_available(self) -> bool:
         try:
             self._run_command(self._command_version(), parse_output=False)

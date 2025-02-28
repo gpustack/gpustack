@@ -29,6 +29,7 @@ class MetricExporter(Collector):
         self._port = port
         self._clientset = clientset
         self._gpu_devices = cfg.get_gpu_devices()
+        self._system_info = cfg.get_system_info()
 
     def collect(self):  # noqa: C901
         labels = ["instance", "provider"]
@@ -122,6 +123,7 @@ class MetricExporter(Collector):
                 self._worker_port,
                 self._clientset,
                 gpu_devices=self._gpu_devices,
+                system_info=self._system_info,
             )
             worker = collector.collect()
             status = worker.status
