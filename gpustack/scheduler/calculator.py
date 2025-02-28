@@ -364,7 +364,7 @@ async def calculate_model_resource_claim(
         elif offload == GPUOffloadEnum.Partial:
             logger.trace(
                 f"Finished running parser for partial offloading model instance {model_instance.name}, latency: {latency:.2f}, at least: "
-                f"{claim.estimate.items[1].to_log_string()}"
+                f"{claim.estimate.items[1].to_log_string() if len(claim.estimate.items) > 1 else claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Disable:
             logger.trace(
