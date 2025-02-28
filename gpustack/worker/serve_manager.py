@@ -80,7 +80,7 @@ class ServeManager:
                     self._get_current_worker_id()
 
                 await asyncio.sleep(5)
-                logger.debug("Started watching model instances.")
+                logger.info("Started watching model instances.")
                 await self._clientset.model_instances.awatch(
                     callback=self._handle_model_instance_event
                 )
@@ -94,7 +94,7 @@ class ServeManager:
             # Ignore model instances that are not assigned to this worker node.
             return
 
-        logger.debug(
+        logger.trace(
             f"Received model instance event: {event.type} {mi.name} {mi.state}"
         )
 
