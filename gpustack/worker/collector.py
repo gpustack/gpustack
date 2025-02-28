@@ -33,10 +33,20 @@ class WorkerStatusCollector:
         self._clientset = clientset
         self._worker_manager = worker_manager
 
-        if gpu_devices or system_info:
-            custom_detector = Custom(gpu_devices, system_info)
+        if gpu_devices and system_info:
             self._detector_factory = DetectorFactory(
-                "custom", {"custom": [custom_detector]}, custom_detector
+                device="custom",
+                gpu_detectors={"custom": [Custom(gpu_devices=gpu_devices)]},
+                system_info_detector=Custom(system_info=system_info),
+            )
+        elif gpu_devices:
+            self._detector_factory = DetectorFactory(
+                device="custom",
+                gpu_detectors={"custom": [Custom(gpu_devices=gpu_devices)]},
+            )
+        elif system_info:
+            self._detector_factory = DetectorFactory(
+                system_info_detector=Custom(system_info=system_info)
             )
         else:
             self._detector_factory = DetectorFactory()
