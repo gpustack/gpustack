@@ -150,7 +150,12 @@ class WorkerStatusCollector:
             if status.memory is not None:
                 status.memory.allocated = allocated.ram
             if status.gpu_devices is not None:
-                for ag, agv in allocated.vram.items():
-                    status.gpu_devices[ag].memory.allocated = agv
+                for i, device in enumerate(status.gpu_devices):
+                    if device.index in allocated.vram:
+                        status.gpu_devices[i].memory.allocated = allocated.vram[
+                            device.index
+                        ]
+                    else:
+                        status.gpu_devices[i].memory.allocated = 0
         except Exception as e:
             logger.error(f"Failed to inject allocated resources: {e}")

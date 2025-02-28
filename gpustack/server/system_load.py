@@ -14,8 +14,16 @@ def compute_avg_cpu_memory_utilization_rate(
     workers: list[Worker],
 ) -> Tuple[float, float]:
     count = len(workers)
-    cpu_sum_value = sum(worker.status.cpu.utilization_rate for worker in workers)
-    memory_sum_value = sum(worker.status.memory.utilization_rate for worker in workers)
+    cpu_sum_value = sum(
+        worker.status.cpu.utilization_rate
+        for worker in workers
+        if worker.status.cpu.utilization_rate
+    )
+    memory_sum_value = sum(
+        worker.status.memory.utilization_rate
+        for worker in workers
+        if worker.status.memory.utilization_rate
+    )
 
     if count == 0:
         return 0, 0
