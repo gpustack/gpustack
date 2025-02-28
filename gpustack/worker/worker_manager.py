@@ -47,6 +47,7 @@ class WorkerManager:
         self._rpc_server_log_dir = f"{cfg.log_dir}/rpc_server"
         self._rpc_server_args = cfg.rpc_server_args
         self._gpu_devices = cfg.get_gpu_devices()
+        self._system_info = cfg.get_system_info()
 
         os.makedirs(self._rpc_server_log_dir, exist_ok=True)
 
@@ -68,6 +69,7 @@ class WorkerManager:
             clientset=self._clientset,
             worker_manager=self,
             gpu_devices=self._gpu_devices,
+            system_info=self._system_info,
         )
 
         try:
@@ -132,6 +134,7 @@ class WorkerManager:
                 clientset=self._clientset,
                 worker_manager=self,
                 gpu_devices=self._gpu_devices,
+                system_info=self._system_info,
             )
             worker = collector.collect()
 

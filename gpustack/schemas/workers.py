@@ -65,9 +65,9 @@ class MountPoint(BaseModel):
     mount_point: str = Field(default="")
     mount_from: str = Field(default="")
     total: int = Field(default=None)  # in bytes
-    used: int = Field(default=None)
-    free: int = Field(default=None)
-    available: int = Field(default=None)
+    used: Optional[int] = Field(default=None)
+    free: Optional[int] = Field(default=None)
+    available: Optional[int] = Field(default=None)
 
 
 FileSystemInfo = List[MountPoint]
