@@ -153,6 +153,7 @@ class InferenceServer(ABC):
             self._clientset = clientset
             self._model_instance = mi
             self._config = cfg
+            self._worker = self._clientset.workers.get(self._model_instance.worker_id)
             self.get_model()
 
             model_file_size = get_model_file_size(self._model, cfg)
@@ -319,18 +320,17 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def get_inference_running_env(self):
-        gpu_indexes = self._model_instance.gpu_indexes
+    def get_inference_running_env(self, env: Dict[str, str] = None) -> Dict[str, str]:
+        if env is None:
+            env = os.environ.copy()
 
-        env = os.environ.copy()
         system = platform.system()
-
+        gpu_indexes = self._model_instance.gpu_indexes
         if (system == "linux" or system == "windows") and gpu_indexes:
             vendor = None
             gpu_devices = None
-            worker = self._clientset.workers.get(self._model_instance.worker_id)
-            if worker and worker.status.gpu_devices:
-                gpu_devices = worker.status.gpu_devices
+            if self._worker and self._worker.status.gpu_devices:
+                gpu_devices = self._worker.status.gpu_devices
 
             if gpu_devices:
                 # Now use the first GPU index to get the vendor

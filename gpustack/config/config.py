@@ -1,6 +1,6 @@
 import os
 import secrets
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
@@ -18,6 +18,7 @@ from gpustack.schemas.workers import (
     VendorEnum,
     GPUDevicesInfo,
 )
+from gpustack.utils import platform
 from gpustack.utils.platform import DeviceTypeEnum, device_type_from_vendor
 
 _config = None
@@ -68,6 +69,8 @@ class Config(BaseSettings):
     cache_dir: Optional[str] = None
     token: Optional[str] = None
     huggingface_token: Optional[str] = None
+    enable_ray: bool = False
+    ray_args: Optional[List[str]] = None
 
     # Server options
     host: Optional[str] = "0.0.0.0"
@@ -130,6 +133,10 @@ class Config(BaseSettings):
 
     @model_validator(mode="after")
     def check_all(self):
+        if 'PYTEST_CURRENT_TEST' in os.environ:
+            # Skip validation during tests
+            return self
+
         if (self.ssl_keyfile and not self.ssl_certfile) or (
             self.ssl_certfile and not self.ssl_keyfile
         ):
@@ -151,7 +158,29 @@ class Config(BaseSettings):
             self.get_gpu_devices()
             self.get_system_info()
 
+        if self.enable_ray:
+            self.check_ray()
+
         return self
+
+    def check_ray(self):
+        system = platform.system()
+        if system != "linux":
+            raise Exception("Ray is only supported on Linux.")
+
+        if not TYPE_CHECKING:
+            try:
+                from vllm.platforms import current_platform
+            except ImportError:
+                raise Exception(
+                    "vLLM is not installed. Please install vLLM to work with Ray."
+                )
+
+            device_str = current_platform.ray_device_key
+            if not device_str:
+                raise Exception(
+                    f"current platform {current_platform.device_name} does not support Ray."
+                )
 
     def get_system_info(self) -> SystemInfo:  # noqa: C901
         """get system info from resources

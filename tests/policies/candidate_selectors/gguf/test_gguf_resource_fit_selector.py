@@ -1,10 +1,8 @@
 import tempfile
 import shutil
-from typing import List
 import pytest
 from gpustack.config.config import Config
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
-from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
     GGUFResourceFitSelector,
 )
@@ -81,6 +79,7 @@ from tests.fixtures.estimates.fixtures import (
 from unittest.mock import patch, AsyncMock
 
 from tests.utils.model import new_model, new_model_instance
+from tests.utils.scheduler import compare_candidates
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -1515,54 +1514,3 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
     return ModelInstanceResourceClaim(
         model_instance=model_instance, resource_claim_estimate=mock_estimate.estimate
     )
-
-
-def compare_candidates(  # noqa: C901
-    candidates: List[ModelInstanceScheduleCandidate], expected_candidates
-):
-    for i, expected in enumerate(expected_candidates):
-        candidate = candidates[i]
-        if "gpu_indexes" in expected:
-            assert candidate.gpu_indexes == expected["gpu_indexes"]
-
-        if "vram" in expected:
-            assert candidate.computed_resource_claim.vram == expected["vram"]
-
-        if "offload_layers" in expected:
-            assert (
-                candidate.computed_resource_claim.offload_layers
-                == expected["offload_layers"]
-            )
-
-        if "worker_id" in expected:
-            assert candidate.worker.id == expected["worker_id"]
-
-        if "worker_name" in expected:
-            assert candidate.worker.name == expected["worker_name"]
-
-        if "is_unified_memory" in expected:
-            assert (
-                candidate.computed_resource_claim.is_unified_memory
-                == expected["is_unified_memory"]
-            )
-
-        if "ram" in expected:
-            assert candidate.computed_resource_claim.ram == expected["ram"]
-
-        if "score" in expected:
-            assert str(candidate.score)[:5] == str(expected["score"])[:5]
-
-        if "rpc_servers" in expected:
-            for i, rpc_server in enumerate(expected["rpc_servers"]):
-                assert rpc_server.worker_id == expected["rpc_servers"][i].worker_id
-                assert rpc_server.gpu_index == expected["rpc_servers"][i].gpu_index
-                assert (
-                    rpc_server.computed_resource_claim
-                    == expected["rpc_servers"][i].computed_resource_claim
-                )
-
-        if "tensor_split" in expected:
-            assert (
-                candidate.computed_resource_claim.tensor_split
-                == expected["tensor_split"]
-            )

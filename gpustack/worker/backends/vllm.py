@@ -1,10 +1,11 @@
+import json
 import logging
 import os
 import subprocess
 import sys
 import sysconfig
-from typing import Optional
-from gpustack.schemas.models import ModelInstanceStateEnum
+from typing import TYPE_CHECKING, Dict, List, Optional
+from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
 from gpustack.utils.command import find_parameter, get_versioned_command
 from gpustack.utils.hub import (
     get_hf_text_config,
@@ -34,6 +35,14 @@ class VLLMServer(InferenceServer):
             if derived_max_model_len and derived_max_model_len > 8192:
                 arguments.extend(["--max-model-len", "8192"])
 
+            auto_parallism_arguments = get_auto_parallelism_arguments(
+                self._model.backend_parameters, self._model_instance
+            )
+            arguments.extend(auto_parallism_arguments)
+
+            if is_distributed_vllm(self._model_instance):
+                arguments.extend(["--distributed-executor-backend", "ray"])
+
             if self._model.backend_parameters:
                 arguments.extend(self._model.backend_parameters)
 
@@ -46,23 +55,6 @@ class VLLMServer(InferenceServer):
                 self._model_instance.model_name,
             ]
 
-            parallelism = find_parameter(
-                self._model.backend_parameters,
-                ["tensor-parallel-size", "tp", "pipeline-parallel-size", "pp"],
-            )
-
-            if (
-                self._model_instance.gpu_indexes is not None
-                and len(self._model_instance.gpu_indexes) > 1
-                and parallelism is None
-            ):
-                built_in_arguments.extend(
-                    [
-                        "--tensor-parallel-size",
-                        str(len(self._model_instance.gpu_indexes)),
-                    ]
-                )
-
             # Extend the built-in arguments at the end so that
             # they cannot be overridden by the user-defined arguments
             arguments.extend(built_in_arguments)
@@ -73,8 +65,9 @@ class VLLMServer(InferenceServer):
                 logger.debug(
                     f"Model environment variables: {', '.join(f'{key}={value}' for key, value in self._model.env.items())}"
                 )
-
-            env = self.get_inference_running_env()
+            env = os.environ.copy()
+            self.set_vllm_distributed_env(env)
+            env = self.get_inference_running_env(env)
             result = subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,
@@ -95,6 +88,60 @@ class VLLMServer(InferenceServer):
                 logger.error(f"Failed to update model instance: {ue}")
             sys.exit(1)
 
+    def set_vllm_distributed_env(self, env: Dict[str, str]):
+        model_instance = self._model_instance
+        worker = self._worker
+        ray_actors = model_instance.distributed_servers.ray_actors
+        if not ray_actors:
+            return
+
+        device_str = "GPU"
+        if not TYPE_CHECKING:
+            from vllm.platforms import current_platform
+
+            device_str = current_platform.ray_device_key
+            if not device_str:
+                raise RuntimeError(
+                    f"current platform {current_platform.device_name} does not support ray."
+                )
+
+        ray_placement_group_bundles: List[Dict[str, float]] = []
+        bundle_indexes = []
+        bundle_index_offset = 0
+        # we add all gpus of involved workers to the bundle, then pick gpus by index
+        for i in range(len(worker.status.gpu_devices)):
+            bundle = {
+                device_str: 1,
+                f"node:{worker.ip}": 0.001,
+            }
+            ray_placement_group_bundles.append(bundle)
+        for gpu_index in model_instance.gpu_indexes:
+            bundle_indexes.append(gpu_index)
+        bundle_index_offset += len(worker.status.gpu_devices)
+
+        for ray_actor in ray_actors:
+            for i in range(ray_actor.total_gpus):
+                bundle = {
+                    device_str: 1,
+                    f"node:{ray_actor.worker_ip}": 0.001,
+                }
+                ray_placement_group_bundles.append(bundle)
+            for gpu_index in ray_actor.gpu_indexes:
+                bundle_indexes.append(bundle_index_offset + gpu_index)
+            bundle_index_offset += ray_actor.total_gpus
+
+        # encoded to json and set in GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES env
+        env["GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES"] = json.dumps(
+            ray_placement_group_bundles
+        )
+        # helps to pick specific gpus
+        env["VLLM_RAY_BUNDLE_INDICES"] = ", ".join([str(x) for x in bundle_indexes])
+
+        logger.debug(
+            f"Set GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES: {env['GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES']}. "
+            f"Set VLLM_RAY_BUNDLE_INDICES: {env['VLLM_RAY_BUNDLE_INDICES']}"
+        )
+
     def _derive_max_model_len(self) -> Optional[int]:
         """
         Derive max model length from model config.
@@ -108,3 +155,56 @@ class VLLMServer(InferenceServer):
             logger.error(f"Failed to derive max model length: {e}")
 
         return None
+
+
+def get_auto_parallelism_arguments(
+    backend_parameters: List[str], model_instance: ModelInstance
+) -> List[str]:
+    parallelism = find_parameter(
+        backend_parameters,
+        ["tensor-parallel-size", "tp", "pipeline-parallel-size", "pp"],
+    )
+
+    if parallelism is not None:
+        return []
+
+    if is_distributed_vllm(model_instance):
+        # distributed across multiple workers
+        pp = len(model_instance.distributed_servers.ray_actors) + 1
+        tp = len(model_instance.gpu_indexes) if model_instance.gpu_indexes else 1
+        uneven_pp = tp
+        uneven = False
+        for ray_actor in model_instance.distributed_servers.ray_actors:
+            num_gpus = len(ray_actor.gpu_indexes)
+            uneven_pp += num_gpus
+            if num_gpus != tp:
+                uneven = True
+
+        if uneven:
+            tp = 1
+            pp = uneven_pp
+            logger.warning(
+                f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
+            )
+        return [
+            "--tensor-parallel-size",
+            str(tp),
+            "--pipeline-parallel-size",
+            str(pp),
+        ]
+
+    if model_instance.gpu_indexes is not None and len(model_instance.gpu_indexes) > 1:
+        # single worker with multiple GPUs
+        return [
+            "--tensor-parallel-size",
+            str(len(model_instance.gpu_indexes)),
+        ]
+
+    return []
+
+
+def is_distributed_vllm(model_instance: ModelInstance) -> bool:
+    return (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.ray_actors
+    )

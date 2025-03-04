@@ -6,6 +6,7 @@ from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import col, or_
 
+from gpustack.config.config import get_global_config
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -178,15 +179,11 @@ async def validate_gpu_ids(  # noqa: C901
                     )
 
     if model_in.backend == BackendEnum.VLLM.value:
-        if len(worker_name_set) > 1:
+        cfg = get_global_config()
+        if len(worker_name_set) > 1 and not cfg.enable_ray:
             raise BadRequestException(
-                message="Model deployment with the vLLM backend is currently not supported on GPUs across different workers."
-            )
-
-        tp = find_parameter(model_in.backend_parameters, ["tensor-parallel-size", "tp"])
-        if tp:
-            raise BadRequestException(
-                message="Use tensor-parallel-size and gpu-selector at the same time is not allowed."
+                message="Selected GPUs are on different workers, but Ray is not enabled. "
+                "Please enable Ray to make vLLM work across multiple workers."
             )
 
     if model_in.backend == BackendEnum.LLAMA_BOX.value:

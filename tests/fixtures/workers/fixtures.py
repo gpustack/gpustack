@@ -105,6 +105,22 @@ def linux_nvidia_21_4090_24gx4_3060_12gx4(reserved=False):
     )
 
 
+def linux_nvidia_22_H100_80gx8(reserved=False):
+    return load_from_file("linux_nvidia_22_H100_80gx8.json", reserved=reserved)
+
+
+def linux_nvidia_23_H100_80gx8(reserved=False):
+    return load_from_file("linux_nvidia_23_H100_80gx8.json", reserved=reserved)
+
+
+def linux_nvidia_24_H100_80gx8(reserved=False):
+    return load_from_file("linux_nvidia_24_H100_80gx8.json", reserved=reserved)
+
+
+def linux_nvidia_25_H100_80gx8(reserved=False):
+    return load_from_file("linux_nvidia_25_H100_80gx8.json", reserved=reserved)
+
+
 def linux_rocm_1_7800_16gx1(reserved=True):
     return load_from_file("linux_rocm_1_7800_16gx1.json", reserved=reserved)
 

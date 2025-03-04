@@ -18,6 +18,7 @@ from gpustack.server.controllers import (
 )
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
+from gpustack.ray.manager import RayManager
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.worker_syncer import WorkerSyncer
@@ -58,6 +59,7 @@ class Server:
         self._start_system_load_collector()
         self._start_worker_syncer()
         self._start_update_checker()
+        self._start_ray()
 
         port = 80
         if self._config.port:
@@ -158,6 +160,15 @@ class Server:
         asyncio.create_task(update_checker.start())
 
         logger.debug("Update checker started.")
+
+    def _start_ray(self):
+        if not self._config.enable_ray:
+            return
+
+        ray_manager = RayManager(
+            cfg=self._config, head=True, pure_head=self._config.disable_worker
+        )
+        asyncio.create_task(ray_manager.start())
 
     def _start_sub_processes(self):
         for process in self._sub_processes:
