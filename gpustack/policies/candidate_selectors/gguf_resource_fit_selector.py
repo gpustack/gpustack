@@ -1427,7 +1427,6 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         workers_allocatable = {}
         workers_allocatable_vram = []
         workers_gpus_allocatable_vram = []
-        workers_gpu_indexes_type = {}
 
         for worker in workers:
             result = await self._get_worker_allocatable_resource(worker)
@@ -1441,9 +1440,6 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 workers_allocatable_vram.append([worker.id, worker_allocatable_vram])
 
             for gpu_device in worker.status.gpu_devices:
-                worker_gpu_index_key = f"{worker.id}:{gpu_device.index}"
-                workers_gpu_indexes_type[worker_gpu_index_key] = gpu_device.type
-
                 if gpu_device.index is None:
                     logger.warning(
                         f"gpu index is not found for {worker.name} {gpu_device.name}"
@@ -1473,41 +1469,6 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             workers, key=lambda worker: worker_vram_totals[worker.id], reverse=True
         )
         return sorted_workers
-
-    def _filter_selected_combinations_for_worker_with_rpcs(
-        self,
-        combinations: Dict,
-        workers_allocatable_gpu_ids,
-        workers_gpu_indexes_type,
-        workers: List[Worker],
-    ) -> Dict:
-        worker_map = {worker.id: worker for worker in workers}
-        filtered_combinations = {}
-        for count in combinations:
-            for combination in combinations[count]:
-                combination_gpu_ids = []
-
-                main_worker_id = combination[0][0]
-                main_worker_gpu_ids = workers_allocatable_gpu_ids.get(main_worker_id)
-                combination_gpu_ids.extend(main_worker_gpu_ids)
-
-                for i in range(1, len(combination)):
-                    rpc_worker_id = combination[i][0]
-                    rpc_worker_name = worker_map.get(rpc_worker_id).name
-
-                    rpc_key = f"{combination[i][0]}:{combination[i][1]}"
-                    rpc_gpu_type = workers_gpu_indexes_type.get(rpc_key)
-                    rpc_gpu_id = f"{rpc_worker_name}:{rpc_gpu_type}:{combination[i][1]}"
-
-                    combination_gpu_ids.append(rpc_gpu_id)
-
-                if sorted(combination_gpu_ids) == sorted(self._selected_gpu_ids):
-                    if count not in filtered_combinations:
-                        filtered_combinations[count] = []
-
-                    filtered_combinations[count].append(combination)
-
-        return filtered_combinations
 
     def _can_offload_at_least_one_layer(
         self, allocatable_vram: int, single_layer_vram: int
@@ -1622,144 +1583,183 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         )
         return sorted_gpu_combinations
 
-    async def _generate_combinations_for_worker_with_rpcs(  # noqa: C901
+    async def _generate_combinations_for_worker_with_rpcs(
         self, workers: List[Worker], worker_map: Dict[int, Worker]
     ) -> tuple[Dict, Dict, List]:
-
-        def sort_and_group(workers_vram, gpus_allocatable_vram):
-            sorted_workers = sorted(
-                workers_vram, key=lambda item: item[1], reverse=True
-            )
-            sorted_gpus = sorted(
-                gpus_allocatable_vram, key=lambda item: item[2], reverse=True
-            )
-            return sorted_workers, sorted_gpus
 
         workers_allocatable, workers_allocatable_vram, workers_gpus_allocatable_vram = (
             await self._generate_workers_and_gpus_allocatable_resources(workers)
         )
 
+        if (
+            len(workers_allocatable_vram) == 0
+            or len(workers_gpus_allocatable_vram) == 0
+        ):
+            return None, None, None
+
         combinations = {}
         if self._selected_gpu_ids:
-            selected_workers_allocatable_vram = []
-            worker_name_id_map = {worker.name: worker.id for worker in workers}
-
-            worker_names = list(self._selected_gpu_ids_by_worker.keys())
-            worker_ids = [
-                worker.id for worker in workers if worker.name in worker_names
-            ]
-            for w in workers_allocatable_vram:
-                if w[0] in worker_ids:
-                    selected_workers_allocatable_vram.append(w)
-
-            selected_workers_gpus_allocatable_vram = []
-            for selected_gpu_id in self._selected_gpu_ids:
-                valid, matched = parse_gpu_id(selected_gpu_id)
-                if not valid:
-                    continue
-
-                selected_worker_name = matched.get("worker_name")
-                selected_gpu_index = matched.get("gpu_index")
-                selected_worker_id = worker_name_id_map.get(selected_worker_name)
-                for w in workers_gpus_allocatable_vram:
-                    if w[0] == selected_worker_id and str(w[1]) == selected_gpu_index:
-                        selected_workers_gpus_allocatable_vram.append(w)
-
-            sorted_workers, sorted_gpus = sort_and_group(
-                selected_workers_allocatable_vram,
-                selected_workers_gpus_allocatable_vram,
+            combinations = await self._generate_combinations_for_worker_with_rpcs_with_selected_gpu_ids(
+                workers,
+                worker_map,
+                workers_allocatable,
+                workers_allocatable_vram,
+                workers_gpus_allocatable_vram,
             )
 
-            # Pick the workers with the most allocatable vram as main.
-            r = sorted_workers[0]
-
-            # Skip the worker if the main worker can't offload even one layer.
-            main_worker = worker_map.get(r[0])
-            if not self._can_offload_at_least_one_layer(
-                r[1],
-                self._get_single_layer_vram(
-                    main_worker.status.memory.is_unified_memory
-                ),
-            ):
-                return None, None, None
-
-            c = [(r, *[gpu for gpu in sorted_gpus if gpu[0] != r[0]])]
-
-            for item in c:
-                key = len(item)
-                if key not in combinations:
-                    combinations[key] = []
-
-                combinations[key].append(item)
-
-            logger.debug(
-                f"Generated combinations with main: {main_worker.name} and rpcs number: {len(c) - 1}"
-            )
         else:
-            if (
-                len(workers_allocatable_vram) == 0
-                or len(workers_gpus_allocatable_vram) == 0
-            ):
-                return None, None, None
-
-            sorted_workers, sorted_gpus = sort_and_group(
-                workers_allocatable_vram, workers_gpus_allocatable_vram
-            )
-
-            # Pick the workers with the most allocatable vram as main.
-            r = sorted_workers[0]
-
-            # Skip the worker if the main worker can't offload even one layer.
-            main_worker = worker_map.get(r[0])
-            if not self._can_offload_at_least_one_layer(
-                r[1],
-                self._get_single_layer_vram(
-                    main_worker.status.memory.is_unified_memory
-                ),
-            ):
-                return None, None, None
-
-            # Skip the gpus if the rpc gpus can't offload even one layer.
-            filtered_gpus = [gpu for gpu in sorted_gpus if gpu[0] != r[0]]
-            filtered_gpus = [
-                gpu
-                for gpu in filtered_gpus
-                if self._can_offload_at_least_one_layer(
-                    gpu[2],
-                    self._get_single_layer_vram(
-                        worker_map.get(gpu[0]).status.memory.is_unified_memory, True
-                    ),
-                )
-            ]
-            if len(filtered_gpus) == 0:
-                return None, None, None
-
-            # Limit the number of gpus for generate rpc combination.
-            if len(filtered_gpus) > default_max_rpc_combination_generate_gpu_count:
-                # Set the message to let user manually set the selected_gpu_ids.
-                self._exceed_max_rpc_combination_generate_gpu_count = True
-                logger.warning(
-                    "The maximum GPU count for generating the RPC combination was exceeded, so the evaluation for distributed deployment across workers was skipped. Please use manual scheduling to select GPUs."
-                )
-                return None, None, None
-
-            key_range = min(len(filtered_gpus), self._max_rpc_server_count)
-            for i in range(1, (key_range + 1)):
-                c = [(r, *v) for v in itertools.combinations(filtered_gpus, i)]
-
-                key = i + 1
-                if key not in combinations:
-                    combinations[key] = []
-
-                combinations[key].extend(c)
-
-            logger.debug(
-                f"Generated combinations with main: {main_worker.name} and rpcs number: 1-{len(filtered_gpus)}"
+            combinations = await self._generate_combinations_for_worker_with_rpcs_without_selected_gpu_ids(
+                worker_map,
+                workers_allocatable,
+                workers_allocatable_vram,
+                workers_gpus_allocatable_vram,
             )
 
         # combinations examples:
         # [( ($worker_id, $worker_allocatable_vram), ($worker_id, $gpu_index, $gpu_allocatable), ($worker_id, $gpu_index, $gpu_allocatable) )]
         return combinations, workers_allocatable, workers_gpus_allocatable_vram
+
+    async def _generate_combinations_for_worker_with_rpcs_with_selected_gpu_ids(  # noqa: C901
+        self,
+        workers: List[Worker],
+        worker_map: Dict[int, Worker],
+        workers_allocatable: Dict[int, int],
+        workers_allocatable_vram: List[Tuple[int, int]],
+        workers_gpus_allocatable_vram: List[Tuple[int, int, int]],
+    ) -> Dict:
+        if not self._selected_gpu_ids:
+            return None
+
+        selected_workers_allocatable_vram = []
+        worker_name_id_map = {worker.name: worker.id for worker in workers}
+
+        worker_names = list(self._selected_gpu_ids_by_worker.keys())
+        worker_ids = [worker.id for worker in workers if worker.name in worker_names]
+        for w in workers_allocatable_vram:
+            if w[0] in worker_ids:
+                selected_workers_allocatable_vram.append(w)
+
+        selected_workers_gpus_allocatable_vram = []
+        for selected_gpu_id in self._selected_gpu_ids:
+            valid, matched = parse_gpu_id(selected_gpu_id)
+            if not valid:
+                continue
+
+            selected_worker_name = matched.get("worker_name")
+            selected_gpu_index = matched.get("gpu_index")
+            selected_worker_id = worker_name_id_map.get(selected_worker_name)
+            for w in workers_gpus_allocatable_vram:
+                if w[0] == selected_worker_id and str(w[1]) == selected_gpu_index:
+                    selected_workers_gpus_allocatable_vram.append(w)
+
+        sorted_workers, sorted_gpus = _sort_and_group_worker_gpu_vram(
+            selected_workers_allocatable_vram,
+            selected_workers_gpus_allocatable_vram,
+        )
+
+        main_worker_vram, main_worker = self._get_main_for_combination(
+            sorted_workers, workers_allocatable, worker_map
+        )
+
+        if not main_worker_vram:
+            return None
+
+        # Check if the rpc gpus can offload even one layer.
+        filtered_gpus = [gpu for gpu in sorted_gpus if gpu[0] != main_worker_vram[0]]
+
+        for gpu in filtered_gpus:
+            rpc_at_least_vram = self._get_single_layer_vram(
+                worker_map.get(gpu[0]).status.memory.is_unified_memory, True
+            )
+
+            if not self._can_offload_at_least_one_layer(
+                gpu[2],
+                rpc_at_least_vram,
+            ):
+                key = f"{worker_map.get(gpu[0]).name}:{gpu[2]}"
+                logger.warning(f"Selected gpu {key} can't offload at least one layer")
+                return None
+
+        c = [
+            (
+                main_worker_vram,
+                *[gpu for gpu in filtered_gpus if gpu[0] != main_worker_vram[0]],
+            )
+        ]
+
+        combinations = {}
+        for item in c:
+            key = len(item)
+            if key not in combinations:
+                combinations[key] = []
+
+            combinations[key].append(item)
+
+        logger.debug(
+            f"Generated combinations with main: {main_worker.name} and rpcs number: {len(c) - 1}"
+        )
+        return combinations
+
+    async def _generate_combinations_for_worker_with_rpcs_without_selected_gpu_ids(
+        self,
+        worker_map: Dict[int, Worker],
+        workers_allocatable: Dict[int, int],
+        workers_allocatable_vram: List[Tuple[int, int]],
+        workers_gpus_allocatable_vram: List[Tuple[int, int, int]],
+    ) -> Dict:
+
+        sorted_workers, sorted_gpus = _sort_and_group_worker_gpu_vram(
+            workers_allocatable_vram, workers_gpus_allocatable_vram
+        )
+
+        main_worker_vram, main_worker = self._get_main_for_combination(
+            sorted_workers, workers_allocatable, worker_map
+        )
+
+        if not main_worker_vram:
+            return None
+
+        # Skip the gpus if the rpc gpus can't offload even one layer.
+        filtered_gpus = [gpu for gpu in sorted_gpus if gpu[0] != main_worker_vram[0]]
+        filtered_gpus = [
+            gpu
+            for gpu in filtered_gpus
+            if self._can_offload_at_least_one_layer(
+                gpu[2],
+                self._get_single_layer_vram(
+                    worker_map.get(gpu[0]).status.memory.is_unified_memory, True
+                ),
+            )
+        ]
+        if len(filtered_gpus) == 0:
+            return None
+
+        # Limit the number of gpus for generate rpc combination.
+        if len(filtered_gpus) > default_max_rpc_combination_generate_gpu_count:
+            # Set the message to let user manually set the selected_gpu_ids.
+            self._exceed_max_rpc_combination_generate_gpu_count = True
+            logger.warning(
+                "The maximum GPU count for generating the RPC combination was exceeded, so the evaluation for distributed deployment across workers was skipped. Please use manual scheduling to select GPUs."
+            )
+            return None
+
+        combinations = {}
+        key_range = min(len(filtered_gpus), self._max_rpc_server_count)
+        for i in range(1, (key_range + 1)):
+            c = [
+                (main_worker_vram, *v) for v in itertools.combinations(filtered_gpus, i)
+            ]
+
+            key = i + 1
+            if key not in combinations:
+                combinations[key] = []
+
+            combinations[key].extend(c)
+
+        logger.debug(
+            f"Generated combinations with main: {main_worker.name} and rpcs number: 1-{len(filtered_gpus)}"
+        )
+        return combinations
 
     async def _check_combination_rpcs(
         self,
@@ -1809,6 +1809,53 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             return []
 
         return rpc_servers
+
+    def _get_main_for_combination(
+        self,
+        workers_allocations_vrams: Tuple[Tuple[int, int]],
+        workers_allocatable: Dict[int, Allocatable],
+        worker_map: Dict[int, Worker],
+    ) -> Tuple[Tuple[int, int], Worker]:
+        """
+        Get the worker with the most allocatable vram as main
+
+        Args:
+            workers_allocations_vrams (Tuple[Tuple[int, int]]): each tuple example ($worker_id, $worker_allocatable_vram)
+            workers_allocatable (Dict[int, Allocatable]): workers allocatable resources
+            worker_map (Dict[int, Worker]): worker map, key is worker id, value is worker instance
+
+        Returns:
+            Tuple[Tuple[int, int], Worker]: main worker vram and worker instance
+        """
+
+        max_worker_can_offload_vram = 0
+        main_worker = None
+        main_worker_vram = None
+
+        for sw in workers_allocations_vrams:
+            is_uma = worker_map.get(sw[0]).status.memory.is_unified_memory
+            single_layer_vram = self._get_single_layer_vram(is_uma)
+
+            if not self._can_offload_at_least_one_layer(
+                sw[1],
+                single_layer_vram,
+            ):
+                continue
+
+            sum_can_offload_at_least_one_layer_vram = 0
+            for ga in workers_allocatable.get(sw[0]).vram.values():
+                if self._can_offload_at_least_one_layer(
+                    ga,
+                    single_layer_vram,
+                ):
+                    sum_can_offload_at_least_one_layer_vram += ga
+
+            if sum_can_offload_at_least_one_layer_vram > max_worker_can_offload_vram:
+                max_worker_can_offload_vram = sum_can_offload_at_least_one_layer_vram
+                main_worker = worker_map.get(sw[0])
+                main_worker_vram = sw
+
+        return main_worker_vram, main_worker
 
     def _update_cache_for_multi_workers_multi_gpus_patial_offload_resource_claim(
         self, key: str, value: Any
@@ -1903,12 +1950,14 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         return candidate
 
 
-# arr is a sorted list from smallest to largest
-
-
 def binary_search(arr, target):
     """
     Binary search the target in the arr.
+    If the target is found, return the index of the target.
+
+    Args:
+        arr (List[int]): The input list, is a sorted list from smallest to largest.
+        target (int): The target number.
     """
     if len(arr) == 0:
         return -1
@@ -1960,3 +2009,12 @@ def _filter_candidates_by_max_offload_layers(
         for candidate in candidates
         if candidate.computed_resource_claim.offload_layers == max_offload_layers
     ]
+
+
+def _sort_and_group_worker_gpu_vram(
+    workers_vram: List[Tuple[int, int]],
+    gpus_allocatable_vram: List[Tuple[int, int, int]],
+):
+    sorted_workers = sorted(workers_vram, key=lambda item: item[1], reverse=True)
+    sorted_gpus = sorted(gpus_allocatable_vram, key=lambda item: item[2], reverse=True)
+    return sorted_workers, sorted_gpus
