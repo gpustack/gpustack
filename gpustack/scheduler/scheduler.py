@@ -419,7 +419,9 @@ class Scheduler:
                 )
             else:
                 try:
-                    candidates_selector = VLLMResourceFitSelector(model, instance)
+                    candidates_selector = VLLMResourceFitSelector(
+                        self._config, model, instance
+                    )
                 except Exception as e:
                     return None, [f"VLLM resource fit selector init failed: {e}"]
 
@@ -500,7 +502,8 @@ class Scheduler:
                 )
                 model_instance.gpu_indexes = candidate.gpu_indexes
                 model_instance.distributed_servers = DistributedServers(
-                    rpc_servers=candidate.rpc_servers
+                    rpc_servers=candidate.rpc_servers,
+                    ray_actors=candidate.ray_actors,
                 )
 
                 await model_instance.update(session, model_instance)

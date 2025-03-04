@@ -1,0 +1,179 @@
+{
+    "name": "host25-h100",
+    "hostname": "host25-h100",
+    "ip": "192.168.50.25",
+    "labels": {
+        "os": "Linux"
+    },
+    "state": "ready",
+    "system_reserved": {
+        "memory": 2147483648,
+        "gpu_memory": 0
+    },
+    "status": {
+        "memory": {
+            "total": 1610612736000,
+            "utilization_rate": 5.905919020930682,
+            "is_unified_memory": false,
+            "used": 3967795200,
+            "allocated": 0
+        },
+        "gpu_devices": [
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c264",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 1,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 2,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c266",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 3,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c267",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 4,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c268",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 5,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c269",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 6,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c270",
+                "name": "H100 SXM5",
+                "vendor": "NVIDIA",
+                "index": 7,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 85899345920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            }
+        ]
+    },
+    "id": 25,
+    "created_at": "2024-07-05T02:17:42",
+    "updated_at": "2024-07-05T10:36:21"
+}

@@ -4,7 +4,7 @@ version = "v0.0.0"
 description = "GPUStack"
 authors = ["GPUStack Authors <contact@gpustack.ai>"]
 readme = "README.md"
-include = ["*/third_party/config/**/*","*/ui/**/*"]
+include = ["*/third_party/config/**/*","*/ui/**/*", "gpustack.pth"]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -39,7 +39,8 @@ truststore = "^0.9.1"
 cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = "^1.19.0"
-vllm = {version = "0.7.2", optional = true}
+ray = {version = "2.40.0", extras = ["default"]}
+vllm = {version = "0.7.3", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
 transformers = "^4.44.2"
