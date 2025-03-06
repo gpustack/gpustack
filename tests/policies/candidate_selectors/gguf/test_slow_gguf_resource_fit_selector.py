@@ -1092,6 +1092,109 @@ async def test_schedule_with_ngl_end_in_patial_offload(temp_dir):
 
 
 @pytest.mark.asyncio
+async def test_schedule_with_ngl_end_in_cpu_offload(temp_dir):
+    cache_dir = os.path.join(
+        os.path.dirname(__file__),
+        "../../../fixtures/estimates/bartowski_Meta-Llama-3.1-8B-Instruct-GGUF-Q8_0",
+    )
+    config = Config(
+        token="test",
+        jwt_secret_key="test",
+        data_dir=temp_dir,
+        cache_dir=cache_dir,
+        huggingface_token="",
+    )
+    set_global_config(config)
+
+    if not check_parser(version="v0.13.18"):
+        pytest.skip("parser path is not available or version mismatch, skipping.")
+
+    workers = [
+        create_worker(
+            1,
+            22036840320,
+            {0: 15275183032},
+            SystemReserved(ram=2147483648, vram=1073741824),
+        ),
+        create_worker(
+            2,
+            67145928704,
+            {0: 25757220864},
+            SystemReserved(ram=2147483648, vram=1073741824),
+        ),
+    ]
+
+    m = new_model(
+        1,
+        "Meta-Llama-3.1-8B-Instruct-Q8_0",
+        1,
+        huggingface_repo_id="bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        cpu_offloading=True,
+        placement_strategy=PlacementStrategyEnum.SPREAD,
+        huggingface_filename="Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
+        backend_parameters=["--ctx-size=8192", "--ngl=0"],
+        distributed_inference_across_workers=True,
+    )
+    mi = new_model_instance(1, "test", 1)
+
+    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
+    placement_scorer_spread = PlacementScorer(m, mi)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.scheduler.calculator._gguf_parser_command',
+            side_effect=mock_gguf_parser_command,
+        ),
+        patch(
+            'gpustack.scheduler.calculator.hf_model_filename',
+            return_value="Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
+        ),
+        patch(
+            'gpustack.scheduler.calculator.hf_mmproj_filename',
+            return_value=None,
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer_spread.score(candidates)
+
+        expected_candidates = [
+            {
+                "offload_layers": 0,
+                "worker_id": 2,
+                "worker_name": "host02",
+                "is_unified_memory": False,
+                "ram": 10114843512,
+                "score": 100,
+            },
+            {
+                "offload_layers": 0,
+                "worker_id": 1,
+                "worker_name": "host01",
+                "is_unified_memory": False,
+                "ram": 10114843512,
+                "score": 100,
+            },
+        ]
+
+        assert len(candidates) == 2
+        compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
 async def test_schedule_with_deepseek_r1_bf16_with_manual_selected_cant_offload_gpus(
     temp_dir,
 ):
