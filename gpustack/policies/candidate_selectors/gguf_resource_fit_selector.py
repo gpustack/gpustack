@@ -328,7 +328,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             return True
 
         # Skip conditions for param gpu layers.
-        if self._param_gpu_layers:
+        if self._param_gpu_layers or self._param_gpu_layers == 0:
             if (
                 self._param_gpu_layers == 0
                 and candidate_func != self.find_single_worker_cpu_candidates
