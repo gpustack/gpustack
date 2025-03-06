@@ -23,6 +23,7 @@ gpustack start [OPTIONS]
 | `--cache-dir` value                 | (empty)                                | Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.                                                           |
 | `-t` value, `--token` value         | Auto-generated.                        | Shared secret used to add a worker.                                                                                                   |
 | `--huggingface-token` value         | (empty)                                | User Access Token to authenticate to the Hugging Face Hub. Can also be configured via the `HF_TOKEN` environment variable.            |
+| `--ollama-library-base-url` value   | `https://registry.ollama.ai`           | Base URL for the Ollama library.                                                                                                      |
 
 ### Server Options
 
@@ -36,7 +37,6 @@ gpustack start [OPTIONS]
 | `--ssl-keyfile` value               | (empty)                                | Path to the SSL key file.                                                                                                                           |
 | `--ssl-certfile` value              | (empty)                                | Path to the SSL certificate file.                                                                                                                   |
 | `--force-auth-localhost`            | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
-| `--ollama-library-base-url`         | `https://registry.ollama.ai`           | Base URL for the Ollama library.                                                                                                                    |
 | `--disable-update-check`            | `False`                                | Disable update check.                                                                                                                               |
 | `--model-catalog-file` value        | (empty)                                | Path or URL to the model catalog file.                                                                                                              |
 

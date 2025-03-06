@@ -12,6 +12,7 @@ You can use the official Docker image to run GPUStack in a container. Installati
 - [x] AMD GPUs
 - [x] Ascend NPUs
 - [x] Moore Threads GPUs
+- [x] Hygon DCUs
 - [x] CPUs (AVX2 for x86 or NEON for ARM)
 
 ## Prerequisites
@@ -105,7 +106,7 @@ docker run -d --name gpustack-worker \
     --ipc=host \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack \
-    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_host_ip
+    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
 ```
 
 ### AMD ROCm
@@ -174,7 +175,7 @@ docker run -d --name gpustack-worker \
     --device /dev/dri \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack:latest-rocm \
-    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_host_ip
+    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
 ```
 
 ### Ascend CANN
@@ -238,7 +239,7 @@ docker run -d --name gpustack-worker \
     --ipc=host \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack:latest-npu \
-    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_host_ip
+    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
 ```
 
 ### Moore Threads MUSA
@@ -300,7 +301,78 @@ docker run -d --name gpustack-worker \
     --ipc=host \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack:latest-musa \
-    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_host_ip
+    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
+```
+
+### Hygon DTK
+
+#### Prerequisites
+
+- [Driver and DTK](https://developer.hpccube.com/tool/#sdk)
+
+Refer to this [Tutorial](../tutorials/running-inference-with-hygon-dcus.md).
+
+#### Run GPUStack
+
+Run the following command to start the GPUStack server **and built-in worker**:
+
+```shell
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    -p 80:80 \
+    --ipc=host \
+    --group-add=video \
+    --security-opt seccomp=unconfined \
+    --device=/dev/kfd \
+    --device=/dev/dri \
+    -v /opt/hyhal:/opt/hyhal:ro \
+    -v gpustack-data:/var/lib/gpustack \
+    gpustack/gpustack:latest-dcu
+```
+
+To retrieve the default admin password, run the following command:
+
+```shell
+docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
+
+```
+
+(**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
+
+```shell
+docker run -d --name gpustack-server \
+    --restart=unless-stopped \
+    -p 80:80 \
+    -v gpustack-server-data:/var/lib/gpustack \
+    gpustack/gpustack:latest-cpu \
+    --disable-worker
+```
+
+#### (Optional) Add Worker
+
+To retrieve the token, run the following command on the GPUStack server host:
+
+```shell
+docker exec -it gpustack-server cat /var/lib/gpustack/token
+```
+
+To start a GPUStack worker and **register it with the GPUStack server**, run the following command on the current host or another host. Replace your specific URL, token, and IP address accordingly:
+
+```shell
+docker run -d --name gpustack-worker \
+    --restart=unless-stopped \
+    -p 10150:10150 \
+    -p 40000-41024:40000-41024 \
+    -p 50000-51024:50000-51024 \
+    --ipc=host \
+    --group-add=video \
+    --security-opt seccomp=unconfined \
+    --device /dev/kfd \
+    --device /dev/dri \
+    -v /opt/hyhal:/opt/hyhal:ro \
+    -v gpustack-worker-data:/var/lib/gpustack \
+    gpustack/gpustack:latest-dcu \
+    --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
 ```
 
 ## Build Your Own Docker Image

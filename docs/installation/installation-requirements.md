@@ -19,6 +19,7 @@ GPUStack has been tested and verified to work on the following operating systems
 | OS        | Versions        |
 | --------- | --------------- |
 | Windows   | 10, 11          |
+| macOS     | \>= 14          |
 | Ubuntu    | \>= 20.04       |
 | Debian    | \>= 11          |
 | RHEL      | \>= 8           |
@@ -30,6 +31,12 @@ GPUStack has been tested and verified to work on the following operating systems
 !!! note
 
     The installation of GPUStack worker on a Linux system requires that the GLIBC version be 2.29 or higher. If your system uses a lower GLIBC version, consider using the [Docker Installation](./docker-installation.md) method as an alternative.
+
+    Use the following command to check the GLIBC version:
+
+    ```
+    ldd --version
+    ```
 
 ### Supported Architectures
 

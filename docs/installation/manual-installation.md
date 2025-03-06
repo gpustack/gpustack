@@ -9,9 +9,14 @@ Install Python version 3.10 to 3.12.
 Run the following to install GPUStack:
 
 ```shell
-# You can add extra dependencies, options are "vllm", "audio" and "all".
-# e.g., gpustack[all]
 pip install gpustack
+```
+
+You can add extra dependencies, options are "vllm", "audio" and "all", such as:
+
+```shell
+# vllm is currently only available for Linux on AMD64
+pip install gpustack[all]
 ```
 
 To verify, run:
