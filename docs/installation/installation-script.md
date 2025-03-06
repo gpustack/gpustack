@@ -10,8 +10,11 @@ You can set additional environment variables and CLI flags when running the scri
 # Run server.
 curl -sfL https://get.gpustack.ai | sh -s -
 
-# Run server with non-default port 
+# Run server with non-default port.
 curl -sfL https://get.gpustack.ai | sh -s - --port 8080
+
+# Run server with a custom data path.
+curl -sfL https://get.gpustack.ai | sh -s - --data-dir /data/gpustack-data
 
 # Run server without the embedded worker.
 curl -sfL https://get.gpustack.ai | sh -s - --disable-worker
@@ -45,12 +48,17 @@ You can set additional environment variables and CLI flags when running the scri
 # Run server.
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 
+# Run server with non-default port.
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --port 8080"
+
+# Run server with a custom data path.
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --data-dir 'D:\gpustack-data'"
+
 # Run server without the embedded worker.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --disable-worker"
 
 # Run server with TLS.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --ssl-keyfile 'C:\path\to\keyfile' --ssl-certfile 'C:\path\to\certfile'"
-
 
 # Run server with external postgresql database.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --database-url 'postgresql://username:password@host:port/database_name'"
