@@ -81,6 +81,25 @@ Please refer to the vLLM [documentation](https://docs.vllm.ai/en/stable/models/s
 
 vLLM supports multimodal language models listed [here](https://docs.vllm.ai/en/stable/models/supported_models.html#multimodal-language-models). When users deploy a vision language model using the vLLM backend, image inputs are supported in the chat completion API.
 
+#### Distributed Inference Across Workers
+
+vLLM supports distributed inference across multiple workers using [Ray](https://ray.io). You can enable a Ray cluster in GPUStack by using the `--enable-ray` start parameter, allowing vLLM to run distributed inference across multiple workers.
+
+!!! warning "Known Limitations"
+
+    1. Both the GPUStack server and all participating workers must run on Linux.
+    2. Model files must be accessible at the same path on all participating workers. Currently, GPUStack downloads model files only to the main worker. You must either use a shared file system or manually copy the model files to the same path on all participating workers.
+    3. Each worker can only be assigned to one distributed vLLM model instance at a time.
+
+Auto-scheduling is supported with the following conditions:
+
+- Participating workers have the same number of GPUs.
+- All GPUs in the worker satisfy the gpu_memory_utilization(defaults to 0.9) requirement.
+- The total number of GPUs can be divided by the number of attention heads.
+- The total VRAM claim is greater than the estimated VRAM claim.
+
+If the above conditions are not met, the model instance will not be scheduled automatically. However, you can manually schedule it by selecting the desired workers/GPUs in the model configuration.
+
 ### Parameters Reference
 
 See the full list of supported parameters for vLLM [here](https://docs.vllm.ai/en/stable/serving/openai_compatible_server.html#command-line-arguments-for-the-server).
