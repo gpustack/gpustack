@@ -32,6 +32,8 @@ class Config(BaseSettings):
         data_dir: Directory to store data. Default is OS specific.
         token: Shared secret used to add a worker.
         huggingface_token: User Access Token to authenticate to the Hugging Face Hub.
+        enable_ray: Enable Ray.
+        ray_args: Additional arguments to pass to Ray.
 
         host: Host to bind the server to.
         port: Port to bind the server to.
