@@ -1,4 +1,4 @@
-# Performing Distributed Inference Across Workers
+# Performing Distributed Inference Across Workers(llama-box)
 
 This tutorial will guide you through the process of configuring and running distributed inference across multiple workers using GPUStack. Distributed inference allows you to handle larger language models by distributing the computational workload among multiple workers. This is particularly useful when individual workers do not have sufficient resources, such as VRAM, to run the entire model independently.
 
