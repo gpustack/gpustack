@@ -39,6 +39,36 @@ You can use the official Docker image to run GPUStack in a container. Installati
 - [NVIDIA Drvier 550+](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/)
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 
+!!! note
+
+    When systemd is used to manage the cgroups of the container and it is triggered to reload any Unit files that have references to NVIDIA GPUs (e.g. systemctl daemon-reload), containerized GPU workloads may suddenly lose access to their GPUs.
+
+    In GPUStack, GPUs may be lost in the Resources menu, and running `nvidia-smi` inside the GPUStack container may result in the error: `Failed to initialize NVML: Unknown Error`
+
+    To prevent [this issue](https://github.com/NVIDIA/nvidia-container-toolkit/issues/48), disabling systemd cgroup management in Docker is required.
+
+Set the parameter "exec-opts": ["native.cgroupdriver=cgroupfs"] in the `/etc/docker/daemon.json` file and restart docker, such as:
+
+```shell
+sudo vim /etc/docker/daemon.json
+```
+
+```json
+{
+  "runtimes": {
+    "nvidia": {
+      "args": [],
+      "path": "nvidia-container-runtime"
+    }
+  },
+  "exec-opts": ["native.cgroupdriver=cgroupfs"]
+}
+```
+
+```shell
+sudo systemctl daemon-reload && sudo systemctl restart docker
+```
+
 #### Run GPUStack
 
 Run the following command to start the GPUStack server **and built-in worker**:
@@ -72,7 +102,6 @@ To retrieve the default admin password, run the following command:
 
 ```shell
 docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
-
 ```
 
 (**Optional**) Run the following command to start the GPUStack server **without** built-in worker:
