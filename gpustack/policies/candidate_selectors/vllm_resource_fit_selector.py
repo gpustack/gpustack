@@ -194,7 +194,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._gpu_count = None
         self._vram_claim = 0
         self._num_attention_heads = None
-        self._message = ""
+        self._messages = []
 
         self._selected_gpu_worker = None
         self._selected_gpu_indexes = []
@@ -253,11 +253,13 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 f"({self._gpu_count})."
             )
 
-    def _set_message(self):
-        self._message = "No workers meet the resource requirements. Consider adjusting parameters such as --gpu-memory-utilization (default: 0.9), --max-model-len, or --enforce-eager to lower the resource demands."
+    def _set_messages(self):
+        self._messages = [
+            "No workers meet the resource requirements. Consider adjusting parameters such as --gpu-memory-utilization (default: 0.9), --max-model-len, or --enforce-eager to lower the resource demands."
+        ]
 
-    def get_message(self) -> str:
-        return self._message
+    def get_messages(self) -> str:
+        return self._messages
 
     async def select_candidates(
         self, workers: List[Worker]
@@ -287,7 +289,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if candidates:
                 return candidates
 
-        self._set_message()
+        self._set_messages()
         return []
 
     async def find_single_worker_single_gpu_full_offloading_candidates(
