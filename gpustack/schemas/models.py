@@ -213,10 +213,22 @@ class ModelInstanceRPCServer(RPCServer):
     )
 
 
+class RayActor(BaseModel):
+    worker_id: Optional[int] = None
+    worker_ip: Optional[str] = None
+    total_gpus: Optional[int] = None
+    gpu_indexes: Optional[List[int]] = None
+    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
+        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
+    )
+
+
 class DistributedServers(BaseModel):
     rpc_servers: Optional[List[ModelInstanceRPCServer]] = Field(
         sa_column=Column(JSON), default=[]
     )
+
+    ray_actors: Optional[List[RayActor]] = Field(sa_column=Column(JSON), default=[])
 
     model_config = ConfigDict(from_attributes=True)
 

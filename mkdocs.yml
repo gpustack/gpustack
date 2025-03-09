@@ -88,7 +88,7 @@ nav:
       - Rerank API: user-guide/rerank-api.md
   - Tutorials:
       - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
-      - Performing Distributed Inference Across Workers: tutorials/performing-distributed-inference-across-workers.md
+      - Performing Distributed Inference Across Workers(llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
       - Using DeepSeek R1: tutorials/using-deepseek-r1.md
       - Using Image Generation Models: tutorials/using-image-generation-models.md
       - Using Audio Models: tutorials/using-audio-models.md

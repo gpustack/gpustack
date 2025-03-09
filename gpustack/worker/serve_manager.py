@@ -88,7 +88,7 @@ class ServeManager:
                 logger.error(f"Failed watching model instances: {e}")
 
     def _handle_model_instance_event(self, event: Event):
-        mi = ModelInstance(**event.data)
+        mi = ModelInstance.model_validate(event.data)
 
         if mi.worker_id != self._worker_id:
             # Ignore model instances that are not assigned to this worker node.

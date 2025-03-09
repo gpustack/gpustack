@@ -153,7 +153,6 @@ async def validate_gpu_ids(  # noqa: C901
             message="Audio models are restricted to execution on a single NVIDIA GPU."
         )
 
-    worker_name_set = set()
     for gpu_id in model_in.gpu_selector.gpu_ids:
         is_valid, matched = parse_gpu_id(gpu_id)
         if not is_valid:
@@ -161,8 +160,6 @@ async def validate_gpu_ids(  # noqa: C901
 
         worker_name = matched.get("worker_name")
         gpu_index = safe_int(matched.get("gpu_index"), -1)
-        worker_name_set.add(worker_name)
-
         worker = await Worker.one_by_field(session, "name", worker_name)
         if not worker:
             raise BadRequestException(message=f"Worker {worker_name} not found")
@@ -176,18 +173,6 @@ async def validate_gpu_ids(  # noqa: C901
                     raise BadRequestException(
                         "Audio models are supported only on NVIDIA GPUs and CPUs."
                     )
-
-    if model_in.backend == BackendEnum.VLLM.value:
-        if len(worker_name_set) > 1:
-            raise BadRequestException(
-                message="Model deployment with the vLLM backend is currently not supported on GPUs across different workers."
-            )
-
-        tp = find_parameter(model_in.backend_parameters, ["tensor-parallel-size", "tp"])
-        if tp:
-            raise BadRequestException(
-                message="Use tensor-parallel-size and gpu-selector at the same time is not allowed."
-            )
 
     if model_in.backend == BackendEnum.LLAMA_BOX.value:
         ts = find_parameter(model_in.backend_parameters, ["ts", "tensor-split"])

@@ -6,6 +6,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     ModelInstance,
     ModelInstanceRPCServer,
+    RayActor,
 )
 from gpustack.schemas.workers import Worker
 
@@ -25,8 +26,9 @@ class ModelInstanceScheduleCandidate:
     computed_resource_claim: ComputedResourceClaim
     score: Optional[float] = None
 
-    # for rpc server scheduling
+    # for multi-worker distributed scheduling
     rpc_servers: Optional[List[ModelInstanceRPCServer]] = None
+    ray_actors: Optional[List[RayActor]] = None
 
     def to_log_string(self) -> str:
         log_dict = {

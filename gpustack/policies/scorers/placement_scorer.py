@@ -2,7 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from gpustack.policies.base import (
     Allocatable,
@@ -292,10 +292,19 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         score = 0
         gpu_count = len(gpu_indexes) if gpu_indexes else 0
 
-        def calculate_score(ram_claim, ram_allocatable, vram_claim, vram_allocatable):
-            ram_score = (
-                ram_claim / ram_allocatable * MaxScore * self._resource_weight.ram
-            )
+        def calculate_score(
+            ram_claim: Optional[int],
+            ram_allocatable: Optional[int],
+            vram_claim: Dict[int, int],
+            vram_allocatable: Dict[int, int],
+        ):
+            if ram_claim is None or ram_allocatable is None or ram_allocatable == 0:
+                ram_score = 0
+            else:
+                ram_score = (
+                    ram_claim / ram_allocatable * MaxScore * self._resource_weight.ram
+                )
+
             vram_score = (
                 vram_claim / vram_allocatable * MaxScore * self._resource_weight.vram
             )

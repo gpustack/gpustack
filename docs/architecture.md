@@ -2,7 +2,7 @@
 
 The following diagram shows the architecture of GPUStack:
 
-![gpustack-architecture](assets/gpustack-architecture.png)
+![gpustack-architecture](assets/gpustack-architecture.svg)
 
 ### Server
 
@@ -31,3 +31,7 @@ Inference servers are the backends that performs the inference tasks. GPUStack s
 ### RPC Server
 
 The RPC server enables running llama-box backend on a remote host. The Inference Server communicates with one or several instances of RPC server, offloading computations to these remote hosts. This setup allows for distributed LLM inference across multiple workers, enabling the system to load larger models even when individual resources are limited.
+
+### Ray Head/Worker
+
+[Ray](https://ray.io) is a distributed computing framework that GPUStack utilizes to run distributed vLLM. Users can enable a Ray cluster in GPUStack to run vLLM across multiple workers. By default, it is disabled.

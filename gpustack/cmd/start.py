@@ -88,6 +88,17 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="User Access Token to authenticate to the Hugging Face Hub.",
         default=os.getenv("HF_TOKEN"),
     )
+    group.add_argument(
+        "--enable-ray",
+        action=OptionalBoolAction,
+        help="Enable Ray.",
+        default=get_gpustack_env_bool("ENABLE_RAY"),
+    )
+    group.add_argument(
+        "--ray-args",
+        action='append',
+        help="Arguments to pass to Ray.",
+    )
 
     group = parser_server.add_argument_group("Server settings")
     group.add_argument(
@@ -268,8 +279,8 @@ def run_server(cfg: Config):
         cfg.server_url = (
             f"{scheme}127.0.0.1:{cfg.port}" if cfg.port else f"{scheme}127.0.0.1"
         )
-        worker = Worker(cfg)
-        worker_process = multiprocessing.Process(target=worker.start, args=(True,))
+        worker = Worker(cfg, is_embedded=True)
+        worker_process = multiprocessing.Process(target=worker.start)
         sub_processes = [worker_process]
 
     server = Server(config=cfg, sub_processes=sub_processes)
@@ -305,7 +316,11 @@ def parse_args(args: argparse.Namespace) -> Config:
     set_server_options(args, config_data)
     set_worker_options(args, config_data)
 
-    cfg = Config(**config_data)
+    try:
+        cfg = Config(**config_data)
+    except Exception as e:
+        raise Exception(f"Config error: {e}")
+
     set_global_config(cfg)
     return cfg
 
@@ -325,6 +340,8 @@ def set_common_options(args, config_data: dict):
         "pipx_path",
         "token",
         "huggingface_token",
+        "enable_ray",
+        "ray_args",
     ]
 
     for option in options:
