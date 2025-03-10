@@ -6,7 +6,11 @@ import sysconfig
 from typing import Optional
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.utils.command import find_parameter, get_versioned_command
-from gpustack.utils.hub import get_max_model_len, get_pretrained_config
+from gpustack.utils.hub import (
+    get_hf_text_config,
+    get_max_model_len,
+    get_pretrained_config,
+)
 from gpustack.worker.backends.base import InferenceServer
 
 logger = logging.getLogger(__name__)
@@ -98,7 +102,8 @@ class VLLMServer(InferenceServer):
         """
         try:
             pretrained_config = get_pretrained_config(self._model)
-            return get_max_model_len(pretrained_config)
+            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
+            return get_max_model_len(pretrained_or_hf_text_config)
         except Exception as e:
             logger.error(f"Failed to derive max model length: {e}")
 
