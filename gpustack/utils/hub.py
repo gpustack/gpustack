@@ -5,6 +5,7 @@ import fnmatch
 from huggingface_hub import HfFileSystem
 from huggingface_hub.utils import validate_repo_id
 from modelscope.hub.api import HubApi
+from transformers import PretrainedConfig
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, SourceEnum
@@ -126,7 +127,7 @@ def get_pretrained_config(model: Model, **kwargs):
 # Simplified from vllm.config._get_and_verify_max_len
 # Keep in our codebase to avoid dependency on vllm's internal
 # APIs which may change unexpectedly.
-# https://github.com/vllm-project/vllm/blob/v0.6.2/vllm/config.py#L1668
+# https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/config.py#L2453
 def get_max_model_len(pretrained_config) -> int:  # noqa: C901
     """Get the model's maximum length."""
     derived_max_model_len = float("inf")
@@ -141,6 +142,8 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
         "seq_length",
         # Command-R
         "model_max_length",
+        # Whisper
+        "max_target_positions",
         # Others
         "max_sequence_length",
         "max_seq_length",
@@ -188,3 +191,17 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
 
     logger.debug(f"Derived max model length: {derived_max_model_len}")
     return int(derived_max_model_len)
+
+
+# Similar to https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/transformers_utils/config.py#L700,
+# But we don't assert and fail if num_attention_heads is missing.
+def get_hf_text_config(config: PretrainedConfig):
+    """Get the "sub" config relevant to llm for multi modal models.
+    No op for pure text models.
+    """
+    if hasattr(config, "text_config") and hasattr(
+        config.text_config, "num_attention_heads"
+    ):
+        return config.text_config
+    else:
+        return config

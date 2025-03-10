@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.config.config import Config
+from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import (
     BackendEnum,
@@ -147,6 +147,7 @@ class InferenceServer(ABC):
         cfg: Config,
     ):
         setup_logging(debug=cfg.debug)
+        set_global_config(cfg)
 
         try:
             self._clientset = clientset
