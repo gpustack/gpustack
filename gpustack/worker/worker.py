@@ -42,6 +42,7 @@ class Worker:
         self._exporter_enabled = not cfg.disable_metrics
         self._enable_worker_ip_monitor = False
         self._system_reserved = SystemReserved(ram=0, vram=0)
+        self._async_tasks = []
 
         if cfg.system_reserved is not None:
             # GB to Bytes
@@ -111,6 +112,9 @@ class Worker:
 
         return worker_name
 
+    def _create_async_task(self, coro):
+        self._async_tasks.append(asyncio.create_task(coro))
+
     def start(self):
         setup_logging(self._config.debug)
 
@@ -170,17 +174,19 @@ class Worker:
             self._serve_manager.health_check_serving_instances, 3
         )
 
-        asyncio.create_task(self._serve_manager.watch_model_instances())
+        self._create_async_task(self._serve_manager.watch_model_instances())
 
         if self._config.enable_ray and not self._is_embedded:
             # Embedded worker does not start Ray.
             # Ray does not support starting pure head,
             # and we don't want to start Ray head and worker on the same node.
             # Ref: https://github.com/ray-project/ray/issues/19745.
-            asyncio.create_task(self._ray_manager.start())
+            self._create_async_task(self._ray_manager.start())
 
         # Start the worker server to expose APIs.
-        await self._serve_apis()
+        self._create_async_task(self._serve_apis())
+
+        await asyncio.gather(*self._async_tasks)
 
     async def _serve_apis(self):
         """

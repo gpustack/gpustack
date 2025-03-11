@@ -34,10 +34,14 @@ class Server:
             sub_processes = []
         self._config: Config = config
         self._sub_processes = sub_processes
+        self._async_tasks = []
 
     @property
     def all_processes(self):
         return self._sub_processes
+
+    def _create_async_task(self, coro):
+        self._async_tasks.append(asyncio.create_task(coro))
 
     @property
     def config(self):
@@ -88,8 +92,9 @@ class Server:
 
         logger.info(f"Serving on {config.host}:{config.port}.")
         server = uvicorn.Server(config)
+        self._create_async_task(server.serve())
 
-        await server.serve()
+        await asyncio.gather(*self._async_tasks)
 
     def _run_migrations(self):
         logger.info("Running database migration.")
@@ -124,31 +129,31 @@ class Server:
 
     def _start_scheduler(self):
         scheduler = Scheduler(self._config)
-        asyncio.create_task(scheduler.start())
+        self._create_async_task(scheduler.start())
 
         logger.debug("Scheduler started.")
 
     def _start_controllers(self):
         model_controller = ModelController(self._config)
-        asyncio.create_task(model_controller.start())
+        self._create_async_task(model_controller.start())
 
         model_instance_controller = ModelInstanceController(self._config)
-        asyncio.create_task(model_instance_controller.start())
+        self._create_async_task(model_instance_controller.start())
 
         worker_controller = WorkerController()
-        asyncio.create_task(worker_controller.start())
+        self._create_async_task(worker_controller.start())
 
         logger.debug("Controllers started.")
 
     def _start_system_load_collector(self):
         collector = SystemLoadCollector()
-        asyncio.create_task(collector.start())
+        self._create_async_task(collector.start())
 
         logger.debug("System load collector started.")
 
     def _start_worker_syncer(self):
         worker_syncer = WorkerSyncer()
-        asyncio.create_task(worker_syncer.start())
+        self._create_async_task(worker_syncer.start())
 
         logger.debug("Worker syncer started.")
 
@@ -157,7 +162,7 @@ class Server:
             return
 
         update_checker = UpdateChecker(update_check_url=self._config.update_check_url)
-        asyncio.create_task(update_checker.start())
+        self._create_async_task(update_checker.start())
 
         logger.debug("Update checker started.")
 
@@ -168,7 +173,7 @@ class Server:
         ray_manager = RayManager(
             cfg=self._config, head=True, pure_head=self._config.disable_worker
         )
-        asyncio.create_task(ray_manager.start())
+        self._create_async_task(ray_manager.start())
 
     def _start_sub_processes(self):
         for process in self._sub_processes:

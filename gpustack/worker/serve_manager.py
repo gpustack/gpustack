@@ -84,6 +84,8 @@ class ServeManager:
                 await self._clientset.model_instances.awatch(
                     callback=self._handle_model_instance_event
                 )
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error(f"Failed watching model instances: {e}")
 
