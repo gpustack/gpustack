@@ -202,6 +202,18 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("WORKER_PORT"),
     )
     group.add_argument(
+        "--service-port-range",
+        type=str,
+        help="Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40000-40063'.",
+        default=get_gpustack_env("SERVICE_PORT_RANGE"),
+    )
+    group.add_argument(
+        "--rpc-server-port-range",
+        type=str,
+        help="Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40064-4095'.",
+        default=get_gpustack_env("RPC_SERVER_PORT_RANGE"),
+    )
+    group.add_argument(
         "--disable-metrics",
         action=OptionalBoolAction,
         help="Disable metrics.",

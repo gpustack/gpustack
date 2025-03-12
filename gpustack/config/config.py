@@ -58,6 +58,8 @@ class Config(BaseSettings):
         disable_rpc_servers: Disable RPC servers.
         metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
+        service_port_range: Port range for inference services. Example: '40000-40063'. Inclusive at both ends of the range.
+        rpc_server_port_range: Port range for RPC servers. Example: '40064-40095'. Inclusive at both ends of the range.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
         pipx_path: Path to the pipx executable, used to install versioned backends.
@@ -98,6 +100,8 @@ class Config(BaseSettings):
     disable_rpc_servers: bool = False
     worker_port: int = 10150
     metrics_port: int = 10151
+    service_port_range: Optional[str] = "40000-40063"
+    rpc_server_port_range: Optional[str] = "40064-40095"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None
@@ -163,6 +167,12 @@ class Config(BaseSettings):
         if self.enable_ray:
             self.check_ray()
 
+        if self.service_port_range:
+            self.check_port_range(self.service_port_range)
+
+        if self.rpc_server_port_range:
+            self.check_port_range(self.rpc_server_port_range)
+
         return self
 
     def check_ray(self):
@@ -183,6 +193,15 @@ class Config(BaseSettings):
                 raise Exception(
                     f"current platform {current_platform.device_name} does not support Ray."
                 )
+
+    def check_port_range(self, port_range: str):
+        ports = port_range.split("-")
+        if len(ports) != 2:
+            raise Exception(f"Invalid port range: {port_range}")
+        if not ports[0].isdigit() or not ports[1].isdigit():
+            raise Exception("Port range must be numeric")
+        if int(ports[0]) > int(ports[1]):
+            raise Exception(f"Invalid port range: {ports[0]} > {ports[1]}")
 
     def get_system_info(self) -> SystemInfo:  # noqa: C901
         """get system info from resources
