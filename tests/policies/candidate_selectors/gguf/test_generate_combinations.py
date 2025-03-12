@@ -28,6 +28,9 @@ async def test_generate_combinations_for_single_worker_gpus():
     mi = new_model_instance(1, "test", 1)
 
     resource_fit_selector = GGUFResourceFitSelector(m, mi)
+    resource_fit_selector._worker_id_to_worker = {
+        worker.id: worker for worker in workers
+    }
 
     with (
         patch(
@@ -42,8 +45,10 @@ async def test_generate_combinations_for_single_worker_gpus():
 
         actual_combinations_count = {}
         for i in range(2, 9):
-            combinations = await resource_fit_selector._generate_combinations_for_single_worker_multi_gpus(
-                allocatable, workers[0], i
+            combinations, _ = (
+                await resource_fit_selector._generate_combinations_for_single_worker_multi_gpus(
+                    allocatable, workers[0], i
+                )
             )
             actual_combinations_count[i] = combinations
 
@@ -71,8 +76,6 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_manual_sel
         linux_nvidia_9_3090_24gx8(),
         linux_nvidia_10_3090_24gx8(),
     ]
-
-    worker_map = {worker.id: worker for worker in workers}
 
     m = new_model(
         1,
@@ -116,6 +119,9 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_manual_sel
     )
     mi = new_model_instance(1, "test", 1)
     resource_fit_selector = GGUFResourceFitSelector(m, mi)
+    resource_fit_selector._non_uma_single_gpu_full_offload_vram = (
+        537.09 * 1024 * 1024 * 1024
+    )
 
     with (
         patch(
@@ -124,9 +130,10 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_manual_sel
         ),
     ):
 
-        combinations, _, _ = (
+        await resource_fit_selector._set_workers_allocatable_resource(workers)
+        combinations = (
             await resource_fit_selector._generate_combinations_for_worker_with_rpcs(
-                workers, worker_map
+                workers
             )
         )
 
@@ -146,7 +153,6 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_auto_selec
         linux_nvidia_9_3090_24gx8(),
         linux_nvidia_10_3090_24gx8(),
     ]
-    worker_map = {worker.id: worker for worker in workers}
 
     m = new_model(
         1,
@@ -156,9 +162,16 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_auto_selec
         cpu_offloading=False,
         placement_strategy=PlacementStrategyEnum.SPREAD,
         huggingface_filename="DeepSeek-R1-Q4_K_M/DeepSeek-R1-Q4_K_M-00001-of-00009.gguf",
+        backend_parameters=[],
     )
     mi = new_model_instance(1, "test", 1)
     resource_fit_selector = GGUFResourceFitSelector(m, mi)
+    resource_fit_selector._worker_id_to_worker = {
+        worker.id: worker for worker in workers
+    }
+    resource_fit_selector._non_uma_single_gpu_full_offload_vram = (
+        537.09 * 1024 * 1024 * 1024
+    )
 
     with (
         patch(
@@ -167,9 +180,10 @@ async def test_generate_combinations_for_worker_with_rpc_servers_with_auto_selec
         ),
     ):
 
-        combinations, _, _ = (
+        await resource_fit_selector._set_workers_allocatable_resource(workers)
+        combinations = (
             await resource_fit_selector._generate_combinations_for_worker_with_rpcs(
-                workers, worker_map
+                workers
             )
         )
 

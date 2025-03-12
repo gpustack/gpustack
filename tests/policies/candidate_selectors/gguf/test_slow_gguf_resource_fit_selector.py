@@ -452,16 +452,8 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_cpu(temp_dir):
         expected_candidates = [
             {
                 "offload_layers": 0,
-                "worker_id": 16,
-                "worker_name": "host03-3090",
-                "is_unified_memory": False,
-                "ram": 1506297877384,
-                "score": 100,
-            },
-            {
-                "offload_layers": 0,
-                "worker_id": 23,
-                "worker_name": "host03-4090",
+                "worker_id": 27,
+                "worker_name": "host-cpu-3",
                 "is_unified_memory": False,
                 "ram": 1506297877384,
                 "score": 100,
@@ -470,6 +462,22 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_cpu(temp_dir):
                 "offload_layers": 0,
                 "worker_id": 26,
                 "worker_name": "host04-4090_24gx4_3060_12gx4",
+                "is_unified_memory": False,
+                "ram": 1506297877384,
+                "score": 100,
+            },
+            {
+                "offload_layers": 0,
+                "worker_id": 25,
+                "worker_name": "host01-3080",
+                "is_unified_memory": False,
+                "ram": 1506297877384,
+                "score": 100,
+            },
+            {
+                "offload_layers": 0,
+                "worker_id": 23,
+                "worker_name": "host03-4090",
                 "is_unified_memory": False,
                 "ram": 1506297877384,
                 "score": 100,
@@ -492,16 +500,8 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_cpu(temp_dir):
             },
             {
                 "offload_layers": 0,
-                "worker_id": 25,
-                "worker_name": "host01-3080",
-                "is_unified_memory": False,
-                "ram": 1506297877384,
-                "score": 100,
-            },
-            {
-                "offload_layers": 0,
-                "worker_id": 27,
-                "worker_name": "host-cpu-3",
+                "worker_id": 16,
+                "worker_name": "host03-3090",
                 "is_unified_memory": False,
                 "ram": 1506297877384,
                 "score": 100,
@@ -670,7 +670,6 @@ async def test_schedule_with_deepseek_r1_bf16_with_end_in_no_candidate(temp_dir)
     mi = new_model_instance(1, "test", 1)
 
     resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
 
     with (
         patch(
@@ -701,12 +700,17 @@ async def test_schedule_with_deepseek_r1_bf16_with_end_in_no_candidate(temp_dir)
     ):
 
         candidates = await resource_fit_selector.select_candidates(workers)
-        message = resource_fit_selector.get_message()
+        messages = resource_fit_selector.get_messages()
+
+        assert len(candidates) == 0
         assert (
-            message
-            == "No workers meet the resource requirements. The system attempted full offloading (using one or multiple GPUs), distributed deployments across multiple workers, but none were suitable. For distributed deployments, the high number of GPUs makes automatic evaluation too slow, manual GPU selection is recommended."
+            messages[0]
+            == "The model requires approximately 1410.55 GiB VRAM and 3.74 GiB RAM. The largest available worker provides 1104.0 GiB VRAM and 2000.0 GiB RAM."
         )
-        candidates = await placement_scorer_spread.score(candidates)
+        assert (
+            messages[1]
+            == "Too many candidate RPC servers, skipping distributed deployment. Use manual scheduling to select GPUs if needed."
+        )
 
 
 @pytest.mark.asyncio
@@ -1106,7 +1110,7 @@ async def test_schedule_with_ngl_end_in_cpu_offload(temp_dir):
     )
     set_global_config(config)
 
-    if not check_parser(version="v0.13.18"):
+    if not check_parser(version="v0.13.10"):
         pytest.skip("parser path is not available or version mismatch, skipping.")
 
     workers = [
@@ -1177,7 +1181,7 @@ async def test_schedule_with_ngl_end_in_cpu_offload(temp_dir):
                 "worker_id": 2,
                 "worker_name": "host02",
                 "is_unified_memory": False,
-                "ram": 10114843512,
+                "ram": 9628795768,
                 "score": 100,
             },
             {
@@ -1185,7 +1189,7 @@ async def test_schedule_with_ngl_end_in_cpu_offload(temp_dir):
                 "worker_id": 1,
                 "worker_name": "host01",
                 "is_unified_memory": False,
-                "ram": 10114843512,
+                "ram": 9628795768,
                 "score": 100,
             },
         ]
@@ -1220,6 +1224,7 @@ async def test_schedule_with_deepseek_r1_bf16_with_manual_selected_cant_offload_
         linux_nvidia_12_A40_48gx2(),
         linux_nvidia_14_A100_40gx2(),
         linux_nvidia_8_3090_24gx8(),
+        linux_nvidia_15_4080_16gx8(),
     ]
 
     m = new_model(
@@ -1281,7 +1286,12 @@ async def test_schedule_with_deepseek_r1_bf16_with_manual_selected_cant_offload_
 
         candidates = await resource_fit_selector.select_candidates(workers)
         candidates = await placement_scorer_spread.score(candidates)
+        messages = resource_fit_selector.get_messages()
         assert len(candidates) == 0
+        assert (
+            messages[0]
+            == "Selected GPU host-5-4080:cuda:0 lacks enough VRAM. At least 26.47 GiB is required."
+        )
 
 
 async def mock_gguf_parser_command(

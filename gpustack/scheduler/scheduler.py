@@ -431,11 +431,11 @@ class Scheduler:
             candidate = self.pick_highest_score_candidate(candidates)
 
             if candidate is None and len(workers) > 0:
-                resource_fit_message = (
-                    candidates_selector.get_message()
+                resource_fit_messages = (
+                    candidates_selector.get_messages()
                     or "No workers meet the resource requirements."
                 )
-                messages.append(resource_fit_message)
+                messages.extend(resource_fit_messages)
             return candidate, messages
         except Exception as e:
             state_message = (
