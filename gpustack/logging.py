@@ -1,6 +1,14 @@
 from datetime import datetime, timezone
 import logging
+import os
 import sys
+
+
+# Suppress warnings from transformers
+# https://github.com/huggingface/transformers/issues/27214
+# Note: This should be set before importing transformers
+if "TRANSFORMERS_NO_ADVISORY_WARNINGS" not in os.environ:
+    os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
 TRACE_LEVEL = 5
 
