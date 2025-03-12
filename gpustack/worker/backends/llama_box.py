@@ -4,8 +4,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Dict, List, Tuple
 import psutil
 
+from gpustack.schemas.workers import Worker
 from gpustack.utils import platform
 from gpustack.schemas.models import (
     ModelInstance,
@@ -37,8 +39,8 @@ class LlamaBoxServer(InferenceServer):
 
         layers = -1
         claim = self._model_instance.computed_resource_claim
-        if claim is not None and claim.get("offload_layers") is not None:
-            layers = claim.get("offload_layers")
+        if claim is not None and claim.offload_layers is not None:
+            layers = claim.offload_layers
 
         workers = self._clientset.workers.list()
         worker_map = {worker.id: worker for worker in workers.items}
@@ -92,7 +94,7 @@ class LlamaBoxServer(InferenceServer):
             self._model_instance.gpu_indexes
             and len(self._model_instance.gpu_indexes) > 0
         ):
-            vram_claims = claim.get("vram").values()
+            vram_claims = claim.vram.values()
             main_worker_tensor_split = vram_claims
 
         legacy_tensor_split = []
@@ -103,10 +105,8 @@ class LlamaBoxServer(InferenceServer):
             legacy_tensor_split.extend(main_worker_tensor_split)
 
         tensor_split = legacy_tensor_split
-        if self._model_instance.computed_resource_claim.get("tensor_split"):
-            tensor_split = self._model_instance.computed_resource_claim.get(
-                "tensor_split"
-            )
+        if self._model_instance.computed_resource_claim.tensor_split:
+            tensor_split = self._model_instance.computed_resource_claim.tensor_split
 
         user_tensor_split = find_parameter(
             self._model.backend_parameters, ["ts", "tensor-split"]
@@ -219,19 +219,20 @@ def get_llama_box_command():
     return command
 
 
-def get_rpc_servers(model_instance: ModelInstance, worker_map):
+def get_rpc_servers(
+    model_instance: ModelInstance, worker_map: Dict[int, Worker]
+) -> Tuple[List[str], List[int]]:
     rpc_servers = []
     rpc_tensor_split = []
-    if model_instance.distributed_servers and model_instance.distributed_servers.get(
-        "rpc_servers"
+    if (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.rpc_servers
     ):
-        for rpc_server in model_instance.distributed_servers.get("rpc_servers"):
-            r_worker = worker_map.get(rpc_server.get("worker_id"))
+        for rpc_server in model_instance.distributed_servers.rpc_servers:
+            r_worker = worker_map.get(rpc_server.worker_id)
             r_ip = r_worker.ip
-            r_port = r_worker.status.rpc_servers.get(rpc_server.get("gpu_index")).port
-            r_ts = list(
-                rpc_server.get("computed_resource_claim", {}).get("vram").values()
-            )
+            r_port = r_worker.status.rpc_servers.get(rpc_server.gpu_index).port
+            r_ts = list((rpc_server.computed_resource_claim or {}).vram.values())
 
             rpc_tensor_split.extend(r_ts)
             rpc_servers.append(f"{r_ip}:{r_port}")
