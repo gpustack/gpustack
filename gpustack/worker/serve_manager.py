@@ -126,7 +126,9 @@ class ServeManager:
 
         try:
             if mi.port is None:
-                mi.port = network.get_free_port()
+                mi.port = network.get_free_port(
+                    port_range=self._config.service_port_range
+                )
 
             logger.info(f"Start serving model instance {mi.name} on port {mi.port}")
 

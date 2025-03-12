@@ -2,6 +2,7 @@ import asyncio
 import random
 import socket
 import time
+from typing import Tuple
 import aiohttp
 import psutil
 
@@ -33,14 +34,30 @@ def get_first_non_loopback_ip():
     raise Exception("No non-loopback IP address found.")
 
 
-def get_free_port(start=40000, end=41024) -> int:
+def parse_port_range(port_range: str) -> Tuple[int, int]:
+    """
+    Parse the port range string to a tuple of start and end port.
+    """
+
+    start, end = port_range.split("-")
+    return int(start), int(end)
+
+
+def get_free_port(port_range: str) -> int:
+    start, end = parse_port_range(port_range)
+    tested_ports = set()
     while True:
         port = random.randint(start, end)
+        if port in tested_ports:
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("", port))
                 return port
             except OSError:
+                tested_ports.add(port)
+                if len(tested_ports) == end - start + 1:
+                    raise Exception("No free port available in the range.")
                 continue
 
 
