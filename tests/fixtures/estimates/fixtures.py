@@ -2,6 +2,54 @@ import os
 from gpustack.scheduler.calculator import modelResoruceClaim
 
 
+def llama3_70b_full_offload():
+    # gguf-parser 0.9.2
+    '''
+    gguf-parser --ol-model llama3:70b \
+    --gpu-layers=-1 --gpu-layers=999 --ctx-size 8192 \
+    --skip-tokenizer --skip-architecture --skip-metadata --json >> llama3_70b_full_offload.json
+    '''
+    return load_model_claim_from_file("llama3_70b_full_offload.json")
+
+
+def llama3_70b_full_offload_split_2_4080():
+    # gguf-parser 0.9.2
+    '''
+    gguf-parser --ol-model llama3:70b \
+    --gpu-layers=999 --gpu-layers-step=1 --ctx-size 8192 \
+    --tensor-split=17171480576,17171480576 \
+    --skip-tokenizer --skip-architecture --skip-metadata --json >> llama3_70b_full_offload_split_2_4080.json
+    '''
+    return load_model_claim_from_file("llama3_70b_full_offload_split_2_4080.json")
+
+
+def deepseek_r1_ud_iq2_xxs_full_offload():
+    # gguf-parser 0.13.10
+    '''
+    gguf-parser --in-max-ctx-size --skip-tokenizer --skip-architecture --skip-metadata \
+    --image-vae-tiling --cache-expiration 168h0m0s --no-mmap \
+    --ctx-size 2048 --cache-path /opt/models/cache/gguf-parser --gpu-layers 999 \
+    -hf-repo unsloth/DeepSeek-R1-GGUF -hf-file DeepSeek-R1-UD-IQ2_XXS/DeepSeek-R1-UD-IQ2_XXS-00001-of-00004.gguf \
+    --json >> deepseek_r1_ud_iq2_xxs_full_offload.json
+    '''
+    return load_model_claim_from_file("deepseek_r1_ud_iq2_xxs_full_offload.json")
+
+
+def deepseek_r1_ud_iq2_xxs_full_offload_split_8():
+    # gguf-parser 0.13.10
+    '''
+    gguf-parser --in-max-ctx-size --skip-tokenizer --skip-architecture --skip-metadata \
+    --image-vae-tiling --cache-expiration 168h0m0s --no-mmap \
+    --ctx-size 2048 --cache-path /opt/models/cache/gguf-parser --gpu-layers 999 \
+    --tensor-split 24576,24576,24576,24576,24576,24576,24576,24576 \
+    -hf-repo unsloth/DeepSeek-R1-GGUF -hf-file DeepSeek-R1-UD-IQ2_XXS/DeepSeek-R1-UD-IQ2_XXS-00001-of-00004.gguf \
+    --json >> deepseek_r1_ud_iq2_xxs_full_offload_split_8.json
+    '''
+    return load_model_claim_from_file(
+        "deepseek_r1_ud_iq2_xxs_full_offload_split_8.json"
+    )
+
+
 def llama3_8b_partial_offload():
     # gguf-parser 0.9.2
     '''

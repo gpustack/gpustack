@@ -21,6 +21,9 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
     Find specified parameter by name from the parameters.
     Return the value of the parameter if found, otherwise return None.
     """
+    if parameters is None:
+        return None
+
     for i, param in enumerate(parameters):
         if '=' in param:
             key, value = param.split('=', 1)
