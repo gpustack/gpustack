@@ -68,7 +68,7 @@ async def get_current_user(
 
 
 async def get_admin_user(
-    current_user: Annotated[User, Depends(get_current_user)]
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
     if not current_user.is_admin:
         raise ForbiddenException(message="No permission to access")
@@ -172,3 +172,17 @@ async def authenticate_user(
         raise UnauthorizedException(message="Incorrect username or password")
 
     return user
+
+
+async def worker_auth(
+    request: Request,
+    bearer_token: Annotated[
+        Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
+    ] = None,
+):
+    if not bearer_token:
+        raise UnauthorizedException(message="Invalid authentication credentials")
+
+    config: Config = request.app.state.config
+    if bearer_token.credentials != config.token:
+        raise UnauthorizedException(message="Invalid authentication credentials")

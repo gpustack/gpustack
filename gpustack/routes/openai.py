@@ -12,6 +12,7 @@ from starlette.datastructures import UploadFile
 from gpustack.api.exceptions import (
     BadRequestException,
     NotFoundException,
+    InternalServerErrorException,
     OpenAIAPIError,
     OpenAIAPIErrorResponse,
     ServiceUnavailableException,
@@ -26,6 +27,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
 )
+from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep
 
 
@@ -173,6 +175,7 @@ async def proxy_request_by_model(request: Request, session: SessionDep, endpoint
     model, stream, body_json, form_data, form_files = await parse_request_body(
         request, session
     )
+
     if not model:
         raise NotFoundException(
             message="Model not found",
@@ -183,18 +186,30 @@ async def proxy_request_by_model(request: Request, session: SessionDep, endpoint
     request.state.stream = stream
 
     instance = await get_running_instance(session, model.id)
+    worker = await Worker.one_by_id(session, instance.worker_id)
+    if not worker:
+        raise InternalServerErrorException(
+            message=f"Worker with ID {instance.worker_id} not found",
+            is_openai_exception=True,
+        )
 
-    url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
-    logger.debug(f"proxying to {url}")
+    url = f"http://{instance.worker_ip}:{worker.port}/proxy/v1/{endpoint}"
+    token = request.app.state.server_config.token
+    extra_headers = {
+        "X-Target-Port": str(instance.port),
+        "Authorization": f"Bearer {token}",
+    }
+
+    logger.debug(f"proxying to {url}, instance port: {instance.port}")
 
     try:
         if stream:
             return await handle_streaming_request(
-                request, url, body_json, form_data, form_files
+                request, url, body_json, form_data, form_files, extra_headers
             )
         else:
             return await handle_standard_request(
-                request, url, body_json, form_data, form_files
+                request, url, body_json, form_data, form_files, extra_headers
             )
     except httpx.TimeoutException as e:
         error_message = f"Request to {url} timed out"
@@ -289,9 +304,12 @@ async def handle_streaming_request(
     body_json: Optional[dict],
     form_data: Optional[dict],
     form_files: Optional[list],
+    extra_headers: Optional[dict] = None,
 ):
     timeout = 300
     headers = filter_headers(request.headers)
+    if extra_headers:
+        headers.update(extra_headers)
 
     if body_json and "stream_options" not in body_json:
         # Defaults to include usage.
@@ -350,9 +368,12 @@ async def handle_standard_request(
     body_json: Optional[dict],
     form_data: Optional[dict],
     form_files: Optional[list],
+    extra_headers: Optional[dict] = None,
 ):
     timeout = 600
     headers = filter_headers(request.headers)
+    if extra_headers:
+        headers.update(extra_headers)
 
     async with httpx.AsyncClient() as client:
         resp = await client.request(

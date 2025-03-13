@@ -9,7 +9,7 @@ from gpustack.security import (
     get_secret_hash,
     verify_hashed_secret,
 )
-from gpustack.server.auth import SESSION_COOKIE_NAME, authenticate_user
+from gpustack.api.auth import SESSION_COOKIE_NAME, authenticate_user
 from gpustack.server.deps import CurrentUserDep, SessionDep
 
 

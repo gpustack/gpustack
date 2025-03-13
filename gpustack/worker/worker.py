@@ -4,27 +4,25 @@ import logging
 import socket
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI
 import setproctitle
 import uvicorn
-from pathlib import Path
 
+from gpustack.api import exceptions
 from gpustack.config import Config
 from gpustack.routes import debug, probes
+from gpustack.routes.worker import logs, proxy
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
 from gpustack.server import catalog
 from gpustack.ray.manager import RayManager
-from gpustack.utils import file, platform
+from gpustack.utils import platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.task import run_periodically_in_thread
-from gpustack.worker.logs import LogOptionsDep
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
-from gpustack.worker.logs import log_generator
 from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
 
@@ -194,22 +192,13 @@ class Worker:
         """
 
         app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
-
-        @app.get("/serveLogs/{id}")
-        async def get_serve_logs(id: int, log_options: LogOptionsDep):
-            path = Path(self._log_dir) / "serve" / f"{id}.log"
-
-            try:
-                file.check_file_with_retries(path)
-            except FileNotFoundError:
-                raise HTTPException(status_code=404, detail="Log file not found")
-
-            return StreamingResponse(
-                log_generator(path, log_options), media_type="text/plain"
-            )
+        app.state.config = self._config
 
         app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)
+        app.include_router(logs.router)
+        app.include_router(proxy.router)
+        exceptions.register_handlers(app)
 
         config = uvicorn.Config(
             app,

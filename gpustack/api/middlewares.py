@@ -23,7 +23,7 @@ from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import JWT_TOKEN_EXPIRE_MINUTES, JWTManager
-from gpustack.server.auth import SESSION_COOKIE_NAME
+from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.server.db import get_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -304,7 +304,7 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
 
 
 def is_usage_chunk(
-    chunk: Union[ChatCompletionChunk, Completion, ImageGenerationChunk]
+    chunk: Union[ChatCompletionChunk, Completion, ImageGenerationChunk],
 ) -> bool:
     choices = getattr(chunk, "choices", None)
 
