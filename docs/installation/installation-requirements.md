@@ -109,18 +109,36 @@ The following network connectivity is required to ensure GPUStack functions prop
 
 GPUStack uses the following ports for communication:
 
-**Server Ports**
+#### Server Ports
 
 | Port    | Description                                                              |
 | ------- | ------------------------------------------------------------------------ |
 | TCP 80  | Default port for the GPUStack UI and API endpoints                       |
 | TCP 443 | Default port for the GPUStack UI and API endpoints (when TLS is enabled) |
 
-**Worker Ports**
+The following ports are used on GPUStack server when Ray is enabled for distributed vLLM across workers:
+
+| Ray Port  | Description                        |
+| --------- | ---------------------------------- |
+| TCP 8265  | Default Port for Ray dashboard     |
+| TCP 40096 | Default port for Ray (GCS server)  |
+| TCP 40097 | Default port for Ray Client Server |
+
+The default ports in GPUStack may differ from Ray’s default ports to simplify port exposure, especially when using Docker. For more information about Ray ports, refer to the [Ray documentation](https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations).
+
+#### Worker Ports
 
 | Port            | Description                                    |
 | --------------- | ---------------------------------------------- |
 | TCP 10150       | Default port for the GPUStack worker           |
 | TCP 10151       | Default port for exposing metrics              |
-| TCP 40000-41024 | Port range allocated for inference services    |
-| TCP 50000-51024 | Port range allocated for llama-box RPC servers |
+| TCP 40000-40063 | Port range allocated for inference services    |
+| TCP 40064-40095 | Port range allocated for llama-box RPC servers |
+
+The following ports are used on GPUStack worker when Ray is enabled for distributed vLLM across workers:
+
+| Ray Port        | Description                         |
+| --------------- | ----------------------------------- |
+| TCP 40098       | Default port for Ray node manager   |
+| TCP 40099       | Default port for Ray object manager |
+| TCP 40100-40131 | Port range for Ray worker processes |
