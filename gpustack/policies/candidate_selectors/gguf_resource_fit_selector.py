@@ -337,6 +337,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates by the resource fit claim.
         """
 
+        if not workers:
+            return []
+
         # reset the data with input workers.
         await self._set_offload_resource_claim()
         await self._set_workers_allocatable_resource(workers)
@@ -435,6 +438,19 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                     EventLevelEnum.ERROR,
                     EVENT_ACTION_PRE_CHECK,
                     f"Invalid backend parameter --gpu-layers {self._param_gpu_layers}. Please choose a valid gpu layers between 0 and {self._total_layers}.",
+                    reason=EVENT_REASON_INVALID_BACKEND_PARAMETER,
+                )
+                return True
+
+            if (
+                self._param_gpu_layers > 0
+                and self._param_gpu_layers < self._total_layers
+                and not self._model.cpu_offloading
+            ):
+                self._event_collector.add(
+                    EventLevelEnum.ERROR,
+                    EVENT_ACTION_PRE_CHECK,
+                    f"The parameter --gpu-layers {self._param_gpu_layers} requires CPU offloading. Please allow CPU offloading in the model configuration.",
                     reason=EVENT_REASON_INVALID_BACKEND_PARAMETER,
                 )
                 return True
