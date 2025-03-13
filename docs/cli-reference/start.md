@@ -41,6 +41,8 @@ gpustack start [OPTIONS]
 | `--force-auth-localhost`            | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
 | `--disable-update-check`            | `False`                                | Disable update check.                                                                                                                               |
 | `--model-catalog-file` value        | (empty)                                | Path or URL to the model catalog file.                                                                                                              |
+| `--ray-port` value                  | `40096`                                | Port of Ray (GCS server). Used when Ray is enabled.                                                                                                 |
+| `--ray-client-server-port` value    | `40097`                                | Port of Ray Client Server. Used when Ray is enabled.                                                                                                |
 
 ### Worker Options
 
@@ -53,6 +55,11 @@ gpustack start [OPTIONS]
 | `--disable-rpc-servers`             | `False`                                | Disable RPC servers.                                                                                                                                                                                                                                             |
 | `--metrics-port` value              | `10151`                                | Port to expose metrics.                                                                                                                                                                                                                                          |
 | `--worker-port` value               | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                                                                                              |
+| `--service-port-range` value        | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                              |
+| `--rpc-server-port-range` value     | `40064-40095`                          | Port range for llama-box RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                           |
+| `--ray-node-manager-port` value     | `40098`                                | Port of Ray node manager. Used when Ray is enabled.                                                                                                                                                                                                              |
+| `--ray-object-manager-port` value   | `40099`                                | Port of Ray object manager. Used when Ray is enabled.                                                                                                                                                                                                            |
+| `--ray-worker-port-range` value     | `40100-40131`                          | Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                            |
 | `--log-dir` value                   | (empty)                                | Directory to store logs.                                                                                                                                                                                                                                         |
 | `--rpc-server-args` value           | (empty)                                | Arguments to pass to the RPC servers. Use `=` to avoid the CLI recognizing rpc-server-args as a server argument. This can be used multiple times to pass a list of arguments. Example: `--rpc-server-args=--verbose --rpc-server-args=--log-colors`              |
 | `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases. |
@@ -93,6 +100,8 @@ force_auth_localhost: false
 bootstrap_password: myadminpassword
 disable_update_check: false
 model_catalog_file: /path_or_url/to/model_catalog_file
+ray_port: 40096
+ray_client_server_port: 40097
 
 # Worker Options
 server_url: http://myserver
@@ -102,6 +111,11 @@ disable_metrics: false
 disable_rpc_servers: false
 metrics_port: 10151
 worker_port: 10150
+service_port_range: 40000-40063
+rpc_server_port_range: 40064-40095
+ray_node_manager_port: 40098
+ray_object_manager_port: 40099
+ray_worker_port_range: 40100-40131
 log_dir: /path/to/log_dir
 rpc_server_args: ["--verbose"]
 system_reserved:

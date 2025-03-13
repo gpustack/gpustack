@@ -30,7 +30,7 @@ You can use the official Docker image to run GPUStack in a container. Installati
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
 
-    4. The  `-p 10150:10150 -p 40000-41024:40000-41024 -p 50000-51024:50000-51024` and `--worker-ip your_host_ip` flags are used to ensure that server is accessible to the worker and inference services running on it.  Alternatively, you can set the `--network=host` and  `--worker-ip your_host_ip` flags to instead.
+    4. The  `-p 40064-40131:40064-40131` flag is used to ensure connectivity for distributed inference across workers. For more details, please refer to the [port requirements](./installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
 
 ### NVIDIA CUDA
 
@@ -91,8 +91,7 @@ docker run -d --name gpustack \
     --gpus all \
     -p 80:80 \
     -p 10150:10150 \
-    -p 40000-41024:40000-41024 \
-    -p 50000-51024:50000-51024 \
+    -p 40064-40131:40064-40131 \
     --ipc=host \
     -v gpustack-data:/var/lib/gpustack \
     gpustack/gpustack --worker-ip your_host_ip
@@ -130,8 +129,7 @@ docker run -d --name gpustack-worker \
     --restart=unless-stopped \
     --gpus all \
     -p 10150:10150 \
-    -p 40000-41024:40000-41024 \
-    -p 50000-51024:50000-51024 \
+    -p 40064-40131:40064-40131 \
     --ipc=host \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack \
@@ -195,8 +193,7 @@ To start a GPUStack worker and **register it with the GPUStack server**, run the
 docker run -d --name gpustack-worker \
     --restart=unless-stopped \
     -p 10150:10150 \
-    -p 40000-41024:40000-41024 \
-    -p 50000-51024:50000-51024 \
+    -p 40064-40131:40064-40131 \
     --ipc=host \
     --group-add=video \
     --security-opt seccomp=unconfined \
@@ -263,8 +260,7 @@ docker run -d --name gpustack-worker \
     --restart=unless-stopped \
     -e ASCEND_VISIBLE_DEVICES=0 \
     -p 10150:10150 \
-    -p 40000-41024:40000-41024 \
-    -p 50000-51024:50000-51024 \
+    -p 40064-40131:40064-40131 \
     --ipc=host \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack:latest-npu \
@@ -325,8 +321,7 @@ To start a GPUStack worker and **register it with the GPUStack server**, run the
 docker run -d --name gpustack-worker \
     --restart=unless-stopped \
     -p 10150:10150 \
-    -p 40000-41024:40000-41024 \
-    -p 50000-51024:50000-51024 \
+    -p 40064-40131:40064-40131 \
     --ipc=host \
     -v gpustack-worker-data:/var/lib/gpustack \
     gpustack/gpustack:latest-musa \
@@ -391,8 +386,7 @@ To start a GPUStack worker and **register it with the GPUStack server**, run the
 docker run -d --name gpustack-worker \
     --restart=unless-stopped \
     -p 10150:10150 \
-    -p 40000-41024:40000-41024 \
-    -p 50000-51024:50000-51024 \
+    -p 40064-40131:40064-40131 \
     --ipc=host \
     --group-add=video \
     --security-opt seccomp=unconfined \
