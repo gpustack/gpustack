@@ -20,7 +20,7 @@ from gpustack.routes import (
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
 from gpustack.routes import rerank
-from gpustack.server.auth import get_admin_user, get_current_user
+from gpustack.api.auth import get_admin_user, get_current_user
 
 
 api_router = APIRouter(responses=error_responses)
