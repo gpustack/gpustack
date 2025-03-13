@@ -50,6 +50,8 @@ class Config(BaseSettings):
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
         model_catalog_file: Path or URL to the model catalog file.
+        ray_port: Port of Ray (GCS server). Used when Ray is enabled. Default is 40096.
+        ray_client_server_port: Port of Ray Client Server. Used when Ray is enabled. Default is 40097.
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
@@ -58,8 +60,11 @@ class Config(BaseSettings):
         disable_rpc_servers: Disable RPC servers.
         metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
-        service_port_range: Port range for inference services. Example: '40000-40063'. Inclusive at both ends of the range.
-        rpc_server_port_range: Port range for RPC servers. Example: '40064-40095'. Inclusive at both ends of the range.
+        service_port_range: Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40000-40063'.
+        rpc_server_port_range: Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40064-40095'.
+        ray_node_manager_port: Raylet port for node manager. Used when Ray is enabled. Default is 40098.
+        ray_object_manager_port: Raylet port for object manager. Used when Ray is enabled. Default is 40099.
+        ray_worker_port_range: Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40100-40131'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
         pipx_path: Path to the pipx executable, used to install versioned backends.
@@ -91,6 +96,8 @@ class Config(BaseSettings):
     disable_update_check: bool = False
     update_check_url: Optional[str] = None
     model_catalog_file: Optional[str] = None
+    ray_port: int = 40096
+    ray_client_server_port: int = 40097
 
     # Worker options
     server_url: Optional[str] = None
@@ -102,6 +109,9 @@ class Config(BaseSettings):
     metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
     rpc_server_port_range: Optional[str] = "40064-40095"
+    ray_node_manager_port: int = 40098
+    ray_object_manager_port: int = 40099
+    ray_worker_port_range: Optional[str] = "40100-40131"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None
@@ -138,7 +148,7 @@ class Config(BaseSettings):
             self.system_reserved = {"ram": 2, "vram": 1}
 
     @model_validator(mode="after")
-    def check_all(self):
+    def check_all(self):  # noqa: C901
         if 'PYTEST_CURRENT_TEST' in os.environ:
             # Skip validation during tests
             return self
@@ -172,6 +182,9 @@ class Config(BaseSettings):
 
         if self.rpc_server_port_range:
             self.check_port_range(self.rpc_server_port_range)
+
+        if self.ray_worker_port_range:
+            self.check_port_range(self.ray_worker_port_range)
 
         return self
 

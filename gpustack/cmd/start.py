@@ -54,13 +54,13 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--data-dir",
         type=str,
-        help="Directory to store data. Default is OS specific.",
+        help="Directory to store data. The default is OS specific.",
         default=get_gpustack_env("DATA_DIR"),
     )
     group.add_argument(
         "--cache-dir",
         type=str,
-        help="Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.",
+        help="Directory to store cache (e.g., model files). The default is <data-dir>/cache.",
         default=get_gpustack_env("CACHE_DIR"),
     )
     group.add_argument(
@@ -153,7 +153,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--ollama-library-base-url",
         type=str,
-        help="Base URL of the Ollama library. Default is https://registry.ollama.ai.",
+        help="Base URL of the Ollama library. The default is https://registry.ollama.ai.",
         default=get_gpustack_env("OLLAMA_LIBRARY_BASE_URL"),
     )
     group.add_argument(
@@ -173,6 +173,18 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="Path or URL to the model catalog file.",
         default=get_gpustack_env("MODEL_CATALOG_FILE"),
+    )
+    group.add_argument(
+        "--ray-port",
+        type=int,
+        help="Port of Ray (GCS server). Used when Ray is enabled. The default is 40096.",
+        default=get_gpustack_env("RAY_PORT"),
+    )
+    group.add_argument(
+        "--ray-client-server-port",
+        type=int,
+        help="Port of Ray Client Server. Used when Ray is enabled. The default is 40097.",
+        default=get_gpustack_env("RAY_CLIENT_SERVER_PORT"),
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -210,8 +222,26 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--rpc-server-port-range",
         type=str,
-        help="Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40064-4095'.",
+        help="Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40064-40095'.",
         default=get_gpustack_env("RPC_SERVER_PORT_RANGE"),
+    )
+    group.add_argument(
+        "--ray-node-manager-port",
+        type=int,
+        help="Port of Ray node manager. Used when Ray is enabled. The default is 40098.",
+        default=get_gpustack_env("RAY_NODE_MANAGER_PORT"),
+    )
+    group.add_argument(
+        "--ray-object-manager-port",
+        type=int,
+        help="Port of Ray object manager. Used when Ray is enabled. The default is 40099.",
+        default=get_gpustack_env("RAY_OBJECT_MANAGER_PORT"),
+    )
+    group.add_argument(
+        "--ray-worker-port-range",
+        type=str,
+        help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40100-40131'.",
+        default=get_gpustack_env("RAY_WORKER_PORT_RANGE"),
     )
     group.add_argument(
         "--disable-metrics",
@@ -374,6 +404,8 @@ def set_server_options(args, config_data: dict):
         "disable_update_check",
         "update_check_url",
         "model_catalog_file",
+        "ray_port",
+        "ray_client_server_port",
     ]
 
     for option in options:
@@ -393,6 +425,9 @@ def set_worker_options(args, config_data: dict):
         "rpc_server_args",
         "system_reserved",
         "tools_download_base_url",
+        "ray_node_manager_port",
+        "ray_object_manager_port",
+        "ray_worker_port_range",
     ]
 
     for option in options:
