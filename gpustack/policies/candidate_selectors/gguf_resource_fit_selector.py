@@ -101,6 +101,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._max_gpu_vram = 0
         self._approximate_full_offload_required_gpu_number = 1
         self._allocatable_gpu_count = 0
+        self._gpu_count = 0
         self._allocatable_worker_count = 0
 
         self._messages = []
@@ -226,6 +227,11 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._workers_allocatable_vram = sorted_workers_allocatable_vram
 
         self._allocatable_gpu_count = len(self._gpus_allocatable_vram)
+        self._gpu_count = sum(
+            len(worker.status.gpu_devices)
+            for worker in workers
+            if worker.status.gpu_devices
+        )
 
         if len(self._gpus_allocatable_vram) > 0:
             self._max_gpu_vram = self._gpus_allocatable_vram[0][2]
@@ -524,7 +530,19 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self, candidate_func
     ) -> bool:
         # Skip conditions for worker allocatable resources.
-        if self._allocatable_worker_count == 0 or self._allocatable_gpu_count == 0:
+        if self._allocatable_worker_count == 0:
+            self._event_collector.add(
+                EventLevelEnum.ERROR,
+                EVENT_ACTION_PRE_CHECK,
+                "Insufficient resources for the model. Please check the available VRAM and RAM for the workers.",
+                reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
+            )
+            return True
+
+        if self._allocatable_gpu_count == 0:
+            if candidate_func == self.find_single_worker_cpu_candidates:
+                return False
+
             if self._selected_gpu_ids:
                 self._event_collector.add(
                     EventLevelEnum.ERROR,
@@ -534,26 +552,14 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 )
                 return True
 
-            else:
-                if not self._model.cpu_offloading:
-                    self._event_collector.add(
-                        EventLevelEnum.ERROR,
-                        EVENT_ACTION_PRE_CHECK,
-                        "Insufficient resources for the model. Please check the available VRAM for the workers.",
-                        reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
-                    )
-                    return True
-                else:
-                    if candidate_func == self.find_single_worker_cpu_candidates:
-                        return False
-
-                    self._event_collector.add(
-                        EventLevelEnum.INFO,
-                        EVENT_ACTION_PRE_CHECK,
-                        "No available resources for workers. Please check workers's available VRAM.",
-                        reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
-                    )
-                    return True
+            if self._gpu_count != 0:
+                self._event_collector.add(
+                    EventLevelEnum.INFO,
+                    EVENT_ACTION_PRE_CHECK,
+                    "No available resources for workers. Please check workers's available VRAM.",
+                    reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
+                )
+                return True
 
         if (
             self._allocatable_worker_count < 2

@@ -150,7 +150,7 @@ async def validate_model_in(
         )
 
         if param_gpu_layers:
-            int_param_gpu_layers = safe_int(param_gpu_layers)
+            int_param_gpu_layers = safe_int(param_gpu_layers, None)
             if (
                 not param_gpu_layers.isdigit()
                 or int_param_gpu_layers < 0
@@ -158,6 +158,15 @@ async def validate_model_in(
             ):
                 raise BadRequestException(
                     message="Invalid backend parameter --gpu-layers. Please provide an integer in the range 0-999 (inclusive)."
+                )
+
+            if (
+                int_param_gpu_layers == 0
+                and model_in.gpu_selector is not None
+                and len(model_in.gpu_selector.gpu_ids) > 0
+            ):
+                raise BadRequestException(
+                    message="Cannot set --gpu-layers to 0 and manually select GPUs at the same time. Setting --gpu-layers to 0 means running on CPU only."
                 )
 
 
