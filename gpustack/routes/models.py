@@ -144,6 +144,22 @@ async def validate_model_in(
     if model_in.gpu_selector is not None and model_in.replicas > 0:
         await validate_gpu_ids(session, model_in)
 
+    if model_in.backend_parameters:
+        param_gpu_layers = find_parameter(
+            model_in.backend_parameters, ["ngl", "gpu-layers", "n-gpu-layers"]
+        )
+
+        if param_gpu_layers:
+            int_param_gpu_layers = safe_int(param_gpu_layers)
+            if (
+                not param_gpu_layers.isdigit()
+                or int_param_gpu_layers < 0
+                or int_param_gpu_layers > 999
+            ):
+                raise BadRequestException(
+                    message="Invalid backend parameter --gpu-layers. Please provide an integer in the range 0-999 (inclusive)."
+                )
+
 
 async def validate_gpu_ids(  # noqa: C901
     session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]

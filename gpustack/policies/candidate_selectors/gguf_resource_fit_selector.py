@@ -288,6 +288,10 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
         self._set_single_layer_vram(result, rpc_result)
 
+    def _set_model_parameters(self):
+        if self._param_gpu_layers and self._param_gpu_layers > self._total_layers:
+            self._param_gpu_layers = self._total_layers
+
     def _set_messages(self, candidates: List[ModelInstanceScheduleCandidate]):
         event_messages = {
             EventLevelEnum.ERROR: [],
@@ -343,6 +347,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         # reset the data with input workers.
         await self._set_offload_resource_claim()
         await self._set_workers_allocatable_resource(workers)
+        self._set_model_parameters()
 
         sorted_workers = self._sort_workers_by_allocatable_vram(workers)
         candidates = await self._filter_in_sequence(sorted_workers)
@@ -430,18 +435,6 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     def _should_skip_for_params(self, candidate_func) -> bool:
         # Skip conditions for param gpu layers.
         if self._param_gpu_layers or self._param_gpu_layers == 0:
-            if (
-                self._param_gpu_layers < 0
-                or self._param_gpu_layers > self._total_layers
-            ):
-                self._event_collector.add(
-                    EventLevelEnum.ERROR,
-                    EVENT_ACTION_PRE_CHECK,
-                    f"Invalid backend parameter --gpu-layers {self._param_gpu_layers}. Please choose a valid gpu layers between 0 and {self._total_layers}.",
-                    reason=EVENT_REASON_INVALID_BACKEND_PARAMETER,
-                )
-                return True
-
             if (
                 self._param_gpu_layers > 0
                 and self._param_gpu_layers < self._total_layers
