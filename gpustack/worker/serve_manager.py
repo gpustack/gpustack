@@ -35,6 +35,10 @@ from gpustack.server.bus import Event, EventType
 logger = logging.getLogger(__name__)
 
 
+class WorkerNotFoundError(Exception):
+    pass
+
+
 class ServeManager:
     def __init__(
         self,
@@ -71,7 +75,7 @@ class ServeManager:
                     logger.debug(f"Successfully found worker ID: {worker.id}")
                     return
 
-        raise Exception(f"Worker {self._worker_name} not found.")
+        raise WorkerNotFoundError(f"Worker {self._worker_name} not found.")
 
     async def watch_model_instances(self):
         while True:
@@ -86,6 +90,8 @@ class ServeManager:
                 )
             except asyncio.CancelledError:
                 break
+            except WorkerNotFoundError:
+                raise
             except Exception as e:
                 logger.error(f"Failed watching model instances: {e}")
 
