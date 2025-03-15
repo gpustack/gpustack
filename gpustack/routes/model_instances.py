@@ -79,8 +79,6 @@ async def get_serving_logs(
     if not worker:
         raise NotFoundException(message="Model instance's worker not found")
 
-    server_config: Config = request.app.state.server_config
-
     model_instance_log_url = (
         f"http://{worker.ip}:{worker.port}/serveLogs"
         f"/{model_instance.id}?{log_options.url_encode()}"
