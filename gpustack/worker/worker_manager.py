@@ -197,7 +197,10 @@ class WorkerManager:
                 self._rpc_servers.pop(gpu_device.index)
 
             log_file_path = f"{self._rpc_server_log_dir}/gpu-{gpu_device.index}.log"
-            port = network.get_free_port(port_range=self._cfg.rpc_server_port_range)
+            port = network.get_free_port(
+                port_range=self._cfg.rpc_server_port_range,
+                unavailable_ports=self.get_occupied_ports(),
+            )
             process = multiprocessing.Process(
                 target=RPCServer.start,
                 args=(
@@ -221,3 +224,6 @@ class WorkerManager:
 
     def get_rpc_servers(self) -> Dict[int, RPCServerProcessInfo]:
         return self._rpc_servers
+
+    def get_occupied_ports(self) -> set[int]:
+        return {server.port for server in self._rpc_servers.values()}

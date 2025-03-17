@@ -421,6 +421,8 @@ def set_worker_options(args, config_data: dict):
         "disable_metrics",
         "disable_rpc_servers",
         "metrics_port",
+        "service_port_range",
+        "rpc_server_port_range",
         "log_dir",
         "rpc_server_args",
         "system_reserved",

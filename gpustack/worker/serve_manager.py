@@ -49,9 +49,10 @@ class ServeManager:
         self._worker_name = worker_name
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
-        self._serving_model_instances: Dict[str, multiprocessing.Process] = {}
-        self._starting_model_instances: Dict[str, ModelInstance] = {}
-        self._model_cache_by_instance: Dict[str, Model] = {}
+        self._serving_model_instances: Dict[int, multiprocessing.Process] = {}
+        self._serving_model_instance_ports: Dict[int, int] = {}
+        self._starting_model_instances: Dict[int, ModelInstance] = {}
+        self._model_cache_by_instance: Dict[int, Model] = {}
         self._clientset = clientset
         self._cache_dir = cfg.cache_dir
 
@@ -133,7 +134,8 @@ class ServeManager:
         try:
             if mi.port is None:
                 mi.port = network.get_free_port(
-                    port_range=self._config.service_port_range
+                    port_range=self._config.service_port_range,
+                    unavailable_ports=set(self._serving_model_instance_ports.values()),
                 )
 
             logger.info(f"Start serving model instance {mi.name} on port {mi.port}")
@@ -154,6 +156,7 @@ class ServeManager:
             process.daemon = False
             process.start()
             self._serving_model_instances[mi.id] = process
+            self._serving_model_instance_ports[mi.id] = mi.port
             self._starting_model_instances[mi.id] = mi
             self._model_cache_by_instance[mi.id] = model
 
@@ -264,6 +267,7 @@ class ServeManager:
 
     def _post_stop_model_instance(self, id: str):
         self._serving_model_instances.pop(id, None)
+        self._serving_model_instance_ports.pop(id, None)
         self._starting_model_instances.pop(id, None)
         self._model_cache_by_instance.pop(id, None)
 
