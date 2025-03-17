@@ -8,7 +8,7 @@ from .filters import to_dash_plural, to_snake_case, to_plural, to_underscore_plu
 
 
 def main():
-    cfg = Config(class_names=["Worker", "Model", "ModelInstance", "User"])
+    cfg = Config(class_names=["Worker", "Model", "ModelInstance", "ModelFile", "User"])
 
     env = Environment(loader=FileSystemLoader(cfg.template_dir), auto_reload=True)
     env.filters["to_snake_case"] = to_snake_case

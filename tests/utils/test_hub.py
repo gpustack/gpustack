@@ -47,6 +47,20 @@ def test_get_hub_model_weight_size():
         ),
         (
             Model(
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="Systran/faster-whisper-large-v3",
+            ),
+            3_087_284_237,
+        ),
+        (
+            Model(
+                source=SourceEnum.HUGGING_FACE,
+                huggingface_repo_id="FunAudioLLM/CosyVoice2-0.5B",
+            ),
+            3_545_354_370,
+        ),
+        (
+            Model(
                 source=SourceEnum.MODEL_SCOPE,
                 model_scope_model_id="Qwen/Qwen2-0.5B-Instruct",
             ),
@@ -79,6 +93,20 @@ def test_get_hub_model_weight_size():
                 model_scope_model_id="deepseek-ai/DeepSeek-R1",
             ),
             688_586_727_753,
+        ),
+        (
+            Model(
+                source=SourceEnum.MODEL_SCOPE,
+                model_scope_model_id="gpustack/faster-whisper-large-v3",
+            ),
+            3_087_284_237,
+        ),
+        (
+            Model(
+                source=SourceEnum.MODEL_SCOPE,
+                model_scope_model_id="iic/CosyVoice2-0.5B",
+            ),
+            3_545_354_370,
         ),
     ]
 

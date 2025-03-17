@@ -13,6 +13,7 @@ from gpustack.config import Config
 from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
     ModelController,
+    ModelFileController,
     ModelInstanceController,
     WorkerController,
 )
@@ -142,6 +143,9 @@ class Server:
 
         worker_controller = WorkerController()
         self._create_async_task(worker_controller.start())
+
+        model_file_controller = ModelFileController()
+        self._create_async_task(model_file_controller.start())
 
         logger.debug("Controllers started.")
 

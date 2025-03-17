@@ -7,8 +7,6 @@ import os
 from typing import Dict, Optional
 import logging
 
-import tenacity
-
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
@@ -35,18 +33,14 @@ from gpustack.server.bus import Event, EventType
 logger = logging.getLogger(__name__)
 
 
-class WorkerNotFoundError(Exception):
-    pass
-
-
 class ServeManager:
     def __init__(
         self,
-        worker_name: str,
+        worker_id: int,
         clientset: ClientSet,
         cfg: Config,
     ):
-        self._worker_name = worker_name
+        self._worker_id = worker_id
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[int, multiprocessing.Process] = {}
@@ -58,43 +52,18 @@ class ServeManager:
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
-    @tenacity.retry(
-        stop=tenacity.stop_after_attempt(3),
-        wait=tenacity.wait_fixed(2),
-        reraise=True,
-        before_sleep=lambda retry_state: logger.debug(
-            f"Retrying to get worker ID (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
-        ),
-    )
-    def _get_current_worker_id(self):
-        workers = self._clientset.workers.list()
-
-        if workers and workers.items:
-            for worker in workers.items:
-                if worker.name == self._worker_name:
-                    self._worker_id = worker.id
-                    logger.debug(f"Successfully found worker ID: {worker.id}")
-                    return
-
-        raise WorkerNotFoundError(f"Worker {self._worker_name} not found.")
-
     async def watch_model_instances(self):
         while True:
             try:
-                if not hasattr(self, "_worker_id"):
-                    self._get_current_worker_id()
-
-                await asyncio.sleep(5)
                 logger.info("Started watching model instances.")
                 await self._clientset.model_instances.awatch(
                     callback=self._handle_model_instance_event
                 )
             except asyncio.CancelledError:
                 break
-            except WorkerNotFoundError:
-                raise
             except Exception as e:
                 logger.error(f"Failed watching model instances: {e}")
+                await asyncio.sleep(5)
 
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance.model_validate(event.data)

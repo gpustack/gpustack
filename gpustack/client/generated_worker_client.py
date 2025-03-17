@@ -23,7 +23,7 @@ class WorkerClient:
 
     def watch(
         self,
-        callback: Callable[[Event], None],
+        callback: Optional[Callable[[Event], None]] = None,
         stop_condition: Optional[Callable[[Event], bool]] = None,
         params: Optional[Dict[str, Any]] = None,
     ):
@@ -42,13 +42,14 @@ class WorkerClient:
                 if line:
                     event_data = json.loads(line)
                     event = Event(**event_data)
-                    callback(event)
+                    if callback:
+                        callback(event)
                     if stop_condition(event):
                         break
 
     async def awatch(
         self,
-        callback: Callable[[Event], None],
+        callback: Optional[Callable[[Event], None]] = None,
         stop_condition: Optional[Callable[[Event], bool]] = None,
         params: Optional[Dict[str, Any]] = None,
     ):
@@ -73,7 +74,8 @@ class WorkerClient:
                     if line:
                         event_data = json.loads(line)
                         event = Event(**event_data)
-                        callback(event)
+                        if callback:
+                            callback(event)
                         if stop_condition(event):
                             break
                 except asyncio.TimeoutError:

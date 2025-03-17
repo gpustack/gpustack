@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 import setproctitle
+import tenacity
 import uvicorn
 
 from gpustack.api import exceptions
@@ -21,6 +22,7 @@ from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
@@ -63,6 +65,7 @@ class Worker:
         self._worker_ip = cfg.worker_ip
         if self._worker_ip is None:
             self._worker_ip = get_first_non_loopback_ip()
+            self._config.worker_ip = self._worker_ip
             self._enable_worker_ip_monitor = True
 
         self._worker_name = cfg.worker_name
@@ -79,11 +82,6 @@ class Worker:
             worker_name=self._worker_name,
             system_reserved=self._system_reserved,
             clientset=self._clientset,
-            cfg=cfg,
-        )
-        self._serve_manager = ServeManager(
-            clientset=self._clientset,
-            worker_name=self._worker_name,
             cfg=cfg,
         )
         self._exporter = MetricExporter(
@@ -109,6 +107,26 @@ class Worker:
                 file.write(worker_name)
 
         return worker_name
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_fixed(2),
+        reraise=True,
+        before_sleep=lambda retry_state: logger.debug(
+            f"Retrying to get worker ID (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
+        ),
+    )
+    def _get_current_worker_id(self):
+        workers = self._clientset.workers.list()
+
+        if workers and workers.items:
+            for worker in workers.items:
+                if worker.name == self._worker_name:
+                    self._worker_id = worker.id
+                    logger.debug(f"Successfully found worker ID: {worker.id}")
+                    return
+
+        raise Exception(f"Worker {self._worker_name} not found.")
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -167,13 +185,6 @@ class Worker:
             # Start rpc server instances with restart.
             run_periodically_in_thread(self._worker_manager.start_rpc_servers, 20, 3)
 
-        # Check serving model instances' health every 3 seconds.
-        run_periodically_in_thread(
-            self._serve_manager.health_check_serving_instances, 3
-        )
-
-        self._create_async_task(self._serve_manager.watch_model_instances())
-
         if self._config.enable_ray and not self._is_embedded:
             # Embedded worker does not start Ray.
             # Ray does not support starting pure head,
@@ -183,6 +194,22 @@ class Worker:
 
         # Start the worker server to expose APIs.
         self._create_async_task(self._serve_apis())
+
+        # Worker ID is available after the worker registration.
+        self._get_current_worker_id()
+        serve_manager = ServeManager(
+            worker_id=self._worker_id,
+            clientset=self._clientset,
+            cfg=self._config,
+        )
+        # Check serving model instances' health every 3 seconds.
+        run_periodically_in_thread(serve_manager.health_check_serving_instances, 3)
+        self._create_async_task(serve_manager.watch_model_instances())
+
+        model_file_manager = ModelFileManager(
+            worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
+        )
+        self._create_async_task(model_file_manager.watch_model_files())
 
         await asyncio.gather(*self._async_tasks)
 
