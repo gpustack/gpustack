@@ -400,6 +400,7 @@ def filter_headers(headers):
         and key.lower() != "host"
         and key.lower() != "content-type"
         and key.lower() != "transfer-encoding"
+        and key.lower() != "authorization"
     }
 
 
