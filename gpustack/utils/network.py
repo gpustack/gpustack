@@ -2,7 +2,7 @@ import asyncio
 import random
 import socket
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 import aiohttp
 import psutil
 
@@ -43,21 +43,26 @@ def parse_port_range(port_range: str) -> Tuple[int, int]:
     return int(start), int(end)
 
 
-def get_free_port(port_range: str) -> int:
+def get_free_port(port_range: str, unavailable_ports: Optional[set[int]] = None) -> int:
     start, end = parse_port_range(port_range)
-    tested_ports = set()
+    if unavailable_ports is None:
+        unavailable_ports = set()
+
+    if len(unavailable_ports) >= end - start + 1:
+        raise Exception("No free port available in the port range.")
+
     while True:
         port = random.randint(start, end)
-        if port in tested_ports:
+        if port in unavailable_ports:
             continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("", port))
                 return port
             except OSError:
-                tested_ports.add(port)
-                if len(tested_ports) == end - start + 1:
-                    raise Exception("No free port available in the range.")
+                unavailable_ports.add(port)
+                if len(unavailable_ports) == end - start + 1:
+                    raise Exception("No free port available in the port range.")
                 continue
 
 
