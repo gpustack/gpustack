@@ -21,6 +21,7 @@ from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
@@ -63,6 +64,7 @@ class Worker:
         self._worker_ip = cfg.worker_ip
         if self._worker_ip is None:
             self._worker_ip = get_first_non_loopback_ip()
+            self._config.worker_ip = self._worker_ip
             self._enable_worker_ip_monitor = True
 
         self._worker_name = cfg.worker_name
@@ -94,6 +96,10 @@ class Worker:
             cfg=cfg,
         )
         self._ray_manager = RayManager(cfg=cfg)
+
+        self._model_file_manager = ModelFileManager(
+            worker_id=1, clientset=self._clientset, cfg=cfg
+        )
 
     def _get_worker_name(self):
         # Hostname might change with the network, so we store the worker name in a file.
@@ -173,6 +179,7 @@ class Worker:
         )
 
         self._create_async_task(self._serve_manager.watch_model_instances())
+        self._create_async_task(self._model_file_manager.watch_model_files())
 
         if self._config.enable_ray and not self._is_embedded:
             # Embedded worker does not start Ray.

@@ -26,11 +26,15 @@ router = APIRouter()
 async def get_model_instances(
     session: SessionDep,
     params: ListParamsDep,
+    id: Optional[int] = None,
     model_id: Optional[int] = None,
     worker_id: Optional[int] = None,
     state: Optional[str] = None,
 ):
     fields = {}
+    if id:
+        fields["id"] = id
+
     if model_id:
         fields["model_id"] = model_id
 
