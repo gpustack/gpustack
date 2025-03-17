@@ -10,16 +10,16 @@ from gpustack.schemas import *
 from .generated_http_client import HTTPClient
 
 
-class UserClient:
+class ModelFileClient:
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v1/users"
+        self._url = f"{client._base_url}/v1/model-files"
 
-    def list(self, params: Dict[str, Any] = None) -> UsersPublic:
+    def list(self, params: Dict[str, Any] = None) -> ModelFilesPublic:
         response = self._client.get_httpx_client().get(self._url, params=params)
         raise_if_response_error(response)
 
-        return UsersPublic.model_validate(response.json())
+        return ModelFilesPublic.model_validate(response.json())
 
     def watch(
         self,
@@ -81,28 +81,28 @@ class UserClient:
                 except asyncio.TimeoutError:
                     raise Exception("watch timeout")
 
-    def get(self, id: int) -> UserPublic:
+    def get(self, id: int) -> ModelFilePublic:
         response = self._client.get_httpx_client().get(f"{self._url}/{id}")
         raise_if_response_error(response)
-        return UserPublic.model_validate(response.json())
+        return ModelFilePublic.model_validate(response.json())
 
-    def create(self, model_create: UserCreate):
+    def create(self, model_create: ModelFileCreate):
         response = self._client.get_httpx_client().post(
             self._url,
             content=model_create.model_dump_json(),
             headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)
-        return UserPublic.model_validate(response.json())
+        return ModelFilePublic.model_validate(response.json())
 
-    def update(self, id: int, model_update: UserUpdate):
+    def update(self, id: int, model_update: ModelFileUpdate):
         response = self._client.get_httpx_client().put(
             f"{self._url}/{id}",
             content=model_update.model_dump_json(),
             headers={"Content-Type": "application/json"},
         )
         raise_if_response_error(response)
-        return UserPublic.model_validate(response.json())
+        return ModelFilePublic.model_validate(response.json())
 
     def delete(self, id: int):
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
