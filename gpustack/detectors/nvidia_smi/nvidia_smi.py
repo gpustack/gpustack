@@ -14,8 +14,10 @@ from gpustack.utils.convert import safe_float, safe_int
 
 
 class NvidiaSMI(GPUDetector):
+    exec_command = "nvidia-smi"
+
     def is_available(self) -> bool:
-        return is_command_available("nvidia-smi")
+        return is_command_available(self.exec_command)
 
     def gather_gpu_info(self) -> GPUDevicesInfo:
         command = self._command_gather_gpu()
@@ -104,8 +106,12 @@ class NvidiaSMI(GPUDetector):
 
     def _command_gather_gpu(self):
         executable_command = [
-            "nvidia-smi",
+            self.exec_command,
             "--format=csv,noheader",
             "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu",
         ]
         return executable_command
+
+
+class WSLNvidiaSMI(NvidiaSMI):
+    exec_command = "/usr/lib/wsl/lib/nvidia-smi"

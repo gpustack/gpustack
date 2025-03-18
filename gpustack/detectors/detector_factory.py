@@ -4,7 +4,7 @@ from gpustack.detectors.base import (
     GPUDetector,
     GPUDevicesInfo,
 )
-from gpustack.detectors.nvidia_smi.nvidia_smi import NvidiaSMI
+from gpustack.detectors.nvidia_smi.nvidia_smi import NvidiaSMI, WSLNvidiaSMI
 from gpustack.schemas.workers import SystemInfo
 from gpustack.detectors.fastfetch.fastfetch import Fastfetch
 from gpustack.detectors.npu_smi.npu_smi import NPUSMI
@@ -35,6 +35,7 @@ class DetectorFactory:
         fastfetch = Fastfetch()
         return {
             platform.DeviceTypeEnum.CUDA.value: [NvidiaSMI()],
+            platform.DeviceTypeEnum.CUDA.value: [WSLNvidiaSMI()],
             platform.DeviceTypeEnum.NPU.value: [NPUSMI()],
             platform.DeviceTypeEnum.MPS.value: [fastfetch],
             platform.DeviceTypeEnum.MUSA.value: [fastfetch],
