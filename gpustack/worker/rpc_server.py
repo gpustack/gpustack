@@ -11,7 +11,7 @@ import setproctitle
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.process import add_signal_handlers
 from gpustack.worker.backends.base import get_env_name_by_vendor
-from gpustack.worker.backends.llama_box import get_llama_box_command
+from gpustack.worker.backends.llama_box import get_llama_box_rpc_server_command
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class RPCServer:
     ):
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
-        ).joinpath(get_llama_box_command())
+        ).joinpath(get_llama_box_rpc_server_command())
 
         arguments = [
             "--rpc-server-host",

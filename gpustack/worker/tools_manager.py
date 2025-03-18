@@ -313,6 +313,14 @@ class ToolsManager:
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
 
+        # In order to avoid confusion caused by having the same name for the RPC server and the inference service,
+        # the process name of the RPC server has been changed to "llama-box-rpc-server"
+        rpc_server_file_name = "llama-box-rpc-server.exe" if self._os == "windows" else "llama-box-rpc-server"
+        if self._os != "windows":
+            os.symlink(target_file, target_dir / rpc_server_file_name)
+        else:
+            shutil.copy(target_file, target_dir / rpc_server_file_name)
+
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
 
