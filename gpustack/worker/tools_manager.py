@@ -306,12 +306,24 @@ class ToolsManager:
 
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / target_file_name
+        if self._os == "windows":
+            target_rpc_server_file = target_dir / "llama-box-rpc-server.exe"
+        else:
+            target_rpc_server_file = target_dir / "llama-box-rpc-server"
         shutil.copy(llama_box_tmp_dir / file_name, target_file)
 
         # Make the file executable (non-Windows only)
         if self._os != "windows":
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
+
+        # To avoid same name for the RPC server and the inference service
+        if self._os != "windows" and not os.path.exists(target_rpc_server_file):
+            os.symlink(target_file, target_dir / target_rpc_server_file)
+        elif self._os == "windows" and not os.path.exists(target_rpc_server_file):
+            os.link(target_file, target_dir / target_rpc_server_file)
+        else:
+            logger.info(f"{target_rpc_server_file} already exists")
 
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
