@@ -315,9 +315,9 @@ class ToolsManager:
 
         # To avoid same name for the RPC server and the inference service
         if self._os != "windows":
-            os.symlink(target_file, target_dir / "llama-box-rpc-server.exe")
+            os.symlink(target_file, target_dir / "llama-box-rpc-server")
         else:
-            shutil.copy(target_file, target_dir / "llama-box-rpc-server")
+            os.symlink(target_file, target_dir / "llama-box-rpc-server.exe")
 
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
