@@ -317,7 +317,7 @@ class ToolsManager:
         if self._os != "windows":
             os.symlink(target_file, target_dir / "llama-box-rpc-server")
         else:
-            os.symlink(target_file, target_dir / "llama-box-rpc-server.exe")
+            os.link(target_file, target_dir / "llama-box-rpc-server.exe")
 
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
