@@ -34,8 +34,7 @@ class DetectorFactory:
     def _get_builtin_gpu_detectors(self) -> Dict[str, GPUDetector]:
         fastfetch = Fastfetch()
         return {
-            platform.DeviceTypeEnum.CUDA.value: [NvidiaSMI()],
-            platform.DeviceTypeEnum.CUDA.value: [WSLNvidiaSMI()],
+            platform.DeviceTypeEnum.CUDA.value: [NvidiaSMI(), WSLNvidiaSMI()],
             platform.DeviceTypeEnum.NPU.value: [NPUSMI()],
             platform.DeviceTypeEnum.MPS.value: [fastfetch],
             platform.DeviceTypeEnum.MUSA.value: [fastfetch],
