@@ -219,13 +219,6 @@ def get_llama_box_command():
     return command
 
 
-def get_llama_box_rpc_server_command():
-    command = "llama-box-rpc-server"
-    if platform.system() == "windows":
-        command += ".exe"
-    return command
-
-
 def get_rpc_servers(
     model_instance: ModelInstance, worker_map: Dict[int, Worker]
 ) -> Tuple[List[str], List[int]]:
