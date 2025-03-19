@@ -70,6 +70,7 @@ class Config(BaseSettings):
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
+        enable_hf_transfer: Speed up file transfers with the huggingface Hub.
     """
 
     # Common options
@@ -118,6 +119,7 @@ class Config(BaseSettings):
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
     rpc_server_args: Optional[List[str]] = None
+    enable_hf_transfer: Optional[str] = None
 
     def __init__(self, **values):
         super().__init__(**values)
