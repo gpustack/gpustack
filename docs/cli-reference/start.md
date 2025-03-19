@@ -52,7 +52,7 @@ gpustack start [OPTIONS]
 ### Worker Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                                                                                                      |
-| ----------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|-------------------------------------|----------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `-s` value, `--server-url` value    | (empty)                                | Server to connect to.                                                                                                                                                                                                                                            |
 | `--worker-name` value               | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                                                                                            |
 | `--worker-ip` value                 | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                                                                                         |
@@ -69,6 +69,7 @@ gpustack start [OPTIONS]
 | `--rpc-server-args` value           | (empty)                                | Arguments to pass to the RPC servers. Use `=` to avoid the CLI recognizing rpc-server-args as a server argument. This can be used multiple times to pass a list of arguments. Example: `--rpc-server-args=--verbose --rpc-server-args=--log-colors`              |
 | `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases. |
 | `--tools-download-base-url` value   |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                                       |
+| `--enable-hf-transfer`              | `False`                                | Speed up file transfers with the huggingface Hub. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer                                                                                              |
 
 ### Available Environment Variables
 
@@ -132,4 +133,5 @@ system_reserved:
   ram: 2
   vram: 1
 tools_download_base_url: https://mirror.mycompany.com
+enable_hf_transfer: false
 ```
