@@ -172,6 +172,10 @@ detect_device() {
       warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
     fi
     DEVICE="cuda"
+    # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.
+    if [ -f "/usr/lib/wsl/lib/nvidia-smi" ] && [ ! -e "/usr/local/bin/nvidia-smi" ]; then
+      $SUDO ln -s /usr/lib/wsl/lib/nvidia-smi /usr/local/bin/nvidia-smi
+    fi
   fi
 
   if check_command "mthreads-gmi"; then
