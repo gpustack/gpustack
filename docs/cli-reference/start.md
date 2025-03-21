@@ -30,7 +30,7 @@ gpustack start [OPTIONS]
 ### Server Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                         |
-| ----------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+|-------------------------------------|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--host` value                      | `0.0.0.0`                              | Host to bind the server to.                                                                                                                         |
 | `--port` value                      | `80`                                   | Port to bind the server to.                                                                                                                         |
 | `--disable-worker`                  | `False`                                | Disable embedded worker.                                                                                                                            |
@@ -43,6 +43,11 @@ gpustack start [OPTIONS]
 | `--model-catalog-file` value        | (empty)                                | Path or URL to the model catalog file.                                                                                                              |
 | `--ray-port` value                  | `40096`                                | Port of Ray (GCS server). Used when Ray is enabled.                                                                                                 |
 | `--ray-client-server-port` value    | `40097`                                | Port of Ray Client Server. Used when Ray is enabled.                                                                                                |
+| `--enable_cors`                     | `False`                                | Enable CORS in server.                                                                                                                              |
+| `--allow-origins` value             | `["*"]`                                | A list of origins that should be permitted to make cross-origin requests.                                                                           |
+| `--allow-credentials`               | `False`                                | Indicate that cookies should be supported for cross-origin requests.                                                                                |
+| `--allow-methods` value             | `["*"]`                                | A list of HTTP methods that should be allowed for cross-origin requests.                                                                            |
+| `--allow-headers` value             | `["*"]`                                | A list of HTTP request headers that should be supported for cross-origin requests.                                                                  |
 
 ### Worker Options
 
@@ -102,6 +107,11 @@ disable_update_check: false
 model_catalog_file: /path_or_url/to/model_catalog_file
 ray_port: 40096
 ray_client_server_port: 40097
+enable_cors: false
+allow_origins: ["*"]
+allow_credentials: false
+allow_methods: ["*"]
+allow_headers: ["*"]
 
 # Worker Options
 server_url: http://myserver

@@ -4,6 +4,7 @@ import os
 from typing import List
 import uvicorn
 import logging
+from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
 from gpustack.schemas.users import User
@@ -78,6 +79,14 @@ class Server:
         # Start FastAPI server
         app.state.server_config = self._config
         app.state.jwt_manager = jwt_manager
+        if self._config.enable_cors:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=self._config.allow_origins,
+                allow_credentials=self._config.allow_credentials,
+                allow_methods=self._config.allow_methods,
+                allow_headers=self._config.allow_headers,
+            )
         config = uvicorn.Config(
             app,
             host=host,
