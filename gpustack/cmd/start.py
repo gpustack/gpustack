@@ -292,6 +292,33 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Base URL to download dependency tools.",
         default=get_gpustack_env("TOOLS_DOWNLOAD_BASE_URL"),
     )
+    group.add_argument(
+        "--enable-cors",
+        action=OptionalBoolAction,
+        help="Enable CORS in server.",
+        default=get_gpustack_env_bool("ENABLE_CORS"),
+    )
+    group.add_argument(
+        "--allow-origins",
+        action='append',
+        help="A list of origins that should be permitted to make cross-origin requests.",
+    )
+    group.add_argument(
+        "--allow-credentials",
+        action=OptionalBoolAction,
+        help="Indicate that cookies should be supported for cross-origin requests.",
+        default=get_gpustack_env_bool("ALLOW_CREDENTIALS"),
+    )
+    group.add_argument(
+        "--allow-methods",
+        action='append',
+        help="A list of HTTP methods that should be allowed for cross-origin requests.",
+    )
+    group.add_argument(
+        "--allow-headers",
+        action='append',
+        help="A list of HTTP request headers that should be supported for cross-origin requests.",
+    )
 
     parser_server.set_defaults(func=run)
 
@@ -406,6 +433,11 @@ def set_server_options(args, config_data: dict):
         "model_catalog_file",
         "ray_port",
         "ray_client_server_port",
+        "enable_cors",
+        "allow_origins",
+        "allow_credentials",
+        "allow_methods",
+        "allow_headers",
     ]
 
     for option in options:
