@@ -231,6 +231,15 @@ check_ports() {
   fi
 }
 
+# Function to reset iogpu.wired_limit_mb
+check_and_reset_wired_limit_mb() {
+  wired_limit_mb=$(get_param_value "wired-limit-mb" "$@")
+  if [ "$OS" = "macos" ] && [ -n "$wired_limit_mb" ]; then
+    $SUDO sysctl -w iogpu.wired_limit_mb="$wired_limit_mb"
+    warn "This operation carries risks. Please proceed only if you fully understand the iogpu.wired_limit_mb."
+  fi
+}
+
 # Function to check and install Python tools
 PYTHONPATH=""
 check_python_tools() {
@@ -720,6 +729,7 @@ install_gpustack() {
   install_dependencies
   check_python_tools
   check_ports "$@"
+  check_and_reset_wired_limit_mb "$@"
   install_gpustack
   create_uninstall_script
   disable_service
