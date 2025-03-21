@@ -46,8 +46,8 @@ gpustack start [OPTIONS]
 | `--enable_cors`                     | `False`                                | Enable CORS in server.                                                                                                                              |
 | `--allow-origins` value             | `["*"]`                                | A list of origins that should be permitted to make cross-origin requests.                                                                           |
 | `--allow-credentials`               | `False`                                | Indicate that cookies should be supported for cross-origin requests.                                                                                |
-| `--allow-methods` value             | `["*"]`                                | A list of HTTP methods that should be allowed for cross-origin requests.                                                                            |
-| `--allow-headers` value             | `["*"]`                                | A list of HTTP request headers that should be supported for cross-origin requests.                                                                  |
+| `--allow-methods` value             | `["GET", "POST"]`                      | A list of HTTP methods that should be allowed for cross-origin requests.                                                                            |
+| `--allow-headers` value             | `["Authorization", "Content-Type"]`    | A list of HTTP request headers that should be supported for cross-origin requests.                                                                  |
 
 ### Worker Options
 
@@ -110,8 +110,8 @@ ray_client_server_port: 40097
 enable_cors: false
 allow_origins: ["*"]
 allow_credentials: false
-allow_methods: ["*"]
-allow_headers: ["*"]
+allow_methods: ["GET", "POST"]
+allow_headers: ["Authorization", "Content-Type"]
 
 # Worker Options
 server_url: http://myserver
