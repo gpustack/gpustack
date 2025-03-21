@@ -19,6 +19,7 @@ from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.vllm import VLLMServer
+from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
     BackendEnum,
@@ -198,6 +199,8 @@ class ServeManager:
                     VLLMServer(clientset, mi, cfg).start()
                 elif backend == BackendEnum.VOX_BOX:
                     VoxBoxServer(clientset, mi, cfg).start()
+                elif backend == BackendEnum.ASCEND_MINDIE:
+                    AscendMindIEServer(clientset, mi, cfg).start()
                 else:
                     raise ValueError(f"Unsupported backend {backend}")
 
@@ -314,7 +317,7 @@ def is_running(mi: ModelInstance, backend: Optional[str]) -> bool:
         # Check /v1/models by default if dedicated health check endpoint is not available.
         # This is served by all backends (llama-box, vox-box, vllm)
         health_check_url = f"http://127.0.0.1:{mi.port}/v1/models"
-        if backend == BackendEnum.LLAMA_BOX:
+        if backend in [BackendEnum.LLAMA_BOX]:
             # For llama-box, use /health to avoid printing error logs.
             health_check_url = f"http://127.0.0.1:{mi.port}/health"
 

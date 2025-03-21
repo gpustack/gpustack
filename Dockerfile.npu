@@ -1,27 +1,339 @@
-ARG CANN_VERSION=8.0.rc2.beta1
+# NB(thxCode): According to Ascend Extension Installation,
+# torch-npu has the mapping requirements for the CANN version,
+# please check https://www.hiascend.com/document/detail/zh/Pytorch/600/configandinstg/instg/insg_0001.html for details.
 
-FROM ascendai/cann:ubuntu-python3.10-cann$CANN_VERSION
+ARG PYTHON_VERSION=3.10
+ARG CANN_VERSION=8.0.0.beta1
+ARG CANN_CHIP=910b
+ARG TORCH_VERSION=2.1.0
+ARG TORCH_NPU_VERSION=2.1.0.post8
+ARG MINDIE_VERSION=1.0.0
+
+FROM ubuntu:20.04
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    wget \
-    tzdata \
-    iproute2 \
-    python3-pip \
-    tini \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y software-properties-common \
+      && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+      && add-apt-repository -y ppa:deadsnakes/ppa \
+      && apt-get update -y
 
-COPY . /workspace/gpustack
-RUN cd /workspace/gpustack && \
-    make build && \
-    pip install /workspace/gpustack/dist/*.whl &&\
-    pip cache purge && \
-    rm -rf /workspace/gpustack
+#
+# Install tools
+#
 
-RUN gpustack download-tools --device npu
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
+    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
 
-ENTRYPOINT [ "tini", "--", "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && exec gpustack start \"$@\"", "--" ]
+    # Install
+    apt-get update && apt-get install -y --no-install-recommends \
+        apt-transport-https ca-certificates build-essential binutils bash openssl \
+        unzip xz-utils \
+        git git-lfs \
+        curl wget aria2 \
+        tzdata locales \
+        iproute2 iputils-ping ifstat net-tools dnsutils pciutils ipmitool \
+        procps sysstat dstat htop \
+        tini vim jq bc tree
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+
+    # Set locale
+    localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
+EOF
+ENV LANG='en_US.UTF-8' \
+    LANGUAGE='en_US:en' \
+    LC_ALL='en_US.UTF-8'
+
+#
+# Install GCC
+#
+
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
+    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+
+    # Install
+    apt-get install -y --no-install-recommends \
+        gcc-11 g++-11 gfortran-11 gfortran
+
+    # Update alternatives
+    if [ -f /etc/alternatives/gcov-dump ]; then update-alternatives --remove-all gcov-dump; fi; update-alternatives --install /usr/bin/gcov-dump gcov-dump /usr/bin/gcov-dump-11 10
+    if [ -f /etc/alternatives/lto-dump ]; then update-alternatives --remove-all lto-dump; fi; update-alternatives --install /usr/bin/lto-dump lto-dump /usr/bin/lto-dump-11 10
+    if [ -f /etc/alternatives/gcov ]; then update-alternatives --remove-all gcov; fi; update-alternatives --install /usr/bin/gcov gcov /usr/bin/gcov-11 10
+    if [ -f /etc/alternatives/gcc ]; then update-alternatives --remove-all gcc; fi; update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 10
+    if [ -f /etc/alternatives/gcc-nm ]; then update-alternatives --remove-all gcc-nm; fi; update-alternatives --install /usr/bin/gcc-nm gcc-nm /usr/bin/gcc-nm-11 10
+    if [ -f /etc/alternatives/cpp ]; then update-alternatives --remove-all cpp; fi; update-alternatives --install /usr/bin/cpp cpp /usr/bin/cpp-11 10
+    if [ -f /etc/alternatives/g++ ]; then update-alternatives --remove-all g++; fi; update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 10
+    if [ -f /etc/alternatives/gcc-ar ]; then update-alternatives --remove-all gcc-ar; fi; update-alternatives --install /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-11 10
+    if [ -f /etc/alternatives/gcov-tool ]; then update-alternatives --remove-all gcov-tool; fi; update-alternatives --install /usr/bin/gcov-tool gcov-tool /usr/bin/gcov-tool-11 10
+    if [ -f /etc/alternatives/gcc-ranlib ]; then update-alternatives --remove-all gcc-ranlib; fi; update-alternatives --install /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-11 10
+    if [ -f /etc/alternatives/gfortran ]; then update-alternatives --remove-all gfortran; fi; update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-11 10
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+#
+# Install CMake/Make/CCache
+#
+
+ENV CMAKE_VERSION=3.22.1
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
+    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+
+    # Install
+    apt-get install -y --no-install-recommends \
+        pkg-config make ccache
+
+    curl -sL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-$(uname -m).tar.gz" | tar -zx -C /usr --strip-components 1
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+#
+# Install Python
+#
+
+ARG PYTHON_VERSION
+
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
+    --mount=type=cache,target=/var/cache/apt,sharing=private \
+    --mount=type=cache,target=/root/.cache,sharing=private <<EOF
+
+    # Install
+    apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-distutils python${PYTHON_VERSION}-venv
+
+    # Update alternatives
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python${PYTHON_VERSION}
+    if [ -f /etc/alternatives/python ]; then update-alternatives --remove-all python; fi; update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 10
+    if [ -f /etc/alternatives/python3 ]; then update-alternatives --remove-all python3; fi; update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 10
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+#
+# Install Dependencies
+#
+
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
+    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+
+    # Install
+    apt-get install -y --no-install-recommends \
+        zlib1g zlib1g-dev libbz2-dev liblzma-dev libffi-dev openssl libssl-dev libsqlite3-dev \
+        libblas-dev liblapack-dev libopenblas-dev libblas3 liblapack3 libhdf5-dev \
+        libxml2 libxslt1-dev libgl1-mesa-glx libgmpxx4ldbl
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+#
+# Install CANN
+#
+
+ARG CANN_VERSION
+ARG CANN_CHIP
+
+ENV CANN_VERSION=${CANN_VERSION} \
+    CANN_CHIP=${CANN_CHIP} \
+    CANN_HOME="/usr/local/Ascend"
+
+RUN --mount=type=cache,target=/root/.cache,sharing=private <<EOF
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
+    URL_PREFIX="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20${DOWNLOAD_VERSION}"
+    URL_SUFFIX="response-content-type=application/octet-stream"
+
+    # Install dependencies
+    pip install attrs cython numpy==1.26.4 decorator sympy cffi pyyaml pathlib2 psutil protobuf scipy requests absl-py
+
+    # Install toolkit
+    TOOLKIT_FILE="Ascend-cann-toolkit_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
+    TOOLKIT_PATH="/tmp/${TOOLKIT_FILE}"
+    TOOLKIT_URL="${URL_PREFIX}/${TOOLKIT_FILE}?${URL_SUFFIX}"
+    curl -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
+    chmod a+x "${TOOLKIT_PATH}"
+    printf "Y\n" | "${TOOLKIT_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
+    rm -f "${TOOLKIT_PATH}"
+    rm -rf /var/log/ascend
+    rm -rf /var/log/ascend_seclog
+EOF
+
+RUN <<EOF
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
+    URL_PREFIX="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20${DOWNLOAD_VERSION}"
+    URL_SUFFIX="response-content-type=application/octet-stream"
+
+    # Prepare environment
+    source ${CANN_HOME}/ascend-toolkit/set_env.sh
+
+    # Install kernels
+    KERNELS_FILE="Ascend-cann-kernels-${CANN_CHIP}_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
+    if ! curl -fsSIL "${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}" >/dev/null 2>&1; then
+        # Fallback to generic kernels
+        KERNELS_FILE="Ascend-cann-kernels-${CANN_CHIP}_${DOWNLOAD_VERSION}_${OS}.run"
+    fi
+    KERNELS_PATH="/tmp/${KERNELS_FILE}"
+    KERNELS_URL="${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}"
+    curl -fL -o "${KERNELS_PATH}" "${KERNELS_URL}"
+    chmod a+x "${KERNELS_PATH}"
+    printf "Y\n" |"${KERNELS_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
+
+    # Cleanup
+    rm -f "${KERNELS_PATH}"
+    rm -rf /var/log/ascend
+    rm -rf /var/log/ascend_seclog
+EOF
+
+RUN <<EOF
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
+    URL_PREFIX="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20${DOWNLOAD_VERSION}"
+    URL_SUFFIX="response-content-type=application/octet-stream"
+
+    # Prepare environment
+    source ${CANN_HOME}/ascend-toolkit/set_env.sh
+
+    # Install NNAL
+    NNAL_FILE="Ascend-cann-nnal_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
+    NNAL_PATH="/tmp/${NNAL_FILE}"
+    NNAL_URL="${URL_PREFIX}/${NNAL_FILE}?${URL_SUFFIX}"
+    curl -fL -o "${NNAL_PATH}" "${NNAL_URL}"
+    chmod a+x "${NNAL_PATH}"
+    printf "Y\n" | "${NNAL_PATH}" --install --install-path="${CANN_HOME}"
+
+    # Cleanup
+    rm -f "${NNAL_PATH}"
+    rm -rf /var/log/ascend_seclog
+    rm -rf /var/log/cann_atb_log
+EOF
+
+COPY --from=thxcode/mindie:1.0.0-800I-A2-py311-openeuler24.03-lts --link=true --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
+RUN <<EOF
+    pip install ${CANN_HOME}/atb-models/*.whl
+EOF
+
+#
+# Install MindIE
+#
+
+ARG TORCH_VERSION
+ARG TORCH_NPU_VERSION
+ARG MINDIE_VERSION
+
+RUN <<EOF
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    DOWNLOAD_VERSION="$(echo ${MINDIE_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
+    URL_PREFIX="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%20${DOWNLOAD_VERSION}"
+    URL_SUFFIX="response-content-type=application/octet-stream"
+
+    # Prepare environment
+    source ${CANN_HOME}/ascend-toolkit/set_env.sh
+    source ${CANN_HOME}/nnal/atb/set_env.sh
+
+    # Install dependencies
+    case "${ARCH}" in
+      amd64|x86_64)
+        pip install torch==${TORCH_VERSION}+cpu --index-url https://download.pytorch.org/whl/cpu
+        ;;
+      arm64|aarch64)
+        pip install torch==${TORCH_VERSION}
+        ;;
+      *)
+        echo "Unsupported arch: ${ARCH}"
+        exit 1
+        ;;
+    esac
+    pip install torch-npu==${TORCH_NPU_VERSION}
+
+    # Install MindIE
+    MINDIE_FILE="Ascend-mindie_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
+    MINDIE_PATH="/tmp/${MINDIE_FILE}"
+    MINDIE_URL="${URL_PREFIX}/${MINDIE_FILE}?${URL_SUFFIX}"
+    curl -fL -o "${MINDIE_PATH}" "${MINDIE_URL}"
+    chmod a+x "${MINDIE_PATH}"
+    printf "Y\n" | "${MINDIE_PATH}" --install --install-path="${CANN_HOME}"
+    chmod +w "${CANN_HOME}/mindie/latest/mindie-service/conf"
+
+    # Cleanup
+    rm -f "${MINDIE_PATH}"
+    rm -rf /var/log/mindie_log
+    rm -rf ~/log
+EOF
+
+#
+# Install GPUStack
+#
+
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+    --mount=type=bind,target=/workspace/gpustack,rw <<EOF
+    # Build
+    cd /workspace/gpustack && \
+        make build
+
+    # Install
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[mindie]"
+    pip install $WHEEL_PACKAGE
+
+    # Post-install
+    pip install transformers==4.46.3 pillow==11.0.0 && \
+        pip list
+
+    # Download tools
+    gpustack download-tools --device npu
+
+    # Set up environment
+    mkdir -p /var/lib/gpustack && \
+        chmod -R 0755 /var/lib/gpustack
+EOF
+
+#
+# Setup environment
+#
+
+RUN <<EOF
+    # Export CANN driver lib
+    EXPORT_DRIVER_LIB="export LD_LIBRARY_PATH=${CANN_HOME}/driver/lib64/common:${CANN_HOME}/driver/lib64/driver:\${LD_LIBRARY_PATH}"
+    echo "${EXPORT_DRIVER_LIB}" >> /etc/profile
+    echo "${EXPORT_DRIVER_LIB}" >> ~/.bashrc
+
+    # Source CANN Toolkit environment
+    SOURCE_TOOLKIT_ENV="source ${CANN_HOME}/ascend-toolkit/set_env.sh"
+    echo "${SOURCE_TOOLKIT_ENV}" >> /etc/profile
+    echo "${SOURCE_TOOLKIT_ENV}" >> ~/.bashrc
+
+    # Source CANN NNAL environment
+    SOURCE_NNAL_ENV="source ${CANN_HOME}/nnal/atb/set_env.sh"
+    echo "${SOURCE_NNAL_ENV}" >> /etc/profile
+    echo "${SOURCE_NNAL_ENV}" >> ~/.bashrc
+
+    # Source ATB model environment
+    SOURCE_ATB_MODEL_ENV="source ${CANN_HOME}/atb-models/set_env.sh"
+    echo "${EXPORT_DRIVER_LIB}" >> /etc/profile
+    echo "${EXPORT_DRIVER_LIB}" >> ~/.bashrc
+
+    # NB(thxCode): For specific MindIE version supporting,
+    # we need to process environment setting up during GPUStack deployment.
+EOF
+
+ENTRYPOINT [ "tini", "--", "gpustack", "start" ]

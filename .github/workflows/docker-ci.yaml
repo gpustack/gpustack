@@ -30,14 +30,65 @@ jobs:
       contents: write
       actions: read
       id-token: write
-    timeout-minutes: 60
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false
       matrix:
-        device: ["cuda", "musa", "npu", "rocm", "cpu", "dcu"]
+        include:
+          #
+          # Nvidia CUDA
+          #
+          - device: cuda
+            dockerfile: "Dockerfile"
+            platforms: "linux/amd64"
+            tag_suffix: ""
+            build_args:
+              - "CUDA_VERSION=12.4.1"
+          #
+          # HIP RoCM
+          #
+          - device: rocm
+            dockerfile: "Dockerfile.rocm"
+            platforms: "linux/amd64,linux/arm64"
+            tag_suffix: "-rocm"
+            build_args:
+              - "BUILD_FA=0"
+          #
+          # Ascend NPU
+          #
+          - device: npu
+            dockerfile: "Dockerfile.npu"
+            platforms: "linux/amd64,linux/arm64"
+            tag_suffix: "-npu"
+            build_args:
+              - "CANN_CHIP=910b"
+          - device: npu
+            dockerfile: "Dockerfile.npu"
+            platforms: "linux/amd64,linux/arm64"
+            tag_suffix: "-npu-310p"
+            build_args:
+              - "CANN_CHIP=310p"
+          #
+          # MooreThreads MUSA
+          #
+          - device: musa
+            dockerfile: "Dockerfile.musa"
+            platforms: "linux/amd64,linux/arm64"
+            tag_suffix: "-musa"
+            build_args: []
+          #
+          # Hygon DCU
+          #
+          - device: dcu
+            dockerfile: "Dockerfile.dcu"
+            platforms: "linux/amd64"
+            tag_suffix: "-dcu"
+            build_args: []
+
     env:
       PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}}
       PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,7 +103,7 @@ jobs:
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
         with:
-          image: tonistiigi/binfmt:qemu-v7.0.0
+          image: tonistiigi/binfmt:qemu-v8.1.5
           platforms: "arm64"
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
@@ -73,21 +124,24 @@ jobs:
             type=ref,event=branch
             type=ref,event=pr
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, 'rc') }}
-          # set no tag suffix for cuda as the default, set -{device} suffix for others
           flavor: |
             latest=false
-            suffix=${{ matrix.device != 'cuda' && format('-{0}', matrix.device) || '' }}
+            suffix=${{ matrix.tag_suffix }}
       - name: Package
         uses: docker/build-push-action@v5
         id: package
         with:
           push: ${{ github.event_name != 'pull_request' }}
-          file: ${{ github.workspace }}/${{ matrix.device == 'cuda' && 'Dockerfile' || format('Dockerfile.{0}', matrix.device) }}
+          file: ${{ github.workspace }}/${{ matrix.dockerfile }}
           context: ${{ github.workspace }}
-          platforms: ${{ (matrix.device == 'rocm' || matrix.device == 'dcu') && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          platforms: ${{ matrix.platforms }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           provenance: true
           sbom: true
           build-args: |
-            ${{ matrix.device == 'rocm' && 'BUILD_FA="0"' || '' }}
+            ${{ matrix.build_args }}
+          cache-from: |
+            type=registry,ref=${{ env.PACKAGE_REGISTRY }}/build-cache:${{ env.PACKAGE_IMAGE }}{{ matrix.tag_suffix }}
+          cache-to: |
+            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,oci-mediatypes=false,compression=gzip,ref={0}/build-cache:{1}{2},ignore-error=true', env.PACKAGE_REGISTRY, env.PACKAGE_IMAGE, matrix.tag_suffix) || '' }}
