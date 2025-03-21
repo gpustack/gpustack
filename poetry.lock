@@ -3838,7 +3838,7 @@ test = ["Cython", "greenlet", "ipython", "packaging", "pytest", "pytest-cov", "p
 [[package]]
 name = "mergedeep"
 version = "1.3.4"
-description = "A deep merge function for 🐍."
+description = "A deep merge function for ?."
 optional = false
 python-versions = ">=3.6"
 files = [

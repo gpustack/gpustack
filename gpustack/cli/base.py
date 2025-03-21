@@ -28,6 +28,8 @@ class CLIConfig(BaseSettings):
     debug: bool = False
     model: str
     prompt: Optional[str] = None
+    system_prompt: Optional[str] = None
+    user_prompt: Optional[str] = None
     base_url: str = os.getenv("GPUSTACK_SERVER_URL", "http://127.0.0.1")
     api_key: Optional[str] = os.getenv("GPUSTACK_API_KEY")
 
