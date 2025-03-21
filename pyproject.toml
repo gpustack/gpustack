@@ -56,6 +56,7 @@ aiofiles = "^23.2.1"
 aiohttp = "^3.11.2"
 bitsandbytes = {version = "^0.45.2", optional = true}
 python-json-logger = "^3.3.0"
+hf-transfer = "^0.1.9"
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
