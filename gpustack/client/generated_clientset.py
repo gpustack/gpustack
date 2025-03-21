@@ -6,6 +6,7 @@ from typing import Optional
 from .generated_worker_client import WorkerClient
 from .generated_model_client import ModelClient
 from .generated_model_instance_client import ModelInstanceClient
+from .generated_model_file_client import ModelFileClient
 from .generated_user_client import UserClient
 
 
@@ -44,4 +45,5 @@ class ClientSet:
         self.workers = WorkerClient(http_client)
         self.models = ModelClient(http_client)
         self.model_instances = ModelInstanceClient(http_client)
+        self.model_files = ModelFileClient(http_client)
         self.users = UserClient(http_client)

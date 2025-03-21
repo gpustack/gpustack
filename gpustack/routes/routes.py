@@ -6,6 +6,7 @@ from gpustack.routes import (
     dashboard,
     debug,
     gpu_devices,
+    model_files,
     model_instances,
     model_sets,
     probes,
@@ -45,6 +46,9 @@ v1_admin_router.include_router(
 )
 v1_admin_router.include_router(
     model_sets.router, prefix="/model-sets", tags=["Model Sets"]
+)
+v1_admin_router.include_router(
+    model_files.router, prefix="/model-files", tags=["Model Files"]
 )
 v1_admin_router.include_router(
     gpu_devices.router, prefix="/gpu-devices", tags=["GPU Devices"]

@@ -9,6 +9,7 @@ from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
+from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
@@ -90,6 +91,9 @@ class ModelInstanceController:
                 if event.type == EventType.DELETED:
                     await sync_replicas(session, model, self._config)
 
+                if model_instance.state == ModelInstanceStateEnum.INITIALIZING:
+                    await ensure_instance_model_file(session, model_instance)
+
                 await model.refresh(session)
 
                 if (
@@ -160,6 +164,83 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 instance = candidate.model_instance
                 await instance.delete(session)
                 logger.debug(f"Deleted model instance {instance.name}")
+
+
+async def ensure_instance_model_file(session: AsyncSession, instance: ModelInstance):
+    """
+    Synchronize the model file of the model instance.
+    """
+    if instance.worker_id is None:
+        # Not scheduled yet
+        return
+
+    if len(instance.model_files) > 0:
+        instance = await ModelInstance.one_by_id(session, instance.id)
+        for model_file in instance.model_files:
+            await sync_model_file_state(session, model_file, instance)
+        return
+
+    model_files = await get_or_create_model_files_for_instance(session, instance)
+    for model_file in model_files:
+        if model_file.state == ModelFileStateEnum.ERROR:
+            # Retry the download
+            model_file.state = ModelFileStateEnum.DOWNLOADING
+            model_file.download_progress = 0
+            model_file.state_message = ""
+            await model_file.update(session)
+
+        logger.info(
+            f"Retrying download for model file {model_file.id} for model instance {instance.name}"
+        )
+
+    instance = await ModelInstance.one_by_id(session, instance.id)
+    instance.model_files = model_files
+    await sync_model_file_state(session, model_file, instance)
+    logger.debug(
+        f"Associated model file {model_file.id} with model instance {instance.name}"
+    )
+
+
+async def get_or_create_model_files_for_instance(
+    session: AsyncSession, instance: ModelInstance
+) -> List[ModelFile]:
+    to_link_model_files = []
+    model_files = await ModelFile.all_by_field(
+        session, "source_index", instance.model_source_index
+    )
+
+    worker_ids = [instance.worker_id]
+    if instance.distributed_servers and instance.distributed_servers.ray_actors:
+        worker_ids += [
+            ray_actor.worker_id for ray_actor in instance.distributed_servers.ray_actors
+        ]
+
+    existing_worker_ids = []
+    for model_file in model_files:
+        existing_worker_ids = [model_file.worker_id for model_file in model_files or []]
+        if model_file.worker_id in worker_ids:
+            to_link_model_files.append(model_file)
+
+    for worker_id in worker_ids:
+        if worker_id not in existing_worker_ids:
+            model_file = ModelFile(
+                source=instance.source,
+                huggingface_repo_id=instance.huggingface_repo_id,
+                huggingface_filename=instance.huggingface_filename,
+                ollama_library_model_name=instance.ollama_library_model_name,
+                model_scope_model_id=instance.model_scope_model_id,
+                model_scope_file_path=instance.model_scope_file_path,
+                local_path=instance.local_path,
+                state=ModelFileStateEnum.DOWNLOADING,
+                worker_id=worker_id,
+                source_index=instance.model_source_index,
+            )
+            model_file = await ModelFile.create(session, model_file)
+            to_link_model_files.append(model_file)
+            logger.info(
+                f"Created model file for model instance {instance.name} and worker {worker_id}"
+            )
+    return to_link_model_files
 
 
 async def find_scale_down_candidates(
@@ -351,3 +432,84 @@ class WorkerController:
                 f"Marked instance {', '.join(instance_names)} {new_state} "
                 f"since {log_update_reason}"
             )
+
+
+class ModelFileController:
+    """
+    Model file controller syncs the model file download status to related model instances.
+    """
+
+    def __init__(self):
+        self._engine = get_engine()
+
+    async def start(self):
+        """
+        Start the controller.
+        """
+
+        async for event in ModelFile.subscribe(self._engine):
+            if event.type == EventType.CREATED or event.type == EventType.UPDATED:
+                await self._reconcile(event)
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the model file.
+        """
+
+        file: ModelFile = event.data
+        try:
+            async with AsyncSession(self._engine) as session:
+                file = await ModelFile.one_by_id(session, file.id)
+
+                for instance in file.instances:
+                    await sync_model_file_state(session, file, instance)
+        except Exception as e:
+            logger.error(f"Failed to reconcile model file {file.id}: {e}")
+
+
+async def sync_model_file_state(
+    session: AsyncSession, file: ModelFile, instance: ModelInstance
+):
+    """
+    Sync the model file state to the related model instance.
+    """
+
+    if instance.state == ModelInstanceStateEnum.ERROR:
+        return
+
+    logger.trace(
+        f"Syncing model file {file.id} with model instance {instance.id}, file state: {file.state}, "
+        f"progress: {file.download_progress}, message: {file.state_message}, instance state: {instance.state}"
+    )
+
+    if (
+        file.state == ModelFileStateEnum.DOWNLOADING
+        and instance.state == ModelInstanceStateEnum.INITIALIZING
+    ):
+        # Download started
+        instance.state = ModelInstanceStateEnum.DOWNLOADING
+        instance.download_progress = 0
+        await instance.update(session)
+    elif (
+        file.state == ModelFileStateEnum.DOWNLOADING
+        and instance.state == ModelInstanceStateEnum.DOWNLOADING
+        and file.download_progress != instance.download_progress
+    ):
+        # Update the download progress
+        instance.download_progress = file.download_progress
+        await instance.update(session)
+
+    elif file.state == ModelFileStateEnum.READY and (
+        instance.state == ModelInstanceStateEnum.DOWNLOADING
+        or instance.state == ModelInstanceStateEnum.INITIALIZING
+    ):
+        # Download completed
+        instance.state = ModelInstanceStateEnum.STARTING
+        instance.download_progress = 100
+        instance.resolved_path = file.resolved_paths[0]
+        await instance.update(session)
+    elif file.state == ModelFileStateEnum.ERROR:
+        # Download failed
+        instance.state = ModelInstanceStateEnum.ERROR
+        instance.state_message = file.state_message
+        await instance.update(session)

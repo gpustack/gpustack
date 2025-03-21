@@ -1,15 +1,22 @@
 from datetime import datetime
 from enum import Enum
+import hashlib
+import json
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticField
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
 from gpustack.schemas.common import PaginatedList, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.links import ModelInstanceModelFileLink
 from gpustack.schemas.workers import RPCServer
 from gpustack.utils.command import find_parameter
+
+if TYPE_CHECKING:
+    from gpustack.schemas.model_files import ModelFile
+
 
 # Models
 
@@ -54,6 +61,15 @@ class ModelSource(BaseModel):
     model_scope_model_id: Optional[str] = None
     model_scope_file_path: Optional[str] = None
     local_path: Optional[str] = None
+
+    @property
+    def model_source_index(self) -> str:
+        fields = ModelSource.model_fields.keys()
+        data = {
+            k: v for k, v in self.model_dump(exclude_unset=True).items() if k in fields
+        }
+        sorted_json = json.dumps(data, sort_keys=True)
+        return hashlib.sha256(sorted_json.encode()).hexdigest()
 
     @model_validator(mode="after")
     def check_huggingface_fields(self):
@@ -241,6 +257,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     pid: Optional[int] = None
     port: Optional[int] = None
     download_progress: Optional[float] = None
+    resolved_path: Optional[str] = None
     state: ModelInstanceStateEnum = ModelInstanceStateEnum.PENDING
     state_message: Optional[str] = None
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
@@ -268,6 +285,12 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "selectin"},
     )
 
+    model_files: List["ModelFile"] = Relationship(
+        back_populates="instances",
+        link_model=ModelInstanceModelFileLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+
     # overwrite the hash to use in uniquequeue
     def __hash__(self):
         return self.id
@@ -292,7 +315,7 @@ class ModelInstancePublic(
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]
 
 
-def is_gguf_model(model: Model):
+def is_gguf_model(model: Union[Model, ModelSource]):
     """
     Check if the model is a GGUF model.
     Args:
@@ -315,7 +338,7 @@ def is_gguf_model(model: Model):
             and model.local_path
             and model.local_path.endswith(".gguf")
         )
-        or (model.backend == BackendEnum.LLAMA_BOX)
+        or (hasattr(model, "backend") and model.backend == BackendEnum.LLAMA_BOX)
     )
 
 
@@ -376,16 +399,17 @@ def get_backend(model: Model) -> str:
     return BackendEnum.VLLM
 
 
-def get_mmproj_filename(model: Model) -> Optional[str]:
+def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
     """
     Get the mmproj filename for the model. If the mmproj is not provided in the model's
     backend parameters, it will try to find the default mmproj file.
     """
-    if get_backend(model) != BackendEnum.LLAMA_BOX:
+    if not is_gguf_model(model):
         return None
 
-    mmproj = find_parameter(model.backend_parameters, ["mmproj"])
-    if mmproj and Path(mmproj).name == mmproj:
-        return mmproj
+    if hasattr(model, "backend_parameters"):
+        mmproj = find_parameter(model.backend_parameters, ["mmproj"])
+        if mmproj and Path(mmproj).name == mmproj:
+            return mmproj
 
     return "*mmproj*.gguf"

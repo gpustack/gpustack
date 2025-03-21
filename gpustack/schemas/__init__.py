@@ -11,6 +11,13 @@ from gpustack.schemas.models import (
     ModelInstancesPublic,
     ComputedResourceClaim,
 )
+from gpustack.schemas.model_files import (
+    ModelFile,
+    ModelFileCreate,
+    ModelFileUpdate,
+    ModelFilePublic,
+    ModelFilesPublic,
+)
 from gpustack.schemas.workers import (
     Worker,
     WorkerCreate,
@@ -73,4 +80,9 @@ __all__ = [
     "MemoryInfo",
     "SystemLoad",
     "ModelUsage",
+    "ModelFile",
+    "ModelFileCreate",
+    "ModelFileUpdate",
+    "ModelFilePublic",
+    "ModelFilesPublic",
 ]

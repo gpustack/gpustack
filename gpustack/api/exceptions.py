@@ -39,6 +39,9 @@ def http_exception_factory(
 AlreadyExistsException = http_exception_factory(
     status.HTTP_409_CONFLICT, "AlreadyExists", "Already exists"
 )
+ConflictException = http_exception_factory(
+    status.HTTP_409_CONFLICT, "Conflict", "Conflict with existing resource"
+)
 NotFoundException = http_exception_factory(
     status.HTTP_404_NOT_FOUND, "NotFound", "Not found"
 )

@@ -84,7 +84,6 @@ class ServeManager:
                 if not hasattr(self, "_worker_id"):
                     self._get_current_worker_id()
 
-                await asyncio.sleep(5)
                 logger.info("Started watching model instances.")
                 await self._clientset.model_instances.awatch(
                     callback=self._handle_model_instance_event
@@ -95,6 +94,7 @@ class ServeManager:
                 raise
             except Exception as e:
                 logger.error(f"Failed watching model instances: {e}")
+                await asyncio.sleep(5)
 
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance.model_validate(event.data)

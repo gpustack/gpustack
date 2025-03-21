@@ -4,7 +4,7 @@ from gpustack.config.config import Config
 from gpustack.utils.convert import safe_int
 from gpustack.utils.file import get_local_file_size_in_byte
 from gpustack.utils.gpu import parse_gpu_id
-from gpustack.worker.backends.base import get_file_size as get_remote_file_size
+from gpustack.utils.hub import get_model_weight_size
 from typing import Dict, List
 import os
 import logging
@@ -405,13 +405,7 @@ def get_model_resource_requirement_from_file_size(
             os.path.join(model.local_path, file_path)
         )
     else:
-        file_size_in_byte = get_remote_file_size(
-            model.huggingface_repo_id,
-            file_path,
-            model.model_scope_model_id,
-            file_path,
-            cfg.huggingface_token,
-        )
+        file_size_in_byte = get_model_weight_size(model, cfg.huggingface_token)
     for size, resource in resource_requirements.items():
         if file_size_in_byte <= size:
             return resource
