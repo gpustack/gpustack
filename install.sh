@@ -172,6 +172,10 @@ detect_device() {
       warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
     fi
     DEVICE="cuda"
+    # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.
+    if [ -f "/usr/lib/wsl/lib/nvidia-smi" ] && [ ! -e "/usr/local/bin/nvidia-smi" ]; then
+      $SUDO ln -s /usr/lib/wsl/lib/nvidia-smi /usr/local/bin/nvidia-smi
+    fi
   fi
 
   if check_command "mthreads-gmi"; then
@@ -224,6 +228,15 @@ check_ports() {
 
   if ! check_port "$worker_port"; then
     fatal "Worker port $worker_port is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+  fi
+}
+
+# Function to reset iogpu.wired_limit_mb
+check_and_reset_wired_limit_mb() {
+  wired_limit_mb=$(get_param_value "wired-limit-mb" "$@")
+  if [ "$OS" = "macos" ] && [ -n "$wired_limit_mb" ]; then
+    $SUDO sysctl -w iogpu.wired_limit_mb="$wired_limit_mb"
+    warn "This operation carries risks. Please proceed only if you fully understand the iogpu.wired_limit_mb."
   fi
 }
 
@@ -716,6 +729,7 @@ install_gpustack() {
   install_dependencies
   check_python_tools
   check_ports "$@"
+  check_and_reset_wired_limit_mb "$@"
   install_gpustack
   create_uninstall_script
   disable_service
