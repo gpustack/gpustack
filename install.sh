@@ -27,11 +27,15 @@ set -o noglob
 #
 #   - INSTALL_SKIP_BUILD_DEPENDENCIES
 #     If set to 1 will skip the build dependencies.
+#
+#   - INSTALL_WIRED_LIMIT_MB
+#     This sets the maximum amount of wired memory that the GPU can allocate.
 
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
 INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-1}"
+INSTALL_WIRED_LIMIT_MB="${INSTALL_WIRED_LIMIT_MB:-}"
 
 BREW_APP_OPENFST_NAME="openfst"
 BREW_APP_OPENFST_VERSION="1.8.3"
@@ -172,6 +176,10 @@ detect_device() {
       warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
     fi
     DEVICE="cuda"
+    # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.
+    if [ -f "/usr/lib/wsl/lib/nvidia-smi" ] && [ ! -e "/usr/local/bin/nvidia-smi" ]; then
+      $SUDO ln -s /usr/lib/wsl/lib/nvidia-smi /usr/local/bin/nvidia-smi
+    fi
   fi
 
   if check_command "mthreads-gmi"; then
@@ -224,6 +232,33 @@ check_ports() {
 
   if ! check_port "$worker_port"; then
     fatal "Worker port $worker_port is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+  fi
+}
+
+# Function to reset wired_limit_mb
+check_and_reset_wired_limit_mb() {
+  if ! [ "$OS" = "macos" ]; then
+    return
+  fi
+  if [ -n "$INSTALL_WIRED_LIMIT_MB" ] ; then
+    # 手动设置wired_limit_mb参数的值
+    $SUDO sysctl -w iogpu.wired_limit_mb="$INSTALL_WIRED_LIMIT_MB"
+    warn "This operation carries risks. Please proceed only if you fully understand the iogpu.wired_limit_mb."
+  else
+    # Automatically set the most appropriate wired_limit_mb value in macos.
+    TOTAL_MEM_MB=$(($(sysctl -n hw.memsize) / 1024 / 1024))
+    # Calculate 85% and TOTAL_MEM_GB-5GB in MB
+    EIGHTY_FIVE_PERCENT=$((TOTAL_MEM_MB * 85 / 100))
+    MINUS_5GB=$((TOTAL_MEM_MB - 5120))
+    # Set WIRED_LIMIT_MB to higher value
+    if [ "$EIGHTY_FIVE_PERCENT" -gt "$MINUS_5GB" ]; then
+      WIRED_LIMIT_MB="$EIGHTY_FIVE_PERCENT"
+    else
+      WIRED_LIMIT_MB="$MINUS_5GB"
+    fi
+    info "Total memory: $TOTAL_MEM_MB MB, Maximum limit (iogpu.wired_limit_mb): $WIRED_LIMIT_MB MB"
+    # Apply the values with sysctl
+    $SUDO sysctl -w iogpu.wired_limit_mb="$WIRED_LIMIT_MB"
   fi
 }
 
@@ -716,6 +751,7 @@ install_gpustack() {
   install_dependencies
   check_python_tools
   check_ports "$@"
+  check_and_reset_wired_limit_mb "$@"
   install_gpustack
   create_uninstall_script
   disable_service
