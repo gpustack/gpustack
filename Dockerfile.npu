@@ -1,8 +1,10 @@
-ARG CANN_VERSION=8.0.rc2.beta1
+ARG CANN_VERSION=8.0.0.beta1
 
 FROM ascendai/cann:ubuntu-python3.10-cann$CANN_VERSION
 
 ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
@@ -14,6 +16,69 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+RUN set -exo pipefail; \
+    OS="${TARGETOS}"; \
+    if [ "${OS}" != "linux" ]; then \
+      echo "Unsupported OS: ${OS}"; \
+      exit 1; \
+    fi; \
+    ARCH="${TARGETARCH}"; \
+    case "${ARCH}" in \
+      amd64|x86_64) \
+        ARCH='x86_64'; \
+        ;; \
+      arm64|aarch64) \
+        ARCH='aarch64'; \
+        ;; \
+      *) \
+        echo "Unsupported arch: ${TARGETARCH}"; \
+        exit 1; \
+        ;; \
+    esac; \
+    ASCEND_CANN_DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"; \
+    ASCEND_CANN_NNAL_URL="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20${ASCEND_CANN_DOWNLOAD_VERSION}/Ascend-cann-nnal_${ASCEND_CANN_DOWNLOAD_VERSION}_${OS}-${ARCH}.run?response-content-type=application/octet-stream"; \
+    ASCEND_CANN_NNAL_FILE="/tmp/cann-nnal.run"; \
+    ASCEND_CANN_NNAL_TARGET_DIR="/usr/local/Ascend"; \
+    echo "Downloading CANN NNAL ${ASCEND_CANN_DOWNLOAD_VERSION} from ${ASCEND_CANN_NNAL_URL}" \
+        && curl -skfL -o "${ASCEND_CANN_NNAL_FILE}" "${ASCEND_CANN_NNAL_URL}" \
+        && chmod a+x "${ASCEND_CANN_NNAL_FILE}"; \
+    echo "Installing CANN NNAL ${ASCEND_CANN_DOWNLOAD_VERSION}" \
+        && "${ASCEND_CANN_NNAL_FILE}" --install --install_path="${ASCEND_CANN_NNAL_TARGET_DIR}" --quiet \
+        && rm -f "${ASCEND_CANN_NNAL_FILE}"; \
+    echo "Installed CANN NNAL ${ASCEND_CANN_DOWNLOAD_VERSION} successfully"
+
+ARG ASCEND_MINDIE_VERSION=1.0.0
+RUN set -exo pipefail; \
+    OS="${TARGETOS}"; \
+    if [ "${OS}" != "linux" ]; then \
+      echo "Unsupported OS: ${OS}"; \
+      exit 1; \
+    fi; \
+    ARCH="${TARGETARCH}"; \
+    case "${ARCH}" in \
+      amd64|x86_64) \
+        ARCH='x86_64'; \
+        ;; \
+      arm64|aarch64) \
+        ARCH='aarch64'; \
+        ;; \
+      *) \
+        echo "Unsupported arch: ${TARGETARCH}"; \
+        exit 1; \
+        ;; \
+    esac; \
+    ASCEND_MINDIE_URL="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%20${ASCEND_MINDIE_VERSION}/Ascend-mindie_${ASCEND_MINDIE_VERSION}_${OS}-${ARCH}.run?response-content-type=application/octet-stream"; \
+    ASCEND_MINDIE_FILE="/tmp/mindie.run"; \
+    ASCEND_MINDIE_TARGET_DIR="/usr/local/Ascend"; \
+    echo "Downloading MindIE ${ASCEND_MINDIE_VERSION} from ${ASCEND_MINDIE_URL}" \
+        && curl -skfL -o "${ASCEND_MINDIE_FILE}" "${ASCEND_MINDIE_URL}" \
+        && chmod a+x "${ASCEND_MINDIE_FILE}"; \
+    echo "Installing MindIE ${ASCEND_MINDIE_VERSION}" \
+        && "${ASCEND_MINDIE_FILE}" --install --install_path="${ASCEND_MINDIE_TARGET_DIR}" --quiet \
+        && rm -f "${ASCEND_MINDIE_FILE}" \
+        && rm -rf /var/log/mindie_log; \
+    echo "Installed MindIE ${ASCEND_MINDIE_VERSION} successfully"
+
 COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
     make build && \
@@ -23,4 +88,4 @@ RUN cd /workspace/gpustack && \
 
 RUN gpustack download-tools --device npu
 
-ENTRYPOINT [ "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && exec gpustack start \"$@\"", "--" ]
+ENTRYPOINT [ "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && source /usr/local/Ascend/nnal/atb/set_env.sh && source /usr/local/Ascend/mindie/set_env.sh && exec gpustack start \"$@\"", "--" ]

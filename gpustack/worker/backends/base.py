@@ -21,7 +21,7 @@ from gpustack.schemas.models import (
     get_mmproj_filename,
 )
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo
-from gpustack.utils import platform
+from gpustack.utils import platform, envs
 from gpustack.worker.downloaders import (
     HfDownloader,
     ModelScopeDownloader,
@@ -320,7 +320,9 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def get_inference_running_env(self, env: Dict[str, str] = None) -> Dict[str, str]:
+    def get_inference_running_env(
+        self, env: Dict[str, str] = None, version: str = None
+    ) -> Dict[str, str]:
         if env is None:
             env = os.environ.copy()
 
@@ -345,6 +347,8 @@ class InferenceServer(ABC):
 
             if get_backend(self._model) == BackendEnum.VLLM:
                 set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
+            elif get_backend(self._model) == BackendEnum.ASCEND_MINDIE:
+                set_ascend_mindie_env(env, vendor, gpu_indexes, gpu_devices, version)
 
         env.update(self._model.env or {})
 
@@ -387,6 +391,36 @@ def set_vllm_env(
 
         if emulate_gfx_version.get(llvm):
             env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[llvm]
+
+
+def set_ascend_mindie_env(
+    env: Dict[str, str],
+    vendor: VendorEnum,
+    gpu_indexes: List[int] = None,
+    gpu_devices: GPUDevicesInfo = None,
+    version: str = None,
+):
+    system = platform.system()
+    if not gpu_indexes or not gpu_devices:
+        return
+
+    if system != "linux" or vendor != VendorEnum.Huawei:
+        return
+
+    if not version:
+        version = "1.0.0"
+
+    # Get the pasth of mindie-service set_env.sh
+    ascend_root_path = envs.get_unix_root_path_of_ascend()
+    mindie_service_env_script = ascend_root_path.joinpath(
+        "mindie", version, "mindie-service", "set_env.sh"
+    )
+
+    # Extract the environment variables from the script
+    env_diff = envs.extract_unix_vars_of_source(str(mindie_service_env_script))
+
+    # Update the environment variables
+    env.update(env_diff)
 
 
 def get_env_name_by_vendor(vendor: str) -> str:
