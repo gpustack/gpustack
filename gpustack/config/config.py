@@ -70,6 +70,11 @@ class Config(BaseSettings):
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
+        enable_cors: Enable CORS in server.
+        allow_origins: A list of origins that should be permitted to make cross-origin requests.
+        allow_credentials: Indicate that cookies should be supported for cross-origin requests.
+        allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
+        allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
     """
 
     # Common options
@@ -98,6 +103,11 @@ class Config(BaseSettings):
     model_catalog_file: Optional[str] = None
     ray_port: int = 40096
     ray_client_server_port: int = 40097
+    enable_cors: bool = False
+    allow_origins: Optional[List[str]] = ['*']
+    allow_credentials: bool = False
+    allow_methods: Optional[List[str]] = ['*']
+    allow_headers: Optional[List[str]] = ['*']
 
     # Worker options
     server_url: Optional[str] = None
