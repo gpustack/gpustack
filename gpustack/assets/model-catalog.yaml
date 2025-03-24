@@ -1195,7 +1195,7 @@
     - embedding
   capabilities:
     - dimensions/1024
-    - max_tokens/8192
+    - max_tokens/512
   licenses:
     - mit
   release_date: "2023-09-12"
@@ -1220,7 +1220,7 @@
     - embedding
   capabilities:
     - dimensions/1024
-    - max_tokens/8192
+    - max_tokens/512
   licenses:
     - mit
   release_date: "2023-09-12"
