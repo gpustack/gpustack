@@ -242,3 +242,55 @@ def get_hf_text_config(config: PretrainedConfig):
         return config.text_config
     else:
         return config
+
+
+quantization_list = [
+    "-IQ1_",
+    "-IQ2_",
+    "-IQ3_",
+    "-IQ4_",
+    "-Q2_",
+    "-Q3_",
+    "-Q4_",
+    "-Q5_",
+    "-Q6_",
+    "-Q8_",
+]
+
+
+def get_hugging_face_model_min_gguf_path(
+    model_id: str,
+    token: Optional[str] = None,
+) -> Optional[str]:
+    api = HfApi(token=token)
+    files = api.list_repo_files(model_id)
+
+    gguf_files = sorted([f for f in files if f.endswith(".gguf")])
+    if not gguf_files:
+        return None
+
+    for quantization in quantization_list:
+        for gguf_file in gguf_files:
+            if quantization in gguf_file.upper():
+                return gguf_file
+
+    return gguf_files[0]
+
+
+def get_model_scope_model_min_gguf_path(
+    model_id: str,
+) -> Optional[str]:
+    api = HubApi()
+    files = api.get_model_files(model_id, recursive=True)
+    file_paths: List[str] = [file["Path"] for file in files]
+
+    gguf_files = sorted([f for f in file_paths if f.endswith(".gguf")])
+    if not gguf_files:
+        return None
+
+    for quantization in quantization_list:
+        for gguf_file in gguf_files:
+            if quantization in gguf_file.upper():
+                return gguf_file
+
+    return gguf_files[0]

@@ -34,6 +34,7 @@ class CategoryEnum(str, Enum):
     RERANKER = "reranker"
     SPEECH_TO_TEXT = "speech_to_text"
     TEXT_TO_SPEECH = "text_to_speech"
+    UNKNOWN = "unknown"
 
 
 class PlacementStrategyEnum(str, Enum):
@@ -60,6 +61,19 @@ class ModelSource(BaseModel):
     model_scope_model_id: Optional[str] = None
     model_scope_file_path: Optional[str] = None
     local_path: Optional[str] = None
+
+    @property
+    def model_source_key(self) -> str:
+        """Returns a unique identifier for the model, independent of quantization."""
+        if self.source == SourceEnum.HUGGING_FACE:
+            return self.huggingface_repo_id or ""
+        elif self.source == SourceEnum.OLLAMA_LIBRARY:
+            return self.ollama_library_model_name or ""
+        elif self.source == SourceEnum.MODEL_SCOPE:
+            return self.model_scope_model_id or ""
+        elif self.source == SourceEnum.LOCAL_PATH:
+            return self.local_path or ""
+        return ""
 
     @property
     def readable_source(self) -> str:
@@ -163,6 +177,7 @@ class ModelBase(SQLModel, ModelSource):
 
     env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
     restart_on_error: Optional[bool] = True
+    distributable: Optional[bool] = False
 
     @model_validator(mode="after")
     def validate(self):
@@ -191,7 +206,6 @@ class Model(ModelBase, BaseModelMixin, table=True):
     __tablename__ = 'models'
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    distributable: Optional[bool] = False
     instances: list["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
         back_populates="model",

@@ -22,7 +22,6 @@ from gpustack.policies.base import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     ModelInstanceRPCServer,
     is_image_model,
 )
@@ -74,21 +73,17 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     def __init__(
         self,
         model: Model,
-        model_instance: ModelInstance,
         cache_dir: Optional[str] = None,
     ):
-        self._initialize_basic_data(model, model_instance, cache_dir)
+        self._initialize_basic_data(model, cache_dir)
         self._initialize_cached_claim_data()
         self._initialize_model_parameters(model)
         self._initialize_selected_gpu_ids()
 
-    def _initialize_basic_data(
-        self, model: Model, model_instance: ModelInstance, cache_dir: Optional[str]
-    ):
+    def _initialize_basic_data(self, model: Model, cache_dir: Optional[str]):
         """Initialize basic data."""
         self._engine = get_engine()
         self._model = model
-        self._model_instance = model_instance
         self._cache_dir = cache_dir
 
         self._workers_allocatable_resource = {}
@@ -105,7 +100,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._allocatable_worker_count = 0
 
         self._messages = []
-        self._event_collector = EventCollector(self._model_instance, logger)
+        self._event_collector = EventCollector(self._model, logger)
 
     def _initialize_cached_claim_data(self):
         """Initialize cached claim data."""
@@ -173,9 +168,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if self._workers_allocatable_resource.get(worker.id):
             return self._workers_allocatable_resource.get(worker.id)
 
-        return await get_worker_allocatable_resource(
-            self._engine, worker, self._model_instance
-        )
+        return await get_worker_allocatable_resource(self._engine, worker)
 
     def _get_claim_with_layers(
         self, layers: int, is_uma: bool = False
@@ -405,14 +398,14 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             func_start_time = time.time()
             logger.info(
                 f"Begin filter candidates with resource fit selector: "
-                f"{candidate_func.__name__}, model {self._model.name}, instance {self._model_instance.name}",
+                f"{candidate_func.__name__}, model {self._model.name or self._model.readable_source}",
             )
 
             candidates = await candidate_func(workers)
             func_latency = time.time() - func_start_time
             logger.info(
                 f"Finished filter candidates with resource fit selector: "
-                f"{candidate_func.__name__}, model {self._model.name}, instance {self._model_instance.name}, "
+                f"{candidate_func.__name__}, model {self._model.name or self._model.readable_source}, "
                 f"latency: {func_latency:.2f}s, candidates: {len(candidates)}",
             )
             if candidates is not None and len(candidates) > 0:
@@ -420,7 +413,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
         overall_latency = time.time() - overall_start_time
         logger.info(
-            f"Finished resource fit selector found {len(candidates)} candidates, model {self._model.name}, instance {self._model_instance.name}, "
+            f"Finished resource fit selector found {len(candidates)} candidates, model {self._model.name or self._model.readable_source}, "
             f"latency: {overall_latency:.2f}s",
         )
 
@@ -1288,7 +1281,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if self._param_gpu_layers:
             if len(estimate.items) - 1 < self._param_gpu_layers:
                 logger.error(
-                    f"Invalid param gpu layers: {self._param_gpu_layers}, max layers is {len(estimate.items) - 1}, model {self._model.name}, instance {self._model_instance.name}"
+                    f"Invalid param gpu layers: {self._param_gpu_layers}, max layers is {len(estimate.items) - 1}, model {self._model.name or self._model.readable_source}"
                 )
                 return None
             estimate_items = estimate.items[
@@ -2237,7 +2230,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._event_collector.add(
             EventLevelEnum.INFO,
             EVENT_ACTION_SINGLE_WORKER_SINGLE_GPU_FULL_OFFLOADING,
-            f"The model requires approximately {byte_to_gib(self._non_uma_single_gpu_full_offload_vram)} GiB VRAM and {byte_to_gib(self._non_uma_single_gpu_full_offload_ram)} GiB RAM. The selected GPU has {byte_to_gib(gpu_vram[2])} GiB VRAM and {byte_to_gib(ram)} GiB RAM.",
+            f"The model requires approximately {byte_to_gib(self._non_uma_single_gpu_full_offload_vram)} GiB VRAM and {byte_to_gib(self._non_uma_single_gpu_full_offload_ram)} GiB RAM. The available GPU has {byte_to_gib(gpu_vram[2])} GiB VRAM and {byte_to_gib(ram)} GiB RAM.",
             reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
         )
 
