@@ -94,6 +94,7 @@ class WorkerManager:
         worker.unreachable = current.unreachable
         worker.system_reserved = self._system_reserved
         worker.heartbeat_time = now
+        ensure_builtin_labels(worker)
 
         try:
             result = self._clientset.workers.update(id=current.id, model_update=worker)
@@ -140,10 +141,7 @@ class WorkerManager:
             worker = collector.collect()
 
             worker.system_reserved = self._system_reserved
-            worker.labels = {
-                "os": platform.system(),
-                "arch": platform.arch(),
-            }
+            ensure_builtin_labels(worker)
 
             return worker
         except Exception as e:
@@ -227,3 +225,12 @@ class WorkerManager:
 
     def get_occupied_ports(self) -> set[int]:
         return {server.port for server in self._rpc_servers.values()}
+
+
+def ensure_builtin_labels(worker: Worker):
+    if worker.labels is None:
+        worker.labels = {}
+
+    worker.labels.setdefault("os", platform.system())
+    worker.labels.setdefault("arch", platform.arch())
+    worker.labels.setdefault("worker-name", worker.name)
