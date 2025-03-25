@@ -180,27 +180,6 @@ class ModelFileDownloadTask:
         try:
             self.prerun()
             self._download_model_file()
-        except Exception as e:
-            logger.error(f"Failed to download model file {self._model_file.id}: {e}")
-
-    def _download_model_file(self):
-        try:
-            logger.info(f"Downloading model file {self._model_file.readable_source}")
-            model_paths = downloaders.download_model(
-                self._model_file,
-                local_dir=self._model_file.local_dir,
-                cache_dir=self._config.cache_dir,
-                ollama_library_base_url=self._config.ollama_library_base_url,
-                huggingface_token=self._config.huggingface_token,
-            )
-            self._update_model_file(
-                self._model_file.id,
-                state=ModelFileStateEnum.READY,
-                download_progress=100,
-                resolved_paths=model_paths,
-            )
-            logger.info(f"Successfully downloaded {self._model_file.readable_source}")
-
         except asyncio.CancelledError:
             logger.info(f"Download cancelled for {self._model_file.id}")
             self._update_model_file(
@@ -215,6 +194,23 @@ class ModelFileDownloadTask:
                 state=ModelFileStateEnum.ERROR,
                 state_message=str(e),
             )
+
+    def _download_model_file(self):
+        logger.info(f"Downloading model file {self._model_file.readable_source}")
+        model_paths = downloaders.download_model(
+            self._model_file,
+            local_dir=self._model_file.local_dir,
+            cache_dir=self._config.cache_dir,
+            ollama_library_base_url=self._config.ollama_library_base_url,
+            huggingface_token=self._config.huggingface_token,
+        )
+        self._update_model_file(
+            self._model_file.id,
+            state=ModelFileStateEnum.READY,
+            download_progress=100,
+            resolved_paths=model_paths,
+        )
+        logger.info(f"Successfully downloaded {self._model_file.readable_source}")
 
     def hijack_tqdm_progress(task_self):
         """
