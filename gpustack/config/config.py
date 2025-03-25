@@ -106,8 +106,8 @@ class Config(BaseSettings):
     enable_cors: bool = False
     allow_origins: Optional[List[str]] = ['*']
     allow_credentials: bool = False
-    allow_methods: Optional[List[str]] = ['*']
-    allow_headers: Optional[List[str]] = ['*']
+    allow_methods: Optional[List[str]] = ['GET', 'POST']
+    allow_headers: Optional[List[str]] = ['Authorization', 'Content-Type']
 
     # Worker options
     server_url: Optional[str] = None
