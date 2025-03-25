@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
 from typing import Dict, List, Optional
-from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.models import Model
 
 
 class EventLevelEnum(str, Enum):
@@ -30,12 +30,10 @@ class Event:
 
 
 class EventCollector:
-    def __init__(
-        self, model_instance: ModelInstance, event_logger: Optional[Logger] = None
-    ):
+    def __init__(self, model: Model, event_logger: Optional[Logger] = None):
         self.events: List[Event] = []
         self._event_logger = event_logger
-        self._model_instance = model_instance
+        self._model = model
         self._event_keys: Dict[str, True] = {}
 
     def add(self, event_level: EventLevelEnum, action: str, message: str, **kwargs):
@@ -47,7 +45,7 @@ class EventCollector:
         self._event_keys[key] = True
 
         if self._event_logger:
-            msg = f"Action: {action}, {message}, {kwargs}, model instance: {self._model_instance.name}, model: {self._model_instance.model_name}"
+            msg = f"Action: {action}, {message}, {kwargs}, model: {self._model.readable_source}"
             if event_level == EventLevelEnum.ERROR:
                 self._event_logger.error(msg)
             elif event_level == EventLevelEnum.WARNING:
