@@ -70,6 +70,7 @@ class Config(BaseSettings):
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
+        enable_hf_transfer: Speed up file transfers with the huggingface Hub.
         enable_cors: Enable CORS in server.
         allow_origins: A list of origins that should be permitted to make cross-origin requests.
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.
@@ -128,6 +129,7 @@ class Config(BaseSettings):
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
     rpc_server_args: Optional[List[str]] = None
+    enable_hf_transfer: bool = False
 
     def __init__(self, **values):
         super().__init__(**values)

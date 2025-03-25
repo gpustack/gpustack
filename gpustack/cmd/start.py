@@ -293,6 +293,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("TOOLS_DOWNLOAD_BASE_URL"),
     )
     group.add_argument(
+        "--enable-hf-transfer",
+        action=OptionalBoolAction,
+        help="Enable faster downloads from the Hugging Face Hub using hf_transfer.",
+        default=os.getenv("HF_HUB_ENABLE_HF_TRANSFER"),
+    )
+    group.add_argument(
         "--enable-cors",
         action=OptionalBoolAction,
         help="Enable CORS in server.",
@@ -328,6 +334,7 @@ def run(args: argparse.Namespace):
         cfg = parse_args(args)
         setup_logging(cfg.debug)
         debug_env_info()
+        set_third_party_env(cfg=cfg)
         multiprocessing.set_start_method('spawn')
 
         if cfg.server_url:
@@ -462,6 +469,7 @@ def set_worker_options(args, config_data: dict):
         "ray_node_manager_port",
         "ray_object_manager_port",
         "ray_worker_port_range",
+        "enable_hf_transfer",
     ]
 
     for option in options:
@@ -485,3 +493,10 @@ def debug_env_info():
     hf_endpoint = os.getenv("HF_ENDPOINT")
     if hf_endpoint:
         logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
+
+
+def set_third_party_env(cfg: Config):
+    if cfg.get("enable_hf_transfer"):
+        # https://huggingface.co/docs/huggingface_hub/guides/download#faster-downloads
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        logger.debug("set env HF_HUB_ENABLE_HF_TRANSFER=1")
