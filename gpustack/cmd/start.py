@@ -496,7 +496,7 @@ def debug_env_info():
 
 
 def set_third_party_env(cfg: Config):
-    if cfg.get("enable_hf_transfer"):
+    if cfg.enable_hf_transfer:
         # https://huggingface.co/docs/huggingface_hub/guides/download#faster-downloads
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
         logger.debug("set env HF_HUB_ENABLE_HF_TRANSFER=1")
