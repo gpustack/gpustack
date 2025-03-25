@@ -1,5 +1,7 @@
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.utils.hub import (
+    get_hugging_face_model_min_gguf_path,
+    get_model_scope_model_min_gguf_path,
     get_model_weight_size,
 )
 from gpustack.schemas.models import (
@@ -120,3 +122,65 @@ def test_get_hub_model_weight_size():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def get_hub_model_weight_size_with_retry(model: Model) -> int:
     return get_model_weight_size(model)
+
+
+def test_get_hf_min_gguf_file():
+    model_to_gguf_file_path = [
+        (
+            "Qwen/Qwen2-0.5B-Instruct-GGUF",
+            "qwen2-0_5b-instruct-q2_k.gguf",
+        ),
+        (
+            "bartowski/Qwen2-VL-7B-Instruct-GGUF",
+            "Qwen2-VL-7B-Instruct-IQ2_M.gguf",
+        ),
+        (
+            "Qwen/Qwen2.5-72B-Instruct-GGUF",
+            "qwen2.5-72b-instruct-q2_k-00001-of-00007.gguf",
+        ),
+        (
+            "unsloth/Llama-3.3-70B-Instruct-GGUF",
+            "Llama-3.3-70B-Instruct-Q2_K.gguf",
+        ),
+        (
+            "unsloth/DeepSeek-R1-GGUF",
+            "DeepSeek-R1-UD-IQ1_M/DeepSeek-R1-UD-IQ1_M-00001-of-00004.gguf",
+        ),
+    ]
+
+    for model, expected_file_path in model_to_gguf_file_path:
+        got = get_hugging_face_model_min_gguf_path(model)
+        assert (
+            got == expected_file_path
+        ), f"min GGUF file path mismatch for huggingface model {model}, got: {got}, expected: {expected_file_path}"
+
+
+def test_get_ms_min_gguf_file():
+    model_to_gguf_file_path = [
+        (
+            "Qwen/Qwen2-0.5B-Instruct-GGUF",
+            "qwen2-0_5b-instruct-q2_k.gguf",
+        ),
+        (
+            "bartowski/Qwen2-VL-7B-Instruct-GGUF",
+            "Qwen2-VL-7B-Instruct-IQ2_M.gguf",
+        ),
+        (
+            "Qwen/Qwen2.5-72B-Instruct-GGUF",
+            "qwen2.5-72b-instruct-q2_k-00001-of-00007.gguf",
+        ),
+        (
+            "unsloth/Llama-3.3-70B-Instruct-GGUF",
+            "Llama-3.3-70B-Instruct-Q2_K.gguf",
+        ),
+        (
+            "unsloth/DeepSeek-R1-GGUF",
+            "DeepSeek-R1-UD-IQ1_M/DeepSeek-R1-UD-IQ1_M-00001-of-00004.gguf",
+        ),
+    ]
+
+    for model, expected_file_path in model_to_gguf_file_path:
+        got = get_model_scope_model_min_gguf_path(model)
+        assert (
+            got == expected_file_path
+        ), f"min GGUF file path mismatch for modelscope model {model}, got: {got}, expected: {expected_file_path}"

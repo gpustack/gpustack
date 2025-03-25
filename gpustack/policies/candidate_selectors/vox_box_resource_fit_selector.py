@@ -19,7 +19,6 @@ from gpustack.policies.utils import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
-    ModelInstance,
 )
 from gpustack.schemas.workers import VendorEnum, Worker
 
@@ -36,14 +35,12 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         self,
         config: Config,
         model: Model,
-        model_instance: ModelInstance,
         cache_dir: str,
     ):
         self._cfg = config
         self._engine = get_engine()
         self._model = model
-        self._model_instance = model_instance
-        self._cache_dir = cache_dir
+        self._cache_dir = os.path.join(cache_dir, "vox-box")
         self._messages = []
 
         self._gpu_ram_claim = 0
@@ -86,7 +83,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
             self._required_os = resource_claim.get("os", None)
 
             logger.info(
-                f"Calculated resource claim for model instance {self._model_instance.name}, "
+                f"Calculated resource claim for model {self._model.readable_source}, "
                 f"gpu vram claim: {self._gpu_vram_claim}, gpu ram claim: {self._gpu_ram_claim}, cpu ram claim: {self._cpu_ram_claim}"
             )
 
@@ -97,7 +94,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
 
         for candidate_func in candidate_functions:
             logger.debug(
-                f"model {self._model.name}, filter candidates with resource fit selector: {candidate_func.__name__}, instance {self._model_instance.name}"
+                f"model {self._model.readable_source}, filter candidates with resource fit selector: {candidate_func.__name__}"
             )
 
             candidates = await candidate_func(workers)
@@ -145,9 +142,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ):
             return []
 
-        allocatable = await get_worker_allocatable_resource(
-            self._engine, worker, self._model_instance
-        )
+        allocatable = await get_worker_allocatable_resource(self._engine, worker)
         is_unified_memory = worker.status.memory.is_unified_memory
 
         if self._gpu_ram_claim > allocatable.ram:
@@ -214,9 +209,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ):
             return []
 
-        allocatable = await get_worker_allocatable_resource(
-            self._engine, worker, self._model_instance
-        )
+        allocatable = await get_worker_allocatable_resource(self._engine, worker)
         is_unified_memory = worker.status.memory.is_unified_memory
 
         if self._cpu_ram_claim > allocatable.ram:

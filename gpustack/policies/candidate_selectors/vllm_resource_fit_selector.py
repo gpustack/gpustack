@@ -15,7 +15,6 @@ from gpustack.policies.utils import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
-    ModelInstance,
     RayActor,
     SourceEnum,
 )
@@ -26,6 +25,7 @@ from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_model_weight_size, get_pretrained_config
+from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
 
@@ -133,14 +133,18 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self,
         cfg: Config,
         model: Model,
-        model_instance: ModelInstance,
     ):
         self._engine = get_engine()
         self._cfg = cfg
         self._model = model
-        self._model_instance = model_instance
         self._gpu_count = None
         self._vram_claim = 0
+        self._largest_single_gpu_vram = 0
+        self._largest_single_gpu_vram_utilization = 0
+        self._largest_multi_gpu_vram = 0
+        self._largest_multi_gpu_total = 0
+        self._largest_multi_gpu_utilization_satisfied_count = 0
+
         self._num_attention_heads = None
         self._messages = []
         self._workers_allocatable_resource: Dict[int, Allocatable] = {}
@@ -202,9 +206,27 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
     def _set_messages(self):
-        self._messages = [
-            "No workers meet the resource requirements. Consider adjusting parameters such as --gpu-memory-utilization (default: 0.9), --max-model-len, or --enforce-eager to lower the resource demands."
+        messages = [
+            f"The model requires {self._gpu_memory_utilization * 100}%(--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
         ]
+        if self._largest_multi_gpu_vram > 0:
+            messages = [
+                f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
+            ]
+        elif self._largest_single_gpu_vram > 0:
+            messages = [
+                f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM on a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM and {self._largest_single_gpu_vram_utilization * 100:.2f}% allocatable VRAM ratio."
+            ]
+
+        if self._cfg.enable_ray and self._model.distributed_inference_across_workers:
+            messages.append(
+                "Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."
+            )
+
+        self._messages = messages
+
+    def _add_message(self, message: str):
+        self._messages.append(message)
 
     def get_messages(self) -> str:
         return self._messages
@@ -229,7 +251,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._model, self._cfg.huggingface_token
             )
             logger.info(
-                f"Calculated resource claim for model instance {self._model_instance.name}, "
+                f"Calculated resource claim for model {self._model.readable_source}, "
                 f"claim: {self._vram_claim}"
             )
 
@@ -241,7 +263,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         for candidate_func in candidate_functions:
             logger.debug(
-                f"model {self._model.name}, filter candidates with resource fit selector: {candidate_func.__name__}, instance {self._model_instance.name}"
+                f"model {self._model.readable_source}, filter candidates with resource fit selector: {candidate_func.__name__}"
             )
 
             candidates = await candidate_func(workers)
@@ -315,12 +337,19 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
                 gpu_index = gpu.index
                 allocatable_vram = allocatable.vram.get(gpu_index, 0)
+                allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
+
+                if allocatable_vram > self._largest_single_gpu_vram:
+                    self._largest_single_gpu_vram = allocatable_vram
+                    self._largest_single_gpu_vram_utilization = (
+                        allocatable_gpu_memory_utilization
+                    )
 
                 if gpu.memory is None or gpu.memory.total == 0:
                     continue
 
                 if (self._vram_claim > allocatable_vram) or (
-                    allocatable_vram / gpu.memory.total < self._gpu_memory_utilization
+                    allocatable_gpu_memory_utilization < self._gpu_memory_utilization
                 ):
                     continue
 
@@ -383,17 +412,30 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             return None
 
         allocatable = await self._get_worker_allocatable_resource(worker)
+
+        gpu_list = []
+        total_allocatable_vram = 0
+        satisfied_gpu_count = 0
+
+        for gpu in worker.status.gpu_devices:
+            if gpu.memory is None or gpu.memory.total is None:
+                continue
+
+            allocatable_vram = allocatable.vram.get(gpu.index, 0)
+            total_allocatable_vram += allocatable_vram
+
+            if allocatable_vram / gpu.memory.total > self._gpu_memory_utilization:
+                satisfied_gpu_count += 1
+                gpu_list.append(gpu)
+
+        if total_allocatable_vram > self._largest_multi_gpu_total:
+            self._largest_multi_gpu_total = total_allocatable_vram
+            self._largest_multi_gpu_utilization_satisfied_count = satisfied_gpu_count
+            self._largest_multi_gpu_total = len(worker.status.gpu_devices)
+
+        # Sort by vram in descending order
         sorted_gpu_devices: GPUDevicesInfo = sorted(
-            [
-                gpu
-                for gpu in worker.status.gpu_devices
-                if gpu.memory is not None
-                and gpu.memory.total is not None
-                and (
-                    allocatable.vram.get(gpu.index, 0) / gpu.memory.total
-                    > self._gpu_memory_utilization
-                )
-            ],
+            gpu_list,
             key=lambda gpu: allocatable.vram.get(gpu.index, 0),
             reverse=True,
         )
