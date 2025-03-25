@@ -28,14 +28,18 @@ set -o noglob
 #   - INSTALL_SKIP_BUILD_DEPENDENCIES
 #     If set to 1 will skip the build dependencies.
 #
-#   - INSTALL_WIRED_LIMIT_MB
-#     This sets the maximum amount of wired memory that the GPU can allocate.
+#   - INSTALL_SKIP_IOGPU_WIRED_LIMIT
+#     If set to 1 will skip setting the GPU wired memory limit on macOS.
+#
+#   - INSTALL_IOGPU_WIRED_LIMIT_MB
+#     This sets the maximum amount of wired memory that the GPU can allocate on macOS.
 
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
 INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-1}"
-INSTALL_WIRED_LIMIT_MB="${INSTALL_WIRED_LIMIT_MB:-}"
+INSTALL_SKIP_IOGPU_WIRED_LIMIT="${INSTALL_SKIP_IOGPU_WIRED_LIMIT:-}"
+INSTALL_IOGPU_WIRED_LIMIT_MB="${INSTALL_IOGPU_WIRED_LIMIT_MB:-}"
 
 BREW_APP_OPENFST_NAME="openfst"
 BREW_APP_OPENFST_VERSION="1.8.3"
@@ -237,15 +241,15 @@ check_ports() {
 
 # Function to reset wired_limit_mb
 check_and_reset_wired_limit_mb() {
-  if ! [ "$OS" = "macos" ]; then
+  if [ "$INSTALL_SKIP_IOGPU_WIRED_LIMIT" = "1" ] || [ "$OS" != "macos" ]; then
     return
   fi
-  if [ -n "$INSTALL_WIRED_LIMIT_MB" ] ; then
-    # 手动设置wired_limit_mb参数的值
-    $SUDO sysctl -w iogpu.wired_limit_mb="$INSTALL_WIRED_LIMIT_MB"
+  if [ -n "$INSTALL_IOGPU_WIRED_LIMIT_MB" ] ; then
+    # Manually set the value of the wired_limit_mb parameter
+    $SUDO sysctl -w iogpu.wired_limit_mb="$INSTALL_IOGPU_WIRED_LIMIT_MB"
     warn "This operation carries risks. Please proceed only if you fully understand the iogpu.wired_limit_mb."
   else
-    # Automatically set the most appropriate wired_limit_mb value in macos.
+    # Automatically set the most appropriate wired_limit_mb value in macos
     TOTAL_MEM_MB=$(($(sysctl -n hw.memsize) / 1024 / 1024))
     # Calculate 85% and TOTAL_MEM_GB-5GB in MB
     EIGHTY_FIVE_PERCENT=$((TOTAL_MEM_MB * 85 / 100))

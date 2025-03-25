@@ -46,13 +46,13 @@ gpustack start [OPTIONS]
 | `--enable_cors`                     | `False`                                | Enable CORS in server.                                                                                                                              |
 | `--allow-origins` value             | `["*"]`                                | A list of origins that should be permitted to make cross-origin requests.                                                                           |
 | `--allow-credentials`               | `False`                                | Indicate that cookies should be supported for cross-origin requests.                                                                                |
-| `--allow-methods` value             | `["*"]`                                | A list of HTTP methods that should be allowed for cross-origin requests.                                                                            |
-| `--allow-headers` value             | `["*"]`                                | A list of HTTP request headers that should be supported for cross-origin requests.                                                                  |
+| `--allow-methods` value             | `["GET", "POST"]`                      | A list of HTTP methods that should be allowed for cross-origin requests.                                                                            |
+| `--allow-headers` value             | `["Authorization", "Content-Type"]`    | A list of HTTP request headers that should be supported for cross-origin requests.                                                                  |
 
 ### Worker Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                                                                                                      |
-| ----------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|-------------------------------------|----------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `-s` value, `--server-url` value    | (empty)                                | Server to connect to.                                                                                                                                                                                                                                            |
 | `--worker-name` value               | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                                                                                            |
 | `--worker-ip` value                 | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                                                                                         |
@@ -69,6 +69,7 @@ gpustack start [OPTIONS]
 | `--rpc-server-args` value           | (empty)                                | Arguments to pass to the RPC servers. Use `=` to avoid the CLI recognizing rpc-server-args as a server argument. This can be used multiple times to pass a list of arguments. Example: `--rpc-server-args=--verbose --rpc-server-args=--log-colors`              |
 | `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases. |
 | `--tools-download-base-url` value   |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                                       |
+| `--enable-hf-transfer`              | `False`                                | Speed up file transfers with the huggingface Hub. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer                                                                                              |
 
 ### Available Environment Variables
 
@@ -110,8 +111,8 @@ ray_client_server_port: 40097
 enable_cors: false
 allow_origins: ["*"]
 allow_credentials: false
-allow_methods: ["*"]
-allow_headers: ["*"]
+allow_methods: ["GET", "POST"]
+allow_headers: ["Authorization", "Content-Type"]
 
 # Worker Options
 server_url: http://myserver
@@ -132,4 +133,5 @@ system_reserved:
   ram: 2
   vram: 1
 tools_download_base_url: https://mirror.mycompany.com
+enable_hf_transfer: false
 ```
