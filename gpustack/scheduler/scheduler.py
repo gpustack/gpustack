@@ -271,18 +271,32 @@ class Scheduler:
             "RobertaForMaskedLM",
             "XLMRobertaModel",
         ]
+        # https://docs.vllm.ai/en/latest/models/supported_models.html#sentence-pair-scoring-task-score
+        supported_reranker_architectures = [
+            "BertForSequenceClassification",
+            "RobertaForSequenceClassification",
+            "XLMRobertaForSequenceClassification",
+        ]
         is_embedding_model = False
+        is_reranker_model = False
 
         for architecture in architectures:
             if architecture in supported_embedding_architectures:
                 is_embedding_model = True
                 break
+            if architecture in supported_reranker_architectures:
+                is_reranker_model = True
 
         should_update = False
         if is_embedding_model and not model.categories:
             should_update = True
             model.categories = [CategoryEnum.EMBEDDING]
             model.embedding_only = True
+
+        if is_reranker_model and not model.categories:
+            should_update = True
+            model.categories = [CategoryEnum.RERANKER]
+            model.reranker = True
 
         if not model.categories:
             should_update = True
