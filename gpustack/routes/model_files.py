@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
@@ -107,7 +108,9 @@ async def update_model_file(
 
 
 @router.delete("/{id}")
-async def delete_model_file(session: SessionDep, id: int):
+async def delete_model_file(
+    session: SessionDep, id: int, cleanup: Optional[bool] = None
+):
     model_file = await ModelFile.one_by_id(session, id)
     if not model_file:
         raise NotFoundException(message=f"Model file {id} not found")
@@ -121,6 +124,10 @@ async def delete_model_file(session: SessionDep, id: int):
         )
 
     try:
+        if cleanup is not None and model_file.cleanup_on_delete != cleanup:
+            model_file.cleanup_on_delete = cleanup
+            await model_file.update(session)
+
         await model_file.delete(session)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model file: {e}")

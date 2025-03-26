@@ -18,6 +18,7 @@ class ModelFileStateEnum(str, Enum):
 class ModelFileBase(SQLModel, ModelSource):
     local_dir: Optional[str] = None
     worker_id: Optional[int] = None
+    cleanup_on_delete: Optional[bool] = None
 
     size: Optional[int] = None
     download_progress: Optional[float] = None

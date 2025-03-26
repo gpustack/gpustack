@@ -96,7 +96,8 @@ class ModelFileManager:
                     f"Cancelled download for deleted model: {model_file.readable_source}({model_file.id})"
                 )
 
-        await self._delete_model_file(model_file)
+        if model_file.cleanup_on_delete:
+            await self._delete_model_file(model_file)
 
     async def _delete_model_file(self, model_file: ModelFile):
         try:
