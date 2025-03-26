@@ -1773,7 +1773,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             select_gpu_combinations = (
                 await self._generate_combinations_with_selected_gpus(worker)
             )
-            gpu_combinations = [(select_gpu_combinations)]
+            gpu_combinations = [select_gpu_combinations]
             return gpu_combinations, False
 
         filterd_gpus = []
@@ -2195,6 +2195,8 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
     def _estimate_approximate_required_gpu_number(self, vram: int) -> int:
         """Estimate the approximate required number of GPUs based on the VRAM offload rate."""
+        if vram == 0:
+            return -1
         vram_offload_rate = self._max_gpu_vram / vram
         for i in range(1, 17):
             if vram_offload_rate > 1 / i:
