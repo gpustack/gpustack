@@ -198,7 +198,7 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
     instance.model_files = model_files
     await sync_instance_files_state(session, instance, model_files)
     logger.debug(
-        f"Associated model file {model_file.readable_source}({model_file.id}) with model instance {instance.name}"
+        f"Associated model file {model_file.readable_source}(id: {model_file.id}) with model instance {instance.name}"
     )
 
 

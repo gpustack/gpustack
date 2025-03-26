@@ -93,7 +93,7 @@ class ModelFileManager:
                 pass
             finally:
                 logger.info(
-                    f"Cancelled download for deleted model: {model_file.readable_source}({model_file.id})"
+                    f"Cancelled download for deleted model: {model_file.readable_source}(id: {model_file.id})"
                 )
 
         if model_file.cleanup_on_delete:
@@ -109,11 +109,11 @@ class ModelFileManager:
                     delete_path(path)
 
             logger.info(
-                f"Deleted model file {model_file.readable_source}({model_file.id})"
+                f"Deleted model file {model_file.readable_source}(id: {model_file.id})"
             )
         except Exception as e:
             logger.error(
-                f"Failed to delete {model_file.readable_source}({model_file.id}: {e}"
+                f"Failed to delete {model_file.readable_source}(id: {model_file.id}: {e}"
             )
             await self._update_model_file(
                 model_file.id,
@@ -126,6 +126,7 @@ class ModelFileManager:
             return
 
         cancel_flag = self._mp_manager.Event()
+
         download_task = ModelFileDownloadTask(model_file, self._config, cancel_flag)
         future = self._download_pool.submit(download_task.run)
         self._active_downloads[model_file.id] = (future, cancel_flag)
@@ -169,7 +170,7 @@ class ModelFileDownloadTask:
 
         self._last_download_update_time = 0
         self._model_downloaded_size = 0
-        logger.debug(f"Initializing task for {self._model_file.id}")
+        logger.debug(f"Initializing task for {self._model_file.readable_source}")
         self._update_progress_func = partial(
             self._update_model_file_progress, self._model_file.id
         )
@@ -182,14 +183,16 @@ class ModelFileDownloadTask:
             self.prerun()
             self._download_model_file()
         except asyncio.CancelledError:
-            logger.info(f"Download cancelled for {self._model_file.id}")
+            logger.info(f"Download cancelled for {self._model_file.readable_source}")
             self._update_model_file(
                 self._model_file.id,
                 state=ModelFileStateEnum.ERROR,
                 state_message="Download cancelled",
             )
         except Exception as e:
-            logger.error(f"Download failed for {self._model_file.id}: {str(e)}")
+            logger.error(
+                f"Download failed for {self._model_file.readable_source}: {str(e)}"
+            )
             self._update_model_file(
                 self._model_file.id,
                 state=ModelFileStateEnum.ERROR,
@@ -220,8 +223,12 @@ class ModelFileDownloadTask:
         """
         from tqdm import tqdm
 
-        _original_init = tqdm.__init__
-        _original_update = tqdm.update
+        _original_init = (
+            tqdm._original_init if hasattr(tqdm, "_original_init") else tqdm.__init__
+        )
+        _original_update = (
+            tqdm._original_update if hasattr(tqdm, "_original_update") else tqdm.update
+        )
 
         def _new_init(self: tqdm, *args, **kwargs):
             kwargs["disable"] = False  # enable the progress bar anyway
@@ -264,6 +271,8 @@ class ModelFileDownloadTask:
 
         tqdm.__init__ = _new_init
         tqdm.update = _new_update
+        tqdm._original_init = _original_init
+        tqdm._original_update = _original_update
 
     def _ensure_model_file_size(self):
         if self._model_file.size is not None:
