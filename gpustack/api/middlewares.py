@@ -147,13 +147,12 @@ async def record_model_usage(
     usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage, None],
     operation: OperationEnum,
 ):
-    prompt_tokens, total_tokens, completion_tokens = 0, 0, 0
-    if usage and hasattr(usage, 'prompt_tokens'):
-        prompt_tokens = usage.prompt_tokens
-        total_tokens = usage.total_tokens
-        completion_tokens = getattr(
-            usage, 'completion_tokens', total_tokens - prompt_tokens
-        )
+    total_tokens = getattr(usage, 'total_tokens', 0) or 0
+    prompt_tokens = getattr(usage, 'prompt_tokens', total_tokens) or total_tokens
+    completion_tokens = (
+        getattr(usage, 'completion_tokens', total_tokens - prompt_tokens)
+        or total_tokens - prompt_tokens
+    )
 
     user: User = request.state.user
     model: Model = request.state.model
