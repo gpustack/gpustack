@@ -170,7 +170,7 @@ class HfDownloader:
             The paths to the downloaded model files.
         """
 
-        if filename is not None:
+        if filename:
             return cls.download_file(
                 repo_id=repo_id,
                 filename=filename,
@@ -627,7 +627,7 @@ class ModelScopeDownloader:
 
         logger.info("Retriving file lock")
         with FileLock(lock_filename):
-            if file_path is not None:
+            if file_path:
                 matching_files = match_model_scope_file_paths(
                     model_id, file_path, extra_file_path
                 )
