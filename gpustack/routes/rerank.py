@@ -21,8 +21,8 @@ class RerankRequest(BaseModel):
 
 
 class RerankUsage(BaseModel):
-    total_tokens: int
-    prompt_tokens: int
+    total_tokens: Optional[int] = None
+    prompt_tokens: Optional[int] = None
 
 
 class RerankResultDocument(BaseModel):
