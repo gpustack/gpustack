@@ -88,7 +88,7 @@ class HTTPClient:
         """Get the underlying httpx.Client, constructing a new one if not previously set"""
         # Use system trust store.
         verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self._verify_ssl is None:
+        if self._verify_ssl is not None:
             verify = self._verify_ssl
         if self._client is None:
             self._client = httpx.Client(
@@ -123,7 +123,7 @@ class HTTPClient:
         """Get the underlying httpx.AsyncClient, constructing a new one if not previously set"""
         # Use system trust store.
         verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self._verify_ssl is None:
+        if self._verify_ssl is not None:
             verify = self._verify_ssl
         if self._async_client is None:
             self._async_client = httpx.AsyncClient(
@@ -237,7 +237,7 @@ class AuthenticatedHTTPClient:
 
         # Use system trust store.
         verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self._verify_ssl is None:
+        if self._verify_ssl is not None:
             verify = self._verify_ssl
         if self._client is None:
             self._headers[self.auth_header_name] = (
