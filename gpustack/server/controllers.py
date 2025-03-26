@@ -3,8 +3,10 @@ import random
 import string
 from typing import Any, Dict, List
 import httpx
+from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
+
 from gpustack.config.config import Config
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
@@ -18,6 +20,7 @@ from gpustack.schemas.models import (
     ModelInstanceCreate,
     ModelInstanceStateEnum,
     RayActor,
+    SourceEnum,
     get_backend,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -254,9 +257,33 @@ async def get_model_files_for_instance(
     model_files = await ModelFile.all_by_field(
         session, "source_index", instance.model_source_index
     )
-    return [
+
+    model_files = [
         model_file for model_file in model_files if model_file.worker_id in worker_ids
     ]
+
+    if instance.source == SourceEnum.LOCAL_PATH:
+        # If the source is local path, get the model files with the same local path.
+        local_path_model_files = await ModelFile.all_by_fields(
+            session,
+            extra_conditions=[
+                col(ModelFile.resolved_paths).contains(instance.local_path)
+            ],
+        )
+        local_path_model_files = [
+            model_file
+            for model_file in local_path_model_files
+            if model_file.worker_id in worker_ids
+        ]
+        existing_worker_ids = {mf.worker_id for mf in model_files}
+        additional_files = [
+            model_file
+            for model_file in local_path_model_files
+            if model_file.worker_id not in existing_worker_ids
+        ]
+        model_files.extend(additional_files)
+
+    return model_files
 
 
 async def find_scale_down_candidates(

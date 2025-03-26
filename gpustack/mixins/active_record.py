@@ -93,7 +93,12 @@ class ActiveRecordMixin:
         return result.all()
 
     @classmethod
-    async def all_by_fields(cls, session: AsyncSession, fields: dict):
+    async def all_by_fields(
+        cls,
+        session: AsyncSession,
+        fields: dict = {},
+        extra_conditions: Optional[List] = None,
+    ):
         """
         Return all objects with the given fields and values.
         Return an empty list if not found.
@@ -102,6 +107,10 @@ class ActiveRecordMixin:
         statement = select(cls)
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
+
+        if extra_conditions:
+            statement = statement.where(and_(*extra_conditions))
+
         result = await session.exec(statement)
         return result.all()
 
