@@ -549,6 +549,40 @@
       model_scope_model_id: unsloth/gemma-2-{size}b-it
       replicas: 1
       backend: vllm
+- name: Phi4 Mini
+  description: Phi-4-mini-instruct is a lightweight open model built upon synthetic data and filtered publicly available websites - with a focus on high-quality, reasoning dense data. The model belongs to the Phi-4 model family and supports 128K token context length. The model underwent an enhancement process, incorporating both supervised fine-tuning and direct preference optimization to support precise instruction adherence and robust safety measures.
+  home: https://azure.microsoft.com/en-us/products/phi
+  icon: /static/catalog_icons/microsoft.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 3.8
+  licenses: 
+    - mit
+  release_date: "2025-02-26"
+  templates: 
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      source: model_scope
+      model_scope_model_id: unsloth/Phi-4-mini-instruct-GGUF
+      model_scope_file_path: "*{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/Phi-4-mini-instruct
+      replicas: 1
+      backend: vllm
 - name: Phi3.5 Mini
   description: Phi-3.5-mini is a lightweight, state-of-the-art open model built upon datasets used for Phi-3 - synthetic data and filtered publicly available websites - with a focus on very high-quality, reasoning dense data. The model belongs to the Phi-3 model family and supports 128K token context length. The model underwent a rigorous enhancement process, incorporating both supervised fine-tuning, proximal policy optimization, and direct preference optimization to ensure precise instruction adherence and robust safety measures.
   home: https://azure.microsoft.com/en-us/products/phi
