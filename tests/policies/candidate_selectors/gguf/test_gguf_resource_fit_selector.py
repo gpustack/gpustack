@@ -9,7 +9,7 @@ from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
-    ModelInstanceResourceClaim,
+    ModelResourceClaim,
 )
 
 from gpustack.scheduler.scheduler import Scheduler
@@ -1292,7 +1292,7 @@ def mock_calculate_model_resource_claim(  # noqa: C901
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
     **kwargs,
-) -> ModelInstanceResourceClaim:
+) -> ModelResourceClaim:
     mock_estimate = AsyncMock()
     tensor_split = kwargs.get("tensor_split")
     if offload == GPUOffloadEnum.Full:
@@ -1377,7 +1377,7 @@ def mock_calculate_model_resource_claim(  # noqa: C901
         mock_estimate = llama3_70b_disable_offload()
         if model.ollama_library_model_name == "llama3:8b":
             return llama3_8b_disable_offload()
-    return ModelInstanceResourceClaim(
+    return ModelResourceClaim(
         model_instance=model_instance, resource_claim_estimate=mock_estimate.estimate
     )
 
@@ -1387,7 +1387,7 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
     **kwargs,
-) -> ModelInstanceResourceClaim:
+) -> ModelResourceClaim:
     mock_estimate = AsyncMock()
     tensor_split = kwargs.get("tensor_split")
     if offload == GPUOffloadEnum.Full:
@@ -1512,6 +1512,6 @@ def mock_calculate_model_resource_claim_for_deepseek_r1(  # noqa: C901
                     ): deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3,
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
-    return ModelInstanceResourceClaim(
+    return ModelResourceClaim(
         model_instance=model_instance, resource_claim_estimate=mock_estimate.estimate
     )
