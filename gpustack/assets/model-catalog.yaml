@@ -543,7 +543,7 @@
         - --enable-auto-tool-choice
         - --tool-call-parser=mistral
 - name: Codestral
-  description: Codestral is Mistral AI’s first-ever code model designed for code generation tasks. Codestral is trained on a diverse dataset of 80+ programming languages, including the most popular ones, such as Python, Java, C, C++, JavaScript, and Bash.
+  description: Codestral is Mistral AI's first-ever code model designed for code generation tasks. Codestral is trained on a diverse dataset of 80+ programming languages, including the most popular ones, such as Python, Java, C, C++, JavaScript, and Bash.
   home: https://mistral.ai
   icon: /static/catalog_icons/mistral.png
   categories:
@@ -641,6 +641,40 @@
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: unsloth/gemma-2-{size}b-it
+      replicas: 1
+      backend: vllm
+- name: Phi4 Mini
+  description: Phi-4-mini-instruct is a lightweight open model built upon synthetic data and filtered publicly available websites - with a focus on high-quality, reasoning dense data. The model belongs to the Phi-4 model family and supports 128K token context length. The model underwent an enhancement process, incorporating both supervised fine-tuning and direct preference optimization to support precise instruction adherence and robust safety measures.
+  home: https://azure.microsoft.com/en-us/products/phi
+  icon: /static/catalog_icons/microsoft.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 3.8
+  licenses: 
+    - mit
+  release_date: "2025-02-26"
+  templates: 
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      source: huggingface
+      huggingface_repo_id: unsloth/Phi-4-mini-instruct-GGUF
+      huggingface_filename: "*{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: microsoft/Phi-4-mini-instruct 
       replicas: 1
       backend: vllm
 - name: Phi3.5 Mini
