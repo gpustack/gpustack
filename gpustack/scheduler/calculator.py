@@ -12,7 +12,6 @@ from dataclasses_json import dataclass_json
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import (
     Model,
-    ModelInstance,
     SourceEnum,
     get_mmproj_filename,
 )
@@ -76,23 +75,24 @@ class estimate:
 
 @dataclass_json
 @dataclass
-class modelResoruceClaim:
+class ggufParserOutput:
     estimate: estimate
 
 
 @dataclass
-class ModelInstanceResourceClaim:
-    model_instance: ModelInstance
+class ModelResourceClaim:
+    model: Model
     resource_claim_estimate: estimate
 
     # overwrite the hash to use in uniquequeue
     def __hash__(self):
-        return self.model_instance.id
+        if self.model.id and self.model.updated_at:
+            return hash((self.model.id, self.model.updated_at))
+        return hash(self.model.model_source_index)
 
-    # compare the model instance id
     def __eq__(self, other):
-        if isinstance(other, ModelInstanceResourceClaim):
-            return self.model_instance.id == other.model_instance.id
+        if isinstance(other, ModelResourceClaim):
+            return self.__hash__() == other.model.__hash__()
         return False
 
 
@@ -309,16 +309,16 @@ async def _gguf_parser_command(  # noqa: C901
 
 
 async def calculate_model_resource_claim(
-    model_instance: ModelInstance,
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
     **kwargs,
-) -> ModelInstanceResourceClaim:
+) -> ModelResourceClaim:
     """
-    Calculate the resource claim of the model instance.
+    Calculate the resource claim of the model.
     Args:
-        model_instance: Model instance to calculate the resource claim for.
         model: Model to calculate the resource claim for.
+        offload: GPU offload strategy.
+        kwargs: Additional arguments to pass to the GGUF parser.
     """
 
     if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(model.local_path):
@@ -328,14 +328,14 @@ async def calculate_model_resource_claim(
         tensor_split = kwargs.get("tensor_split")
         if tensor_split:
             estimate = _get_empty_estimate(n_gpu=len(tensor_split))
-        return ModelInstanceResourceClaim(model_instance, estimate)
+        return ModelResourceClaim(model, estimate)
 
     command = await _gguf_parser_command(model, offload, **kwargs)
     env = _gguf_parser_env(model)
     try:
         start_time = time.time()
         logger.trace(
-            f"Running parser for model instance {model_instance.name} with command: {' '.join(map(str, command))}"
+            f"Running parser for model {model.name} with command: {' '.join(map(str, command))}"
         )
 
         process = await asyncio.create_subprocess_exec(
@@ -353,27 +353,27 @@ async def calculate_model_resource_claim(
             )
 
         cmd_output = stdout.decode()
-        claim: modelResoruceClaim = modelResoruceClaim.from_json(cmd_output)
+        claim: ggufParserOutput = ggufParserOutput.from_json(cmd_output)
         latency = time.time() - start_time
 
         if offload == GPUOffloadEnum.Full:
             logger.trace(
-                f"Finished running parser for full offload model instance {model_instance.name}, latency: {latency:.2f}, "
+                f"Finished running parser for full offload model instance {model.name}, latency: {latency:.2f}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Partial:
             logger.trace(
-                f"Finished running parser for partial offloading model instance {model_instance.name}, latency: {latency:.2f}, at least: "
+                f"Finished running parser for partial offloading model instance {model.name}, latency: {latency:.2f}, at least: "
                 f"{claim.estimate.items[1].to_log_string() if len(claim.estimate.items) > 1 else claim.estimate.items[0].to_log_string()}"
             )
         elif offload == GPUOffloadEnum.Disable:
             logger.trace(
-                f"Finished running parser for disabled offloading model instance {model_instance.name}, latency: {latency:.2f}, "
+                f"Finished running parser for disabled offloading model instance {model.name}, latency: {latency:.2f}, "
                 f"{claim.estimate.items[0].to_log_string()}"
             )
             clear_vram_claim(claim)
 
-        return ModelInstanceResourceClaim(model_instance, claim.estimate)
+        return ModelResourceClaim(model, claim.estimate)
 
     except subprocess.CalledProcessError as e:
         raise Exception(
@@ -387,7 +387,7 @@ async def calculate_model_resource_claim(
         )
 
 
-def clear_vram_claim(claim: modelResoruceClaim):
+def clear_vram_claim(claim: ggufParserOutput):
     for item in claim.estimate.items:
         # gguf-parser provides vram claim when offloadLayers is 0 due to current llama.cpp behavior, but llama-box won't allocate such vram.
         if item.offloadLayers == 0:

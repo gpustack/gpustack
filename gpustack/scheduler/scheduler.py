@@ -147,7 +147,7 @@ class Scheduler:
                     return
 
                 if is_gguf_model(model):
-                    await self._evaluate_gguf_model(session, model, instance)
+                    await self._evaluate_gguf_model(session, model)
                     if await self.check_model_distributability(
                         session, model, instance
                     ):
@@ -193,10 +193,8 @@ class Scheduler:
         self,
         session: AsyncSession,
         model: Model,
-        instance: ModelInstance,
     ):
         task_output = await calculate_model_resource_claim(
-            instance,
             model,
             offload=GPUOffloadEnum.Full,
             cache_dir=self._cache_dir,
