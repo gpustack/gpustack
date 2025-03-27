@@ -1,5 +1,5 @@
 import os
-from gpustack.scheduler.calculator import modelResoruceClaim
+from gpustack.scheduler.calculator import ggufParserOutput
 
 
 def llama3_70b_full_offload():
@@ -438,9 +438,9 @@ def deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3():
     )
 
 
-def load_model_claim_from_file(file_name) -> modelResoruceClaim:
+def load_model_claim_from_file(file_name) -> ggufParserOutput:
     dir = os.path.dirname(__file__)
     file_path = os.path.join(dir, file_name)
     with open(file_path, 'r') as file:
-        model_estimate_claim = modelResoruceClaim.from_json(file.read())
+        model_estimate_claim = ggufParserOutput.from_json(file.read())
     return model_estimate_claim

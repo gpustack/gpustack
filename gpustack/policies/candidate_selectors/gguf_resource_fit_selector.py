@@ -9,7 +9,7 @@ from gpustack.policies.event_recorder.recorder import EventCollector, EventLevel
 from gpustack.policies.utils import get_worker_allocatable_resource
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
-    ModelInstanceResourceClaim,
+    ModelResourceClaim,
     calculate_model_resource_claim,
     estimate,
     memoryEstimate,
@@ -270,7 +270,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._allocatable_worker_count = len(self._workers_allocatable_resource.keys())
 
     def _set_single_layer_vram(
-        self, result: ModelInstanceResourceClaim, rpc_result: ModelInstanceResourceClaim
+        self, result: ModelResourceClaim, rpc_result: ModelResourceClaim
     ):
         for item in result.resource_claim_estimate.items:
             if item.vrams[0].handleLayers == 1:
@@ -2162,9 +2162,8 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
     async def _calculate_model_resource_claim(
         self, offload: GPUOffloadEnum = GPUOffloadEnum.Partial, **kwargs
-    ) -> ModelInstanceResourceClaim:
+    ) -> ModelResourceClaim:
         return await calculate_model_resource_claim(
-            self._model_instance,
             self._model,
             offload,
             cache_dir=self._cache_dir,
