@@ -58,11 +58,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
     def __init__(
         self,
         model: Model,
-        model_instance: Optional[ModelInstance] = None,
         scale_type: ScaleTypeEnum = ScaleTypeEnum.SCALE_UP,
     ):
         self._engine = get_engine()
-        self._model_instance = model_instance
         self._model = model
         self._resource_weight = ResourceWeight()
         self._model_weight = ModelWeight()
@@ -77,12 +75,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         """
 
         logger.debug(
-            f"model {self._model.name}, score canidates with {self._scale_type} placement policy, instance {self._model_instance.name}"
-            + (
-                f", model_instance: {self._model_instance.name}"
-                if self._model_instance
-                else ""
-            )
+            f"model {self._model.readable_source}, score canidates with {self._scale_type} placement policy"
         )
 
         if self._model.placement_strategy == PlacementStrategyEnum.SPREAD:
@@ -126,7 +119,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         """
         for candidate in candidates:
             allocatable = await get_worker_allocatable_resource(
-                self._engine, candidate.worker, self._model_instance
+                self._engine, candidate.worker
             )
 
             final_score = 0
@@ -174,9 +167,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
 
             worker = worker_map.get(instance.worker_id)
 
-            allocatable = await get_worker_allocatable_resource(
-                self._engine, worker, self._model_instance
-            )
+            allocatable = await get_worker_allocatable_resource(self._engine, worker)
 
             final_score = 0
             score = await self._score_binpack_item(
@@ -477,7 +468,6 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 allocatable = await get_worker_allocatable_resource(
                     self._engine,
                     worker_map.get(rpc_server.worker_id),
-                    self._model_instance,
                 )
 
                 score += await self._score_binpack_item(
@@ -514,6 +504,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             }
         """
 
+        if not hasattr(self._model, "id") or self._model.id is None:
+            return {}
+
         model_id = self._model.id
         model_instances = await get_model_instances(self._engine)
 
@@ -533,7 +526,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             worker_model_instances_count_map[worker_id]["total"][key] += 1
 
         for model_instance in model_instances:
-            if self._model_instance and model_instance.id == self._model_instance.id:
+            if model_instance.worker_id is None:
                 continue
 
             is_current_model = model_instance.model_id == model_id
