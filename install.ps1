@@ -628,11 +628,11 @@ function Check-GPUStackService {
         $status = nssm status $serviceName
         if ($status -eq 'SERVICE_RUNNING') {
             # Check abnormal exit from  nssm event logs
-            $events = Get-EventLog -LogName Application -Source nssm -Newest 20 | Where-Object { $_.TimeGenerated -ge (Get-Date).AddSeconds(-30) }
+            $appEvents = Get-EventLog -LogName Application -Source nssm -Newest 20 | Where-Object { $_.TimeGenerated -ge (Get-Date).AddSeconds(-30) }
             $hasError = $false
 
-            foreach ($event in $events) {
-                if ($event.Message -match "$serviceName" -and $event.Message -match "exit code") {
+            foreach ($appEvent in $appEvents) {
+                if ($appEvent.Message -match "$serviceName" -and $appEvent.Message -match "exit code") {
                     $hasError = $true
                     break
                 }
