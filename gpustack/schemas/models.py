@@ -45,6 +45,7 @@ class BackendEnum(str, Enum):
     LLAMA_BOX = "llama-box"
     VLLM = "vllm"
     VOX_BOX = "vox-box"
+    ASCEND_MINDIE = "ascend-mindie"
 
 
 class GPUSelector(BaseModel):
@@ -179,6 +180,11 @@ class ModelBase(SQLModel, ModelSource):
                     "Distributed inference accross workers is only supported for GGUF models"
                 )
         elif backend == BackendEnum.VOX_BOX:
+            if self.distributed_inference_across_workers:
+                raise ValueError(
+                    "Distributed inference accross workers is only supported for GGUF models"
+                )
+        elif backend == BackendEnum.ASCEND_MINDIE:
             if self.distributed_inference_across_workers:
                 raise ValueError(
                     "Distributed inference accross workers is only supported for GGUF models"

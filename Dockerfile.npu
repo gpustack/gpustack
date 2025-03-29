@@ -1,27 +1,125 @@
-ARG CANN_VERSION=8.0.rc2.beta1
+ARG CANN_VERSION=8.0.0.beta1
+ARG CANN_CHIP=910b
 
-FROM ascendai/cann:ubuntu-python3.10-cann$CANN_VERSION
+FROM ascendai/cann:${CANN_VERSION}-${CANN_CHIP}-ubuntu22.04-py3.10 AS cann
 
 ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
 ENV DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
+    --mount=type=cache,target=/var/cache/apt,sharing=private \
+    apt-get update && \
+    apt-get install -y \
+        git \
+        curl \
+        wget \
+        tzdata \
+        iproute2 \
+        python3-pip \
+        python3-venv \
+        build-essential
 
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    wget \
-    tzdata \
-    iproute2 \
-    python3-pip \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+#
+# Install NNAL
+#
 
-COPY . /workspace/gpustack
-RUN cd /workspace/gpustack && \
+FROM cann AS nnal-installer
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG CANN_VERSION
+ARG CANN_CHIP
+
+RUN OS="${TARGETOS}"; \
+    if [ "${OS}" != "linux" ]; then \
+      echo "Unsupported OS: ${OS}"; \
+      exit 1; \
+    fi; \
+    ARCH="${TARGETARCH}"; \
+    case "${ARCH}" in \
+      amd64|x86_64) \
+        ARCH='x86_64'; \
+        ;; \
+      arm64|aarch64) \
+        ARCH='aarch64'; \
+        ;; \
+      *) \
+        echo "Unsupported arch: ${TARGETARCH}"; \
+        exit 1; \
+        ;; \
+    esac; \
+    CANN_DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"; \
+    CANN_NNAL_URL="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20${CANN_DOWNLOAD_VERSION}/Ascend-cann-nnal_${CANN_DOWNLOAD_VERSION}_${OS}-${ARCH}.run?response-content-type=application/octet-stream"; \
+    CANN_NNAL_FILE="/tmp/cann-nnal.run"; \
+    echo "Downloading CANN NNAL ${CANN_DOWNLOAD_VERSION} from ${CANN_NNAL_URL}" \
+        && curl -fL -o "${CANN_NNAL_FILE}" "${CANN_NNAL_URL}" \
+        && chmod a+x "${CANN_NNAL_FILE}"; \
+    echo "Installing CANN NNAL ${CANN_DOWNLOAD_VERSION}" \
+        && source /usr/local/Ascend/ascend-toolkit/set_env.sh \
+        && "${CANN_NNAL_FILE}" --install --install-path=/usr/local/Ascend --force --quiet \
+        && rm -f "${CANN_NNAL_FILE}" \
+        && echo "Installed CANN NNAL ${CANN_DOWNLOAD_VERSION} successfully"
+
+#
+# Install MindIE
+#
+
+FROM cann AS mindie-installer
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG MINDIE_VERSION=1.0.0
+
+RUN OS="${TARGETOS}"; \
+    if [ "${OS}" != "linux" ]; then \
+      echo "Unsupported OS: ${OS}"; \
+      exit 1; \
+    fi; \
+    ARCH="${TARGETARCH}"; \
+    case "${ARCH}" in \
+      amd64|x86_64) \
+        ARCH='x86_64'; \
+        ;; \
+      arm64|aarch64) \
+        ARCH='aarch64'; \
+        ;; \
+      *) \
+        echo "Unsupported arch: ${TARGETARCH}"; \
+        exit 1; \
+        ;; \
+    esac; \
+    MINDIE_URL="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%20${MINDIE_VERSION}/Ascend-mindie_${MINDIE_VERSION}_${OS}-${ARCH}.run?response-content-type=application/octet-stream"; \
+    MINDIE_FILE="/tmp/mindie.run"; \
+    echo "Downloading MindIE ${MINDIE_VERSION} from ${MINDIE_URL}" \
+        && curl -fL -o "${MINDIE_FILE}" "${MINDIE_URL}" \
+        && chmod a+x "${MINDIE_FILE}"; \
+    echo "Installing MindIE ${MINDIE_VERSION}" \
+        && source /usr/local/Ascend/ascend-toolkit/set_env.sh \
+        && "${MINDIE_FILE}" --install --install-path=/usr/local/Ascend --quiet \
+        && rm -f "${MINDIE_FILE}" \
+        && rm -rf /var/log/mindie_log \
+        && echo "Installed MindIE ${MINDIE_VERSION} successfully"
+
+#
+# Install GPUStack
+#
+
+FROM cann
+
+ARG CANN_VERSION
+ARG CANN_CHIP
+
+COPY --from=nnal-installer --chmod=0755 /usr/local/Ascend/nnal /usr/local/Ascend/nnal
+COPY --from=mindie-installer --chmod=0755 /usr/local/Ascend/mindie /usr/local/Ascend/mindie
+
+RUN --mount=type=cache,target=/root/.cache,sharing=private \
+    --mount=type=bind,target=/workspace/gpustack,rw \
+    cd /workspace/gpustack && \
     make build && \
-    pip install /workspace/gpustack/dist/*.whl &&\
-    pip cache purge && \
-    rm -rf /workspace/gpustack
+    pip install /workspace/gpustack/dist/*.whl
 
+ENV CANN_VERSION=${CANN_VERSION} \
+    CANN_CHIP=${CANN_CHIP}
 RUN gpustack download-tools --device npu
 
-ENTRYPOINT [ "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && exec gpustack start \"$@\"", "--" ]
+ENTRYPOINT [ "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && source /usr/local/Ascend/nnal/atb/set_env.sh && source /usr/local/Ascend/mindie/set_env.sh && exec gpustack start \"$@\"", "--" ]
