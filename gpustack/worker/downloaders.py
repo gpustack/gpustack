@@ -66,7 +66,7 @@ def download_model(
             cache_dir=os.path.join(cache_dir, "model_scope"),
         )
     elif model.source == SourceEnum.LOCAL_PATH:
-        return [model.local_path]
+        return file.get_sharded_file_paths(model.local_path)
 
 
 def get_model_file_size(
