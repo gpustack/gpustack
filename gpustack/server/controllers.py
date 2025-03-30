@@ -423,17 +423,6 @@ class WorkerController:
                 )
                 return
 
-            if worker.state == WorkerStateEnum.READY:
-                await self.update_instance_states(
-                    session,
-                    instances,
-                    ModelInstanceStateEnum.UNREACHABLE,
-                    ModelInstanceStateEnum.RUNNING,
-                    "",
-                    "worker is ready",
-                )
-                return
-
             if (
                 worker.state == WorkerStateEnum.NOT_READY
                 or event.type == EventType.DELETED
@@ -452,6 +441,17 @@ class WorkerController:
                         f"Delete instance {', '.join(instance_names)} "
                         f"since worker {worker.name} is {state}"
                     )
+
+            if worker.state == WorkerStateEnum.READY:
+                await self.update_instance_states(
+                    session,
+                    instances,
+                    ModelInstanceStateEnum.UNREACHABLE,
+                    ModelInstanceStateEnum.RUNNING,
+                    "",
+                    "worker is ready",
+                )
+                return
 
     async def update_instance_states(
         self,
