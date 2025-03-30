@@ -1,4 +1,6 @@
+import glob
 import os
+import re
 import shutil
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -92,3 +94,14 @@ def _getsize(path: str, visited: set, cache: dict) -> int:
         return total
 
     raise FileNotFoundError(f"Path does not exist: {path}")
+
+
+def get_sharded_file_paths(file_path: str) -> str:
+    dir_name, base_name = os.path.split(file_path)
+    match = re.match(r"(.*?)-\d{5}-of-\d{5}\.(\w+)", base_name)
+    if not match:
+        return [file_path]
+    prefix = match.group(1)
+    extension = match.group(2)
+    pattern = os.path.join(dir_name, f"{prefix}-*-of-*.{extension}")
+    return sorted(glob.glob(pattern))
