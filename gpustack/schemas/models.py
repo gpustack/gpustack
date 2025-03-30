@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticFi
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
-from gpustack.schemas.common import PaginatedList, pydantic_column_type
+from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.links import ModelInstanceModelFileLink
 from gpustack.schemas.workers import RPCServer
@@ -162,6 +162,7 @@ class ModelBase(SQLModel, ModelSource):
     backend_parameters: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
 
     env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
+    restart_on_error: Optional[bool] = True
 
     @model_validator(mode="after")
     def validate(self):
@@ -277,6 +278,10 @@ class ModelInstanceBase(SQLModel, ModelSource):
     port: Optional[int] = None
     download_progress: Optional[float] = None
     resolved_path: Optional[str] = None
+    restart_count: Optional[int] = 0
+    last_restart_time: Optional[datetime] = Field(
+        sa_column=Column(UTCDateTime), default=None
+    )
     state: ModelInstanceStateEnum = ModelInstanceStateEnum.PENDING
     state_message: Optional[str] = None
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(

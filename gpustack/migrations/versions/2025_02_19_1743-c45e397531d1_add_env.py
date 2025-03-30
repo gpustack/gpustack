@@ -23,9 +23,12 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.add_column(sa.Column('env', sa.JSON(), nullable=True))
+        batch_op.add_column(sa.Column('restart_on_error', sa.Boolean(), nullable=True))
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.add_column(sa.Column('resolved_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('restart_count', sa.Integer(), nullable=True))
+        batch_op.add_column(sa.Column('last_restart_time', gpustack.schemas.common.UTCDateTime(), nullable=True))
 
     op.create_table('model_files',
     sa.Column('deleted_at', sa.DateTime(), nullable=True),
@@ -63,9 +66,12 @@ def upgrade() -> None:
 def downgrade() -> None:
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('env')
+        batch_op.drop_column('restart_on_error')
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('resolved_path')
+        batch_op.drop_column('last_restart_time')
+        batch_op.drop_column('restart_count')
 
     op.drop_table('modelinstancemodelfilelink')
     op.drop_table('model_files')

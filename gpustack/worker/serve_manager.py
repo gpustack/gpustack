@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import multiprocessing
 import psutil
 import requests
@@ -46,6 +47,7 @@ class ServeManager:
         self._serving_model_instances: Dict[int, multiprocessing.Process] = {}
         self._serving_model_instance_ports: Dict[int, int] = {}
         self._starting_model_instances: Dict[int, ModelInstance] = {}
+        self._error_model_instances: Dict[int, ModelInstance] = {}
         self._model_cache_by_instance: Dict[int, Model] = {}
         self._clientset = clientset
         self._cache_dir = cfg.cache_dir
@@ -65,6 +67,21 @@ class ServeManager:
                 logger.error(f"Failed watching model instances: {e}")
                 await asyncio.sleep(5)
 
+    async def monitor_error_instances(self):
+        """Periodically checks cached ERROR state instances and attempts to restart them."""
+        while True:
+            try:
+                logger.trace(
+                    f"Monitoring error instances, instances: {self._error_model_instances.keys()}"
+                )
+
+                for mi_id, mi in list(self._error_model_instances.items()):
+                    self._restart_error_instance(mi)
+                await asyncio.sleep(10)
+            except Exception as e:
+                logger.error(f"Error while monitoring instances: {e}")
+                await asyncio.sleep(5)
+
     def _handle_model_instance_event(self, event: Event):
         mi = ModelInstance.model_validate(event.data)
 
@@ -76,10 +93,16 @@ class ServeManager:
             f"Received model instance event: {event.type} {mi.name} {mi.state}"
         )
 
-        if mi.state == ModelInstanceStateEnum.ERROR:
+        if mi.state == ModelInstanceStateEnum.ERROR and event.type == EventType.DELETED:
+            self._error_model_instances.pop(mi.id, None)
+            return
+        elif mi.state == ModelInstanceStateEnum.ERROR:
+            m = self._get_model_with_cache(mi)
+            if m.restart_on_error:
+                self._error_model_instances[mi.id] = mi
             return
 
-        if mi.id in self._serving_model_instances and event.type == EventType.DELETED:
+        elif mi.id in self._serving_model_instances and event.type == EventType.DELETED:
             self._stop_model_instance(mi)
         elif (
             mi.id in self._serving_model_instances
@@ -109,7 +132,7 @@ class ServeManager:
 
             logger.info(f"Start serving model instance {mi.name} on port {mi.port}")
 
-            model = self._clientset.models.get(mi.model_id)
+            model = self._get_model_with_cache(mi)
             backend = get_backend(model)
 
             process = multiprocessing.Process(
@@ -127,7 +150,6 @@ class ServeManager:
             self._serving_model_instances[mi.id] = process
             self._serving_model_instance_ports[mi.id] = mi.port
             self._starting_model_instances[mi.id] = mi
-            self._model_cache_by_instance[mi.id] = model
 
             patch_dict = {
                 "state": ModelInstanceStateEnum.INITIALIZING,
@@ -188,6 +210,15 @@ class ServeManager:
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
+    def _get_model_with_cache(self, mi: ModelInstance) -> Model:
+        """Get model from cache or fetch from clientset."""
+        if mi.id in self._model_cache_by_instance:
+            return self._model_cache_by_instance[mi.id]
+
+        model = self._clientset.models.get(mi.model_id)
+        self._model_cache_by_instance[mi.id] = model
+        return model
+
     def _stop_model_instance(self, mi: ModelInstance):
         id = mi.id
         if id not in self._serving_model_instances:
@@ -203,6 +234,43 @@ class ServeManager:
                 logger.error(f"Failed to terminate process {pid}: {e}")
 
             self._post_stop_model_instance(id)
+
+    def _restart_error_instance(self, mi: ModelInstance):
+        """Attempts to restart a model instance that is in error state with exponential backoff."""
+        if mi.id in self._serving_model_instances:
+            logger.warning(
+                f"Model instance {mi.name} is already running, skipping restart."
+            )
+            return
+
+        restart_count = mi.restart_count or 0
+        last_restart_time = mi.last_restart_time or mi.updated_at
+
+        current_time = datetime.now(timezone.utc)
+        delay = min(
+            10 * (2 ** (restart_count - 1)), 300
+        )  # Exponential backoff, max 5 minutes
+        if last_restart_time:
+            elapsed_time = (current_time - last_restart_time).total_seconds()
+            if elapsed_time < delay:
+                logger.debug(
+                    f"Delaying restart of {mi.name} for {delay - elapsed_time:.2f} seconds."
+                )
+                return
+
+        logger.info(
+            f"Restarting model instance {mi.name} (attempt {restart_count + 1}) after {delay} seconds delay."
+        )
+
+        self._update_model_instance(
+            mi.id,
+            restart_count=restart_count + 1,
+            last_restart_time=current_time,
+            state=ModelInstanceStateEnum.SCHEDULED,
+            state_message="",
+        )
+
+        self._error_model_instances.pop(mi.id, None)
 
     def health_check_serving_instances(self):
         for id, process in list(self._serving_model_instances.items()):
@@ -225,7 +293,7 @@ class ServeManager:
             elif id in self._starting_model_instances:
                 # health check for starting model instances
                 mi = self._starting_model_instances[id]
-                model = self._model_cache_by_instance[id]
+                model = self._get_model_with_cache(mi)
                 if is_running(mi, model.backend):
                     mi = self._clientset.model_instances.get(id=id)
                     if mi.state != ModelInstanceStateEnum.ERROR:

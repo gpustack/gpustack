@@ -205,6 +205,7 @@ class Worker:
         # Check serving model instances' health every 3 seconds.
         run_periodically_in_thread(serve_manager.health_check_serving_instances, 3)
         self._create_async_task(serve_manager.watch_model_instances())
+        self._create_async_task(serve_manager.monitor_error_instances())
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
