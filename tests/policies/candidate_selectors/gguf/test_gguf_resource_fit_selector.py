@@ -1101,11 +1101,12 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 
 @pytest.mark.asyncio
 async def test_manual_schedule_to_single_worker_multi_gpu(config):
-    workers = [
-        linux_nvidia_1_4090_24gx1(),
-        linux_nvidia_2_4080_16gx2(),
-        linux_nvidia_4_4080_16gx4(),
-    ]
+    def workers():
+        return [
+            linux_nvidia_1_4090_24gx1(),
+            linux_nvidia_2_4080_16gx2(),
+            linux_nvidia_4_4080_16gx4(),
+        ]
 
     m = new_model(
         1,
@@ -1170,7 +1171,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
         ),
     ):
 
-        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await resource_fit_selector.select_candidates(workers())
         candidates = await placement_scorer.score(candidates)
 
         expected_candidates = [
@@ -1202,7 +1203,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
         resource_fit_selector = GGUFResourceFitSelector(m, mi)
         placement_scorer = PlacementScorer(m, mi)
 
-        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await resource_fit_selector.select_candidates(workers())
         candidates = await placement_scorer.score(candidates)
         expected_candidates = [
             {

@@ -17,6 +17,7 @@ from gpustack.schemas.common import Pagination
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
+    get_backend,
     is_audio_model,
     BackendEnum,
 )
@@ -179,6 +180,8 @@ async def validate_gpu_ids(  # noqa: C901
             message="Audio models are restricted to execution on a single NVIDIA GPU."
         )
 
+    model_backend = get_backend(model_in)
+
     worker_name_set = set()
     for gpu_id in model_in.gpu_selector.gpu_ids:
         is_valid, matched = parse_gpu_id(gpu_id)
@@ -202,8 +205,17 @@ async def validate_gpu_ids(  # noqa: C901
                     raise BadRequestException(
                         "Audio models are supported only on NVIDIA GPUs and CPUs."
                     )
+        worker_os = (
+            worker.labels.get("os", "unknown")
+            if worker.labels is not None
+            else "unknown"
+        )
+        if model_backend == BackendEnum.VLLM and worker_os != "linux":
+            raise BadRequestException(
+                message=f'vLLM backend is only supported on Linux, but the selected worker "{worker.name}" is running on {worker_os.capitalize()}.'
+            )
 
-    if model_in.backend == BackendEnum.VLLM.value:
+    if model_backend == BackendEnum.VLLM:
         cfg = get_global_config()
         if len(worker_name_set) > 1 and not cfg.enable_ray:
             raise BadRequestException(
@@ -211,7 +223,7 @@ async def validate_gpu_ids(  # noqa: C901
                 "Please enable Ray to make vLLM work across multiple workers."
             )
 
-    if model_in.backend == BackendEnum.LLAMA_BOX.value:
+    if model_backend == BackendEnum.LLAMA_BOX:
         ts = find_parameter(model_in.backend_parameters, ["ts", "tensor-split"])
         if ts:
             raise BadRequestException(
