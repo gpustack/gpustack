@@ -41,8 +41,8 @@ class RayManager:
                 # Ray is running
                 return
 
-            raise Exception(
-                f"Ray exited with code {returncode}, check logs in {self._log_file_path} to diagnose."
+            logger.error(
+                f"Ray exited with code {returncode}, check logs in {self._log_file_path} to diagnose. Restarting..."
             )
 
         await self._start_ray()
@@ -103,7 +103,7 @@ class RayManager:
 
         await asyncio.sleep(5)
         if proc.poll() is not None:
-            raise Exception(
+            logger.error(
                 f"Failed to start Ray {self._role}. Check logs in {self._log_file_path} to diagnose."
             )
 
