@@ -508,6 +508,10 @@ class ModelFileController:
             async with AsyncSession(self._engine) as session:
                 file = await ModelFile.one_by_id(session, file.id)
 
+                if not file:
+                    # In case the file is deleted
+                    return
+
                 for instance in file.instances:
                     await sync_instance_files_state(session, instance, [file])
         except Exception as e:
