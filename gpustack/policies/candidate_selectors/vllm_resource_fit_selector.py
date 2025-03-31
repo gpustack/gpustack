@@ -4,7 +4,6 @@ import logging
 import os
 import re
 from typing import Dict, List, Optional
-from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
     ScheduleCandidatesSelector,
@@ -478,9 +477,11 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         3. The total number of GPUs can be divided by the number of attention heads.
         4. The total VRAM claim is greater than the estimated VRAM claim.
         """
-        workers = await self.get_workers_sorted_by_gpu_count(workers)
+
         if not workers:
             return []
+
+        sort_workers_by_gpu_count(workers)
 
         workers_by_gpu_count_dict = defaultdict(list)
         for worker in workers:
@@ -526,33 +527,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
-    async def get_workers_sorted_by_gpu_count(
-        self, workers: List[Worker]
-    ) -> List[Worker]:
-        """
-        Get workers sorted by the number of GPUs.
-        """
-        # TODO gpu_devices info is modified in gpu_matching_filter so refetch the workers.
-        # Revisit this logic later.
-        async with AsyncSession(self._engine) as session:
-            workers = [
-                worker
-                for worker in await Worker.all(session)
-                if self._selected_gpu_workers is None
-                or worker.name in self._selected_gpu_workers
-            ]
-            # Sort by the number of GPUs and pick the main worker with the most GPUs.
-            workers.sort(
-                key=lambda worker: (
-                    len(worker.status.gpu_devices)
-                    if worker.status and worker.status.gpu_devices
-                    else 0
-                ),
-                reverse=True,
-            )
-
-        return workers
-
     async def manual_select_multi_worker_multi_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
@@ -562,9 +536,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if not self._selected_gpu_workers or len(self._selected_gpu_workers) < 2:
             return []
 
-        workers = await self.get_workers_sorted_by_gpu_count(workers)
         if not workers:
             return []
+
+        sort_workers_by_gpu_count(workers)
 
         main_worker = workers[0]
         main_worker_name = main_worker.name
@@ -667,3 +642,17 @@ def _create_candidate(
         for worker in selected_workers[1:]
     ]
     return candidate
+
+
+def sort_workers_by_gpu_count(workers: List[Worker]):
+    """
+    Sort workers by the number of GPUs.
+    """
+    workers.sort(
+        key=lambda worker: (
+            len(worker.status.gpu_devices)
+            if worker.status and worker.status.gpu_devices
+            else 0
+        ),
+        reverse=True,
+    )

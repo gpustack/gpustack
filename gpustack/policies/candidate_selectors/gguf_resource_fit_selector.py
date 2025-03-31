@@ -211,6 +211,28 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 break
         return vram_claims, ram_claim
 
+    def _filter_selected_gpus_in_workers(self, workers: List[Worker]):
+        """
+        Filter the selected GPUs in workers.
+        """
+        if (
+            self._model.gpu_selector is None
+            or self._model.gpu_selector.gpu_ids is None
+            or len(self._model.gpu_selector.gpu_ids) == 0
+        ):
+            return workers, []
+
+        for worker in workers:
+            gpu_candidates = []
+            for gpu in worker.status.gpu_devices:
+                id = f"{worker.name}:{gpu.type}:{gpu.index}"
+                if id not in self._model.gpu_selector.gpu_ids:
+                    continue
+
+                gpu_candidates.append(gpu)
+
+            worker.status.gpu_devices = gpu_candidates
+
     async def _set_workers_allocatable_resource(self, workers: List[Worker]):
         workers_allocatable, workers_allocatable_vram, workers_gpus_allocatable_vram = (
             await self._generate_workers_and_gpus_allocatable_resources(workers)
@@ -352,6 +374,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
         # reset the data with input workers.
         await self._set_offload_resource_claim()
+        self._filter_selected_gpus_in_workers(workers)
         await self._set_workers_allocatable_resource(workers)
         self._set_model_parameters()
 

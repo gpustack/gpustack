@@ -39,15 +39,6 @@ class GPUMatchingFilter(WorkerFilter):
             if worker.name not in seleted_workers:
                 continue
 
-            gpu_candidates = []
-            for gpu in worker.status.gpu_devices:
-                id = f"{worker.name}:{gpu.type}:{gpu.index}"
-                if id not in self._model.gpu_selector.gpu_ids:
-                    continue
-
-                gpu_candidates.append(gpu)
-
-            worker.status.gpu_devices = gpu_candidates
             candidates.append(worker)
 
         return candidates, [f"Matched {len(candidates)} workers by gpu selector."]

@@ -123,9 +123,13 @@ async def set_default_worker_selector(session: AsyncSession, model: Model):
         return
 
     model = await Model.one_by_id(session, model.id)
-    if not model.worker_selector and get_backend(model) == BackendEnum.VLLM:
-        # vLLM models are only supported on Linux amd64
-        model.worker_selector = {"os": "linux", "arch": "amd64"}
+    if (
+        not model.worker_selector
+        and not model.gpu_selector
+        and get_backend(model) == BackendEnum.VLLM
+    ):
+        # vLLM models are only supported on Linux
+        model.worker_selector = {"os": "linux"}
         await model.update(session)
 
 

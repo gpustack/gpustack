@@ -37,7 +37,7 @@ class LabelMatchingFilter(WorkerFilter):
                 f"Matched {len(candidates)}/{len(workers)} workers by label selector: {self._model.worker_selector}."
             ]
             if get_backend(self._model) == BackendEnum.VLLM:
-                messages[0] += " (Note: The vLLM backend supports amd64 Linux only.)"
+                messages[0] += " (Note: The vLLM backend supports Linux only.)"
 
         return candidates, messages
 
