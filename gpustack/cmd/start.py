@@ -25,7 +25,7 @@ class OptionalBoolAction(argparse.Action):
         super(OptionalBoolAction, self).__init__(
             option_strings, dest, nargs=0, **kwargs
         )
-        self.default = None
+        self.default = kwargs.get("default")
 
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, True)
@@ -485,7 +485,7 @@ def get_gpustack_env_bool(env_var: str) -> Optional[bool]:
     env_name = "GPUSTACK_" + env_var
     env_value = os.getenv(env_name)
     if env_value is not None:
-        return env_value.lower() in ["true", "True"]
+        return env_value.lower() in ["true", "1"]
     return None
 
 
