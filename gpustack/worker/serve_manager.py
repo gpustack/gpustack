@@ -253,7 +253,7 @@ class ServeManager:
         if last_restart_time:
             elapsed_time = (current_time - last_restart_time).total_seconds()
             if elapsed_time < delay:
-                logger.debug(
+                logger.trace(
                     f"Delaying restart of {mi.name} for {delay - elapsed_time:.2f} seconds."
                 )
                 return
