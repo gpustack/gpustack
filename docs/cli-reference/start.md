@@ -30,7 +30,7 @@ gpustack start [OPTIONS]
 ### Server Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                         |
-|-------------------------------------|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--host` value                      | `0.0.0.0`                              | Host to bind the server to.                                                                                                                         |
 | `--port` value                      | `80`                                   | Port to bind the server to.                                                                                                                         |
 | `--disable-worker`                  | `False`                                | Disable embedded worker.                                                                                                                            |
@@ -52,7 +52,7 @@ gpustack start [OPTIONS]
 ### Worker Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                                                                                                      |
-|-------------------------------------|----------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-s` value, `--server-url` value    | (empty)                                | Server to connect to.                                                                                                                                                                                                                                            |
 | `--worker-name` value               | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                                                                                            |
 | `--worker-ip` value                 | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                                                                                         |
@@ -115,7 +115,7 @@ allow_methods: ["GET", "POST"]
 allow_headers: ["Authorization", "Content-Type"]
 
 # Worker Options
-server_url: http://myserver
+server_url: http://your_gpustack_server_url
 worker_name: myworker
 worker_ip: 192.168.1.101
 disable_metrics: false

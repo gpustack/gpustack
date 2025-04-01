@@ -47,6 +47,8 @@ extra_css:
 markdown_extensions:
   - pymdownx.highlight
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - admonition
   - sane_lists
   - pymdownx.details
@@ -63,10 +65,26 @@ nav:
   - Quickstart: quickstart.md
   - Installation:
       - Installation Requirements: installation/installation-requirements.md
+      - NVIDIA CUDA:
+          - Online Installation: installation/nvidia-cuda/online-installation.md
+          - Air-Gapped Installation: installation/nvidia-cuda/air-gapped-installation.md
+      - AMD ROCm:
+          - Online Installation: installation/amd-rocm/online-installation.md
+          - Air-Gapped Installation: installation/amd-rocm/air-gapped-installation.md
+      - Apple Metal: installation/apple-metal-installation.md
+      - Ascend CANN:
+          - Online Installation: installation/ascend-cann/online-installation.md
+          - Air-Gapped Installation: installation/ascend-cann/air-gapped-installation.md
+      - Hygon DTK:
+          - Online Installation: installation/hygon-dtk/online-installation.md
+          - Air-Gapped Installation: installation/hygon-dtk/air-gapped-installation.md
+      - Moore Threads MUSA:
+          - Online Installation: installation/moorethreads-musa/online-installation.md
+          - Air-Gapped Installation: installation/moorethreads-musa/air-gapped-installation.md
+      - CPU:
+          - Online Installation: installation/cpu/online-installation.md
+          - Air-Gapped Installation: installation/cpu/air-gapped-installation.md
       - Installation Script: installation/installation-script.md
-      - Docker Installation: installation/docker-installation.md
-      - Manual Installation: installation/manual-installation.md
-      - Air-Gapped Installation: installation/air-gapped-installation.md
       - Uninstallation: installation/uninstallation.md
   - Upgrade: upgrade.md
   - User Guide:
@@ -86,24 +104,24 @@ nav:
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
       - Image Generation APIs: user-guide/image-generation-apis.md
       - Rerank API: user-guide/rerank-api.md
+  - Using Models:
+      - Using Large Language Models: using-models/using-large-language-models.md
+      - Using Vision Language Models: using-models/using-vision-language-models.md
+      - Using Embedding Models: using-models/using-embedding-models.md
+      - Using Reranker Models: using-models/using-reranker-models.md
+      - Using Image Generation Models: using-models/using-image-generation-models.md
+      - Recommended Parameters for Image Generation Models: using-models/recommended-parameters-for-image-generation-models.md
+      - Editing Images: using-models/editing-images.md
+      - Using Audio Models: using-models/using-audio-models.md
   - Tutorials:
-      - Setting Up a Multi-node GPUStack Cluster: tutorials/setting-up-a-multi-node-gpustack-cluster.md
-      - Performing Distributed Inference Across Workers(llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
-      - Using DeepSeek R1: tutorials/using-deepseek-r1.md
-      - Using Image Generation Models: tutorials/using-image-generation-models.md
-      - Using Audio Models: tutorials/using-audio-models.md
-      - Using Reranker Models: tutorials/using-reranker-models.md
-      - Using Vision Language Models: tutorials/using-vision-language-models.md
-      - Recommended Parameters for Image Generation Models: tutorials/recommended-parameters-for-image-generation-models.md
-      - Editing Images: tutorials/editing-images.md
-      - Creating Text Embeddings: tutorials/creating-text-embeddings.md
+      - Performing Distributed Inference Across Workers (llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
+      - Inference On CPUs: tutorials/inference-on-cpus.md
       - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
-      - Running Inference with Ascend NPUs: tutorials/running-inference-with-ascend-npus.md
-      - Running Inference with Hygon DCUs: tutorials/running-inference-with-hygon-dcus.md
-      - Running Inference with AMD GPUs: tutorials/running-inference-with-amd-gpus.md
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
-      - Running Inference with Moore Threads GPUs: tutorials/running-inference-with-moorethreads-gpus.md
-      - Running Inference on CPUs: tutorials/inference-on-cpus.md
+  - Integrations:
+      - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
+      - Integrate with Dify: integrations/interate-with-dify.md
+      - Integrate with RAGFlow: integrations/interate-with-ragflow.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md

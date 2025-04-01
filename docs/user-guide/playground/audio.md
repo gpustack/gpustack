@@ -1,6 +1,6 @@
 # Audio Playground
 
-The Audio Playground is a dedicated space for testing and experimenting with GPUStack’s text-to-speech (TTS) and speech-to-text (STT) APIs. It allows users to interactively convert text to audio and audio to text, customize parameters, and review code examples for seamless API integration.
+The Audio Playground is a dedicated space for testing and experimenting with GPUStack’s Text-to-Speech (TTS) and Speech-to-Text (STT) APIs. It allows users to interactively convert text to audio and audio to text, customize parameters, and review code examples for seamless API integration.
 
 ## Text to Speech
 

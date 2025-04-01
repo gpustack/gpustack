@@ -7,7 +7,7 @@ GPUStack supports inference on CPUs, offering flexibility when GPU resources are
 
 !!! note
 
-    CPU inference is supported when using the llama-box (llama.cpp) backend.
+    CPU inference is supported when using the llama-box backend.
 
 To deploy a model with CPU offloading, enable the `Allow CPU Offloading` option in the deployment configuration (this setting is enabled by default).
 

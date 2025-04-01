@@ -51,6 +51,6 @@ When automatic installation is not feasible or preferred, GPUStack provides a st
    - **Linux/macOS:** `<backend>_<version>`
    - **Windows:** `<backend>_<version>.exe`
 
-For example, the vLLM executable for version v0.6.4 should be named `vllm_v0.6.4` on Linux.
+For example, the vLLM executable for version v0.7.3 should be named `vllm_v0.7.3` on Linux.
 
 By following these steps, you can maintain full control over the backend installation process, ensuring that the correct version is used for your deployment.
