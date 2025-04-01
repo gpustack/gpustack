@@ -154,7 +154,7 @@ SUDO=
 check_root() {
   if [ "$(id -u)" -ne 0 ]; then
     if check_command "sudo"; then
-      info "running as non-root, will use sudo for installation."
+      info "Running as non-root, will use sudo for installation."
       SUDO="sudo"
     else
       fatal "This script must be run as root. Please use sudo or run as root."
@@ -276,7 +276,7 @@ check_python_tools() {
     info "Python3 could not be found. Attempting to install..."
     if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
       $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt install -y python3
-    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
+    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ]; then
       $SUDO yum install -y python3
     else
       fatal "Unsupported OS for automatic Python installation. Please install Python3 manually."
@@ -297,7 +297,7 @@ check_python_tools() {
 
   PYTHON_STDLIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
   if [ -f "$PYTHON_STDLIB_PATH/EXTERNALLY-MANAGED" ]; then
-    # Current Python environment is externally manged by OS distros. Package installation by pip is restricted.
+    # Current Python environment is externally managed by OS distros. Package installation by pip is restricted.
     # Use package manager to install pipx in later step.
     # Ref: https://packaging.python.org/en/latest/specifications/externally-managed-environments
     PYTHON_EXTERNALLY_MANAGED=1
@@ -316,9 +316,9 @@ check_python_tools() {
       info "Pip3 could not be found. Attempting to ensure pip..."
       if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
         if python3 -m ensurepip 2>&1 | grep -q "ensurepip is disabled"; then
-            $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip
+          $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip
         else
-            python3 -m ensurepip --upgrade
+          python3 -m ensurepip --upgrade
         fi
       else
         python3 -m ensurepip --upgrade
@@ -348,7 +348,7 @@ check_python_tools() {
       pip3 install pipx
     elif [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
       $SUDO apt update && $SUDO sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y pipx"
-    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
+    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ]; then
       $SUDO yum install -y pipx
     elif [ "$OS" = "macos" ]; then
       brew install pipx
@@ -443,7 +443,7 @@ install_dependencies() {
     fi
   done
 
-  # check SeLinux dependency
+  # Check SeLinux dependency
   if check_command "getenforce"; then
       if [ "Disabled" != "$(getenforce)" ]; then
           if ! check_command "semanage"; then
@@ -461,7 +461,6 @@ install_dependencies() {
     fi
   fi
 }
-
 
 # Function to setup SeLinux permissions
 setup_selinux_permissions() {
