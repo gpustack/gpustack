@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     tzdata \
     iproute2 \
     python3-pip \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace/gpustack
@@ -23,4 +24,4 @@ RUN cd /workspace/gpustack && \
 
 RUN gpustack download-tools --device npu
 
-ENTRYPOINT [ "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && exec gpustack start \"$@\"", "--" ]
+ENTRYPOINT [ "tini", "--", "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && exec gpustack start \"$@\"", "--" ]
