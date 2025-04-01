@@ -117,12 +117,5 @@ def terminate_process(process):
         except psutil.TimeoutExpired:
             try:
                 process.kill()
-                process.wait(timeout=3)
             except psutil.NoSuchProcess:
                 pass
-            except psutil.TimeoutExpired:
-                logger.warning(f"Process {process.pid} failed to terminate after kill.")
-            except Exception as e:
-                logger.error(f"Error killing process {process.pid}: {e}")
-        except Exception as e:
-            logger.error(f"Error terminating process {process.pid}: {e}")
