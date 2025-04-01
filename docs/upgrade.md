@@ -17,7 +17,7 @@ Running the installation script will:
 2. Update the system service (systemd, launchd, or Windows) init script to reflect the arguments passed to the installation script.
 3. Restart the GPUStack service.
 
-### Linux and macOS
+### Linux or macOS
 
 For example, to upgrade GPUStack to the latest version on a Linux system and macOS:
 
@@ -60,9 +60,9 @@ docker pull gpustack/gpustack:vX.Y.Z
 
 Then restart the GPUStack service with the new image.
 
-## Manual Upgrade
+## pip Upgrade
 
-If you install GPUStack manually, upgrade using the common `pip` workflow.
+If you install GPUStack manually using pip, upgrade using the common `pip` workflow.
 
 For example, to upgrade GPUStack to the latest version:
 

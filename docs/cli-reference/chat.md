@@ -85,7 +85,7 @@ Commands:
 
 If you are not running `gpustack chat` on the server node, or if you are serving on a custom host or port, you should provide the following environment variables:
 
-| Name                | Description                                          |
-| ------------------- | ---------------------------------------------------- |
-| GPUSTACK_SERVER_URL | URL of the GPUStack server, e.g., `http://myserver`. |
-| GPUSTACK_API_KEY    | GPUStack API key.                                    |
+| Name                | Description                                              |
+| ------------------- | -------------------------------------------------------- |
+| GPUSTACK_SERVER_URL | URL of the GPUStack server, e.g., `http://your_host_ip`. |
+| GPUSTACK_API_KEY    | GPUStack API key.                                        |

@@ -4,10 +4,6 @@ In the context of Retrieval-Augmented Generation (RAG), reranking refers to the 
 
 GPUStack serves [Jina compatible Rerank API](https://jina.ai/reranker/) using the `/v1/rerank` path.
 
-!!! note
-
-    The Rerank API is only available when using the [llama-box](./inference-backends.md#llama-box) inference backend.
-
 ## Supported Models
 
 The following models are available for reranking:
@@ -24,8 +20,8 @@ The following models are available for reranking:
 The following is an example using the Rerank API:
 
 ```bash
-export GPUSTACK_API_KEY=myapikey
-curl http://myserver/v1/rerank \
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1/rerank \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $GPUSTACK_API_KEY" \
     -d '{

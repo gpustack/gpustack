@@ -8,13 +8,13 @@ GPUStack supports the following inference backends:
 
 When users deploy a model, the backend is selected automatically based on the following criteria:
 
-- If the model is a [GGUF](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) model, `llama-box` is used.
-- If the model is a known `text-to-speech` or `speech-to-text` model, `vox-box` is used.
+- If the model is a [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) model, `llama-box` is used.
+- If the model is a known `Text-to-Speech` or `Speech-to-Text` model, `vox-box` is used.
 - Otherwise, `vLLM` is used.
 
 ## llama-box
 
-[llama-box](https://github.com/gpustack/llama-box) is a LM inference server based on [llama.cpp](https://github.com/ggerganov/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp).
+[llama-box](https://github.com/gpustack/llama-box) is a LM inference server based on [llama.cpp](https://github.com/ggml-org/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp).
 
 ### Supported Platforms
 
@@ -22,7 +22,7 @@ The llama-box backend supports Linux, macOS and Windows (with CPU offloading onl
 
 ### Supported Models
 
-- LLMs: For supported LLMs, refer to the llama.cpp [README](https://github.com/ggerganov/llama.cpp#description).
+- LLMs: For supported LLMs, refer to the llama.cpp [README](https://github.com/ggml-org/llama.cpp#description).
 - Diffussion Models: Supported models are listed in this [Hugging Face collection](https://huggingface.co/collections/gpustack/image-672dafeb2fa0d02dbe2539a9) or this [ModelScope collection](https://modelscope.cn/collections/Image-fab3d241f8a641).
 - Reranker Models: Supported models can be found in this [Hugging Face collection](https://huggingface.co/collections/gpustack/reranker-6721a234527f6fcd90deedc4) or this [ModelScope collection](https://modelscope.cn/collections/Reranker-7576210e79de4a).
 
@@ -64,7 +64,7 @@ For more details, please refer to [vLLM documentation](https://docs.vllm.ai/en/s
 
 ### Supported Platforms
 
-The vLLM backend works on AMD Linux.
+The vLLM backend works on AMD64 Linux.
 
 !!! note
 
