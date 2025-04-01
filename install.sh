@@ -37,12 +37,14 @@ set -o noglob
 INSTALL_PACKAGE_SPEC="${INSTALL_PACKAGE_SPEC:-}"
 INSTALL_INDEX_URL="${INSTALL_INDEX_URL:-}"
 INSTALL_SKIP_POST_CHECK="${INSTALL_SKIP_POST_CHECK:-0}"
-INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-1}"
+INSTALL_SKIP_BUILD_DEPENDENCIES="${INSTALL_SKIP_BUILD_DEPENDENCIES:-0}"
 INSTALL_SKIP_IOGPU_WIRED_LIMIT="${INSTALL_SKIP_IOGPU_WIRED_LIMIT:-}"
 INSTALL_IOGPU_WIRED_LIMIT_MB="${INSTALL_IOGPU_WIRED_LIMIT_MB:-}"
 
 BREW_APP_OPENFST_NAME="openfst"
 BREW_APP_OPENFST_VERSION="1.8.3"
+
+MACOS_PYTHON_VERSION="3.12"
 
 # --- helper functions for logs ---
 info()
@@ -269,14 +271,13 @@ check_and_reset_wired_limit_mb() {
 # Function to check and install Python tools
 PYTHONPATH=""
 check_python_tools() {
+  # Check if Python3 is installed (Linux Only)
   if ! check_command "python3"; then
     info "Python3 could not be found. Attempting to install..."
     if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
       $SUDO apt update && $SUDO DEBIAN_FRONTEND=noninteractive apt install -y python3
     elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] ; then
       $SUDO yum install -y python3
-    elif [ "$OS" = "macos" ]; then
-      brew install python@3.12
     else
       fatal "Unsupported OS for automatic Python installation. Please install Python3 manually."
     fi
@@ -285,7 +286,13 @@ check_python_tools() {
   PYTHON_VERSION=$(python3 -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)")
   CURRENT_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
   if [ "$PYTHON_VERSION" -lt 40 ] || [ "$PYTHON_VERSION" -ge 43 ]; then
-    fatal "Python version $CURRENT_VERSION is not supported. Please use Python 3.10, 3.11, or 3.12."
+    if [ "$OS" = "macos" ]; then
+      info "Python version $CURRENT_VERSION is not supported. Installing Python $MACOS_PYTHON_VERSION via Homebrew..."
+      brew install python@"$MACOS_PYTHON_VERSION"
+      alias python3=/opt/homebrew/bin/python"$MACOS_PYTHON_VERSION"
+    else
+      fatal "Python version $CURRENT_VERSION is not supported. Please use Python 3.10, 3.11, or 3.12."
+    fi
   fi
 
   PYTHON_STDLIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
@@ -318,7 +325,14 @@ check_python_tools() {
       fi
     fi
 
-    PIP_PYTHON_VERSION_READABLE=$(pip3 -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}')
+  # Determine the PIP3 path
+  if [ "$OS" = "macos" ]; then
+    PIP3_BIN_PATH="/opt/homebrew/bin/pip$MACOS_PYTHON_VERSION"
+  else
+    PIP3_BIN_PATH=$(which pip3)
+  fi
+
+    PIP_PYTHON_VERSION_READABLE=$($PIP3_BIN_PATH -V | grep -Eo 'python [0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}')
     PIP_PYTHON_VERSION=$(echo "$PIP_PYTHON_VERSION_READABLE" | awk -F. '{print $1 * 10 + $2}')
     if [ "$PIP_PYTHON_VERSION" -lt 40 ]; then
       fatal "Python version for pip3 is $PIP_PYTHON_VERSION_READABLE which is not supported. Please use Python 3.10, 3.11, or 3.12."
@@ -344,6 +358,13 @@ check_python_tools() {
 
     # In case pipx installation causes python3 PATH changes (e.g., brew link), re-evaluate once.
     check_python_tools
+  fi
+
+  # Determine the Python3 binary path
+  if [ "$OS" = "macos" ]; then
+    PYTHON3_BIN_PATH="/opt/homebrew/bin/python$MACOS_PYTHON_VERSION"
+  else
+    PYTHON3_BIN_PATH=$(which python3)
   fi
 
   pipx ensurepath --force
@@ -729,7 +750,7 @@ install_gpustack() {
   fi
 
   # shellcheck disable=SC2090,SC2086
-  pipx install --force --verbose $install_args --python "$(which python3)" "$INSTALL_PACKAGE_SPEC"
+  pipx install --force --verbose $install_args --python "$PYTHON3_BIN_PATH" "$INSTALL_PACKAGE_SPEC"
   # Workaround for issue #581
   pipx inject gpustack pydantic==2.9.2 --force > /dev/null 2>&1
 
