@@ -11,6 +11,7 @@ from gpustack.policies.base import (
 )
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
+    get_worker_model_instances,
 )
 from gpustack.schemas.models import (
     ComputedResourceClaim,
@@ -206,6 +207,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
     def _set_messages(self):
+        if self._messages:
+            return
+
         messages = [
             f"The model requires {self._gpu_memory_utilization * 100}%(--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
         ]
@@ -604,6 +608,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if worker.name not in self._selected_gpu_workers:
                 continue
 
+            if not await self._validate_distributed_vllm_limit_per_worker(worker):
+                return []
+
             if worker.name == main_worker_name:
                 continue
 
@@ -633,6 +640,20 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 ray_actors=ray_actors,
             )
         ]
+
+    async def _validate_distributed_vllm_limit_per_worker(self, worker: Worker) -> bool:
+        """
+        Validate that there is no more than one distributed vLLM instance per worker.
+        """
+        instances = await get_worker_model_instances(self._engine, worker)
+        for instance in instances:
+            if instance.distributed_servers and instance.distributed_servers.ray_actors:
+                self._messages = [
+                    f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
+                ]
+                return False
+
+        return True
 
     async def _get_worker_vram_claim(
         self,

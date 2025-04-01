@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import col, or_
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
 from gpustack.api.exceptions import (
@@ -215,6 +216,9 @@ async def validate_gpu_ids(  # noqa: C901
                 message=f'vLLM backend is only supported on Linux, but the selected worker "{worker.name}" is running on {worker_os.capitalize()}.'
             )
 
+        if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
+            await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
+
     if model_backend == BackendEnum.VLLM:
         cfg = get_global_config()
         if len(worker_name_set) > 1 and not cfg.enable_ray:
@@ -228,6 +232,24 @@ async def validate_gpu_ids(  # noqa: C901
         if ts:
             raise BadRequestException(
                 message="Use tensor-split and gpu-selector at the same time is not allowed."
+            )
+
+
+async def validate_distributed_vllm_limit_per_worker(
+    session: AsyncSession, model: Union[ModelCreate, ModelUpdate], worker: Worker
+):
+    """
+    Validate that there is no more than one distributed vLLM instance per worker.
+    """
+    instances = await ModelInstance.all_by_field(session, "worker_id", worker.id)
+    for instance in instances:
+        if (
+            instance.distributed_servers
+            and instance.distributed_servers.ray_actors
+            and instance.model_name != model.name
+        ):
+            raise BadRequestException(
+                message=f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
             )
 
 

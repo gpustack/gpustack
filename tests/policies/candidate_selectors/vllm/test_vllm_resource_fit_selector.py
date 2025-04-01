@@ -77,6 +77,10 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
             return_value=[],
         ),
         patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
             'gpustack.policies.scorers.placement_scorer.get_model_instances',
             return_value=[],
         ),
@@ -149,6 +153,10 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
     with (
         patch(
             'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.get_worker_model_instances',
             return_value=[],
         ),
         patch(
@@ -228,6 +236,10 @@ async def test_manual_schedule_to_3_workers_4_gpus(
     with (
         patch(
             'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.get_worker_model_instances',
             return_value=[],
         ),
         patch(
