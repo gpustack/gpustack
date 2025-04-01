@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     tzdata \
     iproute2 \
+    tini \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/gpustack/dist/*.whl /dist/
@@ -32,4 +33,4 @@ RUN pip install /dist/*.whl && \
 
 RUN gpustack download-tools
 
-ENTRYPOINT [ "gpustack", "start" ]
+ENTRYPOINT [ "tini", "--", "gpustack", "start" ]

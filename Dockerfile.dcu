@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     tzdata \
     build-essential \
+    tini \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace/gpustack
@@ -26,4 +27,4 @@ RUN /root/.local/bin/gpustack download-tools
 
 RUN ln -s $(which vllm) /root/.local/share/pipx/venvs/gpustack/bin/vllm
 
-ENTRYPOINT [ "/root/.local/bin/gpustack", "start" ]
+ENTRYPOINT [ "tini", "--", "/root/.local/bin/gpustack", "start" ]

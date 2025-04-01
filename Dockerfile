@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace/gpustack
@@ -33,4 +34,4 @@ RUN if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
 
 RUN gpustack download-tools
 
-ENTRYPOINT [ "gpustack", "start" ]
+ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
