@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 import string
@@ -266,12 +267,12 @@ async def get_model_files_for_instance(
         model_file for model_file in model_files if model_file.worker_id in worker_ids
     ]
 
-    if instance.source == SourceEnum.LOCAL_PATH:
+    if instance.source == SourceEnum.LOCAL_PATH and instance.local_path:
         # If the source is local path, get the model files with the same local path.
         local_path_model_files = await ModelFile.all_by_fields(
             session,
             extra_conditions=[
-                col(ModelFile.resolved_paths).contains(instance.local_path)
+                col(ModelFile.resolved_paths).contains(json.dumps(instance.local_path))
             ],
         )
         local_path_model_files = [
