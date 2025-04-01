@@ -17,6 +17,10 @@ from gpustack.utils import platform
 logger = logging.getLogger(__name__)
 
 
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.128"
+BUILTIN_GGUF_PARSER_VERSION = "v0.13.20"
+
+
 class ToolsManager:
     """
     ToolsManager is responsible for managing prebuilt binary tools including the following:
@@ -60,9 +64,7 @@ class ToolsManager:
             "https://gpustack-1303613262.cos.ap-guangzhou.myqcloud.com",
         ]
 
-        test_path = (
-            "/gpustack/gguf-parser-go/releases/download/v0.13.6/gguf-parser-linux-amd64"
-        )
+        test_path = f"/gpustack/gguf-parser-go/releases/download/{BUILTIN_GGUF_PARSER_VERSION}/gguf-parser-linux-amd64"
         test_size = 512 * 1024  # 512KB
         download_tests = []
         for url in urls:
@@ -156,7 +158,7 @@ class ToolsManager:
             )
 
     def download_llama_box(self):
-        version = "v0.0.126"
+        version = BUILTIN_LLAMA_BOX_VERSION
         target_dir = self.third_party_bin_path / "llama-box"
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / file_name
@@ -408,7 +410,7 @@ class ToolsManager:
         return platform_name
 
     def download_gguf_parser(self):
-        version = "v0.13.20"
+        version = BUILTIN_GGUF_PARSER_VERSION
         gguf_parser_dir = self.third_party_bin_path.joinpath("gguf-parser")
         os.makedirs(gguf_parser_dir, exist_ok=True)
 

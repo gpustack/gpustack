@@ -39,11 +39,11 @@ truststore = "^0.9.1"
 cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = "^1.19.0"
-ray = {version = "2.40.0", extras = ["default"]}
-vllm = {version = "0.7.3", optional = true}
+ray = {version = "2.43.0", extras = ["default"]}
+vllm = {version = "0.8.2", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
-transformers = "^4.44.2"
+transformers = "^4.50.3"
 fastapi-cdn-host = "^0.8.0"
 wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
