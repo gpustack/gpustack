@@ -172,7 +172,7 @@ class Scheduler:
             except Exception as e:
                 try:
                     instance.state = ModelInstanceStateEnum.ERROR
-                    instance.state_message = f"Failed to evaluate model metadata: {e}"
+                    instance.state_message = str(e)
                     await instance.update(session)
                 except Exception as ue:
                     logger.error(
