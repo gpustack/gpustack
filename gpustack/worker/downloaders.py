@@ -4,7 +4,7 @@ import time
 import logging
 import os
 import re
-from filelock import FileLock
+from filelock import SoftFileLock
 import requests
 from typing import List, Optional, Tuple, Union
 from pathlib import Path
@@ -176,7 +176,7 @@ class HfDownloader:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
         logger.info(f"Retriving file lock: {lock_filename}")
-        with FileLock(lock_filename):
+        with SoftFileLock(lock_filename):
             if filename:
                 return cls.download_file(
                     repo_id=repo_id,
@@ -354,7 +354,7 @@ class OllamaLibraryDownloader:
         lock_filename = model_path + ".lock"
 
         logger.info(f"Retriving file lock: {lock_filename}")
-        with FileLock(lock_filename):
+        with SoftFileLock(lock_filename):
             if os.path.exists(model_path):
                 return [model_path]
 
@@ -624,7 +624,7 @@ class ModelScopeDownloader:
         lock_filename = os.path.join(cache_dir, group_or_owner, f"{name}.lock")
 
         logger.info("Retriving file lock")
-        with FileLock(lock_filename):
+        with SoftFileLock(lock_filename):
             if file_path:
                 matching_files = match_model_scope_file_paths(
                     model_id, file_path, extra_file_path
