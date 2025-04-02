@@ -646,6 +646,46 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: Deepseek V3 0324
+  description: DeepSeek-V3-0324 is an updated version of DeepSeek-V3. It features notable improvements over its predecessor in reasoning, front-end web development, Chinese writing, Chinese search, and function calling.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+  sizes:
+    - 671
+  licenses:
+    - mit
+  release_date: "2025-03-24"
+  templates:
+    - quantizations:
+        - UD-IQ1_M
+        - UD-IQ1_S
+        - Q2_K
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      source: huggingface
+      huggingface_repo_id: unsloth/DeepSeek-V3-0324-GGUF
+      huggingface_filename: "*-{quantization}-*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --no-context-shift
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["FP8"]
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/DeepSeek-V3-0324
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 - name: Deepseek R1
   description: DeepSeek's first-generation reasoning model that delivers superior performance in math, code, and reasoning tasks. It effectively overcomes reasoning challenges and achieves performance comparable to OpenAI-o1 across various benchmarks. This includes six dense models distilled from DeepSeek-R1 based on Llama and Qwen.
   home: https://www.deepseek.com
