@@ -1,4 +1,5 @@
 from gpustack.schemas.models import (
+    CategoryEnum,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -45,6 +46,7 @@ def new_model(
     )
     gpu_selector = kargs.get("gpu_selector", None)
     backend_parameters = kargs.get("backend_parameters")
+    categories = kargs.get("categories", [CategoryEnum.LLM])
 
     source = SourceEnum.OLLAMA_LIBRARY
     huggingface_filename = None
@@ -68,4 +70,5 @@ def new_model(
         distributed_inference_across_workers=distributed_inference_across_workers,
         gpu_selector=gpu_selector,
         backend_parameters=backend_parameters,
+        categories=categories,
     )
