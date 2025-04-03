@@ -1,7 +1,11 @@
 import asyncio
+import hashlib
+import json
 import logging
+import os
 from typing import List, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
+from cachetools import TTLCache
 
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate, Worker
@@ -29,6 +33,12 @@ from gpustack.utils.profiling import time_decorator
 
 logger = logging.getLogger(__name__)
 
+EVALUATION_CACHE_MAX_SIZE = int(
+    os.environ.get("GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE", 1000)
+)
+EVALUATION_CACHE_TTL = int(os.environ.get("GPUSTACK_MODEL_EVALUATION_CACHE_TTL", 3600))
+evaluate_cache = TTLCache(maxsize=EVALUATION_CACHE_MAX_SIZE, ttl=EVALUATION_CACHE_TTL)
+
 
 @time_decorator
 async def evaluate_models(
@@ -40,10 +50,64 @@ async def evaluate_models(
     workers = await Worker.all(session)
     async with asyncio.TaskGroup() as tg:
         tasks = {
-            tg.create_task(evaluate_model(config, model, workers)): model
+            tg.create_task(evaluate_model_with_cache(config, model, workers)): model
             for model in model_specs
         }
     return [task.result() for task in tasks]
+
+
+def make_hashable_key(model: ModelSpec, workers: List[Worker]) -> str:
+    key_data = json.dumps(
+        {
+            "model": model.model_dump(mode="json"),
+            "workers": [
+                w.model_dump(
+                    mode="json",
+                    exclude={
+                        "status": {
+                            "cpu": True,
+                            "swap": True,
+                            "filesystem": True,
+                            "os": True,
+                            "kernel": True,
+                            "uptime": True,
+                            "memory": {"utilization_rate", "used"},
+                            "gpu_devices": {
+                                "__all__": {
+                                    "temperature": True,
+                                    "core": {"utilization_rate"},
+                                    "memory": {"utilization_rate", "used"},
+                                },
+                            },
+                        },
+                        "heartbeat_time": True,
+                        "created_at": True,
+                        "updated_at": True,
+                    },
+                )
+                for w in workers
+            ],
+        },
+        sort_keys=True,
+    )
+    return hashlib.md5(key_data.encode()).hexdigest()
+
+
+async def evaluate_model_with_cache(
+    config: Config,
+    model: ModelSpec,
+    workers: List[Worker],
+) -> ModelEvaluationResult:
+    cache_key = make_hashable_key(model, workers)
+    if cache_key in evaluate_cache:
+        logger.trace(
+            f"Evaluation cache hit for model: {model.name or model.readable_source}"
+        )
+        return evaluate_cache[cache_key]
+
+    result = await evaluate_model(config, model, workers)
+    evaluate_cache[cache_key] = result
+    return result
 
 
 @time_decorator
