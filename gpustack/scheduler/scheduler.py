@@ -496,21 +496,34 @@ async def evaluate_pretrained_config(model: Model) -> bool:
         raise
 
     architectures = getattr(pretrained_config, "architectures", []) or []
+    if not architectures:
+        raise Exception("Unknown model architectures.")
+
     model_type = detect_model_type(architectures)
+
     if model_type == CategoryEnum.UNKNOWN:
         raise Exception(f"Model architectures {architectures} are not supported.")
-    elif model.categories:
+
+    return set_model_categories(model, model_type)
+
+
+def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
+    if model.categories:
         return False
-    elif model_type == CategoryEnum.EMBEDDING:
+
+    if model_type == CategoryEnum.EMBEDDING:
         model.categories = [CategoryEnum.EMBEDDING]
         model.embedding_only = True
+        return True
     elif model_type == CategoryEnum.RERANKER:
         model.categories = [CategoryEnum.RERANKER]
         model.reranker = True
+        return True
     elif model_type == CategoryEnum.LLM:
         model.categories = [CategoryEnum.LLM]
+        return True
 
-    return True
+    return False
 
 
 def detect_model_type(architectures: List[str]) -> CategoryEnum:
