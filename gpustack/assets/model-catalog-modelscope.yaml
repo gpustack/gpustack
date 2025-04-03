@@ -2025,7 +2025,7 @@
   templates:
     - quantizations: ["FP16"]
       source: model_scope
-      model_scope_model_id: iic/CosyVoice-300M
+      model_scope_model_id: gpustack/CosyVoice-300M
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M Instruct
@@ -2040,7 +2040,7 @@
   templates:
     - quantizations: ["FP16"]
       source: model_scope
-      model_scope_model_id: iic/CosyVoice-300M-Instruct
+      model_scope_model_id: gpustack/CosyVoice-300M-Instruct
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M SFT
