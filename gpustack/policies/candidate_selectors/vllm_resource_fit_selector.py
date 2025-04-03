@@ -14,6 +14,7 @@ from gpustack.policies.utils import (
     get_worker_model_instances,
 )
 from gpustack.schemas.models import (
+    CategoryEnum,
     ComputedResourceClaim,
     Model,
     RayActor,
@@ -52,7 +53,12 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
     """
     # CUDA graphs can take additional 1~3 GiB memory
     # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
-    cuda_graph_size = 2 * 1024**3
+    # For non-LLM models like embedding, set a smaller overhead
+    framework_overhead = (
+        2 * 1024**3
+        if not model.categories or CategoryEnum.LLM in model.categories
+        else 512 * 1024**2
+    )
     weight_size = 0
     timeout_in_seconds = 15
 
@@ -72,7 +78,8 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
     except Exception as e:
         logger.warning(f"Cannot get weight size for model {model.name}: {e}")
 
-    return weight_size * 1.2 + cuda_graph_size
+    # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
+    return weight_size * 1.2 + framework_overhead
 
 
 def get_model_num_attention_heads(model: Model) -> Optional[int]:
@@ -190,6 +197,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._vram_claim = 0
 
         self._gpu_memory_utilization = 0.9
+        if model.categories and CategoryEnum.LLM not in model.categories:
+            # gpu memory utilization is not used for non-LLM models
+            self._gpu_memory_utilization = 0
+
         gmu = find_parameter(model.backend_parameters, ["gpu-memory-utilization"])
         if gmu:
             self._gpu_memory_utilization = float(gmu)
@@ -213,13 +224,28 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         messages = [
             f"The model requires {self._gpu_memory_utilization * 100}%(--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
         ]
-        if self._largest_multi_gpu_vram > 0:
+        if self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization > 0:
             messages = [
                 f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
             ]
-        elif self._largest_single_gpu_vram > 0:
+        elif self._largest_single_gpu_vram > 0 and self._gpu_memory_utilization > 0:
             messages = [
                 f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM on a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM and {self._largest_single_gpu_vram_utilization * 100:.2f}% allocatable VRAM ratio."
+            ]
+        elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization == 0:
+            # Non-LLM models
+            messages = [
+                f"The model requires a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM."
+            ]
+        elif self._largest_single_gpu_vram > 0 and self._gpu_memory_utilization == 0:
+            # Non-LLM models
+            messages = [
+                f"The model requires a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM."
+            ]
+        elif self._gpu_memory_utilization == 0:
+            # Non-LLM models
+            messages = [
+                f"The model requires {byte_to_gib(self._vram_claim)} GiB VRAM in total."
             ]
 
         if self._cfg.enable_ray and self._model.distributed_inference_across_workers:
@@ -353,9 +379,17 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     continue
 
                 if (self._vram_claim > allocatable_vram) or (
-                    allocatable_gpu_memory_utilization < self._gpu_memory_utilization
+                    self._gpu_memory_utilization > 0
+                    and allocatable_gpu_memory_utilization
+                    < self._gpu_memory_utilization
                 ):
                     continue
+
+                vram_claim = (
+                    int(gpu.memory.total * self._gpu_memory_utilization)
+                    if self._gpu_memory_utilization > 0  # LLMs
+                    else int(self._vram_claim)  # non LLMs
+                )
 
                 candidates.append(
                     ModelInstanceScheduleCandidate(
@@ -363,9 +397,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                         gpu_indexes=[gpu_index],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={
-                                gpu_index: int(
-                                    gpu.memory.total * self._gpu_memory_utilization
-                                )
+                                gpu_index: vram_claim,
                             },
                         ),
                     )
@@ -452,12 +484,16 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if worker.name != selected_gpu_worker:
                 return []
 
-            vram_claim = {
-                gpu_index: int(
-                    allocatable.vram.get(gpu_index, 0) * self._gpu_memory_utilization
+            vram_claim = {}
+            for gpu_index in selected_gpu_indexes:
+                vram_claim[gpu_index] = (
+                    int(
+                        allocatable.vram.get(gpu_index, 0)
+                        * self._gpu_memory_utilization
+                    )
+                    if self._gpu_memory_utilization > 0  # LLMs
+                    else int(self._vram_claim / len(selected_gpu_indexes))  # non LLMs
                 )
-                for gpu_index in selected_gpu_indexes
-            }
 
             if sum(vram_claim.values()) < self._vram_claim:
                 return []
@@ -479,7 +515,11 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         found_candidate = False
         for _, gpu in enumerate(sorted_gpu_devices):
             gpu_indexes.append(gpu.index)
-            vram_claim[gpu.index] = int(gpu.memory.total * self._gpu_memory_utilization)
+            vram_claim[gpu.index] = (
+                int(gpu.memory.total * self._gpu_memory_utilization)
+                if self._gpu_memory_utilization > 0  # LLMs
+                else allocatable.vram.get(gpu.index, 0)  # non LLMs
+            )
             gpu_sum += 1
             vram_sum += vram_claim[gpu.index]
 
