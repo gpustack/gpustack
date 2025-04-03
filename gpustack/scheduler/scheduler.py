@@ -482,9 +482,18 @@ async def evaluate_audio_model(
 
 async def evaluate_pretrained_config(model: Model) -> bool:
 
-    pretrained_config = await run_in_thread(
-        get_pretrained_config, timeout=15, model=model
-    )
+    try:
+        pretrained_config = await run_in_thread(
+            get_pretrained_config, timeout=15, model=model
+        )
+    except Exception:
+        # Skip auto config exceptions and defaults to LLM catagory if using custom backend version.
+        # New model architectures may be added.
+        if model.backend_version:
+            if not model.categories:
+                model.categories = [CategoryEnum.LLM]
+            return True
+        raise
 
     architectures = getattr(pretrained_config, "architectures", []) or []
     model_type = detect_model_type(architectures)

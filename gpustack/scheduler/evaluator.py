@@ -4,10 +4,14 @@ from typing import List, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import Config
-from gpustack.policies.base import Worker
+from gpustack.policies.base import ModelInstanceScheduleCandidate, Worker
 from gpustack.scheduler import scheduler
 from gpustack.server.catalog import model_set_specs_by_key
-from gpustack.schemas.model_evaluations import ModelEvaluationResult, ModelSpec
+from gpustack.schemas.model_evaluations import (
+    ModelEvaluationResult,
+    ModelSpec,
+    ResourceClaim,
+)
 
 from gpustack.schemas.models import (
     BackendEnum,
@@ -79,8 +83,43 @@ async def evaluate_model(
             "Unable to find a schedulable worker for the model."
         )
         result.scheduling_messages = schedule_messages
+    else:
+        result.resource_claim = summarize_candidate_resource_claim(candidate)
 
     return result
+
+
+def summarize_candidate_resource_claim(
+    candidate: ModelInstanceScheduleCandidate,
+) -> ResourceClaim:
+    """
+    Summarize the computed resource claim for a schedule candidate.
+    """
+    computed_resource_claims = [candidate.computed_resource_claim]
+
+    if candidate.rpc_servers:
+        computed_resource_claims.extend(
+            rpc.computed_resource_claim
+            for rpc in candidate.rpc_servers
+            if rpc.computed_resource_claim is not None
+        )
+
+    if candidate.ray_actors:
+        computed_resource_claims.extend(
+            actor.computed_resource_claim
+            for actor in candidate.ray_actors
+            if actor.computed_resource_claim is not None
+        )
+
+    ram, vram = 0, 0
+    for computed_resource_claim in computed_resource_claims:
+        ram += computed_resource_claim.ram or 0
+        if computed_resource_claim.vram:
+            vram += sum(
+                v for v in computed_resource_claim.vram.values() if v is not None
+            )
+
+    return ResourceClaim(ram=ram, vram=vram)
 
 
 def make_compatibility_messages_user_friendly(messages: List[str]) -> List[str]:
