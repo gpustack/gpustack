@@ -92,10 +92,6 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     Returns:
         int: The size of the model weights
     """
-    if model.env and model.env['GPUSTACK_MODEL_WEIGHT_SIZE']:
-        # Use as a potential workaround if the model weight size is not expected.
-        return int(model.env['GPUSTACK_MODEL_WEIGHT_SIZE'])
-
     weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
     if model.source == SourceEnum.HUGGING_FACE:
         api = HfApi(token=token)

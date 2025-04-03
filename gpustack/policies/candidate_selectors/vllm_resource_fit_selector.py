@@ -51,6 +51,10 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
     - 72B requires 164.5 GiB
 
     """
+    if model.env and model.env['GPUSTACK_MODEL_VRAM_CLAIM']:
+        # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
+        return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
+
     # CUDA graphs can take additional 1~3 GiB memory
     # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
     # For non-LLM models like embedding, set a smaller overhead
