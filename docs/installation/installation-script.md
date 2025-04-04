@@ -6,8 +6,8 @@ You can use the installation script available at `https://get.gpustack.ai` to in
 
 You can set additional environment variables and CLI flags when running the script. The following are examples running the installation script with different configurations:
 
-```shell
-# Run server.
+```bash
+# Run server with the built-in worker.
 curl -sfL https://get.gpustack.ai | sh -s -
 
 # Run server with non-default port.
@@ -16,7 +16,7 @@ curl -sfL https://get.gpustack.ai | sh -s - --port 8080
 # Run server with a custom data path.
 curl -sfL https://get.gpustack.ai | sh -s - --data-dir /data/gpustack-data
 
-# Run server without the embedded worker.
+# Run server without the built-in worker.
 curl -sfL https://get.gpustack.ai | sh -s - --disable-worker
 
 # Run server with TLS.
@@ -28,14 +28,14 @@ curl -sfL https://get.gpustack.ai | sh -s - --database-url "postgresql://usernam
 # Run worker with specified IP.
 curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken --worker-ip 192.168.1.100
 
-# Install with a custom index URL.
+# Install with a custom PyPI mirror.
 curl -sfL https://get.gpustack.ai | INSTALL_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple sh -s -
 
 # Install a custom wheel package other than releases form pypi.org.
 curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=https://repo.mycompany.com/my-gpustack.whl sh -s -
 
 # Install a specific version with extra audio dependencies.
-curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=gpustack[audio]==0.4.0 sh -s -
+curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=gpustack[audio]==0.6.0 sh -s -
 ```
 
 ## Windows
@@ -45,7 +45,7 @@ You can use the installation script available at `https://get.gpustack.ai` to in
 You can set additional environment variables and CLI flags when running the script. The following are examples running the installation script with different configurations:
 
 ```powershell
-# Run server.
+# Run server with the built-in worker.
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 
 # Run server with non-default port.
@@ -54,7 +54,7 @@ Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseB
 # Run server with a custom data path.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --data-dir 'D:\gpustack-data'"
 
-# Run server without the embedded worker.
+# Run server without the built-in worker.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --disable-worker"
 
 # Run server with TLS.
@@ -69,7 +69,7 @@ Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseB
 # Run worker with customize reserved resource.
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url 'http://myserver' --token 'mytoken' --system-reserved '{""ram"":5, ""vram"":5}'"
 
-# Install with a custom index URL.
+# Install with a custom PyPI mirror.
 $env:INSTALL_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 
@@ -78,7 +78,7 @@ $env:INSTALL_PACKAGE_SPEC = "https://repo.mycompany.com/my-gpustack.whl"
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 
 # Install a specific version with extra audio dependencies.
-$env:INSTALL_PACKAGE_SPEC = "gpustack[audio]==0.4.0"
+$env:INSTALL_PACKAGE_SPEC = "gpustack[audio]==0.6.0"
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
 
@@ -89,7 +89,7 @@ Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicPar
 ## Available Environment Variables for the Installation Script
 
 | Name                              | Default                              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-|-----------------------------------|--------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| --------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INSTALL_INDEX_URL`               | (empty)                              | Base URL of the Python Package Index.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `INSTALL_PACKAGE_SPEC`            | `gpustack[all]` or `gpustack[audio]` | The package spec to install. The install script will automatically decide based on the platform. It supports PYPI package names, URLs, and local paths. See the [pip install documentation](https://pip.pypa.io/en/stable/cli/pip_install/#pip-install) for details. <ul><li>`gpustack[all]`: With all inference backends: llama-box, vllm, vox-box.</li><li>`gpustack[vllm]`: With inference backends: llama-box, vllm.</li><li>`gpustack[audio]`: With inference backends: llama-box, vox-box.</li></ul> |
 | `INSTALL_SKIP_POST_CHECK`         | (empty)                              | If set to 1, the installation script will skip the post-installation check.                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -106,7 +106,7 @@ You can set environment variables for the GPUStack service in an environment fil
 
 The following is an example of the content of the file:
 
-```shell
+```bash
 HF_TOKEN="mytoken"
 HF_ENDPOINT="https://my-hf-endpoint"
 ```
@@ -118,37 +118,3 @@ HF_ENDPOINT="https://my-hf-endpoint"
 ## Available CLI Flags
 
 The appended CLI flags of the installation script are passed directly as flags for the `gpustack start` command. You can refer to the [CLI Reference](../cli-reference/start.md) for details.
-
-## Install Server
-
-To set up the GPUStack server (the management node), install GPUStack without the `--server-url` flag. By default, the GPUStack server includes an embedded worker. To disable this embedded worker on the server, use the `--disable-worker` flag.
-
-## Install Worker
-
-To form a cluster, you can add GPUStack workers on additional nodes. Install GPUStack with the `--server-url` flag to specify the server' address and the `--token` flag for worker authenticate.
-
-Examples are as follows:
-
-### Linux or macOS
-
-```shell
-curl -sfL https://get.gpustack.ai | sh -s - --server-url http://myserver --token mytoken
-```
-
-In the default setup, you can run the following on the server node to get the token used for adding workers:
-
-```shell
-cat /var/lib/gpustack/token
-```
-
-### Windows
-
-```powershell
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url http://myserver --token mytoken"
-```
-
-In the default setup, you can run the following on the server node to get the token used for adding workers:
-
-```powershell
-Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
-```

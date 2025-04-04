@@ -30,7 +30,7 @@ GPUStack has been tested and verified to work on the following operating systems
 
 !!! note
 
-    The installation of GPUStack worker on a Linux system requires that the GLIBC version be 2.29 or higher. If your system uses a lower GLIBC version, consider using the [Docker Installation](./docker-installation.md) method as an alternative.
+    The installation of GPUStack worker on a Linux system requires that the GLIBC version be 2.29 or higher. If your system uses a lower GLIBC version, consider using the `Docker Installation` method as an alternative.
 
     Use the following command to check the GLIBC version:
 
@@ -49,12 +49,12 @@ GPUStack supports both **AMD64** and **ARM64** architectures, with the following
 
 GPUStack supports the following accelerators:
 
-- [x] Apple Metal (M-series chips)
 - [x] NVIDIA CUDA ([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
-- [x] Ascend CANN
-- [x] Moore Threads MUSA
+- [x] Apple Metal (M-series chips)
 - [x] AMD ROCm
+- [x] Ascend CANN
 - [x] Hygon DTK
+- [x] Moore Threads MUSA
 
 Ensure all necessary drivers and libraries are installed on the system prior to installing GPUStack.
 
@@ -62,36 +62,38 @@ Ensure all necessary drivers and libraries are installed on the system prior to 
 
 To use NVIDIA CUDA as an accelerator, ensure the following components are installed:
 
-- [NVIDIA CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit) (Including CUDA Runtime, cuBLAS, NVIDIA driver)
-- [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) (Optional, required for audio models)
-- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit) (Optional, required for docker installation)
-
-### Ascend CANN
-
-For Ascend CANN as an accelerator, ensure the following components are installed:
-
-- [Ascend NPU driver & firmware](https://www.hiascend.com/en/hardware/firmware-drivers/community)
-- [Ascend CANN Toolkit & kernels](https://www.hiascend.com/zh/developer/download/community/result?module=cann)
-
-### MUSA
-
-To use Moore Threads MUSA as an accelerator, ensure the following components are installed:
-
-- [MUSA SDK](https://developer.mthreads.com/sdk/download/musa)
-- [MT Container Toolkits](https://developer.mthreads.com/sdk/download/CloudNative)(Optional, required for docker installation)
+- [NVIDIA Driver](https://www.nvidia.com/en-us/drivers/)
+- [NVIDIA CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit) (Optional, required for non-Docker installations)
+- [NVIDIA cuDNN 9](https://developer.nvidia.com/cudnn) (Optional, required for audio models when not using Docker)
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit) (Optional, required for Docker installation)
 
 ### AMD ROCm
 
 To use AMD ROCm as an accelerator, ensure the following components are installed:
 
-- [ROCm](https://rocm.docs.amd.com/en/docs-6.1.0/)
+- [ROCm](https://rocm.docs.amd.com/en/docs-6.2.4/)
+
+### Ascend CANN
+
+For Ascend CANN as an accelerator, ensure the following components are installed:
+
+- [Ascend NPU Driver & Firmware](https://www.hiascend.com/hardware/firmware-drivers/community)
+- [Ascend CANN Toolkit & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.0.beta1) (Optional, required for non-Docker installations)
+- [Ascend Docker Runtime](https://gitee.com/ascend/ascend-docker-runtime/releases) (Optional, required for Docker installation)
 
 ### Hygon DTK
 
 To use Hygon DTK as an accelerator, ensure the following components are installed:
 
-- [Driver](https://developer.sourcefind.cn/tool/)
-- [DTK](https://developer.sourcefind.cn/tool/)
+- [DCU Driver](https://developer.sourcefind.cn/tool/)
+- [DCU Toolkit](https://developer.sourcefind.cn/tool/)
+
+### Moore Threads MUSA
+
+To use Moore Threads MUSA as an accelerator, ensure the following components are installed:
+
+- [MUSA SDK](https://developer.mthreads.com/sdk/download/musa)
+- [MT Container Toolkits](https://developer.mthreads.com/sdk/download/CloudNative) (Optional, required for docker installation)
 
 ## Networking Requirements
 
