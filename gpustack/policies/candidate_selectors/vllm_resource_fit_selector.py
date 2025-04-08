@@ -560,7 +560,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if self._selected_gpu_workers:
             return await self.manual_select_multi_worker_multi_gpu_candidates(workers)
 
-        return await self.auto_select_multi_worker_multi_gpu_candidates(workers)
+        if self._model.distributed_inference_across_workers:
+            return await self.auto_select_multi_worker_multi_gpu_candidates(workers)
+
+        return []
 
     async def auto_select_multi_worker_multi_gpu_candidates(
         self, workers: List[Worker]
