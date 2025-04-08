@@ -164,6 +164,11 @@ check_root() {
 detect_os() {
   if [ "$(uname)" = "Darwin" ]; then
     OS="macos"
+  # macos version must greater than 14.
+  MACOS_VERSION=$(sw_vers -productVersion)
+  if version_compare "$MACOS_VERSION" "lt" "14.0"; then
+    fatal "Your macOS version $MACOS_VERSION is lower than the required 14.0. Please upgrade to macOS 14.0 or higher."
+  fi
   elif [ -f /etc/os-release ]; then
     # shellcheck disable=SC1091
     . /etc/os-release
@@ -173,11 +178,67 @@ detect_os() {
   fi
 }
 
+# Function to compare version strings.
+# Usage: version_compare_sort version1 operator version2
+# Operators: eq, ne, lt, le, gt, ge
+# Returns 0 (true) if condition met, 1 (false) otherwise
+version_compare() {
+  v1=$1
+  op=$2
+  v2=$3
+
+  if [ "$v1" = "$v2" ]; then
+    case $op in
+      eq|le|ge) return 0 ;; # True if equal
+      ne|lt|gt) return 1 ;; # False if equal
+      *) warn "Invalid operator '$op'"; return 1 ;;
+    esac
+  fi
+
+  # Use sort -V to determine order for non-equal versions
+  sorted_first=$(printf "%s\n%s\n" "$v1" "$v2" | sort -V | head -n 1)
+
+  result=1 # Default to false
+  case $op in
+    eq) result=1 ;;
+    ne) result=0 ;;
+    lt) [ "$sorted_first" = "$v1" ] && result=0 ;;
+    le) [ "$sorted_first" = "$v1" ] && result=0 ;;
+    gt) [ "$sorted_first" = "$v2" ] && result=0 ;;
+    ge) [ "$sorted_first" = "$v2" ] && result=0 ;;
+    *) warn "Invalid operator '$op'"; return 1 ;;
+  esac
+
+  return $result
+}
+
 # Function to detect the OS and package manager
 detect_device() {
   if check_command "nvidia-smi"; then
-    if ! check_command "nvcc" && ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
-      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+    # Get CUDA version from nvidia-smi
+    NVIDIA_SMI_CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | sed 's/.*CUDA Version: \([0-9.]*\).*/\1/')
+    if [ -n "$NVIDIA_SMI_CUDA_VERSION" ]; then
+      if version_compare "$NVIDIA_SMI_CUDA_VERSION" "lt" "12.4"; then
+        fatal "Your NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION is lower than the required 12.4. Please update your NVIDIA driver to support CUDA 12.4 or higher."
+      else
+        info "NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION detected."
+      fi
+    else
+      fatal "Can not detect supported CUDA version from nvidia-smi. Please install NVIDIA driver that supports CUDA 12.4 or higher."
+    fi
+
+    # Check nvcc version if available
+    if check_command "nvcc"; then
+      NVCC_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $6}' | cut -c2-)
+      if [ -n "$NVCC_CUDA_VERSION" ]; then
+        if version_compare "$NVCC_CUDA_VERSION" "lt" "12.4"; then
+          warn "CUDA Toolkit version $NVCC_CUDA_VERSION is less than 12.4. Please upgrading to CUDA 12.4 or higher."
+        else
+          info "CUDA Toolkit version $NVCC_CUDA_VERSION detected."
+        fi
+      fi
+    elif ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
+      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA 12.4 or higher."
     fi
     DEVICE="cuda"
     # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.

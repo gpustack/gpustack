@@ -65,10 +65,88 @@ function Check-OS {
     }
 }
 
+# Function to compare version strings
+# Usage: Compare-Version -Ver1 "1.2.3" -Ver2 "1.2.4" -Op "lt"
+# Operators: eq (equal), ne (not equal), lt (less than), le (less than or equal),
+#           gt (greater than), ge (greater than or equal)
+# Returns: $true if condition is met, $false otherwise
+function Compare-Version {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Ver1,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Ver2,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("eq", "ne", "lt", "le", "gt", "ge")]
+        [string]$Op
+    )
+
+    try {
+        # Convert version strings to [version] objects for proper comparison
+        $v1 = [version]$Ver1
+        $v2 = [version]$Ver2
+
+        # Handle equality cases first
+        if ($v1 -eq $v2) {
+            return $Op -in @("eq", "le", "ge")
+        }
+
+        # Handle other cases
+        switch ($Op) {
+            "eq" { return $false }
+            "ne" { return $true }
+            "lt" { return $v1 -lt $v2 }
+            "le" { return $v1 -le $v2 }
+            "gt" { return $v1 -gt $v2 }
+            "ge" { return $v1 -ge $v2 }
+            default {
+                Log-Warn "Invalid operator '$Op'"
+                return $false
+            }
+        }
+    }
+    catch {
+        Log-Warn "Version comparison failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Check-CUDA {
+    # First check if NVIDIA GPU exists (via nvidia-smi)
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        # If GPU exists but CUDA is not installed (via nvcc), prompt for installation
         if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) {
-            throw "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+            throw "NVIDIA GPU detected but CUDA is not installed. Please install CUDA 12.4 or higher."
+        }
+
+        # Check nvidia-smi CUDA version
+        $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($nvidiaSmi) {
+            try {
+                $cudaVersion = (nvidia-smi | Select-String "CUDA Version").Line -replace '.*CUDA Version: ([0-9.]*)',''
+                if (Compare-Version -Ver1 $cudaVersion -Ver2 "12.4" -Op "lt") {
+                    throw "Current NVIDIA driver version ($cudaVersion) is too low. Please upgrade to a driver that supports CUDA 12.4 or higher."
+                }
+            }
+            catch {
+                throw "Failed to get NVIDIA driver version: $($_.Exception.Message)"
+            }
+        }
+
+        # Check nvcc CUDA version
+        $nvcc = Get-Command nvcc -ErrorAction SilentlyContinue
+        if ($nvcc) {
+            try {
+                $nvccVersion = (nvcc --version).Split(" ")[2]
+                if (Compare-Version -Ver1 $nvccVersion -Ver2 "12.4" -Op "lt") {
+                    throw "Current CUDA version ($nvccVersion) is too low. Please upgrade to CUDA 12.4 or higher."
+                }
+            }
+            catch {
+                throw "Failed to get CUDA version: $($_.Exception.Message)"
+            }
         }
     }
 }
