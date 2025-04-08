@@ -160,6 +160,17 @@ check_root() {
   fi
 }
 
+# Function to check if root user has set environment variables.
+check_root_env_vars() {
+  # check LD_LIBRARY_PATH
+  ROOT_LD_LIBRARY_PATH=$($SUDO sh -c "echo $LD_LIBRARY_PATH")
+  if [ -z "$ROOT_LD_LIBRARY_PATH" ]; then
+    fatal "LD_LIBRARY_PATH is not set for root user. This may cause issues with library loading."
+  else
+    info "Root user has LD_LIBRARY_PATH set to: $ROOT_LD_LIBRARY_PATH"
+  fi
+}
+
 # Function to detect the OS and package manager
 detect_os() {
   if [ "$(uname)" = "Darwin" ]; then
@@ -244,6 +255,26 @@ detect_device() {
     # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.
     if [ -f "/usr/lib/wsl/lib/nvidia-smi" ] && [ ! -e "/usr/local/bin/nvidia-smi" ]; then
       $SUDO ln -s /usr/lib/wsl/lib/nvidia-smi /usr/local/bin/nvidia-smi
+    fi
+  fi
+
+  if check_command "npu-smi"; then
+    # Only 910B1/910B2/910B3/910B4/310P1/310P3 supported.
+    npu_info=$(npu-smi info 2>/dev/null)
+    # This will handle multiple NPU devices that might have different names.
+    npu_names=$(echo "$npu_info" | grep -E '^\|\s+[0-9]+\s+[0-9]{3}[A-Z]?[0-9]?' | awk '{print $2}' | sort | uniq)
+    support=false
+    support_names="910B1 910B2 910B3 910B4 310P1 310P3"
+    for npu_name in $npu_names; do
+      if echo "$support_names" | grep -q "$npu_name"; then
+        support=true
+        break
+      fi
+    done
+    if [ "$support" = false ]; then
+      fatal "Your NPU model $npu_name is not supported. Only 910B1/910B2/910B3/910B4/310P1/310P3 are supported."
+    else
+      fatal "Docker installation is recommended for NPU. Please refer to https://docs.gpustack.ai/latest/tutorials/running-inference-with-ascend-npus for more details."
     fi
   fi
 
@@ -485,7 +516,7 @@ brew_install_with_version() {
   BREW_APP_VERSION="$2"
   BREW_APP_NAME_WITH_VERSION="$BREW_APP_NAME@$BREW_APP_VERSION"
   TAP_NAME="$USER/local-$BREW_APP_NAME-$BREW_APP_VERSION"
-  
+
   # Check current installed versions
   info "Checking installed versions of $BREW_APP_NAME."
   INSTALLED_VERSIONS=$(brew list --versions | grep "$BREW_APP_NAME" || true)
@@ -882,6 +913,7 @@ install_gpustack() {
   verify_system
   install_dependencies
   check_server_health "$@"
+  check_root_env_vars
   check_python_tools
   check_ports "$@"
   check_and_reset_wired_limit_mb "$@"

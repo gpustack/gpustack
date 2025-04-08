@@ -322,6 +322,70 @@ function Check-Server-Health {
     throw "Server at $serverUrl is not healthy after $RetryCount attempts. Last status - HTTP code: $httpCode, Result: $result"
 }
 
+# Function to check if a Visual C++ package is already installed.
+function Is-VCRedistInstalled {
+    param(
+        [string]$partialName
+    )
+    try {
+        # Check installation status using registry
+        $uninstallKeys = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        foreach ($key in $uninstallKeys) {
+            $installed = Get-ItemProperty $key | Where-Object { $_.DisplayName -like "*$partialName*" }
+            if ($null -ne $installed) {
+                return $true
+            }
+        }
+        return $false
+    } catch {
+        Log-Warn "Error checking installation status for ${partialName}: $_"
+        return $false
+    }
+}
+
+function Install-VCRedist {
+    # Define Visual C++ Runtime packages with Chocolatey package names
+    $vcRedistPackages = @(
+        @{
+            Name = "Visual C++ 2015-2022 Redistributable";
+            ChocoPackage = "vcredist140";
+            CheckName = "Microsoft Visual C++ 2015-2022 Redistributable"
+        }
+    )
+
+    Log-Info "Checking for Visual C++ 2015-2022 Redistributable..."
+
+    foreach ($package in $vcRedistPackages) {
+        Log-Info "Processing $($package.Name)..."
+
+        # Check if already installed
+        if (Is-VCRedistInstalled $package.CheckName) {
+            Log-Info "$($package.Name) is already installed. Skipping."
+            continue
+        }
+
+        # Install package using Chocolatey
+        try {
+            Log-Info "Installing $($package.Name) using Chocolatey..."
+            $process = Start-Process -FilePath "choco" `
+                -ArgumentList "install", $package.ChocoPackage, "-y" `
+                -Wait -PassThru -NoNewWindow `
+                -ErrorAction Stop
+
+            if ($process.ExitCode -eq 0) {
+                Refresh-ChocolateyProfile
+                Log-Info "$($package.Name) installation completed successfully."
+            } else {
+                Log-Warn "$($package.Name) installation completed with exit code: $($process.ExitCode)"
+            }
+        } catch {
+            Log-Warn "Failed to install $($package.Name): $_"
+        }
+    }
+}
 
 # Function to print completion message.
 function Print-Complete-Message {
@@ -959,6 +1023,7 @@ try {
     Install-Chocolatey
     Install-Python
     Install-NSSM
+    Install-VCRedist
     Install-GPUStack
     Create-UninstallScript
     $argResult = Get-Arg @args
