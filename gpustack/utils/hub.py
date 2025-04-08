@@ -14,6 +14,22 @@ from gpustack.schemas.models import Model, SourceEnum
 logger = logging.getLogger(__name__)
 
 
+# Ignore more than the default
+# https://github.com/modelscope/modelscope/blob/5a0d8b6523f336d3b055b3d16f3f9293021d9e69/modelscope/utils/hf_util/patcher.py#L18
+MODELSCOPE_CONFIG_IGNORE_FILE_PATTERN = [
+    # The default
+    r'\w+\.bin',
+    r'\w+\.safetensors',
+    r'\w+\.pth',
+    r'\w+\.pt',
+    r'\w+\.h5',
+    r'\w+\.ckpt',
+    # Additional
+    r'\w+\.zip',
+    r'\w+\.onnx',
+]
+
+
 def match_hugging_face_files(
     repo_id: str,
     filename: str,
@@ -143,6 +159,7 @@ def get_pretrained_config(model: Model, **kwargs):
         pretrained_config = AutoConfig.from_pretrained(
             model.model_scope_model_id,
             trust_remote_code=trust_remote_code,
+            ignore_file_pattern=MODELSCOPE_CONFIG_IGNORE_FILE_PATTERN,
         )
     elif model.source == SourceEnum.LOCAL_PATH:
         from transformers import AutoConfig

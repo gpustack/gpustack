@@ -37,7 +37,7 @@ pytest-asyncio = "^0.23.7"
 truststore = "^0.9.1"
 cryptography = "^43.0.0"
 tzdata = "^2024.1"
-modelscope = "^1.19.0"
+modelscope = ">=1.22.3,<1.23"
 ray = {version = "2.43.0", extras = ["default"]}
 vllm = {version = "0.8.2", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
