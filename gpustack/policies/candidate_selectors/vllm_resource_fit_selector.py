@@ -51,7 +51,7 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
     - 72B requires 164.5 GiB
 
     """
-    if model.env and model.env['GPUSTACK_MODEL_VRAM_CLAIM']:
+    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
         # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
         return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
 
