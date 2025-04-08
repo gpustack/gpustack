@@ -263,6 +263,66 @@ function Check-Port {
     }
 }
 
+# Function to check if the server is healthy.
+function Check-Server-Health {
+    param (
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ScriptArgs
+    )
+
+    [int]$RetryCount = 3
+    [int]$RetryInterval = 2
+
+    $serverUrl = Get-Arg-Value -ArgName "server-url" @ScriptArgs
+    if ([string]::IsNullOrEmpty($serverUrl)) {
+        $serverUrl = Get-Arg-Value -ArgName "s" @ScriptArgs # try short form
+    }
+
+    # Skip server health check if server-url is not set.
+    if ([string]::IsNullOrEmpty($serverUrl)) {
+        return
+    }
+
+    $result = "unknown"
+    $httpCode = "unknown"
+
+    $attemptCount = 1
+    while ($attemptCount -le $RetryCount) {
+        try {
+            $response = Invoke-WebRequest -Uri "$serverUrl/healthz" -Method Get -TimeoutSec 10 -ErrorAction Stop
+            $result = $response.Content
+
+            if ($result -eq '"ok"') {
+                Log-Info "Server at $serverUrl is healthy."
+                return
+            }
+
+            $httpCode = $response.StatusCode
+
+            Log-Warn "Server returned non-healthy status - HTTP code: $httpCode, Result: $result"
+        } catch {
+            $httpCode = if ($_.Exception.Response) {
+                [int]$_.Exception.Response.StatusCode
+            } else {
+                "connection failed"
+            }
+            $result = $_.Exception.Message
+            Log-Warn "Failed to connect to server $serverUrl - Error: $result"
+        }
+
+        if ($attemptCount -lt $RetryCount) {
+            $currentInterval =$RetryInterval * [Math]::Pow(2, $attemptCount - 1)
+            Log-Warn "Attempt ${attemptCount}: Failed to connect to ${serverUrl}. Retrying in ${currentInterval} seconds..."
+            Start-Sleep -Seconds $currentInterval
+        }
+
+        $attemptCount++
+    }
+
+    throw "Server at $serverUrl is not healthy after $RetryCount attempts. Last status - HTTP code: $httpCode, Result: $result"
+}
+
+
 # Function to print completion message.
 function Print-Complete-Message {
     param (
@@ -894,6 +954,7 @@ try {
     Check-AdminPrivilege
     Check-OS
     Check-CUDA
+    Check-Server-Health @args
     Check-Port @args
     Install-Chocolatey
     Install-Python

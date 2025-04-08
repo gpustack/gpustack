@@ -412,6 +412,73 @@ check_python_tools() {
   export PATH="$PIPX_BIN_DIR:$PATH"
 }
 
+# Function to calculate backoff.
+calculate_backoff() {
+    if [ $# -lt 2 ]; then
+        fatal "Usage: calculate_backoff <base_interval> <attempt_number> [max_wait_time]" >&2
+    fi
+
+    base_interval=$1
+    attempt=$2
+    max_wait=${3:-300} # default max wait time is 300 seconds.
+
+    # calculate 2 ^ (attempt - 1)
+    power=$(( attempt - 1 ))
+    result=$base_interval
+    i=1
+    while [ $i -le $power ]; do
+        result=$(( result * 2 ))
+        # if result is greater than max wait time, return max wait time.
+        if [ $result -gt "$max_wait" ]; then
+            echo "$max_wait"
+            return 0
+        fi
+        i=$(( i + 1 ))
+    done
+
+    echo "$result"
+    return 0
+}
+
+# Function to check if server is healthy for worker.
+check_server_health() {
+  server_url=$(get_param_value "server-url" "$@")
+  if [ -z "$server_url" ]; then
+      server_url=$(get_param_value "s" "$@") # try short form
+  fi
+
+  # Skip server health check if server-url is not set.
+  if [ -z "$server_url" ]; then
+    return 0
+  fi
+
+  base_interval=2
+  max_retries=3
+  max_wait=60
+  i=1
+
+  while [ $i -le $max_retries ]; do
+    response=$(curl -k --connect-timeout 5 --max-time 10 --write-out "\n%{http_code}" --silent "$server_url/healthz")
+
+    http_code=$(echo "$response" | tail -n1)
+    result=$(echo "$response" | sed '$d' | tr -d '"')
+    if [ "$result" = "ok" ]; then
+      info "Server at $server_url is healthy."
+      return 0
+    fi
+
+    if [ "$i" -lt $max_retries ]; then
+      wait_time=$(calculate_backoff "$base_interval" "$i" "$max_wait")
+      warn "Attempt $i: Failed to connect to $server_url. Retrying in $wait_time seconds..."
+      sleep "$wait_time"
+    fi
+    i=$((i+1))
+  done
+
+  fatal "Server at $server_url is not healthy, http code: $http_code, result: $result.\
+  Please check your server configuration."
+}
+
 # Function to install a specific version of a Homebrew application
 brew_install_with_version() {
   BREW_APP_NAME="$1"
@@ -814,6 +881,7 @@ install_gpustack() {
   detect_device
   verify_system
   install_dependencies
+  check_server_health "$@"
   check_python_tools
   check_ports "$@"
   check_and_reset_wired_limit_mb "$@"
