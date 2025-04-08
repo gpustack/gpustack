@@ -191,19 +191,15 @@ class ModelBase(SQLModel, ModelSource):
         elif backend == BackendEnum.VLLM:
             if self.cpu_offloading:
                 raise ValueError("CPU offloading is only supported for GGUF models")
-            if self.distributed_inference_across_workers:
-                raise ValueError(
-                    "Distributed inference accross workers is only supported for GGUF models"
-                )
         elif backend == BackendEnum.VOX_BOX:
             if self.distributed_inference_across_workers:
                 raise ValueError(
-                    "Distributed inference accross workers is only supported for GGUF models"
+                    "Distributed inference accross workers is not supported for the vox-box backend"
                 )
         elif backend == BackendEnum.ASCEND_MINDIE:
             if self.distributed_inference_across_workers:
                 raise ValueError(
-                    "Distributed inference accross workers is only supported for GGUF models"
+                    "Distributed inference accross workers is not supported for the ascend-mindie backend"
                 )
         return self
 
