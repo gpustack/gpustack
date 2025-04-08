@@ -1,9 +1,11 @@
+import argparse
+import dataclasses
 import json
 import logging
 import subprocess
 import sys
 import os
-from typing import Optional
+from typing import Optional, List
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.utils import envs
 from gpustack.worker.backends.base import InferenceServer
@@ -14,6 +16,212 @@ from gpustack.utils.hub import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class AscendMindIEParameters:
+    log_level: str = "Info"
+    max_seq_len: int = 8192
+    max_input_token_len: int = -1
+    cpu_mem_size: int = 5
+    npu_memory_fraction: float = 0.9
+    cache_block_size: int = 128
+    max_prefill_batch_size: int = 50
+    prefill_time_ms_per_req: int = 150
+    prefill_policy_type: int = 0
+    max_batch_size: int = 200  # FIXME: Calculate this
+    decode_time_ms_per_req: int = 50
+    decode_policy_type: int = 0
+    max_preempt_count: int = 0
+    support_select_batch: bool = False
+    max_queue_delay_microseconds: int = 5000
+    enable_prefix_caching: bool = False
+    metrics: bool = False
+    enforce_eager: bool = False
+    trust_remote_code: bool = False
+
+    def from_args(self, args: List[str]):
+        parser = argparse.ArgumentParser(exit_on_error=False)
+        parser.add_argument(
+            "--log-level",
+            type=str,
+            default="Info",
+            choices=['Verbose', 'Info', 'Warning', 'Warn', 'Error', 'Debug'],
+            help="Log level for MindIE.",
+        )
+        parser.add_argument(
+            "--max-seq-len",
+            type=int,
+            default=self.max_seq_len,
+            help="Model context length. "
+            "If unspecified, will be automatically derived from the model config.",
+        )
+        parser.add_argument(
+            "--max-input-token-len",
+            type=int,
+            default=self.max_input_token_len,
+            help="Max input token length. "
+            "If unspecified, will be automatically derived from `--max-seq-len`.",
+        )
+        parser.add_argument(
+            "--cpu-mem-size",
+            type=int,
+            default=self.cpu_mem_size,
+            help="CPU swap space size (GiB). "
+            f"If unspecified, will use the default value of {self.cpu_mem_size}.",
+        )
+        parser.add_argument(
+            "--npu-memory-fraction",
+            type=float,
+            default=self.npu_memory_fraction,
+            help="The fraction of NPU memory to be used for the model executor, which can range from 0 to 1 (included). "
+            "For example, a value of 0.5 would imply 50% GPU memory utilization. "
+            f"If unspecified, will use the default value of {self.npu_memory_fraction}.",
+        )
+        parser.add_argument(
+            "--cache-block-size",
+            type=int,
+            default=self.cache_block_size,
+            help="KV cache block size, which must be powers of 2. "
+            f"If unspecified, will use the default value of {self.cache_block_size}.",
+        )
+        parser.add_argument(
+            "--max-prefill-batch-size",
+            type=int,
+            default=self.max_prefill_batch_size,
+            help="During prefilling stage, the maximum requests can be batched, which must be less than --max-batch-size.",
+        )
+        parser.add_argument(
+            "--prefill-time-ms-per-req",
+            type=int,
+            default=self.prefill_time_ms_per_req,
+            help="Compare with --decode-time-ms-per-req to select prefilling or decoding, "
+            "works with --support-select-batch.",
+        )
+        parser.add_argument(
+            "--prefill-policy-type",
+            type=int,
+            choices=[0, 1, 2, 3],
+            default=self.prefill_policy_type,
+            help="Strategy of prefilling stage. "
+            "0: FCFS, first come first serving, "
+            "1: STATE, same as FCFS, "
+            "2: PRIORITY, priority queue, "
+            "3: MLFQ, multi-levels feedback queue.",
+        )
+        parser.add_argument(
+            "--max-batch-size",
+            type=int,
+            default=self.max_batch_size,
+            help="During decoding stage, the maximum requests can be batched.",
+        )
+        parser.add_argument(
+            "--decode-time-ms-per-req",
+            type=int,
+            default=self.decode_time_ms_per_req,
+            help="Compare with --prefill-time-ms-per-req to select prefilling or decoding, "
+            "works with --support-select-batch.",
+        )
+        parser.add_argument(
+            "--decode-policy-type",
+            type=int,
+            choices=[0, 1, 2, 3],
+            default=self.decode_policy_type,
+            help="Strategy of decoding stage. "
+            "0: FCFS, first come first serving, "
+            "1: STATE, process those requests have been preempted or swapped at first, "
+            "2: PRIORITY, priority queue, "
+            "3: MLFQ, multi-levels feedback queue.",
+        )
+        parser.add_argument(
+            "--max-preempt-count",
+            type=int,
+            default=self.max_preempt_count,
+            help="Maximum preempt requests during decoding stage, which must be less than --max-batch-size.",
+        )
+        parser.add_argument(
+            "--support-select-batch",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable batch selecting. According to --prefill",
+        )
+        parser.add_argument(
+            "--max-queue-delay-microseconds",
+            type=int,
+            help="Maximum microseconds of queue waiting.",
+        )
+        parser.add_argument(
+            "--enable-prefix-caching",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable prefix caching. "
+            "Use `--no-enable-prefix-caching` to disable explicitly.",
+        )
+        parser.add_argument(
+            "--metrics",
+            action='store_true',
+            help="Expose metrics in /metrics router.",
+        )
+        parser.add_argument(
+            "--enforce-eager",
+            action='store_true',
+            help="Emit operators in eager mode.",
+        )
+        parser.add_argument(
+            "--trust-remote-code",
+            action='store_true',
+            help="Trust remote code.",
+        )
+
+        args_parsed = parser.parse_known_args(args=args)
+        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+            if attr_value := getattr(args_parsed[0], attr_name):
+                setattr(self, attr_name, attr_value)
+
+        self._default()
+        self._validate()
+
+    def _default(self):
+        if self.max_input_token_len <= 0:
+            self.max_input_token_len = self.max_seq_len - 1
+
+    def _validate(self):  # noqa: max-complexity=13
+        if self.max_seq_len <= 0:
+            raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
+        if self.max_input_token_len > self.max_seq_len:
+            raise argparse.ArgumentTypeError(
+                "--max-input-token-len must be less than --max-seq-len"
+            )
+        if not (0 < self.npu_memory_fraction < 1):
+            raise argparse.ArgumentTypeError(
+                "--npu-memory-fraction must be range of (0, 1]"
+            )
+        if self.cache_block_size & (self.cache_block_size - 1) != 0:
+            raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
+        if not (1 <= self.max_batch_size <= 5000):
+            raise argparse.ArgumentTypeError(
+                "--max-batch-size must be range of [1, 5000]"
+            )
+        if not (0 <= self.max_preempt_count <= self.max_batch_size):
+            raise argparse.ArgumentTypeError(
+                "--max-preempt-count must be range of [0, --max-batch-size]"
+            )
+        if not (1 <= self.max_prefill_batch_size <= self.max_batch_size):
+            raise argparse.ArgumentTypeError(
+                "--max-prefill-batch-size must be range of [1, --max-batch-size]"
+            )
+        if not (0 <= self.prefill_time_ms_per_req <= 1000):
+            raise argparse.ArgumentTypeError(
+                "--prefill-time-ms-per-req must be range of [0, 1000]"
+            )
+        if not (0 <= self.decode_time_ms_per_req <= 1000):
+            raise argparse.ArgumentTypeError(
+                "--decode-time-ms-per-req must be range of [0, 1000]"
+            )
+        if not (500 <= self.max_queue_delay_microseconds <= 1000000):
+            raise argparse.ArgumentTypeError(
+                "--max-queue-delay-microseconds must be range of [500, 1000000]"
+            )
 
 
 class AscendMindIEServer(InferenceServer):
@@ -34,127 +242,269 @@ class AscendMindIEServer(InferenceServer):
         )
         install_path = root_path.joinpath("mindie", version, "mindie-service")
 
-        # Load envs and configuration
+        # Load config,
+        # the config includes two parts: environment variables and a JSON configuration file.
         logger.info("Loading Ascend MindIE config")
+
+        # - Load environment variables,
+        #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0416.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0300.html.
         env = self.get_inference_running_env(version=version)
-        with open(
-            install_path.joinpath("conf", "config.json"), "r", encoding="utf-8"
-        ) as f:
-            config = json.load(f)
+
+        # - Initialize JSON configuration, picks partial items from Ascend MindIE document,
+        #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0004.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0285.html.
+        config = {
+            "Version": "1.0.0",
+            "LogConfig": {
+                "logLevel": "Info",  # Mutate below, customizable
+                "logFileSize": 0,
+                "logFileNum": 0,
+                "logPath": "logs/mindservice.log",
+            },
+            "ServerConfig": {
+                "ipAddress": "0.0.0.0",
+                "port": 1025,  # Mutate below
+                "managementPort": 1026,  # Mutate below
+                "metricsPort": 1027,  # Mutate below
+                "allowAllZeroIpListening": True,
+                "maxLinkNum": 1000,
+                "httpsEnabled": False,
+                "fullTextEnabled": False,
+                "inferMode": "standard",
+                "openAiSupport": "vllm",
+                "interCommTLSEnabled": False,
+            },
+            "BackendConfig": {
+                "backendName": "mindieservice_llm_engine",
+                "modelInstanceNumber": 1,
+                "npuDeviceIds": [[0, 1, 2, 3]],  # Mutate below
+                "tokenizerProcessNumber": 8,
+                "multiNodesInferEnabled": False,
+                "interNodeTLSEnabled": False,
+                "ModelDeployConfig": {
+                    "maxSeqLen": 2560,  # Mutate below, customizable
+                    "maxInputTokenLen": 2048,  # Mutate below, customizable
+                    "truncation": False,
+                    "ModelConfig": [
+                        {
+                            "modelInstanceType": "Standard",
+                            "modelName": "llama_65b",  # Mutate below
+                            "modelWeightPath": "/home/data/Meta-Llama-3-8B/",  # Mutate below
+                            "worldSize": 4,  # Mutate below
+                            "cpuMemSize": 5,  # Mutate below, customizable
+                            "npuMemSize": -1,  # Mutate below, customizable
+                            "backendType": "atb",
+                            "trustRemoteCode": False,
+                            # "plugin_params": "" # Mutate below, customizable
+                        }
+                    ],
+                },
+                "ScheduleConfig": {
+                    "templateType": "Standard",
+                    "templateName": "Standard_LLM",
+                    "cacheBlockSize": 128,  # Mutate below, customizable
+                    "maxIterTimes": 512,  # Mutate below
+                    "maxPrefillBatchSize": 50,  # Mutate below, customizable
+                    "maxPrefillTokens": 8192,  # Mutate below, customizable
+                    "prefillTimeMsPerReq": 150,  # Mutate below, customizable
+                    "prefillPolicyType": 0,  # Mutate below, customizable
+                    "decodeTimeMsPerReq": 50,  # Mutate below, customizable
+                    "decodePolicyType": 0,  # Mutate below, customizable
+                    "maxBatchSize": 200,  # Mutate below, customizable
+                    "maxPreemptCount": 0,  # Mutate below, customizable
+                    "supportSelectBatch": False,  # Mutate below, customizable
+                    "maxQueueDelayMicroseconds": 5000,  # Mutate below, customizable
+                    "enablePrefixCache": False,  # Mutate below, customizable
+                },
+            },
+        }
+        log_config = config["LogConfig"]
         server_config = config["ServerConfig"]
         backend_config = config["BackendConfig"]
         model_deploy_config = backend_config["ModelDeployConfig"]
         model_config = model_deploy_config["ModelConfig"][0]
         schedule_config = backend_config["ScheduleConfig"]
 
-        # Mutate envs and configuration
+        # Mutate config
         logger.info("Mutating Ascend MindIE config")
 
-        # - Pin installation path, which helps to locate other resources.
+        # - Global config
+        # -- Pin installation path, which helps to locate other resources.
         env["MIES_INSTALL_PATH"] = str(install_path)
+        # -- Disable exposing metrics.
+        env["MIES_SERVICE_MONITOR_MODE"] = "0"
+        # -- Enable high performance swapper.
+        env["MIES_USE_MB_SWAPPER"] = "1"
+        env["MIES_RECOMPUTE_THRESHOLD"] = "0.5"
+        env["MINDIE_LLM_USE_MB_SWAPPER"] = "1"
+        env["MINDIE_LLM_RECOMPUTE_THRESHOLD"] = "0.5"
+        # -- Enforce continues batching.
+        env["MINDIE_LLM_CONTINUOUS_BATCHING"] = "1"
+        # -- Disable checking files permission.
+        env["MINDIE_CHECK_INPUTFILES_PERMISSION"] = "0"
+        # -- Enforce using ATB as backend
+        env["MINDIE_LLM_FRAMEWORK_BACKEND"] = "ATB"
+        # -- Asynchronous ATB execution
+        env["ATB_OPERATION_EXECUTE_ASYNC"] = "1"
+        # -- Asynchronous operators emitting
+        env["TASK_QUEUE_ENABLE"] = "1"
+        # -- Enforce using 90% of GPU memory
+        env["NPU_MEMORY_FRACTION"] = "0.9"
+        # -- Pop conflict configuration items.
+        env.pop("RANKTABLEFILE", "")  # TODO need for host-across deployment.
+        env.pop("NPU_VISIBLE_DEVICES", "")
+        env.pop("NPU-VISIBLE-DEVICES", "")
+        env.pop("NPU_DEVICE_IDS", "")
+        env.pop("ASCEND_RT_VISIBLE_DEVICES", "")
+        env.pop("MIES_CONTAINER_IP", "")
+        env.pop("MIES_CONTAINER_MANAGEMENT_IP", "")
 
-        # - Logging configuration
-        # -- Ascend MindIE Service
-        config["logLevel"] = "Info"
+        # - Logging config
+        # -- Ascend MindIE
         env["MINDIE_LOG_LEVEL"] = "INFO"
         env["MINDIE_LOG_TO_STDOUT"] = "1"
         env["MINDIE_LOG_TO_FILE"] = "0"
+        # -- Ascend MindIE Service
+        env["MIES_CERTS_LOG_LEVEL"] = "INFO"
+        env["MIES_CERTS_LOG_TO_STDOUT"] = "1"
+        env["MIES_CERTS_LOG_TO_FILE"] = "0"
+        # -- Ascend MindIE LLM
         env["MINDIE_LLM_LOG_LEVEL"] = "WARN"
         env["MINDIE_LLM_LOG_TO_STDOUT"] = "1"
         env["MINDIE_LLM_LOG_TO_FILE"] = "0"
         env["MINDIE_LLM_PYTHON_LOG_LEVEL"] = "WARN"
         env["MINDIE_LLM_PYTHON_LOG_TO_STDOUT"] = "1"
         env["MINDIE_LLM_PYTHON_LOG_TO_FILE"] = "0"
-        # -- scend MindIE Runtime
+        # -- Ascend MindIE Runtime
         env["ASCEND_GLOBAL_LOG_LEVEL"] = "3"  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
+        env["ASCEND_SLOG_LEVEL"] = "WARN"
         env["ASCEND_SLOG_PRINT_TO_STDOUT"] = "1"
         env["ASCEND_SLOG_PRINT_TO_FILE"] = "0"
+        env["MINDIE_RT_LOG_LEVEL"] = "3"  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
+        env["MINDIE_RT_LOG_PRINT_TO_STDOUT"] = "1"
+        env["MINDIE_RT_LOG_PRINT_TO_FILE"] = "0"
         # -- Ascend MindIE ATB
         env["ATB_LOG_LEVEL"] = "ERROR"
         env["ATB_LOG_TO_STDOUT"] = "1"
         env["ATB_LOG_TO_FILE"] = "0"
+        env["LOG_LEVEL"] = "ERROR"
+        env["LOG_TO_STDOUT"] = "1"
+        env["LOG_TO_FILE"] = "0"
         # -- Ascend MindIE Model
         env["ASDOPS_LOG_LEVEL"] = "ERROR"
         env["ASDOPS_LOG_TO_STDOUT"] = "1"
         env["ASDOPS_LOG_TO_FILE"] = "0"
+        env["ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE"] = "0"
         # -- Ascend MindIE OCK
         env["OCK_LOG_LEVEL"] = "ERROR"
         env["OCK_LOG_TO_STDOUT"] = "1"
         env["OCK_LOG_TO_FILE"] = "0"
+        # -- Ascend MindIE Torch
+        env["TORCH_AIE_LOG_LEVEL"] = "3"  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
+        env["TORCH_AIE_PRINT_TO_STDOUT"] = "1"
+        env["TORCH_AIE_PRINT_TO_FILE"] = "0"
 
-        # - Listening configuration
-        server_config["ipAddress"] = "0.0.0.0"
-        server_config["allowAllZeroIpListening"] = True
+        # - Listening config
         server_config["port"] = self._model_instance.port
-        server_config["httpsEnabled"] = False
+        server_config["managementPort"] = self._model_instance.port
+        server_config["metricsPort"] = self._model_instance.port
 
-        # - Device configuration
-        env.pop("ASCEND_RT_VISIBLE_DEVICES")
+        # - Device config
         backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
-        backend_config["multiNodesInferEnabled"] = False
-        backend_config["multiNodesInferEnabled"] = False
         model_config["worldSize"] = len(self._model_instance.gpu_indexes)
 
-        # - Model configuration
-        model_deploy_config["truncation"] = True
-        if max_model_len := self._get_model_max_seq_len():
-            model_deploy_config["maxSeqLen"] = max_model_len
-            model_deploy_config["maxInputTokenLen"] = max_model_len
-            schedule_config["maxPrefillTokens"] = max_model_len
+        # - Model config
+        max_seq_len = self._get_model_max_seq_len()
+        model_deploy_config["maxSeqLen"] = max_seq_len
+        model_deploy_config["maxInputTokenLen"] = max_seq_len - 1
+        schedule_config["maxIterTimes"] = max_seq_len
+        schedule_config["maxPrefillTokens"] = max_seq_len
         model_config["modelName"] = self._model.name
         model_config["modelWeightPath"] = self._model_path
-        model_config["trustRemoteCode"] = True
 
-        # Generate configuration file by model instance id
+        # - Customize config, translate to Ascend MindIE configuration language,
+        #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0285.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0302.html,
+        #       ttps://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0300.html.
+        if self._model.backend_parameters:
+            logger.debug(
+                f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
+            )
+            params = AscendMindIEParameters(max_seq_len=max_seq_len)
+            try:
+                params.from_args(self._model.backend_parameters)
+            except Exception as e:
+                logger.error(f"Failed to parse parameters: {e}")
+                raise e
+
+            # -- Set log level.
+            log_config["logLevel"] = params.log_level
+            env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
+            # -- Set context size.
+            model_deploy_config["maxSeqLen"] = params.max_seq_len
+            model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
+            schedule_config["maxIterTimes"] = params.max_seq_len
+            schedule_config["maxPrefillTokens"] = params.max_seq_len
+            model_config["cpuMemSize"] = params.cpu_mem_size
+            # -- Set NPU memory fraction.
+            env["NPU_MEMORY_FRACTION"] = str(params.npu_memory_fraction)
+            schedule_config["cacheBlockSize"] = params.cache_block_size
+            # -- Set prefix cache.
+            if params.enable_prefix_caching:
+                schedule_config["enablePrefixCache"] = True
+                model_config["plugin_params"] = json.dumps(
+                    {
+                        "plugin_type": "prefix_cache",
+                    }
+                )
+            # -- Set exposing metrics.
+            env["MIES_SERVICE_MONITOR_MODE"] = "1" if params.metrics else "0"
+            # -- Set emitting operators in synchronous way.
+            env["TASK_QUEUE_ENABLE"] = "0" if params.enforce_eager else "1"
+            # -- Set trust remote code or not.
+            model_config["trustRemoteCode"] = params.trust_remote_code
+
+        # Generate JSON configuration file by model instance id
         config_path = install_path.joinpath(
             "conf", f"config-{self._model_instance.id}.json"
         )
         logger.info(f"Writing Ascend MindIE config to {config_path}")
+        config_str = json.dumps(config, indent=4, ensure_ascii=False)
         with open(
             config_path,
             "w",
             encoding="utf-8",
         ) as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
+            f.write(config_str)
 
-        # Run
+        # Start, configure environment variable to indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
-        ascend_mindie_service_path = root_path.joinpath(
-            "mindie", version, "mindie-service"
-        )
-        ascend_mindie_service_bin_path = ascend_mindie_service_path.joinpath(
-            "bin", "mindieservice_daemon"
-        )
+        service_path = root_path.joinpath("mindie", version, "mindie-service")
+        service_bin_path = service_path.joinpath("bin", "mindieservice_daemon")
 
         try:
-            debugging = logger.isEnabledFor(logging.DEBUG)
-
-            if debugging:
-                envs_view = env
-            else:
-                envs_view = self._model.env
+            logger.info(f"Starting Ascend MindIE: {service_bin_path}")
+            env_view = env if logger.isEnabledFor(logging.DEBUG) else self._model.env
             logger.info(
-                f"Starting Ascend MindIE: {ascend_mindie_service_bin_path}, "
-                f"with envs: {os.linesep}{os.linesep.join(f'  {key}={value}' for key, value in sorted(envs_view.items()))}"
+                f"  With environment variables: {os.linesep}{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
             )
+            logger.info(f"  With JSON configuration: {os.linesep}{config_str}")
 
-            # Fork
+            # Fork, inject environment variables and set working directory.
             proc = subprocess.Popen(
-                [str(ascend_mindie_service_bin_path)],
+                [str(service_bin_path)],
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
-                cwd=ascend_mindie_service_path,
+                cwd=service_path,
             )
             exit_code = proc.wait()
-
-            # Remove configuration file
-            if not debugging:
-                config_path.unlink(missing_ok=True)
 
             self.exit_with_code(exit_code)
 
         except Exception as e:
+            # Handle exceptions and update model instance state
             error_message = f"Failed to run Ascend MindIE: {e}"
             logger.error(error_message)
             try:
@@ -167,6 +517,10 @@ class AscendMindIEServer(InferenceServer):
                 logger.error(f"Failed to update model instance state: {ue}")
 
             raise e
+
+        finally:
+            # Finally, remove JSON configuration file.
+            config_path.unlink(missing_ok=True)
 
     def _get_model_max_seq_len(self) -> Optional[int]:
         """Get the maximum sequence length of the model."""

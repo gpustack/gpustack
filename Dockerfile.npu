@@ -17,7 +17,7 @@ ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update -y && apt-get install -y software-properties-common \
+RUN apt-get update -y && apt-get install -y software-properties-common apt-transport-https \
       && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
       && add-apt-repository -y ppa:deadsnakes/ppa \
       && apt-get update -y
@@ -31,7 +31,7 @@ RUN <<EOF
 
     # Install
     apt-get update && apt-get install -y --no-install-recommends \
-        apt-transport-https ca-certificates build-essential binutils bash openssl \
+        ca-certificates build-essential binutils bash openssl \
         unzip xz-utils \
         git git-lfs \
         curl wget aria2 \
@@ -171,7 +171,7 @@ RUN <<EOF
     TOOLKIT_FILE="Ascend-cann-toolkit_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
     TOOLKIT_PATH="/tmp/${TOOLKIT_FILE}"
     TOOLKIT_URL="${URL_PREFIX}/${TOOLKIT_FILE}?${URL_SUFFIX}"
-    curl -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
     chmod a+x "${TOOLKIT_PATH}"
     printf "Y\n" | "${TOOLKIT_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
     
@@ -196,13 +196,13 @@ RUN <<EOF
 
     # Install kernels
     KERNELS_FILE="Ascend-cann-kernels-${CANN_CHIP}_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
-    if ! curl -fsSIL "${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}" >/dev/null 2>&1; then
+    if ! curl -H 'Referer: https://www.hiascend.com/' -fsSIL "${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}" >/dev/null 2>&1; then
         # Fallback to generic kernels
         KERNELS_FILE="Ascend-cann-kernels-${CANN_CHIP}_${DOWNLOAD_VERSION}_${OS}.run"
     fi
     KERNELS_PATH="/tmp/${KERNELS_FILE}"
     KERNELS_URL="${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}"
-    curl -fL -o "${KERNELS_PATH}" "${KERNELS_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' -fL -o "${KERNELS_PATH}" "${KERNELS_URL}"
     chmod a+x "${KERNELS_PATH}"
     printf "Y\n" |"${KERNELS_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
 
@@ -229,7 +229,7 @@ RUN <<EOF
     NNAL_FILE="Ascend-cann-nnal_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
     NNAL_PATH="/tmp/${NNAL_FILE}"
     NNAL_URL="${URL_PREFIX}/${NNAL_FILE}?${URL_SUFFIX}"
-    curl -fL -o "${NNAL_PATH}" "${NNAL_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' -fL -o "${NNAL_PATH}" "${NNAL_URL}"
     chmod a+x "${NNAL_PATH}"
     printf "Y\n" | "${NNAL_PATH}" --install --install-path="${CANN_HOME}"
 
@@ -294,7 +294,7 @@ RUN <<EOF
     MINDIE_FILE="Ascend-mindie_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
     MINDIE_PATH="/tmp/${MINDIE_FILE}"
     MINDIE_URL="${URL_PREFIX}/${MINDIE_FILE}?${URL_SUFFIX}"
-    curl -fL -o "${MINDIE_PATH}" "${MINDIE_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' -fL -o "${MINDIE_PATH}" "${MINDIE_URL}"
     chmod a+x "${MINDIE_PATH}"
     printf "Y\n" | "${MINDIE_PATH}" --install --install-path="${CANN_HOME}"
     chmod +w "${CANN_HOME}/mindie/latest/mindie-service/conf"

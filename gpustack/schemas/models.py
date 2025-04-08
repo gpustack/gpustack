@@ -208,12 +208,14 @@ class ModelBase(ModelSpecBase):
         elif backend == BackendEnum.VOX_BOX:
             if self.distributed_inference_across_workers:
                 raise ValueError(
-                    "Distributed inference accross workers is not supported for the vox-box backend"
+                    "Distributed inference across workers is not supported for the vox-box backend"
                 )
         elif backend == BackendEnum.ASCEND_MINDIE:
+            if self.cpu_offloading:
+                raise ValueError("CPU offloading is only supported for GGUF models")
             if self.distributed_inference_across_workers:
                 raise ValueError(
-                    "Distributed inference accross workers is not supported for the ascend-mindie backend"
+                    "Distributed inference across workers is not supported for the ascend-mindie backend"
                 )
         return self
 
