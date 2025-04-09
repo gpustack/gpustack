@@ -164,7 +164,9 @@ class Scheduler:
                         self._config, model
                     )
                 else:
-                    should_update_model = await evaluate_pretrained_config(model)
+                    should_update_model = await evaluate_pretrained_config(
+                        model, raise_raw=True
+                    )
 
                 if should_update_model:
                     await ModelService(session).update(model)
@@ -465,7 +467,7 @@ async def evaluate_audio_model(
 
     supported = model_dict.get("supported", False)
     if not supported:
-        raise Exception("Not a supported audio model.")
+        raise Exception("Not a supported model.")
 
     should_update = False
     task_type = model_dict.get("task_type")
@@ -481,20 +483,36 @@ async def evaluate_audio_model(
     return should_update
 
 
-async def evaluate_pretrained_config(model: Model) -> bool:
-
+async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> bool:
+    """
+    evaluate the model's pretrained config to determine its type.
+    Args:
+        model: Model to evaluate.
+        raise_raw: If True, raise the raw exception.
+    Returns:
+        True if the model's categories are updated, False otherwise.
+    """
     try:
         pretrained_config = await run_in_thread(
-            get_pretrained_config, timeout=15, model=model
+            get_pretrained_config, timeout=30, model=model
         )
-    except Exception:
-        # Skip auto config exceptions and defaults to LLM catagory if using custom backend version.
+    except ValueError:
+        # Skip value error exceptions and defaults to LLM catagory if using custom backend version.
         # New model architectures may be added.
         if model.backend_version:
-            if not model.categories:
-                model.categories = [CategoryEnum.LLM]
+            model.categories = model.categories or [CategoryEnum.LLM]
             return True
-        raise
+        if raise_raw:
+            raise
+        raise Exception("Not a supported model.")
+    except TimeoutError:
+        raise Exception(
+            f"Timeout while getting config for model {model.name or model.readable_source}."
+        )
+    except Exception as e:
+        raise Exception(
+            f"Failed to get config for model {model.name or model.readable_source}: {e}"
+        )
 
     architectures = getattr(pretrained_config, "architectures", []) or []
     if not architectures:
