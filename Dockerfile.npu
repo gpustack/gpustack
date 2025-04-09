@@ -2,7 +2,6 @@
 # torch-npu has the mapping requirements for the CANN version,
 # please check https://www.hiascend.com/document/detail/zh/Pytorch/600/configandinstg/instg/insg_0001.html for details.
 
-ARG PYTHON_VERSION=3.10
 ARG CANN_VERSION=8.0.0.beta1
 ARG CANN_CHIP=910b
 ARG TORCH_VERSION=2.1.0
@@ -27,8 +26,8 @@ RUN apt-get update -y && apt-get install -y software-properties-common \
 # Install tools
 #
 
-RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
-    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+RUN <<EOF
+    # Tools
 
     # Install
     apt-get update && apt-get install -y --no-install-recommends \
@@ -43,11 +42,13 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
 
     # Cleanup
     rm -rf /var/tmp/* \
-        && rm -rf /tmp/*
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
 
     # Set locale
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 EOF
+
 ENV LANG='en_US.UTF-8' \
     LANGUAGE='en_US:en' \
     LC_ALL='en_US.UTF-8'
@@ -56,8 +57,8 @@ ENV LANG='en_US.UTF-8' \
 # Install GCC
 #
 
-RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
-    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+RUN <<EOF
+    # GCC
 
     # Install
     apt-get install -y --no-install-recommends \
@@ -78,58 +79,58 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
 
     # Cleanup
     rm -rf /var/tmp/* \
-        && rm -rf /tmp/*
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
 EOF
 
 #
-# Install CMake/Make/CCache
+# Install CMake/Make/SCCache
 #
 
-ENV CMAKE_VERSION=3.22.1
-RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
-    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+RUN <<EOF
+    # CMake/Make/SCCache
 
     # Install
     apt-get install -y --no-install-recommends \
-        pkg-config make ccache
-
-    curl -sL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-$(uname -m).tar.gz" | tar -zx -C /usr --strip-components 1
+        pkg-config make
+    curl -sL "https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-linux-$(uname -m).tar.gz" | tar -zx -C /usr --strip-components 1
+    curl -sL "https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-$(uname -m)-unknown-linux-musl.tar.gz" | tar -zx -C /usr/bin --strip-components 1
 
     # Cleanup
     rm -rf /var/tmp/* \
-        && rm -rf /tmp/*
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
 EOF
 
 #
 # Install Python
 #
 
-ARG PYTHON_VERSION
-
-RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
-    --mount=type=cache,target=/var/cache/apt,sharing=private \
-    --mount=type=cache,target=/root/.cache,sharing=private <<EOF
+RUN <<EOF
+    # Python
 
     # Install
     apt-get install -y --no-install-recommends \
-        python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-distutils python${PYTHON_VERSION}-venv
+        python3.10 python3.10-dev python3.10-distutils python3.10-venv
 
     # Update alternatives
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python${PYTHON_VERSION}
-    if [ -f /etc/alternatives/python ]; then update-alternatives --remove-all python; fi; update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 10
-    if [ -f /etc/alternatives/python3 ]; then update-alternatives --remove-all python3; fi; update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 10
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
+    if [ -f /etc/alternatives/python ]; then update-alternatives --remove-all python; fi; update-alternatives --install /usr/bin/python python /usr/bin/python3.10 10
+    if [ -f /etc/alternatives/python3 ]; then update-alternatives --remove-all python3; fi; update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10
 
     # Cleanup
     rm -rf /var/tmp/* \
-        && rm -rf /tmp/*
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
+        && pip cache purge
 EOF
 
 #
 # Install Dependencies
 #
 
-RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
-    --mount=type=cache,target=/var/cache/apt,sharing=private <<EOF
+RUN <<EOF
+    # Dependencies
 
     # Install
     apt-get install -y --no-install-recommends \
@@ -139,7 +140,8 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=private \
 
     # Cleanup
     rm -rf /var/tmp/* \
-        && rm -rf /tmp/*
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
 EOF
 
 #
@@ -153,7 +155,9 @@ ENV CANN_VERSION=${CANN_VERSION} \
     CANN_CHIP=${CANN_CHIP} \
     CANN_HOME="/usr/local/Ascend"
 
-RUN --mount=type=cache,target=/root/.cache,sharing=private <<EOF
+RUN <<EOF
+    # CANN Toolkit
+
     OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH="$(uname -m)"
     DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
@@ -170,12 +174,17 @@ RUN --mount=type=cache,target=/root/.cache,sharing=private <<EOF
     curl -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
     chmod a+x "${TOOLKIT_PATH}"
     printf "Y\n" | "${TOOLKIT_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
-    rm -f "${TOOLKIT_PATH}"
-    rm -rf /var/log/ascend
-    rm -rf /var/log/ascend_seclog
+    
+    # Cleanup
+    rm -f "${TOOLKIT_PATH}" \
+        && rm -rf /var/log/ascend \
+        && rm -rf /var/log/ascend_seclog \
+        && pip cache purge
 EOF
 
 RUN <<EOF
+    # CANN Kernels
+
     OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH="$(uname -m)"
     DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
@@ -198,12 +207,15 @@ RUN <<EOF
     printf "Y\n" |"${KERNELS_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
 
     # Cleanup
-    rm -f "${KERNELS_PATH}"
-    rm -rf /var/log/ascend
-    rm -rf /var/log/ascend_seclog
+    rm -f "${KERNELS_PATH}" \
+        && rm -rf /var/log/ascend \
+        && rm -rf /var/log/ascend_seclog \
+        && pip cache purge
 EOF
 
 RUN <<EOF
+    # CANN NNAL
+
     OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH="$(uname -m)"
     DOWNLOAD_VERSION="$(echo ${CANN_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
@@ -222,14 +234,24 @@ RUN <<EOF
     printf "Y\n" | "${NNAL_PATH}" --install --install-path="${CANN_HOME}"
 
     # Cleanup
-    rm -f "${NNAL_PATH}"
-    rm -rf /var/log/ascend_seclog
-    rm -rf /var/log/cann_atb_log
+    rm -f "${NNAL_PATH}" \
+        && rm -rf /var/log/ascend_seclog \
+        && rm -rf /var/log/cann_atb_log \
+        && pip cache purge
 EOF
 
-COPY --from=thxcode/mindie:1.0.0-800I-A2-py311-openeuler24.03-lts --link=true --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
+COPY --from=thxcode/mindie:1.0.0-800I-A2-py311-openeuler24.03-lts --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
 RUN <<EOF
+    # ATB Models
+
+    # Install
     pip install ${CANN_HOME}/atb-models/*.whl
+
+    # Cleanup
+    rm -f "${NNAL_PATH}" \
+        && rm -rf /var/log/ascend_seclog \
+        && rm -rf /var/log/cann_atb_log \
+        && pip cache purge
 EOF
 
 #
@@ -241,6 +263,8 @@ ARG TORCH_NPU_VERSION
 ARG MINDIE_VERSION
 
 RUN <<EOF
+    # MindIE
+
     OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH="$(uname -m)"
     DOWNLOAD_VERSION="$(echo ${MINDIE_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
@@ -276,17 +300,17 @@ RUN <<EOF
     chmod +w "${CANN_HOME}/mindie/latest/mindie-service/conf"
 
     # Cleanup
-    rm -f "${MINDIE_PATH}"
-    rm -rf /var/log/mindie_log
-    rm -rf ~/log
+    rm -f "${MINDIE_PATH}" \
+        && rm -rf /var/log/mindie_log \
+        && rm -rf ~/log \
+        && pip cache purge
 EOF
 
 #
 # Install GPUStack
 #
 
-RUN --mount=type=cache,target=/root/.cache,sharing=private \
-    --mount=type=bind,target=/workspace/gpustack,rw <<EOF
+RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Build
     cd /workspace/gpustack && \
         make build
@@ -305,6 +329,10 @@ RUN --mount=type=cache,target=/root/.cache,sharing=private \
     # Set up environment
     mkdir -p /var/lib/gpustack && \
         chmod -R 0755 /var/lib/gpustack
+
+    # Cleanup
+    rm -rf /workspace/gpustack/dist \
+        && pip cache purge
 EOF
 
 #
