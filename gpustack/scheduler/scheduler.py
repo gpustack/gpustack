@@ -51,6 +51,7 @@ from gpustack.scheduler.calculator import (
     calculate_model_resource_claim,
 )
 from gpustack.server.services import ModelInstanceService, ModelService
+from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_pretrained_config
 from gpustack.utils.task import run_in_thread
@@ -497,11 +498,11 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
             get_pretrained_config, timeout=30, model=model
         )
     except ValueError as e:
-        # Skip value error exceptions and defaults to LLM catagory if using custom backend version.
-        # New model architectures may be added.
-        if model.backend_version:
+        # Skip value error exceptions and defaults to LLM catagory for certain cases.
+        if should_skip_architecture_check(model):
             model.categories = model.categories or [CategoryEnum.LLM]
             return True
+
         if raise_raw:
             raise
 
@@ -528,6 +529,28 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         raise Exception(f"Model architectures {architectures} are not supported.")
 
     return set_model_categories(model, model_type)
+
+
+def should_skip_architecture_check(model: Model) -> bool:
+    """
+    Check if the model should skip architecture check.
+    Args:
+        model: Model to check.
+    Returns:
+        True if the model should skip architecture check, False otherwise.
+    """
+
+    if model.backend_version:
+        # New model architectures may be added with custom backend version.
+        return True
+
+    if model.backend_parameters and find_parameter(
+        model.backend_parameters, ["tokenizer-mode"]
+    ):
+        # Models like Pixtral may not provide compatible config but still work with custom parameters.
+        return True
+
+    return False
 
 
 def simplify_auto_config_value_error(e: ValueError) -> Exception:
