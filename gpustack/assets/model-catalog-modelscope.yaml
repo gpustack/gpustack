@@ -1175,11 +1175,10 @@
   templates:
     - quantizations: ["BF16"]
       source: model_scope
-      model_scope_model_id: AI-ModelScope/Pixtral-12B-2409
+      model_scope_model_id: unsloth/Pixtral-12B-2409
       replicas: 1
       backend: vllm
       backend_parameters:
-        - --tokenizer-mode=mistral
         - --limit-mm-per-prompt=image=4
 - name: Phi3.5 Vision
   description: Phi-3.5-vision is a lightweight, state-of-the-art open multimodal model built upon datasets which include - synthetic data and filtered publicly available websites - with a focus on very high-quality, reasoning dense data both on text and vision. The model belongs to the Phi-3 model family, and the multimodal version comes with 128K context length (in tokens) it can support. The model underwent a rigorous enhancement process, incorporating both supervised fine-tuning and direct preference optimization to ensure precise instruction adherence and robust safety measures.
@@ -1222,6 +1221,8 @@
       model_scope_model_id: OpenGVLab/InternVL2_5-{size}B-MPO
       replicas: 1
       backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 # Embedding models
 - name: BGE M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
