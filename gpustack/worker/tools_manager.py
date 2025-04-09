@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_LLAMA_BOX_VERSION = "v0.0.129"
 BUILTIN_GGUF_PARSER_VERSION = "v0.13.20"
+BUILTIN_RAY_VERSION = "2.43.0"
 
 
 class ToolsManager:
@@ -249,9 +250,18 @@ class ToolsManager:
                 f"Auto-installation for versioned vLLM is only supported on CUDA devices. Please install vLLM manually and link it to {target_path}."
             )
 
-        self.install_versioned_package_by_pipx("vllm", version)
+        self.install_versioned_package_by_pipx(
+            "vllm",
+            version,
+            extra_packages=[
+                "gpustack",  # To apply Ray patch for dist vLLM
+                f"ray=={BUILTIN_RAY_VERSION}",  # To avoid version conflict with Ray cluster
+            ],
+        )
 
-    def install_versioned_package_by_pipx(self, package: str, version: str):
+    def install_versioned_package_by_pipx(
+        self, package: str, version: str, extra_packages: Optional[list] = None
+    ):
         """
         Install a versioned package using pipx.
 
@@ -293,7 +303,7 @@ class ToolsManager:
 
         try:
             logger.info(f"Installing {package} {version} using pipx")
-            subprocess.run(install_command, check=True, text=True)
+            subprocess.run(install_command, capture_output=True, check=True, text=True)
 
             installed_bin_path = pipx_bin_path / f"{package}{suffix}"
             if not installed_bin_path.exists():
@@ -305,15 +315,34 @@ class ToolsManager:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.symlink_to(installed_bin_path)
 
-            print(
+            if extra_packages:
+                for extra_package in extra_packages:
+                    self._pipx_inject_package(
+                        pipx_path, f"{package}{suffix}", extra_package
+                    )
+
+            logger.info(
                 f"{package} {version} successfully installed and linked to {target_path}"
             )
-        except subprocess.CalledProcessError as e:
-            raise Exception(
-                f"Failed to install {package} {version} using pipx: {e}"
-            ) from e
         except Exception as e:
-            raise Exception(f"An error occurred: {e}") from e
+            raise Exception(f"Failed to install {package} {version} using pipx: {e}")
+
+    def _pipx_inject_package(self, pipx_path: str, env_name: str, package: str):
+        """
+        Use `pipx inject` to add a package to an existing pipx environment.
+        """
+        try:
+            logger.info(f"Injecting {package} into pipx environment '{env_name}'")
+            subprocess.run(
+                [pipx_path, "inject", env_name, package, "--force"],
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to inject {package} into pipx environment '{env_name}': {e}"
+            )
 
     def _get_pipx_bin_dir(self, pipx_path: str) -> Path:
         """
