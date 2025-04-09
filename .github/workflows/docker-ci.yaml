@@ -85,10 +85,6 @@ jobs:
             tag_suffix: "-dcu"
             build_args: []
 
-    env:
-      PACKAGE_REGISTRY: ${{ vars.PACKAGE_REGISTRY || 'gpustack'}}
-      PACKAGE_IMAGE: ${{ vars.PACKAGE_IMAGE || 'gpustack' }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,7 +113,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.PACKAGE_REGISTRY }}/${{ env.PACKAGE_IMAGE }}
+          images: gpustack/gpustack
           tags: |
             type=pep440,pattern={{raw}}
             type=pep440,pattern=v{{major}}.{{minor}}
@@ -142,6 +138,6 @@ jobs:
           build-args: |
             ${{ matrix.build_args }}
           cache-from: |
-            type=registry,ref=${{ env.PACKAGE_REGISTRY }}/build-cache:${{ env.PACKAGE_IMAGE }}{{ matrix.tag_suffix }}
+            type=registry,ref=gpustack/build-cache:gpustack${{ matrix.tag_suffix }}
           cache-to: |
-            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,oci-mediatypes=false,compression=gzip,ref={0}/build-cache:{1}{2},ignore-error=true', env.PACKAGE_REGISTRY, env.PACKAGE_IMAGE, matrix.tag_suffix) || '' }}
+            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,oci-mediatypes=false,compression=gzip,ref=gpustack/build-cache:gpustack{0},ignore-error=true', matrix.tag_suffix) || '' }}
