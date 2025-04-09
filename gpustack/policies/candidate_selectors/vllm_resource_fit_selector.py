@@ -469,7 +469,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 gpu_list.append(gpu)
 
         if total_allocatable_vram > self._largest_multi_gpu_total:
-            self._largest_multi_gpu_total = total_allocatable_vram
+            self._largest_multi_gpu_vram = total_allocatable_vram
             self._largest_multi_gpu_utilization_satisfied_count = satisfied_gpu_count
             self._largest_multi_gpu_total = len(worker.status.gpu_devices)
 
