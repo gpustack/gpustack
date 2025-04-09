@@ -496,7 +496,7 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         pretrained_config = await run_in_thread(
             get_pretrained_config, timeout=30, model=model
         )
-    except ValueError:
+    except ValueError as e:
         # Skip value error exceptions and defaults to LLM catagory if using custom backend version.
         # New model architectures may be added.
         if model.backend_version:
@@ -504,7 +504,11 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
             return True
         if raise_raw:
             raise
-        raise Exception("Not a supported model.")
+
+        logger.debug(
+            f"Failed to get config for model {model.name or model.readable_source}: {e}"
+        )
+        raise simplify_auto_config_value_error(e)
     except TimeoutError:
         raise Exception(
             f"Timeout while getting config for model {model.name or model.readable_source}."
@@ -524,6 +528,21 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         raise Exception(f"Model architectures {architectures} are not supported.")
 
     return set_model_categories(model, model_type)
+
+
+def simplify_auto_config_value_error(e: ValueError) -> Exception:
+    """
+    Simplify the error message for ValueError exceptions.
+    """
+    message = str(e)
+    if "option `trust_remote_code=True`" in message:
+        return Exception(
+            message.replace(
+                "option `trust_remote_code=True`",
+                "backend parameter `--trust-remote-code`",
+            )
+        )
+    return Exception("Not a supported model.")
 
 
 def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:

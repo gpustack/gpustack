@@ -133,9 +133,7 @@ async def evaluate_model(
         compatible, messages = await evaluation(*args)
         if not compatible:
             result.compatible = False
-            result.compatibility_messages = make_compatibility_messages_user_friendly(
-                messages
-            )
+            result.compatibility_messages = messages
             return result
 
     candidate, schedule_messages = await scheduler.find_candidate(
@@ -184,19 +182,6 @@ def summarize_candidate_resource_claim(
             )
 
     return ResourceClaim(ram=ram, vram=vram)
-
-
-def make_compatibility_messages_user_friendly(messages: List[str]) -> List[str]:
-    """
-    Convert a compatibility message to a user-friendly format.
-    """
-    for i, message in enumerate(messages):
-        if "option `trust_remote_code=True`" in message:
-            messages[i] = message.replace(
-                "option `trust_remote_code=True`",
-                "backend parameter `--trust-remote-code`",
-            )
-    return messages
 
 
 async def set_gguf_model_file_path(config: Config, model: ModelSpec):
