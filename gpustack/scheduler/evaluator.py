@@ -202,7 +202,7 @@ def make_compatibility_messages_user_friendly(messages: List[str]) -> List[str]:
 async def set_gguf_model_file_path(config: Config, model: ModelSpec):
     if (
         model.source == SourceEnum.HUGGING_FACE
-        and "GGUF" in model.huggingface_repo_id.upper()
+        and model.backend == BackendEnum.LLAMA_BOX
         and not model.huggingface_filename
     ):
         model.huggingface_filename = await run_in_thread(
@@ -213,7 +213,7 @@ async def set_gguf_model_file_path(config: Config, model: ModelSpec):
         )
     elif (
         model.source == SourceEnum.MODEL_SCOPE
-        and "GGUF" in model.model_scope_model_id.upper()
+        and model.backend == BackendEnum.LLAMA_BOX
         and not model.model_scope_file_path
     ):
         model.model_scope_file_path = await run_in_thread(

@@ -3,17 +3,17 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
 
 from gpustack.schemas.models import (
-    ModelBase,
+    ModelSpecBase,
 )
 
 
-class ModelTemplate(ModelBase):
+class ModelTemplate(ModelSpecBase):
     name: Optional[str] = None
     quantizations: Optional[List[str]] = None
     sizes: Optional[List[float]] = None
 
 
-class ModelSpec(ModelBase):
+class ModelSpec(ModelSpecBase):
     name: Optional[str] = None
     quantization: Optional[str] = None
     size: Optional[float] = None

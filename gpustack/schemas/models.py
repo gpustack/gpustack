@@ -134,7 +134,7 @@ class ModelSource(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
-class ModelBase(SQLModel, ModelSource):
+class ModelSpecBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     description: Optional[str] = None
     meta: Optional[Dict[str, Any]] = Field(sa_column=Column(JSON), default={})
@@ -163,8 +163,8 @@ class ModelBase(SQLModel, ModelSource):
         PydanticField(default=False, deprecated="Deprecated, use categories instead"),
     ]
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
-    cpu_offloading: bool = False
-    distributed_inference_across_workers: bool = False
+    cpu_offloading: Optional[bool] = None
+    distributed_inference_across_workers: Optional[bool] = None
     worker_selector: Optional[Dict[str, str]] = Field(
         sa_column=Column(JSON), default={}
     )
@@ -180,6 +180,20 @@ class ModelBase(SQLModel, ModelSource):
     restart_on_error: Optional[bool] = True
     distributable: Optional[bool] = False
 
+    @model_validator(mode="after")
+    def set_defaults(self):
+        backend = get_backend(self)
+        if self.cpu_offloading is None:
+            self.cpu_offloading = True if backend == BackendEnum.LLAMA_BOX else False
+
+        if self.distributed_inference_across_workers is None:
+            self.distributed_inference_across_workers = (
+                True if backend in [BackendEnum.LLAMA_BOX, BackendEnum.VLLM] else False
+            )
+        return self
+
+
+class ModelBase(ModelSpecBase):
     @model_validator(mode="after")
     def validate(self):
         backend = get_backend(self)
