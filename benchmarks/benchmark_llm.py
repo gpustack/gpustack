@@ -133,7 +133,10 @@ async def main(
     api_key,
 ):
     client = AsyncOpenAI(
-        base_url=f"{server_url}/v1", api_key=api_key, http_client=http_client
+        base_url=f"{server_url}/v1",
+        api_key=api_key,
+        http_client=http_client,
+        max_retries=0,
     )
 
     if not await preflight_check(client, model):
