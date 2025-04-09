@@ -186,13 +186,12 @@ class HfDownloader:
                     extra_filename=extra_filename,
                 )
 
-            return [
-                snapshot_download(
-                    repo_id=repo_id,
-                    token=token,
-                    local_dir=local_dir,
-                )
-            ]
+            snapshot_download(
+                repo_id=repo_id,
+                token=token,
+                local_dir=local_dir,
+            )
+            return [local_dir]
 
     @classmethod
     def download_file(

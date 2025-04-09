@@ -76,6 +76,7 @@ def upgrade() -> None:
         )
 
     create_legacy_hf_cache_symlinks()
+    remove_legacy_ms_cache_locks()
 
 
 def downgrade() -> None:
@@ -126,3 +127,25 @@ def create_legacy_hf_cache_symlinks():
 
         os.symlink(first_snapshot, target_path)
         logger.info(f"Created symlink: {target_path} -> {first_snapshot}")
+
+def remove_legacy_ms_cache_locks():
+    config = get_global_config()
+    model_scope_dir = os.path.join(config.cache_dir, "model_scope")
+
+    if not os.path.isdir(model_scope_dir):
+        return
+
+    for org in os.listdir(model_scope_dir):
+        org_path = os.path.join(model_scope_dir, org)
+        if not os.path.isdir(org_path):
+            continue
+
+        for file in os.listdir(org_path):
+            if file.endswith(".lock"):
+                lock_path = os.path.join(org_path, file)
+                if os.path.isfile(lock_path):
+                    try:
+                        os.remove(lock_path)
+                        logger.info(f"Deleted lock file: {lock_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete lock file {lock_path}: {e}")

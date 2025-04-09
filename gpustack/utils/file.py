@@ -53,6 +53,8 @@ def delete_path(path: str):
     elif os.path.isfile(path):
         os.remove(path)
     elif os.path.isdir(path):
+        for item in os.scandir(path):
+            delete_path(item.path)
         shutil.rmtree(path)
 
 
