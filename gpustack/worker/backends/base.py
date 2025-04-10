@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import threading
+from pathlib import Path
 from typing import Dict, List
 from abc import ABC, abstractmethod
 
@@ -230,7 +231,7 @@ def set_ascend_mindie_env(
     vendor: VendorEnum,
     gpu_indexes: List[int] = None,
     gpu_devices: GPUDevicesInfo = None,
-    version: str = None,
+    version: str = "latest",
 ):
     system = platform.system()
     if not gpu_indexes or not gpu_devices:
@@ -238,9 +239,6 @@ def set_ascend_mindie_env(
 
     if system != "linux" or vendor != VendorEnum.Huawei:
         return
-
-    if not version:
-        version = "1.0.0"
 
     # Select root path
     root_path = next(
@@ -252,31 +250,22 @@ def set_ascend_mindie_env(
         None,
     )
 
-    # Get the paths of mindie set_env.sh
-    mindie_rt_env_script = root_path.joinpath(
-        "mindie", version, "mindie-rt", "set_env.sh"
-    )
-    mindie_torch_env_script = root_path.joinpath(
-        "mindie", version, "mindie-torch", "set_env.sh"
-    )
-    mindie_service_env_script = root_path.joinpath(
-        "mindie", version, "mindie-service", "set_env.sh"
-    )
-    mindie_llm_env_script = root_path.joinpath(
-        "mindie", version, "mindie-llm", "set_env.sh"
-    )
-
     # Extract the environment variables from the script
-    env_diff = envs.extract_unix_vars_of_source(
-        [
-            mindie_rt_env_script,
-            mindie_torch_env_script,
-            mindie_service_env_script,
-            mindie_llm_env_script,
-        ]
-    )
+    # - Get the paths of Ascend MindIE set_env.sh
+    script_paths = [
+        root_path.joinpath("mindie", version, "mindie-rt", "set_env.sh"),
+        root_path.joinpath("mindie", version, "mindie-torch", "set_env.sh"),
+        root_path.joinpath("mindie", version, "mindie-service", "set_env.sh"),
+        root_path.joinpath("mindie", version, "mindie-llm", "set_env.sh"),
+    ]
+    # - Get the paths of Ascend MindIE virtual environment if needed
+    venv_dir = Path("/var/lib/gpustack/venvs/mindie").joinpath(version)
+    venv_path = venv_dir.joinpath("bin", "activate")
+    if venv_dir.is_dir() and venv_path.is_file():
+        script_paths.append(venv_path)
 
-    # Update the environment variables
+    # Update the environment variables with diff
+    env_diff = envs.extract_unix_vars_of_source(script_paths)
     env.update(env_diff)
 
 

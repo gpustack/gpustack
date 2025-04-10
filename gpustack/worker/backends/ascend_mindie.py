@@ -23,6 +23,7 @@ class AscendMindIEParameters:
     log_level: str = "Info"
     max_seq_len: int = 8192
     max_input_token_len: int = -1
+    truncation: bool = False
     cpu_mem_size: int = 5
     npu_memory_fraction: float = 0.9
     cache_block_size: int = 128
@@ -64,6 +65,13 @@ class AscendMindIEParameters:
             "If unspecified, will be automatically derived from `--max-seq-len`.",
         )
         parser.add_argument(
+            "--truncation",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Truncate the input token length, "
+            "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len - 1`.",
+        )
+        parser.add_argument(
             "--cpu-mem-size",
             type=int,
             default=self.cpu_mem_size,
@@ -75,7 +83,7 @@ class AscendMindIEParameters:
             type=float,
             default=self.npu_memory_fraction,
             help="The fraction of NPU memory to be used for the model executor, which can range from 0 to 1 (included). "
-            "For example, a value of 0.5 would imply 50% GPU memory utilization. "
+            "For example, a value of 0.5 would imply 50% NPU memory utilization. "
             f"If unspecified, will use the default value of {self.npu_memory_fraction}.",
         )
         parser.add_argument(
@@ -89,14 +97,14 @@ class AscendMindIEParameters:
             "--max-prefill-batch-size",
             type=int,
             default=self.max_prefill_batch_size,
-            help="During prefilling stage, the maximum requests can be batched, which must be less than --max-batch-size.",
+            help="During prefilling stage, the maximum requests can be batched, which must be less than `--max-batch-size`.",
         )
         parser.add_argument(
             "--prefill-time-ms-per-req",
             type=int,
             default=self.prefill_time_ms_per_req,
             help="Compare with --decode-time-ms-per-req to select prefilling or decoding, "
-            "works with --support-select-batch.",
+            "works with `--support-select-batch`.",
         )
         parser.add_argument(
             "--prefill-policy-type",
@@ -119,8 +127,8 @@ class AscendMindIEParameters:
             "--decode-time-ms-per-req",
             type=int,
             default=self.decode_time_ms_per_req,
-            help="Compare with --prefill-time-ms-per-req to select prefilling or decoding, "
-            "works with --support-select-batch.",
+            help="Compare with `--prefill-time-ms-per-req` to select prefilling or decoding, "
+            "works with `--support-select-batch`.",
         )
         parser.add_argument(
             "--decode-policy-type",
@@ -137,13 +145,15 @@ class AscendMindIEParameters:
             "--max-preempt-count",
             type=int,
             default=self.max_preempt_count,
-            help="Maximum preempt requests during decoding stage, which must be less than --max-batch-size.",
+            help="Maximum preempt requests during decoding stage, which must be less than `--max-batch-size`.",
         )
         parser.add_argument(
             "--support-select-batch",
             type=bool,
             action=argparse.BooleanOptionalAction,
-            help="Enable batch selecting. According to --prefill",
+            help="Enable batch selecting. "
+            "According to `--prefill-time-ms-per-req` and `--decode-time-ms-per-req`, "
+            "select the execution priority for this batch.",
         )
         parser.add_argument(
             "--max-queue-delay-microseconds",
@@ -183,14 +193,14 @@ class AscendMindIEParameters:
 
     def _default(self):
         if self.max_input_token_len <= 0:
-            self.max_input_token_len = self.max_seq_len - 1
+            self.max_input_token_len = self.max_seq_len
 
     def _validate(self):  # noqa: max-complexity=13
         if self.max_seq_len <= 0:
             raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
         if self.max_input_token_len > self.max_seq_len:
             raise argparse.ArgumentTypeError(
-                "--max-input-token-len must be less than --max-seq-len"
+                "--max-input-token-len must be less or equal than --max-seq-len"
             )
         if not (0 < self.npu_memory_fraction < 1):
             raise argparse.ArgumentTypeError(
@@ -229,7 +239,11 @@ class AscendMindIEServer(InferenceServer):
 
         version = self._model.backend_version
         if not version:
-            version = "1.0.0"
+            # Allow to control the version installed by user,
+            # this relies on the environment setting.
+            # There is a risk of failure, but flexible.
+            # When error happens, specify a version to avoid this.
+            version = "latest"
 
         # Select root path
         root_path = next(
@@ -251,74 +265,13 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0300.html.
         env = self.get_inference_running_env(version=version)
 
-        # - Initialize JSON configuration, picks partial items from Ascend MindIE document,
+        # - Load JSON configuration,
         #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0004.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0285.html.
-        config = {
-            "Version": "1.0.0",
-            "LogConfig": {
-                "logLevel": "Info",  # Mutate below, customizable
-                "logFileSize": 0,
-                "logFileNum": 0,
-                "logPath": "logs/mindservice.log",
-            },
-            "ServerConfig": {
-                "ipAddress": "0.0.0.0",
-                "port": 1025,  # Mutate below
-                "managementPort": 1026,  # Mutate below
-                "metricsPort": 1027,  # Mutate below
-                "allowAllZeroIpListening": True,
-                "maxLinkNum": 1000,
-                "httpsEnabled": False,
-                "fullTextEnabled": False,
-                "inferMode": "standard",
-                "openAiSupport": "vllm",
-                "interCommTLSEnabled": False,
-            },
-            "BackendConfig": {
-                "backendName": "mindieservice_llm_engine",
-                "modelInstanceNumber": 1,
-                "npuDeviceIds": [[0, 1, 2, 3]],  # Mutate below
-                "tokenizerProcessNumber": 8,
-                "multiNodesInferEnabled": False,
-                "interNodeTLSEnabled": False,
-                "ModelDeployConfig": {
-                    "maxSeqLen": 2560,  # Mutate below, customizable
-                    "maxInputTokenLen": 2048,  # Mutate below, customizable
-                    "truncation": False,
-                    "ModelConfig": [
-                        {
-                            "modelInstanceType": "Standard",
-                            "modelName": "llama_65b",  # Mutate below
-                            "modelWeightPath": "/home/data/Meta-Llama-3-8B/",  # Mutate below
-                            "worldSize": 4,  # Mutate below
-                            "cpuMemSize": 5,  # Mutate below, customizable
-                            "npuMemSize": -1,  # Mutate below, customizable
-                            "backendType": "atb",
-                            "trustRemoteCode": False,
-                            # "plugin_params": "" # Mutate below, customizable
-                        }
-                    ],
-                },
-                "ScheduleConfig": {
-                    "templateType": "Standard",
-                    "templateName": "Standard_LLM",
-                    "cacheBlockSize": 128,  # Mutate below, customizable
-                    "maxIterTimes": 512,  # Mutate below
-                    "maxPrefillBatchSize": 50,  # Mutate below, customizable
-                    "maxPrefillTokens": 8192,  # Mutate below, customizable
-                    "prefillTimeMsPerReq": 150,  # Mutate below, customizable
-                    "prefillPolicyType": 0,  # Mutate below, customizable
-                    "decodeTimeMsPerReq": 50,  # Mutate below, customizable
-                    "decodePolicyType": 0,  # Mutate below, customizable
-                    "maxBatchSize": 200,  # Mutate below, customizable
-                    "maxPreemptCount": 0,  # Mutate below, customizable
-                    "supportSelectBatch": False,  # Mutate below, customizable
-                    "maxQueueDelayMicroseconds": 5000,  # Mutate below, customizable
-                    "enablePrefixCache": False,  # Mutate below, customizable
-                },
-            },
-        }
+        with open(
+            install_path.joinpath("conf", "config.json"), "r", encoding="utf-8"
+        ) as f:
+            config = json.load(f)
         log_config = config["LogConfig"]
         server_config = config["ServerConfig"]
         backend_config = config["BackendConfig"]
@@ -406,18 +359,25 @@ class AscendMindIEServer(InferenceServer):
         env["TORCH_AIE_PRINT_TO_FILE"] = "0"
 
         # - Listening config
+        server_config["ipAddress"] = "0.0.0.0"
+        server_config["allowAllZeroIpListening"] = True
         server_config["port"] = self._model_instance.port
         server_config["managementPort"] = self._model_instance.port
         server_config["metricsPort"] = self._model_instance.port
+        server_config["httpsEnabled"] = False
+        server_config["interCommTLSEnabled"] = False
 
         # - Device config
         backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
+        backend_config["multiNodesInferEnabled"] = False
+        backend_config["interNodeTLSEnabled"] = False
         model_config["worldSize"] = len(self._model_instance.gpu_indexes)
 
         # - Model config
         max_seq_len = self._get_model_max_seq_len()
         model_deploy_config["maxSeqLen"] = max_seq_len
-        model_deploy_config["maxInputTokenLen"] = max_seq_len - 1
+        model_deploy_config["maxInputTokenLen"] = max_seq_len
+        model_deploy_config["truncation"] = False
         schedule_config["maxIterTimes"] = max_seq_len
         schedule_config["maxPrefillTokens"] = max_seq_len
         model_config["modelName"] = self._model.name
@@ -447,9 +407,23 @@ class AscendMindIEServer(InferenceServer):
             schedule_config["maxIterTimes"] = params.max_seq_len
             schedule_config["maxPrefillTokens"] = params.max_seq_len
             model_config["cpuMemSize"] = params.cpu_mem_size
+            # -- Set truncation.
+            model_deploy_config["truncation"] = params.truncation
             # -- Set NPU memory fraction.
             env["NPU_MEMORY_FRACTION"] = str(params.npu_memory_fraction)
             schedule_config["cacheBlockSize"] = params.cache_block_size
+            # -- Set batching.
+            schedule_config["maxPrefillBatchSize"] = params.max_prefill_batch_size
+            schedule_config["prefillTimeMsPerReq"] = params.prefill_time_ms_per_req
+            schedule_config["prefillPolicyType"] = params.prefill_policy_type
+            schedule_config["maxBatchSize"] = params.max_batch_size
+            schedule_config["decodeTimeMsPerReq"] = params.decode_time_ms_per_req
+            schedule_config["decodePolicyType"] = params.decode_policy_type
+            schedule_config["maxPreemptCount"] = params.max_preempt_count
+            schedule_config["supportSelectBatch"] = params.support_select_batch
+            schedule_config["maxQueueDelayMicroseconds"] = (
+                params.max_queue_delay_microseconds
+            )
             # -- Set prefix cache.
             if params.enable_prefix_caching:
                 schedule_config["enablePrefixCache"] = True

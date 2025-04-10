@@ -2,13 +2,14 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 import shutil
 import stat
 import subprocess
 import time
-from typing import Optional
+from typing import Optional, Dict
 import zipfile
 import requests
 
@@ -187,7 +188,6 @@ class ToolsManager:
         if self._os != "linux":
             raise Exception("Only Linux is supported")
 
-        version = version if not version.startswith("v") else version[1:]
         target_dir = next(
             (
                 rp
@@ -196,33 +196,37 @@ class ToolsManager:
             ),
             None,
         )
-
-        # NB(thxCode): Only check mindie-service here,
-        # but MindIE must work with mindie-service, mindie-rt, mindie-torch and mindie-llm.
-        # We assume that the mindie-service is installed by ascend run package,
-        # so that we check whether the set_env.sh exists to determine the installation.
-        target_file = target_dir.joinpath(
-            "mindie", version, "mindie-service", "set_env.sh"
-        )
-        if target_file.exists():
-            if target_file.is_file():
-                logger.debug(
-                    f"Ascend MindIE {version} already exists, skipping download"
-                )
-                return
-            else:
-                raise Exception(
-                    f"Ascend MindIE {version} already exists, but not a file"
-                )
+        if target_dir:
+            # NB(thxCode): Only check mindie-service here,
+            # but MindIE must work with mindie-service, mindie-rt, mindie-torch and mindie-llm.
+            # We assume that the mindie-service is installed by ascend run package,
+            # so that we check whether the set_env.sh exists to determine the installation.
+            version = version if not version.startswith("v") else version[1:]
+            target_file = target_dir.joinpath(
+                "mindie", version, "mindie-service", "set_env.sh"
+            )
+            if target_file.exists():
+                if target_file.is_file():
+                    logger.debug(
+                        f"Ascend MindIE {version} already exists, skipping download"
+                    )
+                    return
+                else:
+                    raise Exception(
+                        f"Ascend MindIE {version} already exists, but not a file"
+                    )
 
         target_dir = next(
             (
                 rp
                 for rp in envs.get_unix_available_root_paths_of_ascend(writable=True)
-                if rp.joinpath("mindie", version).is_dir()
+                if rp.joinpath("mindie").is_dir()
             ),
             None,
         )
+        if target_dir is None:
+            # If we cannot find an available path, pick the latest one.
+            target_dir = envs.get_unix_available_root_paths_of_ascend(writable=True)[-1]
         self._download_acsend_mindie(version, target_dir)
 
     def install_versioned_llama_box(self, version: str):
@@ -380,26 +384,34 @@ class ToolsManager:
         # - https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%201.0.0/Ascend-mindie_1.0.0_linux-x86_64.run?response-content-type=application/octet-stream
         # - https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%201.0.0/Ascend-mindie_1.0.0_linux-aarch64.run?response-content-type=application/octet-stream
         base_url = "https://ascend-repo.obs.cn-east-2.myhuaweicloud.com"
-        url_path = f"/MindIE/MindIE%20{version}/{target_file_name}?response-content-type=application/octet-stream"
+        url_path = f"MindIE/MindIE%20{version}/{target_file_name}?response-content-type=application/octet-stream"
 
         # Create system temporary directory for downloading and installing
-        fd, tmp_dir = tempfile.mkstemp(prefix="acsend_mindie")
+        tmp_dir = tempfile.mkdtemp(prefix="acsend-mindie-")
 
         # Download and install the MindIE package
         try:
-            with os.fdopen(fd, "w"):
-                target_file = os.path.join(tmp_dir, target_file_name)
+            target_file = os.path.join(tmp_dir, target_file_name)
+            logger.info(
+                f"Downloading Ascend MindIE '{version}' from '{base_url}/{url_path}' to '{target_file}'"
+            )
 
-                logger.info(
-                    f"Downloading Ascend MindIE '{version}' from '{base_url}/{url_path}'"
-                )
-                self._download_file(url_path, target_file, base_url)
+            headers = {"Referer": "https://www.hiascend.com/"}
+            self._download_file(url_path, target_file, base_url, headers)
 
-                logger.info(f"Installing Ascend MindIE '{version}'")
-                target_dir.mkdir(parents=True, exist_ok=True)
-                self._install_run_pkg(target_file, str(target_dir))
+            logger.info(f"Installing Ascend MindIE '{version}'")
+            target_dir.mkdir(parents=True, exist_ok=True)
+            self._install_ascend_mindie_run_pkg(target_file, target_dir, version)
+
+            logger.info(f"Postprocessing Ascend MindIE '{version}' installation")
+            # Allow writing MindIE service configuration directory.
+            service_path = os.path.join(
+                target_dir, "mindie", version, "mindie-service", "conf"
+            )
+            st = os.stat(service_path)
+            os.chmod(service_path, st.st_mode | stat.S_IWRITE)
         finally:
-            os.remove(tmp_dir)
+            shutil.rmtree(tmp_dir)
 
     def _download_llama_box(
         self, version: str, target_dir: Path, target_file_name: str
@@ -666,7 +678,13 @@ class ToolsManager:
 
         return platform_name
 
-    def _download_file(self, url_path: str, target_path: str, base_url: str = None):
+    def _download_file(
+        self,
+        url_path: str,
+        target_path: str,
+        base_url: str = None,
+        headers: Optional[Dict[str, str]] = None,
+    ):
         """Download a file from the URL to the target path."""
         if not self._download_base_url:
             self._check_and_set_download_base_url()
@@ -678,7 +696,12 @@ class ToolsManager:
         retries = 0
         while retries < max_retries:
             try:
-                with requests.get(url, stream=True, timeout=30) as response:
+                with requests.get(
+                    url,
+                    stream=True,
+                    timeout=30,
+                    headers=headers,
+                ) as response:
                     response.raise_for_status()
                     with open(target_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
@@ -704,16 +727,58 @@ class ToolsManager:
         except Exception as e:
             raise Exception(f"error extracting {file_path}: {e}")
 
-    def _install_run_pkg(self, run_package_path: str, target_dir: str):
-        """Install a run package to the target directory."""
-        args = [
-            run_package_path,
-            "--install",
-            f"--install-path={target_dir}",
-            "--quiet",
-        ]
+    def _install_ascend_mindie_run_pkg(
+        self,
+        run_package_path: str,
+        target_dir: Path,
+        version: str,
+    ):
+        """Install Ascend MindIE run package to the target directory."""
+
+        # Create a virtual environment to collect the new Python packages.
+        venv_parent_dir = Path("/var/lib/gpustack/venvs/mindie")
+        venv_parent_dir.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(run_package_path, 0o755)
-            subprocess.run(args, check=True)
+            subprocess.check_call(
+                [sys.executable, "-m", "venv", "--system-site-packages", version],
+                cwd=venv_parent_dir,
+            )
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Error running {run_package_path} {' '.join(args)}: {e}")
+            raise Exception(
+                f"Failed to create a virtual environment for Ascend MindIE installation: {e}"
+            )
+        venv_dir = venv_parent_dir.joinpath(version)
+        venv_path = venv_dir.joinpath("bin", "activate")
+        logger.info(
+            f"Created virtual environment for Ascend MindIE installation: {venv_dir}"
+        )
+
+        # Install
+        command = (
+            f"source {venv_path} "
+            f"&& {run_package_path} --install --install-path={target_dir} --quiet"
+        )
+        try:
+            # Make run package executable.
+            st = os.stat(run_package_path)
+            os.chmod(run_package_path, st.st_mode | stat.S_IEXEC)
+
+            # Cheat MindIE installer run package with a fake ASCEND_HOME_PATH env.
+            env = os.environ.copy()
+            env["ASCEND_HOME_PATH"] = str(target_dir)
+
+            # Run
+            out = None
+            if logger.isEnabledFor(logging.DEBUG):
+                out = sys.stdout
+            subprocess.check_call(
+                command,
+                shell=True,
+                executable="/bin/bash",
+                stdout=out,
+                stderr=out,
+                env=env,
+                cwd=target_dir,
+            )
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Failed to install Ascend MindIE {command}: {e}")

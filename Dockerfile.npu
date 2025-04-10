@@ -15,38 +15,47 @@ ARG TARGETPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update -y && apt-get install -y software-properties-common apt-transport-https \
-      && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
-      && add-apt-repository -y ppa:deadsnakes/ppa \
-      && apt-get update -y
-
 #
 # Install tools
 #
 
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONPATH="/usr/lib/python3.10/site-packages:/usr/lib64/python3.10/site-packages"
+
 RUN <<EOF
-    # Tools
+    # Refresh
+    apt-get update -y && apt-get install -y --no-install-recommends \
+        software-properties-common apt-transport-https \
+      && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+      && add-apt-repository -y ppa:deadsnakes/ppa \
+      && apt-get update -y
 
     # Install
-    apt-get update && apt-get install -y --no-install-recommends \
+    apt-get install -y --no-install-recommends \
         ca-certificates build-essential binutils bash openssl \
-        unzip xz-utils \
-        git git-lfs \
         curl wget aria2 \
+        git git-lfs \
+        unzip xz-utils \
         tzdata locales \
         iproute2 iputils-ping ifstat net-tools dnsutils pciutils ipmitool \
-        procps sysstat dstat htop \
+        procps sysstat htop \
         tini vim jq bc tree
+
+    # Update python
+    apt-get install -y --no-install-recommends \
+        python3.10 python3.10-dev python3.10-distutils python3.10-venv
+    if [ -f /etc/alternatives/python ]; then update-alternatives --remove-all python; fi; update-alternatives --install /usr/bin/python python /usr/bin/python3.10 10
+    if [ -f /etc/alternatives/python3 ]; then update-alternatives --remove-all python3; fi; update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
+
+    # Update locale
+    localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
     # Cleanup
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
-        && rm -rf /var/cache/apt
-
-    # Set locale
-    localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
+        && rm -rf /var/cache/apt \
+        && pip cache purge
 EOF
 
 ENV LANG='en_US.UTF-8' \
@@ -103,29 +112,6 @@ RUN <<EOF
 EOF
 
 #
-# Install Python
-#
-
-RUN <<EOF
-    # Python
-
-    # Install
-    apt-get install -y --no-install-recommends \
-        python3.10 python3.10-dev python3.10-distutils python3.10-venv
-
-    # Update alternatives
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-    if [ -f /etc/alternatives/python ]; then update-alternatives --remove-all python; fi; update-alternatives --install /usr/bin/python python /usr/bin/python3.10 10
-    if [ -f /etc/alternatives/python3 ]; then update-alternatives --remove-all python3; fi; update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10
-
-    # Cleanup
-    rm -rf /var/tmp/* \
-        && rm -rf /tmp/* \
-        && rm -rf /var/cache/apt \
-        && pip cache purge
-EOF
-
-#
 # Install Dependencies
 #
 
@@ -135,7 +121,7 @@ RUN <<EOF
     # Install
     apt-get install -y --no-install-recommends \
         zlib1g zlib1g-dev libbz2-dev liblzma-dev libffi-dev openssl libssl-dev libsqlite3-dev \
-        libblas-dev liblapack-dev libopenblas-dev libblas3 liblapack3 libhdf5-dev \
+        libblas-dev liblapack-dev libopenblas-dev libblas3 liblapack3 gfortran libhdf5-dev \
         libxml2 libxslt1-dev libgl1-mesa-glx libgmpxx4ldbl
 
     # Cleanup
@@ -174,7 +160,7 @@ RUN <<EOF
     curl -H 'Referer: https://www.hiascend.com/' -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
     chmod a+x "${TOOLKIT_PATH}"
     printf "Y\n" | "${TOOLKIT_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
-    
+
     # Cleanup
     rm -f "${TOOLKIT_PATH}" \
         && rm -rf /var/log/ascend \
@@ -321,7 +307,8 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
 
     # Post-install
     pip install transformers==4.46.3 pillow==11.0.0 && \
-        pip list
+        pip list && \
+        python -m site
 
     # Download tools
     gpustack download-tools --device npu
@@ -364,4 +351,4 @@ RUN <<EOF
     # we need to process environment setting up during GPUStack deployment.
 EOF
 
-ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
+ENTRYPOINT [ "tini", "--", "/usr/bin/bash", "-c", "source /etc/profile && exec gpustack start \"$@\"", "--" ]
