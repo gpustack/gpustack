@@ -48,7 +48,7 @@ class LlamaBoxServer(InferenceServer):
             self._model_instance, worker_map
         )
 
-        default_parallel = "4"
+        default_parallel = "1"
         if is_renaker_model(self._model) or is_embedding_model(self._model):
             default_parallel = "1"
 
@@ -61,7 +61,7 @@ class LlamaBoxServer(InferenceServer):
             "--parallel",
             default_parallel,
             "--ctx-size",
-            "8192",
+            "2048",
             "--port",
             str(self._model_instance.port),
             "--model",
