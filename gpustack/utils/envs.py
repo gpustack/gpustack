@@ -1,3 +1,4 @@
+import functools
 import getpass
 import os
 import stat
@@ -6,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 
+@functools.lru_cache
 def get_unix_available_root_paths_of_ascend(writable: bool = False) -> List[Path]:
     """Returns the available root paths of the Ascend installation on *unix."""
     # Assume the CANN has been installed,
@@ -52,7 +54,7 @@ def get_unix_available_root_paths_of_ascend(writable: bool = False) -> List[Path
             if writable:
                 mode_mask |= stat.S_IWOTH
         # Add candidate root path if it can be accessed by the current user.
-        if bool(ascend_root_path_stat.st_mode & mode_mask):
+        if ascend_root_path_stat.st_mode & mode_mask == mode_mask:
             root_paths.append(ascend_root_path)
 
         # In practice, personal Ascend tool is installed under "/home/<username>/Ascend",
