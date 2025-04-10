@@ -27,6 +27,12 @@ MODELSCOPE_CONFIG_IGNORE_FILE_PATTERN = [
     # Additional
     r'\w+\.zip',
     r'\w+\.onnx',
+    r'\w+\.tar',
+    r'\w+\.gz',
+    r'\w+\.png',
+    r'\w+\.md',
+    r'\w+\.nemo',
+    r'\w+\.llamafile',
 ]
 
 
