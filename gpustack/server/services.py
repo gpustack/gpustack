@@ -70,14 +70,16 @@ class UserService:
         result = await User.one_by_id(self.session, user_id)
         if result is None:
             return None
-        return User(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     @locked_cached(ttl=60)
     async def get_by_username(self, username: str) -> Optional[User]:
         result = await User.one_by_field(self.session, "username", username)
         if result is None:
             return None
-        return User(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     async def create(self, user: User):
         return await User.create(self.session, user)
@@ -104,7 +106,8 @@ class APIKeyService:
         result = await ApiKey.one_by_field(self.session, "access_key", access_key)
         if result is None:
             return None
-        return ApiKey(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     async def delete(self, api_key: ApiKey):
         result = await api_key.delete(self.session)
@@ -121,14 +124,16 @@ class WorkerService:
         result = await Worker.one_by_id(self.session, worker_id)
         if result is None:
             return None
-        return Worker(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     @locked_cached(ttl=60)
     async def get_by_name(self, name: str) -> Optional[Worker]:
         result = await Worker.one_by_field(self.session, "name", name)
         if result is None:
             return None
-        return Worker(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     async def update(self, worker: Worker, source: Union[dict, SQLModel, None] = None):
         result = await worker.update(self.session, source)
@@ -152,14 +157,16 @@ class ModelService:
         result = await Model.one_by_id(self.session, model_id)
         if result is None:
             return None
-        return Model(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     @locked_cached(ttl=60)
     async def get_by_name(self, name: str) -> Optional[Model]:
         result = await Model.one_by_field(self.session, "name", name)
         if result is None:
             return None
-        return Model(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     async def update(self, model: Model, source: Union[dict, SQLModel, None] = None):
         result = await model.update(self.session, source)
@@ -186,7 +193,10 @@ class ModelInstanceService:
         )
         if results is None:
             return []
-        return [ModelInstance(**result.model_dump()) for result in results]
+
+        for result in results:
+            self.session.expunge(result)
+        return results
 
     async def create(self, model_instance):
         result = await ModelInstance.create(self.session, model_instance)
@@ -218,7 +228,8 @@ class ModelUsageService:
         )
         if result is None:
             return None
-        return ModelUsage(**result.model_dump())
+        self.session.expunge(result)
+        return result
 
     async def create(self, model_usage: ModelUsage):
         return await ModelUsage.create(self.session, model_usage)
