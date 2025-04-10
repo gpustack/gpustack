@@ -50,14 +50,13 @@ async def evaluate_models(
     Evaluate the compatibility of a list of model specs with the available workers.
     """
     workers = await Worker.all(session)
-    async with asyncio.TaskGroup() as tg:
-        tasks = {
-            tg.create_task(
-                evaluate_model_with_cache(config, session, model, workers)
-            ): model
-            for model in model_specs
-        }
-    return [task.result() for task in tasks]
+
+    async def evaluate(model: ModelSpec):
+        return await evaluate_model_with_cache(config, session, model, workers)
+
+    tasks = [evaluate(model) for model in model_specs]
+    results = await asyncio.gather(*tasks)
+    return results
 
 
 def make_hashable_key(model: ModelSpec, workers: List[Worker]) -> str:
