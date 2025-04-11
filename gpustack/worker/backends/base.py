@@ -75,7 +75,7 @@ class InferenceServer(ABC):
         except ModelInstanceStateError:
             sys.exit(1)
         except Exception as e:
-            error_message = f"Failed to initilialze: {e}"
+            error_message = f"Failed to initialize: {e}"
             logger.error(error_message)
             try:
                 patch_dict = {

@@ -47,7 +47,7 @@ class ModelFileManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Failed watching model files: {e}")
+                logger.error(f"Failed to watch model files: {e}")
                 await asyncio.sleep(5)
 
     def _prerun(self):
