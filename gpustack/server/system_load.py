@@ -92,4 +92,4 @@ class SystemLoadCollector:
                     system_load = compute_system_load(workers)
                     await SystemLoad.create(session, system_load)
             except Exception as e:
-                logger.error(f"failed to collect system load: {e}")
+                logger.error(f"Failed to collect system load: {e}")
