@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import random
@@ -350,7 +351,9 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
         await ModelService(session).update(model)
 
 
-async def get_meta_from_running_instance(mi: ModelInstance) -> Dict[str, Any]:
+async def get_meta_from_running_instance(  # noqa: max-complexity=15
+    mi: ModelInstance,
+) -> Dict[str, Any]:
     """
     Get the meta information from the running instance.
     """
@@ -359,29 +362,65 @@ async def get_meta_from_running_instance(mi: ModelInstance) -> Dict[str, Any]:
         return {}
 
     async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(f"http://{mi.worker_ip}:{mi.port}/v1/models")
-            response.raise_for_status()
+        # Retry until the instance is ready
+        # or the retries has been exhausted.
+        retries = 30
 
-            models = response.json()
-            if "data" not in models or not models["data"]:
-                return {}
+        while True:
+            try:
+                url = f"http://{mi.worker_ip}:{mi.port}/v1/models"
+                if mi.model.backend == BackendEnum.ASCEND_MINDIE:
+                    # Ascend MindIE models
+                    url = f"http://{mi.worker_ip}:{mi.port}/info"
 
-            first_model = models["data"][0]
-            meta_info = first_model.get("meta", {})
+                response = await client.get(url)
+                response.raise_for_status()
 
-            # Optional keys from different backends
-            optional_keys = [
-                "voices",
-                "max_model_len",
-            ]
-            for key in optional_keys:
-                if key in first_model:
-                    meta_info[key] = first_model[key]
+                models = response.json()
 
-            return meta_info
-        except Exception as e:
-            logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
+                if mi.model.backend == BackendEnum.ASCEND_MINDIE:
+                    # Ascend MindIE models
+                    return {
+                        **{
+                            key: val
+                            for key, val in models["models"][0].items()
+                            if val is not None
+                        },
+                        **{
+                            key: val
+                            for key, val in models.items()
+                            if key != "models" and val is not None
+                        },
+                    }
+
+                if "data" not in models or not models["data"]:
+                    return {}
+
+                first_model = models["data"][0]
+                meta_info = first_model.get("meta", {})
+
+                # Optional keys from different backends
+                for key in ["voices", "max_model_len"]:
+                    if key in first_model:
+                        meta_info[key] = first_model[key]
+
+                return meta_info
+            except httpx.HTTPStatusError as e:
+                if retries > 0 and e.response.status_code >= 500:
+                    # Retry on server errors
+                    logger.error(
+                        f"Server error {e.response.status_code} when getting meta from running instance {mi.name}, retry in 1 second"
+                    )
+                    await asyncio.sleep(1)
+                    retries -= 1
+                    continue
+
+                logger.error(
+                    f"Failed to get meta from running instance {mi.name}: status code {e.response.status_code}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
+
             return {}
 
 
