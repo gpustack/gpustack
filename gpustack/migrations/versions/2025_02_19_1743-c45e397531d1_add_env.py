@@ -77,6 +77,9 @@ def upgrade() -> None:
 
     create_legacy_hf_cache_symlinks()
     remove_legacy_ms_cache_locks()
+    recreate_users_table(True)
+    delete_orphan_keys()
+    recreate_api_keys_table(True)
 
 
 def downgrade() -> None:
@@ -96,6 +99,8 @@ def downgrade() -> None:
 
     if table_exists('model_files'):
         op.drop_table('model_files')
+    recreate_users_table(False)
+    recreate_api_keys_table(False)
 
 def create_legacy_hf_cache_symlinks():
     config = get_global_config()
@@ -149,3 +154,85 @@ def remove_legacy_ms_cache_locks():
                         logger.info(f"Deleted lock file: {lock_path}")
                     except Exception as e:
                         logger.warning(f"Failed to delete lock file {lock_path}: {e}")
+
+def recreate_users_table(auto_increment=False) -> None:
+    kwarg = dict()
+    if auto_increment:
+        kwarg['sqlite_autoincrement'] = True
+    op.rename_table('users', 'users_old')
+    op.create_table('users',
+        sa.Column('deleted_at', sa.DateTime(), nullable=True),
+        sa.Column('username', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('is_admin', sa.Boolean(), nullable=False),
+        sa.Column('full_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('require_password_change', sa.Boolean(), nullable=False),
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('hashed_password', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+        sa.PrimaryKeyConstraint('id'),
+        **kwarg
+    )
+    conn = op.get_bind()
+    if conn.engine.name == 'postgresql':
+        op.drop_constraint('fk_model_usages_user_id_users', 'model_usages', type_='foreignkey')
+        op.create_foreign_key('fk_model_usages_user_id_users', 'model_usages', 'users', ['user_id'], ['id'], ondelete='CASCADE')
+
+    conn = op.get_bind()
+    conn.execute(
+        sa.text(
+            """
+            INSERT INTO users
+            SELECT * FROM users_old
+            """
+        )
+    )
+    op.drop_table('users_old') 
+
+
+def recreate_api_keys_table(foreign_key=False) -> None:
+    user_id_fk = sa.ForeignKeyConstraint(['user_id'], ['users.id'], name='fk_api_keys_user_id', ondelete='CASCADE') if foreign_key else None
+    op.rename_table('api_keys', 'api_keys_old')
+    op.drop_index(op.f('ix_api_keys_access_key'), table_name='api_keys_old')
+    conn = op.get_bind()
+    if conn.engine.name == 'postgresql':
+        op.drop_constraint('uix_name_user_id', 'api_keys_old', type_='unique')
+    op.create_table('api_keys',
+    sa.Column('deleted_at', sa.DateTime(), nullable=True),
+    sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('description', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('access_key', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('hashed_secret_key', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('expires_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
+    sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+    sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('hashed_secret_key'),
+    sa.UniqueConstraint('name', 'user_id', name='uix_name_user_id'),
+    user_id_fk,
+    )
+    op.create_index(op.f('ix_api_keys_access_key'), 'api_keys', ['access_key'], unique=True)
+
+
+    conn.execute(
+        sa.text(
+            """
+            INSERT INTO api_keys
+            SELECT * FROM api_keys_old
+            """
+        )
+    )
+    op.drop_table('api_keys_old') 
+
+def delete_orphan_keys() -> None:
+    conn = op.get_bind()
+    conn.execute(
+        sa.text(
+            """
+            DELETE FROM api_keys
+            WHERE user_id NOT IN (SELECT id FROM users)
+            """
+        )
+    )

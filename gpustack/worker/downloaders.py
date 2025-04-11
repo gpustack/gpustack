@@ -622,7 +622,7 @@ class ModelScopeDownloader:
         group_or_owner, name = model_id_to_group_owner_name(model_id)
         lock_filename = os.path.join(cache_dir, group_or_owner, f"{name}.lock")
 
-        logger.info("Retriving file lock")
+        logger.info(f"Retriving file lock: {lock_filename}")
         with SoftFileLock(lock_filename):
             if file_path:
                 matching_files = match_model_scope_file_paths(
