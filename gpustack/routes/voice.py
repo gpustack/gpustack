@@ -5,7 +5,6 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from gpustack.routes.openai import proxy_request_by_model
-from gpustack.server.deps import SessionDep
 
 router = APIRouter()
 
@@ -26,8 +25,5 @@ class VoicesResponse(BaseModel):
         "Please use the `/v1-openai/models` endpoint with the `with_meta` query parameter instead."
     ),
 )
-async def voices(
-    session: SessionDep,
-    request: Request,
-):
-    return await proxy_request_by_model(request, session, "voices")
+async def voices(request: Request):
+    return await proxy_request_by_model(request, "voices")
