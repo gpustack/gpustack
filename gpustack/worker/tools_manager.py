@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 import shutil
@@ -57,6 +58,8 @@ class ToolsManager:
         self._os = system if system else platform.system()
         self._arch = arch if arch else platform.arch()
         self._device = device if device else platform.device()
+        if self._device == platform.DeviceTypeEnum.CUDA.value:
+            self._llama_box_cuda_version = self._get_llama_box_cuda_version()
         self._download_base_url = tools_download_base_url
         self._bin_dir = bin_dir
         self._pipx_path = pipx_path
@@ -440,6 +443,27 @@ class ToolsManager:
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
 
+    def _get_llama_box_cuda_version(self) -> str:
+        """
+        Gets the appropriate CUDA version of the llama-box based on the system's CUDA version.
+        """
+        if os.getenv("LLAMA_BOX_CUDA_VERSION", ""):
+            return os.getenv("LLAMA_BOX_CUDA_VERSION")
+
+        default_version = "12.4"
+        cuda_version = platform.get_cuda_version()
+        match = re.match(r"(\d+)\.(\d+)", cuda_version)
+        if not match:
+            return default_version
+
+        major, minor = map(int, match.groups())
+        if major == 11:
+            return "11.8"
+        elif major == 12 and minor >= 8:
+            return "12.8"
+
+        return default_version
+
     def _get_llama_box_platform_name(self) -> str:  # noqa C901
         platform_name = ""
         if (
@@ -451,17 +475,15 @@ class ToolsManager:
         elif self._os == "darwin":
             platform_name = "darwin-amd64-avx2"
         elif (
-            self._os == "linux"
-            and self._arch == "amd64"
+            self._os in ["linux", "windows"]
+            and self._arch in ["amd64", "arm64"]
             and self._device == platform.DeviceTypeEnum.CUDA.value
         ):
-            platform_name = "linux-amd64-cuda-12.4"
-        elif (
-            self._os == "linux"
-            and self._arch == "arm64"
-            and self._device == platform.DeviceTypeEnum.CUDA.value
-        ):
-            platform_name = "linux-arm64-cuda-12.4"
+            # Only amd64 for windows
+            normalized_arch = "amd64" if self._os == "windows" else self._arch
+            platform_name = (
+                f"{self._os}-{normalized_arch}-cuda-{self._llama_box_cuda_version}"
+            )
         elif (
             self._os == "linux"
             and self._arch == "amd64"
@@ -496,12 +518,6 @@ class ToolsManager:
             platform_name = "linux-amd64-avx2"
         elif self._os == "linux" and self._arch == "arm64":
             platform_name = "linux-arm64-neon"
-        elif (
-            self._os == "windows"
-            and self._arch == "amd64"
-            and self._device == platform.DeviceTypeEnum.CUDA.value
-        ):
-            platform_name = "windows-amd64-cuda-12.4"
         elif (
             self._os == "windows"
             and self._arch == "amd64"
