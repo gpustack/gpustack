@@ -2,6 +2,8 @@ from enum import Enum
 import os
 import platform
 import logging
+import re
+import subprocess
 import threading
 
 from gpustack.utils.command import is_command_available
@@ -138,3 +140,19 @@ def device_type_from_vendor(vendor: VendorEnum) -> str:
     }
 
     return mapping.get(vendor, "")
+
+
+def get_cuda_version() -> str:
+    """
+    Returns the CUDA toolkit version installed on the system.
+    """
+
+    if is_command_available("nvcc"):
+        try:
+            output = subprocess.check_output(["nvcc", "--version"], encoding="utf-8")
+            match = re.search(r"release (\d+\.\d+),", output)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            logger.error(f"Error running nvcc: {e}")
+    return ""
