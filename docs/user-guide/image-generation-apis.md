@@ -165,8 +165,8 @@ The followings are examples using the image generation APIs:
 ### curl (Create Image)
 
 ```bash
-export GPUSTACK_API_KEY=myapikey
-curl http://myserver/v1-openai/image/generate \
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1-openai/image/generate \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $GPUSTACK_API_KEY" \
     -d '{
@@ -186,8 +186,8 @@ curl http://myserver/v1-openai/image/generate \
 ### curl (Create Image Edit)
 
 ```bash
-export GPUSTACK_API_KEY=myapikey
-curl http://myserver/v1-openai/image/edit \
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1-openai/image/edit \
     -H "Authorization: Bearer $GPUSTACK_API_KEY" \
     -F image="@otter.png" \
     -F mask="@mask.png" \

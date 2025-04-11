@@ -22,8 +22,8 @@ The following are examples using the APIs in different languages:
 ### curl
 
 ```bash
-export GPUSTACK_API_KEY=myapikey
-curl http://myserver/v1-openai/chat/completions \
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1-openai/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
@@ -47,7 +47,7 @@ curl http://myserver/v1-openai/chat/completions \
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://myserver/v1-openai", api_key="myapikey")
+client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
 
 completion = client.chat.completions.create(
   model="llama3",
@@ -66,8 +66,8 @@ print(completion.choices[0].message)
 const OpenAI = require("openai");
 
 const openai = new OpenAI({
-  apiKey: "myapikey",
-  baseURL: "http://myserver/v1-openai",
+  apiKey: "your_api_key",
+  baseURL: "http://your_gpustack_server_url/v1",
 });
 
 async function main() {

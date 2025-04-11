@@ -1,26 +1,34 @@
 # Quickstart
 
-## Installation
+## Installation Script
 
-### Linux or macOS
+=== "Linux"
 
-GPUStack provides a script to install it as a service on systemd or launchd based systems with default port 80. To install GPUStack using this method, just run:
+    GPUStack provides a script to install it as a systemd service on Linux with default port 80. To install GPUStack using this method, just run:
 
-```bash
-curl -sfL https://get.gpustack.ai | sh -s -
-```
+    ```bash
+    curl -sfL https://get.gpustack.ai | sh -s -
+    ```
 
-### Windows
+=== "macOS"
 
-Run PowerShell as administrator (**avoid** using PowerShell ISE), then run the following command to install GPUStack:
+    GPUStack provides a script to install it as a launchd service on macOS with default port 80. To install GPUStack using this method, just run:
 
-```powershell
-Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-```
+    ```bash
+    curl -sfL https://get.gpustack.ai | sh -s -
+    ```
 
-### Other Installation Methods
+=== "Windows"
 
-For manual installation, docker installation or detailed configuration options, please refer to the [Installation Documentation](installation/installation-script.md).
+    Run PowerShell as administrator (**avoid** using PowerShell ISE), then run the following command to install GPUStack with default port 80:
+
+    ```powershell
+    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+    ```
+
+## Other Installation Methods
+
+For Docker installation, pip installation or detailed configuration options, please refer to the [Installation Documentation](installation/installation-requirements.md).
 
 ## Getting Started
 
@@ -46,19 +54,25 @@ Once the command completes, the generated image will appear in the default viewe
 
 ![Generated Image](assets/quickstart-minion.png)
 
-3. Open `http://myserver` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+3. Open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
-**Linux or macOS**
+=== "Linux"
 
-```bash
-cat /var/lib/gpustack/initial_admin_password
-```
+    ```bash
+    cat /var/lib/gpustack/initial_admin_password
+    ```
 
-**Windows**
+=== "macOS"
 
-```powershell
-Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
-```
+    ```bash
+    cat /var/lib/gpustack/initial_admin_password
+    ```
+
+=== "Windows"
+
+    ```powershell
+    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
+    ```
 
 3. Click `Playground - Chat` in the navigation menu. Now you can chat with the LLM in the UI playground.
 
@@ -73,8 +87,8 @@ Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
 7. Now you can use the API key to access the OpenAI-compatible API. For example, use curl as the following:
 
 ```bash
-export GPUSTACK_API_KEY=myapikey
-curl http://myserver/v1-openai/chat/completions \
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1-openai/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{

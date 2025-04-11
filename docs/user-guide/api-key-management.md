@@ -26,8 +26,8 @@ GPUStack supports authentication using API keys. Each GPUStack user can generate
 GPUStack supports using the API key as a bearer token. The following is an example using curl:
 
 ```bash
-export GPUSTACK_API_KEY=myapikey
-curl http://myserver/v1-openai/chat/completions \
+export GPUSTACK_API_KEY=your_api_key
+curl http://your_gpustack_server_url/v1-openai/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
