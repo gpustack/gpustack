@@ -20,7 +20,7 @@ from gpustack.utils import platform, envs
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.129"
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.131"
 BUILTIN_GGUF_PARSER_VERSION = "v0.13.20"
 BUILTIN_RAY_VERSION = "2.43.0"
 
