@@ -107,7 +107,7 @@ jobs:
       - name: Maximize Docker Build Space
         uses: gpustack/.github/.github/actions/maximize-docker-build-space@main
         with:
-          deep-clean: false
+          deep-clean: true
           root-reserve-mb: 20480
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
