@@ -315,9 +315,9 @@ class ServeManager:
 def is_running(mi: ModelInstance, backend: Optional[str]) -> bool:
     try:
         # Check /v1/models by default if dedicated health check endpoint is not available.
-        # This is served by all backends (llama-box, vox-box, vllm)
+        # This is served by all backends (llama-box, vox-box, vllm, ascend-mindie)
         health_check_url = f"http://127.0.0.1:{mi.port}/v1/models"
-        if backend in [BackendEnum.LLAMA_BOX]:
+        if backend == BackendEnum.LLAMA_BOX:
             # For llama-box, use /health to avoid printing error logs.
             health_check_url = f"http://127.0.0.1:{mi.port}/health"
 
