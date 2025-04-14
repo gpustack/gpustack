@@ -21,7 +21,7 @@ from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_
 from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
-fetch_file_timeout_in_seconds = 5
+fetch_file_timeout_in_seconds = 15
 
 
 class GPUOffloadEnum(str, Enum):
