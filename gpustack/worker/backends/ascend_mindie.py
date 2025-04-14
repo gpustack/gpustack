@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclasses.dataclass
 class AscendMindIEParameters:
     log_level: str = "Info"
+    max_link_num: int = 2000
     max_seq_len: int = 8192
     max_input_token_len: int = -1
     truncation: bool = False
@@ -52,6 +53,15 @@ class AscendMindIEParameters:
             default="Info",
             choices=['Verbose', 'Info', 'Warning', 'Warn', 'Error', 'Debug'],
             help="Log level for MindIE.",
+        )
+        #
+        # Server config
+        #
+        parser.add_argument(
+            "--max-link-num",
+            type=int,
+            default=self.max_link_num,
+            help="Maximum parallel requests",
         )
         #
         # Model deploy config
@@ -378,6 +388,7 @@ class AscendMindIEServer(InferenceServer):
         # - Listening config
         server_config["ipAddress"] = "0.0.0.0"
         server_config["allowAllZeroIpListening"] = True
+        server_config["maxLinkNum"] = 2000
         server_config["port"] = self._model_instance.port
         server_config["managementPort"] = self._model_instance.port
         server_config["metricsPort"] = self._model_instance.port
@@ -418,6 +429,8 @@ class AscendMindIEServer(InferenceServer):
             # -- Log config
             log_config["logLevel"] = params.log_level
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
+            # -- Server config
+            server_config["maxLinkNum"] = params.max_link_num
             # -- Model deploy config.
             model_deploy_config["maxSeqLen"] = params.max_seq_len
             model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
