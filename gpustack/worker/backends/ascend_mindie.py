@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclasses.dataclass
 class AscendMindIEParameters:
     log_level: str = "Info"
-    max_link_num: int = 2000
+    max_link_num: int = 1000
     max_seq_len: int = 8192
     max_input_token_len: int = -1
     truncation: bool = False
@@ -222,7 +222,11 @@ class AscendMindIEParameters:
         if self.max_input_token_len <= 0:
             self.max_input_token_len = self.max_seq_len
 
-    def _validate(self):  # noqa: max-complexity=13
+    def _validate(self):  # noqa: max-complexity=14
+        if not (1 <= self.max_link_num <= 1000):
+            raise argparse.ArgumentTypeError(
+                "--max-link-num must be in the range [1, 1000]"
+            )
         if self.max_seq_len <= 0:
             raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
         if self.max_input_token_len > self.max_seq_len:
@@ -231,33 +235,33 @@ class AscendMindIEParameters:
             )
         if not (0 < self.npu_memory_fraction < 1):
             raise argparse.ArgumentTypeError(
-                "--npu-memory-fraction must be range of (0, 1]"
+                "--npu-memory-fraction must be in the range (0, 1]"
             )
         if self.cache_block_size & (self.cache_block_size - 1) != 0:
             raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
         if not (1 <= self.max_batch_size <= 5000):
             raise argparse.ArgumentTypeError(
-                "--max-batch-size must be range of [1, 5000]"
+                "--max-batch-size must be in the range [1, 5000]"
             )
         if not (0 <= self.max_preempt_count <= self.max_batch_size):
             raise argparse.ArgumentTypeError(
-                "--max-preempt-count must be range of [0, --max-batch-size]"
+                "--max-preempt-count must be in the range [0, --max-batch-size]"
             )
         if not (1 <= self.max_prefill_batch_size <= self.max_batch_size):
             raise argparse.ArgumentTypeError(
-                "--max-prefill-batch-size must be range of [1, --max-batch-size]"
+                "--max-prefill-batch-size must be in the range [1, --max-batch-size]"
             )
         if not (0 <= self.prefill_time_ms_per_req <= 1000):
             raise argparse.ArgumentTypeError(
-                "--prefill-time-ms-per-req must be range of [0, 1000]"
+                "--prefill-time-ms-per-req must be in the range [0, 1000]"
             )
         if not (0 <= self.decode_time_ms_per_req <= 1000):
             raise argparse.ArgumentTypeError(
-                "--decode-time-ms-per-req must be range of [0, 1000]"
+                "--decode-time-ms-per-req must be in the range [0, 1000]"
             )
         if not (500 <= self.max_queue_delay_microseconds <= 1000000):
             raise argparse.ArgumentTypeError(
-                "--max-queue-delay-microseconds must be range of [500, 1000000]"
+                "--max-queue-delay-microseconds must be in the range [500, 1000000]"
             )
 
 
