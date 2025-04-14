@@ -344,8 +344,8 @@ RUN <<EOF
 
     # Source ATB model environment
     SOURCE_ATB_MODEL_ENV="source ${CANN_HOME}/atb-models/set_env.sh"
-    echo "${EXPORT_DRIVER_LIB}" >> /etc/profile
-    echo "${EXPORT_DRIVER_LIB}" >> ~/.bashrc
+    echo "${SOURCE_ATB_MODEL_ENV}" >> /etc/profile
+    echo "${SOURCE_ATB_MODEL_ENV}" >> ~/.bashrc
 
     # NB(thxCode): For specific MindIE version supporting,
     # we need to process environment setting up during GPUStack deployment.
