@@ -5,6 +5,7 @@ Revises: e6bf9e067296
 Create Date: 2025-02-19 17:43:06.434145
 
 """
+import shutil
 from typing import Sequence, Union
 import glob
 import logging
@@ -78,7 +79,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('model_instance_id', 'model_file_id')
         )
 
-    create_legacy_hf_cache_symlinks()
+    migrate_legacy_hf_cache()
     remove_legacy_ms_cache_locks()
     alter_users_table_autoincrement_keyword(True)
     delete_orphan_keys()
@@ -105,7 +106,7 @@ def downgrade() -> None:
     alter_users_table_autoincrement_keyword(False)
     alter_api_keys_foreign_key(False)
 
-def create_legacy_hf_cache_symlinks():
+def migrate_legacy_hf_cache():
     config = get_global_config()
     hf_cache_base = os.path.join(config.cache_dir, "huggingface")
     model_dirs = glob.glob(os.path.join(hf_cache_base, "models--*--*"))
@@ -128,13 +129,29 @@ def create_legacy_hf_cache_symlinks():
         first_snapshot = os.path.join(snapshot_dir, snapshot_subdirs[0])
         target_path = os.path.join(hf_cache_base, org, model)
 
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
-        if os.path.exists(target_path) or os.path.islink(target_path):
+        if os.path.exists(target_path):
+            logger.info(f"Target path already exists, skipping: {target_path}")
             continue
 
-        os.symlink(first_snapshot, target_path)
-        logger.info(f"Created symlink: {target_path} -> {first_snapshot}")
+        os.makedirs(target_path, exist_ok=True)
+
+        for filename in os.listdir(first_snapshot):
+            src_path = os.path.join(first_snapshot, filename)
+            dst_path = os.path.join(target_path, filename)
+
+            try:
+                if os.path.islink(src_path):
+                    real_path = os.path.realpath(src_path)
+                    shutil.copy2(real_path, dst_path)
+                else:
+                    shutil.copy2(src_path, dst_path)
+            except Exception as e:
+                logger.warning(f"Failed to copy {src_path} to {dst_path}: {e}")
+
+        shutil.rmtree(model_dir, ignore_errors=True)
+        logger.info(f"Migrated from {first_snapshot} to {target_path}")
+
 
 def remove_legacy_ms_cache_locks():
     config = get_global_config()
