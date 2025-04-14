@@ -26,6 +26,7 @@ class AscendMindIEParameters:
     truncation: bool = False
     cpu_mem_size: int = 5
     npu_memory_fraction: float = 0.9
+    trust_remote_code: bool = False
     cache_block_size: int = 128
     max_prefill_batch_size: int = 50
     prefill_time_ms_per_req: int = 150
@@ -39,10 +40,12 @@ class AscendMindIEParameters:
     enable_prefix_caching: bool = False
     metrics: bool = False
     enforce_eager: bool = False
-    trust_remote_code: bool = False
 
     def from_args(self, args: List[str]):
         parser = argparse.ArgumentParser(exit_on_error=False)
+        #
+        # Log config
+        #
         parser.add_argument(
             "--log-level",
             type=str,
@@ -50,6 +53,9 @@ class AscendMindIEParameters:
             choices=['Verbose', 'Info', 'Warning', 'Warn', 'Error', 'Debug'],
             help="Log level for MindIE.",
         )
+        #
+        # Model deploy config
+        #
         parser.add_argument(
             "--max-seq-len",
             type=int,
@@ -71,6 +77,9 @@ class AscendMindIEParameters:
             help="Truncate the input token length, "
             "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len - 1`.",
         )
+        #
+        # Model config
+        #
         parser.add_argument(
             "--cpu-mem-size",
             type=int,
@@ -82,10 +91,19 @@ class AscendMindIEParameters:
             "--npu-memory-fraction",
             type=float,
             default=self.npu_memory_fraction,
-            help="The fraction of NPU memory to be used for the model executor, which can range from 0 to 1 (included). "
+            help="The fraction of NPU memory to be used for the model executor, "
+            "which can range from 0 to 1 (included). "
             "For example, a value of 0.5 would imply 50% NPU memory utilization. "
             f"If unspecified, will use the default value of {self.npu_memory_fraction}.",
         )
+        parser.add_argument(
+            "--trust-remote-code",
+            action='store_true',
+            help="Trust remote code.",
+        )
+        #
+        # Schedule config
+        #
         parser.add_argument(
             "--cache-block-size",
             type=int,
@@ -97,7 +115,8 @@ class AscendMindIEParameters:
             "--max-prefill-batch-size",
             type=int,
             default=self.max_prefill_batch_size,
-            help="During prefilling stage, the maximum requests can be batched, which must be less than `--max-batch-size`.",
+            help="During prefilling stage, the maximum requests can be batched, "
+            "which must be less than `--max-batch-size`.",
         )
         parser.add_argument(
             "--prefill-time-ms-per-req",
@@ -160,6 +179,9 @@ class AscendMindIEParameters:
             type=int,
             help="Maximum microseconds of queue waiting.",
         )
+        #
+        # Features
+        #
         parser.add_argument(
             "--enable-prefix-caching",
             type=bool,
@@ -176,11 +198,6 @@ class AscendMindIEParameters:
             "--enforce-eager",
             action='store_true',
             help="Emit operators in eager mode.",
-        )
-        parser.add_argument(
-            "--trust-remote-code",
-            action='store_true',
-            help="Trust remote code.",
         )
 
         args_parsed = parser.parse_known_args(args=args)
@@ -398,21 +415,21 @@ class AscendMindIEServer(InferenceServer):
                 logger.error(f"Failed to parse parameters: {e}")
                 raise e
 
-            # -- Set log level.
+            # -- Log config
             log_config["logLevel"] = params.log_level
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
-            # -- Set context size.
+            # -- Model deploy config.
             model_deploy_config["maxSeqLen"] = params.max_seq_len
             model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
             schedule_config["maxIterTimes"] = params.max_seq_len
             schedule_config["maxPrefillTokens"] = params.max_seq_len
-            model_config["cpuMemSize"] = params.cpu_mem_size
-            # -- Set truncation.
             model_deploy_config["truncation"] = params.truncation
-            # -- Set NPU memory fraction.
+            # -- Model config.
+            model_config["cpuMemSize"] = params.cpu_mem_size
             env["NPU_MEMORY_FRACTION"] = str(params.npu_memory_fraction)
+            model_config["trustRemoteCode"] = params.trust_remote_code
+            # -- Schedule config.
             schedule_config["cacheBlockSize"] = params.cache_block_size
-            # -- Set batching.
             schedule_config["maxPrefillBatchSize"] = params.max_prefill_batch_size
             schedule_config["prefillTimeMsPerReq"] = params.prefill_time_ms_per_req
             schedule_config["prefillPolicyType"] = params.prefill_policy_type
@@ -424,7 +441,8 @@ class AscendMindIEServer(InferenceServer):
             schedule_config["maxQueueDelayMicroseconds"] = (
                 params.max_queue_delay_microseconds
             )
-            # -- Set prefix cache.
+            # -- Features
+            # --- Prefix cache.
             if params.enable_prefix_caching:
                 schedule_config["enablePrefixCache"] = True
                 model_config["plugin_params"] = json.dumps(
@@ -432,12 +450,10 @@ class AscendMindIEServer(InferenceServer):
                         "plugin_type": "prefix_cache",
                     }
                 )
-            # -- Set exposing metrics.
+            # --- Exposing metrics.
             env["MIES_SERVICE_MONITOR_MODE"] = "1" if params.metrics else "0"
-            # -- Set emitting operators in synchronous way.
+            # --- Emitting operators in synchronous way.
             env["TASK_QUEUE_ENABLE"] = "0" if params.enforce_eager else "1"
-            # -- Set trust remote code or not.
-            model_config["trustRemoteCode"] = params.trust_remote_code
 
         # Generate JSON configuration file by model instance id
         config_path = install_path.joinpath(
