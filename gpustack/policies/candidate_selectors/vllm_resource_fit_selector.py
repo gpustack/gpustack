@@ -228,7 +228,16 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         messages = [
             f"The model requires {self._gpu_memory_utilization * 100}%(--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
         ]
-        if self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization > 0:
+        if (
+            self._selected_gpu_workers
+            and self._largest_multi_gpu_vram > 0
+            and self._gpu_memory_utilization > 0
+        ):
+            # Manually selected multiple GPUs
+            messages = [
+                f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The selected GPUs provide {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
+            ]
+        elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization > 0:
             messages = [
                 f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
             ]
@@ -463,6 +472,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if total_gpu < 2:
             return None
 
+        if self._selected_gpu_workers and len(self._selected_gpu_workers) == 1:
+            return await self.manually_select_single_worker_multi_gpu_candidates(worker)
+
         allocatable = await self._get_worker_allocatable_resource(worker)
 
         gpu_list = []
@@ -491,52 +503,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             key=lambda gpu: allocatable.vram.get(gpu.index, 0),
             reverse=True,
         )
-
-        if self._selected_gpu_workers and len(self._selected_gpu_workers) == 1:
-            selected_gpu_worker = self._selected_gpu_workers[0]
-            selected_gpu_indexes = self._selected_gpu_indexes_by_worker[
-                selected_gpu_worker
-            ]
-            if worker.name != selected_gpu_worker:
-                return []
-
-            overcommit = False
-            vram_claims = {}
-            for gpu in worker.status.gpu_devices:
-                if gpu.index not in selected_gpu_indexes:
-                    continue
-                if gpu.memory is None or gpu.memory.total is None:
-                    continue
-                vram_claim = (
-                    int(gpu.memory.total * self._gpu_memory_utilization)
-                    if self._gpu_memory_utilization > 0  # LLMs
-                    else int(self._vram_claim / len(selected_gpu_indexes))  # non LLMs
-                )
-                vram_claims[gpu.index] = vram_claim
-
-                # Check if the GPU is overcommitted
-                allocatable_vram = allocatable.vram.get(gpu.index, 0)
-                allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
-                if (
-                    self._gpu_memory_utilization > 0
-                    and allocatable_gpu_memory_utilization
-                    < self._gpu_memory_utilization
-                ):
-                    overcommit = True
-
-            if sum(vram_claims.values()) < self._vram_claim:
-                overcommit = True
-
-            return [
-                ModelInstanceScheduleCandidate(
-                    worker=worker,
-                    gpu_indexes=selected_gpu_indexes,
-                    computed_resource_claim=ComputedResourceClaim(
-                        vram=vram_claims,
-                    ),
-                    overcommit=overcommit,
-                )
-            ]
 
         vram_sum = 0
         gpu_sum = 0
@@ -576,6 +542,64 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             ]
 
         return []
+
+    async def manually_select_single_worker_multi_gpu_candidates(
+        self, worker: Worker
+    ) -> List[ModelInstanceScheduleCandidate]:
+        allocatable = await self._get_worker_allocatable_resource(worker)
+
+        selected_gpu_worker = self._selected_gpu_workers[0]
+        selected_gpu_indexes = self._selected_gpu_indexes_by_worker[selected_gpu_worker]
+        if worker.name != selected_gpu_worker:
+            return []
+
+        overcommit = False
+        total_allocatable_vram = 0
+        satisfied_gpu_count = 0
+        vram_claims = {}
+        for gpu in worker.status.gpu_devices:
+            if gpu.index not in selected_gpu_indexes:
+                continue
+            if gpu.memory is None or gpu.memory.total is None:
+                continue
+            vram_claim = (
+                int(gpu.memory.total * self._gpu_memory_utilization)
+                if self._gpu_memory_utilization > 0  # LLMs
+                else int(self._vram_claim / len(selected_gpu_indexes))  # non LLMs
+            )
+            vram_claims[gpu.index] = vram_claim
+
+            # Check if the GPU is overcommitted
+            allocatable_vram = allocatable.vram.get(gpu.index, 0)
+            allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
+            if (
+                self._gpu_memory_utilization > 0
+                and allocatable_gpu_memory_utilization < self._gpu_memory_utilization
+            ):
+                overcommit = True
+
+            # Record allocation info for scheduling message
+            total_allocatable_vram += allocatable_vram
+            if allocatable_vram / gpu.memory.total > self._gpu_memory_utilization:
+                satisfied_gpu_count += 1
+
+        self._largest_multi_gpu_vram = total_allocatable_vram
+        self._largest_multi_gpu_utilization_satisfied_count = satisfied_gpu_count
+        self._largest_multi_gpu_total = len(selected_gpu_indexes)
+
+        if sum(vram_claims.values()) < self._vram_claim:
+            overcommit = True
+
+        return [
+            ModelInstanceScheduleCandidate(
+                worker=worker,
+                gpu_indexes=selected_gpu_indexes,
+                computed_resource_claim=ComputedResourceClaim(
+                    vram=vram_claims,
+                ),
+                overcommit=overcommit,
+            )
+        ]
 
     async def find_multi_worker_multi_gpu_candidates(
         self, workers: List[Worker]
