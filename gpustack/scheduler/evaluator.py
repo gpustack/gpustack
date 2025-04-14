@@ -21,6 +21,7 @@ from gpustack.schemas.model_evaluations import (
 
 from gpustack.schemas.models import (
     BackendEnum,
+    CategoryEnum,
     SourceEnum,
     get_backend,
     is_audio_model,
@@ -132,8 +133,8 @@ async def evaluate_model(
 
     evaluations = [
         (evaluate_model_input, (session, model)),
-        (evaluate_environment, (model, workers)),
         (evaluate_model_metadata, (config, model)),
+        (evaluate_environment, (model, workers)),
     ]
     for evaluation, args in evaluations:
         compatible, messages = await evaluation(*args)
@@ -223,6 +224,14 @@ async def evaluate_environment(
         return False, [
             "The model requires Linux workers but none are available. Use GGUF models instead."
         ]
+
+    only_windows_workers = all(worker.labels["os"] == "windows" for worker in workers)
+    if (
+        only_windows_workers
+        and model.backend == BackendEnum.VOX_BOX
+        and CategoryEnum.TEXT_TO_SPEECH.value in model.categories
+    ):
+        return False, ["The model is not supported on Windows workers."]
 
     return True, []
 
