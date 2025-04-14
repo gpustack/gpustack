@@ -8,7 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from cachetools import TTLCache
 
 from gpustack.api.exceptions import HTTPException
-from gpustack.config.config import Config
+from gpustack.config.config import Config, VendorEnum
 from gpustack.policies.base import ModelInstanceScheduleCandidate, Worker
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
@@ -225,13 +225,15 @@ async def evaluate_environment(
     model: ModelSpec,
     workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
-    has_linux_workers = any(worker.labels["os"] == "linux" for worker in workers)
+    has_linux_workers = any(worker.labels.get("os") == "linux" for worker in workers)
     if get_backend(model) == BackendEnum.VLLM and not has_linux_workers:
         return False, [
             "The model requires Linux workers but none are available. Use GGUF models instead."
         ]
 
-    only_windows_workers = all(worker.labels["os"] == "windows" for worker in workers)
+    only_windows_workers = all(
+        worker.labels.get("os") == "windows" for worker in workers
+    )
     if (
         only_windows_workers
         and model.backend == BackendEnum.VOX_BOX
@@ -239,7 +241,21 @@ async def evaluate_environment(
     ):
         return False, ["The model is not supported on Windows workers."]
 
+    if model.backend == BackendEnum.ASCEND_MINDIE and not has_ascend_npu(workers):
+        return False, [
+            "The MindIE backend requires Ascend NPUs but none are available."
+        ]
+
     return True, []
+
+
+def has_ascend_npu(workers: List[Worker]) -> bool:
+    for worker in workers:
+        if worker.status and worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                if gpu.vendor == VendorEnum.Huawei.value:
+                    return True
+    return False
 
 
 async def evaluate_model_metadata(
