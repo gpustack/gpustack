@@ -136,6 +136,16 @@ jobs:
           flavor: |
             latest=false
             suffix=${{ matrix.tag_suffix }}
+      - name: Get Build Args
+        id: build-args
+        env:
+          BUILD_ARGS: ${{ join(matrix.build_args, ' ') }}
+        run: |
+          echo "BUILD_ARGS<<EOF" >> $GITHUB_OUTPUT
+          for arg in $BUILD_ARGS; do
+            echo "$arg" >> $GITHUB_OUTPUT
+          done
+          echo "EOF" >> $GITHUB_OUTPUT
       - name: Package
         uses: docker/build-push-action@v5
         id: package
@@ -149,7 +159,7 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
-            ${{ matrix.build_args }}
+            ${{ steps.build-args.outputs.BUILD_ARGS }}
           cache-from: |
             type=registry,ref=gpustack/build-cache:gpustack${{ matrix.tag_suffix }}
           cache-to: |
