@@ -363,6 +363,9 @@ async def find_candidate(
                 "No workers meet the resource requirements."
             ]
             messages.extend(resource_fit_messages)
+        elif candidate and candidate.overcommit:
+            messages.extend(candidates_selector.get_messages())
+
         return candidate, messages
     except Exception as e:
         state_message = (
