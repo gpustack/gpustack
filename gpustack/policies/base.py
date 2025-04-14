@@ -25,6 +25,7 @@ class ModelInstanceScheduleCandidate:
     gpu_indexes: Optional[List[int]]
     computed_resource_claim: ComputedResourceClaim
     score: Optional[float] = None
+    overcommit: Optional[bool] = None
 
     # for multi-worker distributed scheduling
     rpc_servers: Optional[List[ModelInstanceRPCServer]] = None

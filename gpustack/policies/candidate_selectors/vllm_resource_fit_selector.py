@@ -3,7 +3,7 @@ from collections import defaultdict
 import logging
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -280,14 +280,13 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates that fit the GPU resources requirement.
         """
 
-        if not self._gpu_count:
-            self._vram_claim = await estimate_model_vram(
-                self._model, self._cfg.huggingface_token
-            )
-            logger.info(
-                f"Calculated resource claim for model {self._model.readable_source}, "
-                f"claim: {self._vram_claim}"
-            )
+        self._vram_claim = await estimate_model_vram(
+            self._model, self._cfg.huggingface_token
+        )
+        logger.info(
+            f"Calculated resource claim for model {self._model.readable_source}, "
+            f"claim: {self._vram_claim}"
+        )
 
         candidate_functions = [
             self.find_single_worker_single_gpu_full_offloading_candidates,
@@ -301,6 +300,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             )
 
             candidates = await candidate_func(workers)
+
+            if len(candidates) == 1 and candidates[0].overcommit:
+                # Manually selected candidate with overcommit. Also add the message.
+                # It's useful for compatibility check.
+                self._set_messages()
+
             if candidates:
                 return candidates
 
@@ -366,7 +371,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if worker.status.gpu_devices:
             for _, gpu in enumerate(worker.status.gpu_devices):
 
-                if selected_gpu_index and gpu.index != selected_gpu_index:
+                if selected_gpu_index is not None and gpu.index != selected_gpu_index:
                     continue
 
                 gpu_index = gpu.index
@@ -382,12 +387,18 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 if gpu.memory is None or gpu.memory.total == 0:
                     continue
 
-                if (self._vram_claim > allocatable_vram) or (
+                overcommit = False
+                exceeds_vram = self._vram_claim > allocatable_vram
+                exceeds_memory_utilization = (
                     self._gpu_memory_utilization > 0
                     and allocatable_gpu_memory_utilization
                     < self._gpu_memory_utilization
-                ):
-                    continue
+                )
+                if exceeds_vram or exceeds_memory_utilization:
+                    if selected_gpu_index is not None:
+                        overcommit = True
+                    else:
+                        continue
 
                 vram_claim = (
                     int(gpu.memory.total * self._gpu_memory_utilization)
@@ -404,6 +415,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                                 gpu_index: vram_claim,
                             },
                         ),
+                        overcommit=overcommit,
                     )
                 )
 
@@ -488,27 +500,41 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if worker.name != selected_gpu_worker:
                 return []
 
-            vram_claim = {}
-            for gpu_index in selected_gpu_indexes:
-                vram_claim[gpu_index] = (
-                    int(
-                        allocatable.vram.get(gpu_index, 0)
-                        * self._gpu_memory_utilization
-                    )
+            overcommit = False
+            vram_claims = {}
+            for gpu in worker.status.gpu_devices:
+                if gpu.index not in selected_gpu_indexes:
+                    continue
+                if gpu.memory is None or gpu.memory.total is None:
+                    continue
+                vram_claim = (
+                    int(gpu.memory.total * self._gpu_memory_utilization)
                     if self._gpu_memory_utilization > 0  # LLMs
                     else int(self._vram_claim / len(selected_gpu_indexes))  # non LLMs
                 )
+                vram_claims[gpu.index] = vram_claim
 
-            if sum(vram_claim.values()) < self._vram_claim:
-                return []
+                # Check if the GPU is overcommitted
+                allocatable_vram = allocatable.vram.get(gpu.index, 0)
+                allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
+                if (
+                    self._gpu_memory_utilization > 0
+                    and allocatable_gpu_memory_utilization
+                    < self._gpu_memory_utilization
+                ):
+                    overcommit = True
+
+            if sum(vram_claims.values()) < self._vram_claim:
+                overcommit = True
 
             return [
                 ModelInstanceScheduleCandidate(
                     worker=worker,
                     gpu_indexes=selected_gpu_indexes,
                     computed_resource_claim=ComputedResourceClaim(
-                        vram=vram_claim,
+                        vram=vram_claims,
                     ),
+                    overcommit=overcommit,
                 )
             ]
 
@@ -646,7 +672,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         main_worker = workers[0]
         main_worker_name = main_worker.name
         main_gpu_indexes = self._selected_gpu_indexes_by_worker[main_worker_name]
-        main_vram_claim = await self._get_worker_vram_claim(
+        main_vram_claim, overcommit = await self._get_worker_vram_claim(
             main_worker, main_gpu_indexes, self._gpu_memory_utilization
         )
 
@@ -662,9 +688,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             gpu_indexes = self._selected_gpu_indexes_by_worker[worker.name]
-            vram_claim = await self._get_worker_vram_claim(
+            vram_claim, actor_overcommit = await self._get_worker_vram_claim(
                 worker, gpu_indexes, self._gpu_memory_utilization
             )
+            overcommit = overcommit or actor_overcommit
             ray_actors.append(
                 RayActor(
                     worker_id=worker.id,
@@ -685,6 +712,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     vram=main_vram_claim,
                 ),
                 ray_actors=ray_actors,
+                overcommit=overcommit,
             )
         ]
 
@@ -707,26 +735,26 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         worker: Worker,
         gpu_indexes: List[int],
         gpu_memory_utilization: float = 0.9,
-    ) -> Dict[int, int]:
+    ) -> Tuple[Dict[int, int], bool]:
         """
         Given a worker and gpu indexes, get the vram claim according to gpu_memory_utilization.
-        Returns a dictionary of gpu index to vram claim in bytes.
+        Returns a dictionary of gpu index to vram claim in bytes, and a boolean indicating
+        whether the claim exceeds the allocatable vram.
         """
         vram_claim: Dict[int, int] = {}
 
+        overcommit = False
         allocatable = await self._get_worker_allocatable_resource(worker)
         for gpu in worker.status.gpu_devices:
             if gpu.index in gpu_indexes:
                 gpu_vram_claim = int(gpu.memory.total * gpu_memory_utilization)
                 allocatable_vram = allocatable.vram.get(gpu.index, 0)
                 if gpu_vram_claim > allocatable_vram:
-                    # Allocatable seems to be smaller than the expected.
-                    # We claim the maximum allocatable vram and proceed.
-                    gpu_vram_claim = allocatable_vram
+                    overcommit = True
 
                 vram_claim[gpu.index] = gpu_vram_claim
 
-        return vram_claim
+        return vram_claim, overcommit
 
 
 def _create_candidate(

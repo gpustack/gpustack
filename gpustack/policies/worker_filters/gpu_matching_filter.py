@@ -36,4 +36,6 @@ class GPUMatchingFilter(WorkerFilter):
 
             candidates.append(worker)
 
-        return candidates, [f"Matched {len(candidates)} workers by gpu selector."]
+        return candidates, [
+            f"Matched {len(candidates)} {'worker' if len(candidates) == 1 else 'workers'} by gpu selector."
+        ]

@@ -152,6 +152,12 @@ async def evaluate_model(
             "Unable to find a schedulable worker for the model."
         )
         result.scheduling_messages = schedule_messages
+    elif candidate.overcommit:
+        result.compatible = False
+        result.compatibility_messages.append(
+            "Selected GPUs may not have enough resources to run the model."
+        )
+        result.scheduling_messages = schedule_messages
     else:
         result.resource_claim = summarize_candidate_resource_claim(candidate)
 
