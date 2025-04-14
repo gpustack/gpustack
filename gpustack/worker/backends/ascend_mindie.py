@@ -319,9 +319,9 @@ class AscendMindIEServer(InferenceServer):
         # -- Disable exposing metrics.
         env["MIES_SERVICE_MONITOR_MODE"] = "0"
         # -- Enable high performance swapper.
-        env["MIES_USE_MB_SWAPPER"] = "1"
+        # env["MIES_USE_MB_SWAPPER"] = "1"  # Atlas 300I Duo needs to unset this.
         env["MIES_RECOMPUTE_THRESHOLD"] = "0.5"
-        env["MINDIE_LLM_USE_MB_SWAPPER"] = "1"
+        # env["MINDIE_LLM_USE_MB_SWAPPER"] = "1"  # Atlas 300I Duo needs to unset this.
         env["MINDIE_LLM_RECOMPUTE_THRESHOLD"] = "0.5"
         # -- Enforce continues batching.
         env["MINDIE_LLM_CONTINUOUS_BATCHING"] = "1"
