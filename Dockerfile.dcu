@@ -1,8 +1,11 @@
-ARG BASE_IMAGE=gpustack/dcu-base:dtk24.04.3_ubuntu22.04_py3.10_pytorch2.3.0_vllm0.6.2
-
-FROM $BASE_IMAGE
+FROM image.sourcefind.cn:5000/dcu/admin/base/pytorch:2.4.1-ubuntu22.04-dtk25.04-py3.10-fixpy AS base
 
 ARG TARGETPLATFORM
+
+# Install vllm
+RUN pip3 install https://download.sourcefind.cn:65024/file/4/lmslim/DAS1.5/lmslim-0.2.1+das.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip3 install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.6.2+das.opt3.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     python3-venv \
