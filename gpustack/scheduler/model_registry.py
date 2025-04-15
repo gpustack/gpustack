@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.8.2/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.8.4/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 vllm_supported_embedding_architectures = [
     "BertModel",
@@ -28,6 +28,7 @@ vllm_supported_llm_architectures = [
     "BambaForCausalLM",
     "BloomForCausalLM",
     "ChatGLMModel",
+    "ChatGLMForConditionalGeneration",
     "CohereForCausalLM",
     "Cohere2ForCausalLM",
     "DbrxForCausalLM",
@@ -42,6 +43,7 @@ vllm_supported_llm_architectures = [
     "Gemma2ForCausalLM",
     "Gemma3ForCausalLM",
     "GlmForCausalLM",
+    "Glm4ForCausalLM",
     "GPT2LMHeadModel",
     "GPTBigCodeForCausalLM",
     "GPTJForCausalLM",
@@ -58,7 +60,6 @@ vllm_supported_llm_architectures = [
     "JAISLMHeadModel",
     "JambaForCausalLM",
     "LlamaForCausalLM",
-    "Llama4ForCausalLM",
     "LLaMAForCausalLM",
     "MambaForCausalLM",
     "FalconMambaForCausalLM",
@@ -84,6 +85,8 @@ vllm_supported_llm_architectures = [
     "QWenLMHeadModel",
     "Qwen2ForCausalLM",
     "Qwen2MoeForCausalLM",
+    "Qwen3ForCausalLM",
+    "Qwen3MoeForCausalLM",
     "RWForCausalLM",
     "StableLMEpochForCausalLM",
     "StableLmForCausalLM",
@@ -107,6 +110,7 @@ vllm_supported_llm_architectures = [
     "H2OVLChatModel",
     "InternVLChatModel",
     "Idefics3ForConditionalGeneration",
+    "SmolVLMForConditionalGeneration",
     "LlavaForConditionalGeneration",
     "LlavaNextForConditionalGeneration",
     "LlavaNextVideoForConditionalGeneration",
