@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import functools
 from typing import Any, Callable, Dict, List, Optional, Union
-from aiocache import Cache, cached
+from aiocache import Cache, BaseCache
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -37,7 +38,25 @@ async def set_cache_by_key(key: str, value: Any):
 _cache_locks: Dict[str, asyncio.Lock] = {}
 
 
-class locked_cached(cached):
+class locked_cached:
+    def __init__(self, ttl: int = 30, cache: BaseCache = cache):
+        self.cache = cache
+        self.ttl = ttl
+
+    def __call__(self, f):
+        @functools.wraps(f)
+        async def wrapper(*args, **kwargs):
+            return await self.decorator(f, *args, **kwargs)
+
+        wrapper.cache = self.cache
+        return wrapper
+
+    async def get_from_cache(self, key: str):
+        return await self.cache.get(key)
+
+    async def set_in_cache(self, key: str, value: Any):
+        await self.cache.set(key, value, ttl=self.ttl)
+
     async def decorator(self, f, *args, **kwargs):
         # no self arg
         key = build_cache_key(f, *args[1:], **kwargs)
@@ -91,9 +110,14 @@ class UserService:
         return result
 
     async def delete(self, user: User):
+        apikeys = await APIKeyService(self.session).get_by_user_id(user.id)
         result = await user.delete(self.session)
         await delete_cache_by_key(self.get_by_id, user.id)
         await delete_cache_by_key(self.get_by_username, user.username)
+        for apikey in apikeys:
+            await delete_cache_by_key(
+                APIKeyService.get_by_access_key, apikey.access_key
+            )
         return result
 
 
@@ -108,6 +132,14 @@ class APIKeyService:
             return None
         self.session.expunge(result)
         return result
+
+    async def get_by_user_id(self, user_id: int) -> List[ApiKey]:
+        results = await ApiKey.all_by_field(self.session, "user_id", user_id)
+        if results is None:
+            return []
+        for result in results:
+            self.session.expunge(result)
+        return results
 
     async def delete(self, api_key: ApiKey):
         result = await api_key.delete(self.session)
