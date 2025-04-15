@@ -106,7 +106,134 @@ def upgrade() -> None:
                 )
             """)
         )
+    elif conn.dialect.name == 'mysql':
+        # Get existing modelinstancestateenum values
+        result = conn.execute(
+            sa.text("""
+                SELECT COLUMN_TYPE 
+                FROM information_schema.COLUMNS 
+                WHERE TABLE_NAME = 'model_instances' 
+                AND COLUMN_NAME = 'state' 
+                AND TABLE_SCHEMA = DATABASE()
+            """)
+        ).scalar()
 
+        existing_values = []
+        if result:
+            enum_str = result.split("enum(")[1].split(")")[0]
+            existing_values = [v.strip("'") for v in enum_str.split("','")]
+
+        # Add new values (STARTING and UNREACHABLE)
+        new_values = existing_values + ['STARTING', 'UNREACHABLE']
+        new_enum_str = "enum('" + "','".join(new_values) + "')"
+
+        # Construct new ALTER TABLE statement
+        alter_sql = f"""
+            ALTER TABLE model_instances 
+            MODIFY COLUMN state {new_enum_str};
+        """
+
+        # Execute modification
+        conn.execute(sa.text(alter_sql))
+
+        # Get existing workerstateenum values
+        result = conn.execute(
+            sa.text("""
+                SELECT COLUMN_TYPE 
+                FROM information_schema.COLUMNS 
+                WHERE TABLE_NAME = 'workers' 
+                AND COLUMN_NAME = 'state' 
+                AND TABLE_SCHEMA = DATABASE()
+            """)
+        ).scalar()
+
+        existing_values = []
+        if result:
+            enum_str = result.split("enum(")[1].split(")")[0]
+            existing_values = [v.strip("'") for v in enum_str.split("','")]
+
+        # Add new value (UNREACHABLE)
+        if 'UNREACHABLE' not in existing_values:
+            new_values = existing_values + ['UNREACHABLE']
+            new_enum_str = "enum('" + "','".join(new_values) + "')"
+
+            # Construct new ALTER TABLE statement
+            alter_sql = f"""
+                ALTER TABLE workers 
+                MODIFY COLUMN state {new_enum_str};
+            """
+
+            # Execute modification
+            conn.execute(sa.text(alter_sql))
+
+        # Extend model_usage_operation_enum type
+        # Get existing operationenum values
+        result = conn.execute(
+            sa.text("""
+                SELECT COLUMN_TYPE 
+                FROM information_schema.COLUMNS 
+                WHERE TABLE_NAME = 'model_usages' 
+                AND COLUMN_NAME = 'operation' 
+                AND TABLE_SCHEMA = DATABASE()
+            """)
+        ).scalar()
+
+        existing_values = []
+        if result:
+            enum_str = result.split("enum(")[1].split(")")[0]
+            existing_values = [v.strip("'") for v in enum_str.split("','")]
+
+        # Add new values (AUDIO_TRANSCRIPTION and AUDIO_SPEECH)
+        new_values = existing_values.copy()
+        for value in ['AUDIO_TRANSCRIPTION', 'AUDIO_SPEECH']:
+            if value not in existing_values:
+                new_values.append(value)
+
+        new_enum_str = "enum('" + "','".join(new_values) + "')"
+
+        # Construct new ALTER TABLE statement
+        alter_sql = f"""
+            ALTER TABLE model_usages 
+            MODIFY COLUMN operation {new_enum_str};
+        """
+
+        # Execute modification
+        conn.execute(sa.text(alter_sql))
+
+        conn.execute(sa.text(gpustack.schemas.stmt.worker_after_create_view_stmt_mysql))
+        # MySQL-specific worker status update logic
+        conn.execute(
+            sa.text("""
+                UPDATE workers
+                SET status = JSON_SET(
+                    status,
+                    '$.gpu_devices',
+                    (
+                        SELECT JSON_ARRAYAGG(
+                            JSON_OBJECT(
+                                'vendor', device.vendor,
+                                'type', CASE
+                                    WHEN device.vendor = 'NVIDIA' THEN 'cuda'
+                                    WHEN device.vendor = 'Moore Threads' THEN 'musa'
+                                    WHEN device.vendor = 'Apple' THEN 'mps'
+                                    WHEN device.vendor = 'Huawei' THEN 'npu'
+                                    WHEN device.vendor = 'AMD' THEN 'rocm'
+                                    ELSE 'unknown'
+                                END,
+                                'labels', JSON_OBJECT()
+                            )
+                        )
+                        FROM JSON_TABLE(
+                            status->'$.gpu_devices',
+                            '$[*]' COLUMNS(
+                                vendor VARCHAR(255) PATH '$.vendor',
+                                type VARCHAR(255) PATH '$.type'
+                            )
+                        ) AS device
+                    )
+                );
+            """)
+        )
     elif conn.dialect.name == 'sqlite':
         rows = conn.execute(sa.text("SELECT id, status FROM workers")).fetchall()
         for row in rows:
@@ -152,7 +279,15 @@ def upgrade() -> None:
                 (sa.column('text_to_speech') == True, sa.func.to_json(['text_to_speech'])),
                 else_=sa.func.to_json(['llm'])
             )
-
+        elif connection.dialect.name == 'mysql':
+            categories_case = sa.case(
+                (sa.column('reranker') == True, sa.text("JSON_ARRAY('reranker')")),
+                (sa.column('embedding_only') == True, sa.text("JSON_ARRAY('embedding')")),
+                (sa.column('image_only') == True, sa.text("JSON_ARRAY('image')")),
+                (sa.column('speech_to_text') == True, sa.text("JSON_ARRAY('speech_to_text')")),
+                (sa.column('text_to_speech') == True, sa.text("JSON_ARRAY('text_to_speech')")),
+                else_=sa.text("JSON_ARRAY('llm')")
+            )
         models_table = sa.table('models', sa.column('categories', sa.JSON))
         connection.execute(
             sa.update(models_table).values(

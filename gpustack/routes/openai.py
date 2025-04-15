@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Query, Request, Response, status
 from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
-from sqlmodel import col, or_, select
+from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.datastructures import UploadFile
 
@@ -20,7 +20,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.http_proxy.load_balancer import LoadBalancer
-from gpustack.routes.models import build_pg_category_condition
+from gpustack.routes.models import build_category_conditions
 from gpustack.schemas.models import (
     CategoryEnum,
     Model,
@@ -114,42 +114,24 @@ async def list_models(
         description="Include model meta information.",
     ),
 ):
+    all_categories = set(categories)
+    if embedding_only:
+        all_categories.add(CategoryEnum.EMBEDDING.value)
+    if image_only:
+        all_categories.add(CategoryEnum.IMAGE.value)
+    if reranker:
+        all_categories.add(CategoryEnum.RERANKER.value)
+    if speech_to_text:
+        all_categories.add(CategoryEnum.SPEECH_TO_TEXT.value)
+    if text_to_speech:
+        all_categories.add(CategoryEnum.TEXT_TO_SPEECH.value)
+    all_categories = list(all_categories)
+
     statement = select(Model).where(Model.ready_replicas > 0)
 
-    if embedding_only is not None:
-        categories.append(CategoryEnum.EMBEDDING)
-
-    if image_only is not None:
-        categories.append(CategoryEnum.IMAGE)
-
-    if reranker is not None:
-        categories.append(CategoryEnum.RERANKER)
-
-    if speech_to_text is not None:
-        categories.append(CategoryEnum.SPEECH_TO_TEXT)
-
-    if text_to_speech is not None:
-        categories.append(CategoryEnum.TEXT_TO_SPEECH)
-
-    if categories:
-        if session.bind.dialect.name == "sqlite":
-            statement = statement.where(
-                or_(
-                    *[
-                        (
-                            col(Model.categories) == []
-                            if category == ""
-                            else col(Model.categories).contains(category)
-                        )
-                        for category in categories
-                    ]
-                )
-            )
-        else:  # For PostgreSQL
-            category_conditions = [
-                build_pg_category_condition(category) for category in categories
-            ]
-            statement = statement.where(or_(*category_conditions))
+    if all_categories:
+        conditions = build_category_conditions(session, all_categories)
+        statement = statement.where(or_(*conditions))
 
     models = (await session.exec(statement)).all()
     result = SyncPage[OAIModel](data=[], object="list")

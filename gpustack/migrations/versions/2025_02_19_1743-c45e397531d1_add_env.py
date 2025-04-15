@@ -50,6 +50,8 @@ def upgrade() -> None:
     if not table_exists('model_files'):
         if conn.dialect.name == 'postgresql':
             source_enum_type = postgresql.ENUM('HUGGING_FACE', 'OLLAMA_LIBRARY', 'MODEL_SCOPE', 'LOCAL_PATH', name='sourceenum', create_type=False)
+        elif conn.dialect.name == 'mysql':
+            source_enum_type = sa.Enum('HUGGING_FACE', 'OLLAMA_LIBRARY', 'MODEL_SCOPE', 'LOCAL_PATH', name='sourceenum', create_constraint=True)
         else:
             source_enum_type = sqlmodel.sql.sqltypes.AutoString()
 
