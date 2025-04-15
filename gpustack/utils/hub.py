@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import List, Optional
 from pathlib import Path
 import fnmatch
@@ -14,25 +15,9 @@ from gpustack.schemas.models import Model, SourceEnum
 logger = logging.getLogger(__name__)
 
 
-# Ignore more than the default
-# https://github.com/modelscope/modelscope/blob/5a0d8b6523f336d3b055b3d16f3f9293021d9e69/modelscope/utils/hf_util/patcher.py#L18
-MODELSCOPE_CONFIG_IGNORE_FILE_PATTERN = [
-    # The default
-    r'\w+\.bin',
-    r'\w+\.safetensors',
-    r'\w+\.pth',
-    r'\w+\.pt',
-    r'\w+\.h5',
-    r'\w+\.ckpt',
-    # Additional
-    r'\w+\.zip',
-    r'\w+\.onnx',
-    r'\w+\.tar',
-    r'\w+\.gz',
-    r'\w+\.png',
-    r'\w+\.md',
-    r'\w+\.nemo',
-    r'\w+\.llamafile',
+MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
+    '*.json',
+    '*.py',
 ]
 
 
@@ -160,13 +145,27 @@ def get_pretrained_config(model: Model, **kwargs):
             trust_remote_code=trust_remote_code,
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
-        from modelscope import AutoConfig
+        from modelscope import AutoConfig, snapshot_download
 
-        pretrained_config = AutoConfig.from_pretrained(
-            model.model_scope_model_id,
-            trust_remote_code=trust_remote_code,
-            ignore_file_pattern=MODELSCOPE_CONFIG_IGNORE_FILE_PATTERN,
-        )
+        try:
+            # Download first then load config locally.
+            # A temporary workaround for the issue:
+            # https://github.com/modelscope/modelscope/issues/1302
+            config_dir = snapshot_download(
+                model.model_scope_model_id,
+                cache_dir=os.path.join(global_config.cache_dir, "model_scope"),
+                allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
+            )
+            pretrained_config = AutoConfig.from_pretrained(
+                config_dir,
+                trust_remote_code=trust_remote_code,
+            )
+        except ValueError as e:
+            if config_dir in str(e):
+                # Make the message not confusing.
+                raise ValueError(str(e).replace(config_dir, model.model_scope_model_id))
+            else:
+                raise e
     elif model.source == SourceEnum.LOCAL_PATH:
         from transformers import AutoConfig
 
