@@ -25,13 +25,13 @@ placement_strategy_enum = sa.Enum('SPREAD', 'BINPACK', name='placementstrategyen
 def upgrade() -> None:
     # system_loads
     with op.batch_alter_table('system_loads') as batch_op:
-        batch_op.alter_column('memory', new_column_name='ram')
-        batch_op.alter_column('gpu_memory', new_column_name='vram')
+        batch_op.alter_column('memory', new_column_name='ram', existing_type=sa.Float)
+        batch_op.alter_column('gpu_memory', new_column_name='vram', existing_type=sa.Float)
 
     # models
     bind = op.get_bind()
-    if bind.dialect.name == 'postgresql':
-        placement_strategy_enum.create(bind,checkfirst=True)
+    if bind.dialect.name in ('postgresql', 'mysql'):
+        placement_strategy_enum.create(bind, checkfirst=True)
     with op.batch_alter_table('models') as batch_op:
         batch_op.add_column(sa.Column('placement_strategy', placement_strategy_enum, nullable=False, server_default='SPREAD'))
         batch_op.add_column(sa.Column('cpu_offloading', sa.Boolean(), nullable=False, server_default="1"))

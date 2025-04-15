@@ -25,6 +25,35 @@ WHERE
     json_array_length(w.status, '$.gpu_devices') > 0
 """
 
+worker_after_drop_view_stmt_mysql = "DROP VIEW IF EXISTS gpu_devices_view"
+worker_after_create_view_stmt_mysql = """
+CREATE VIEW gpu_devices_view AS
+SELECT
+    CONCAT(w.name, ':', JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.type')), ':', JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.index'))) AS id,
+    w.id AS worker_id,
+    w.name AS worker_name,
+    w.ip AS worker_ip,
+    w.created_at,
+    w.updated_at,
+    w.deleted_at,
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.uuid')) AS uuid,
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.name')) AS name,
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.vendor')) AS vendor,
+    CAST(JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.index')) AS UNSIGNED) AS `index`,
+    JSON_EXTRACT(gpu_device, '$.core') AS core,
+    JSON_EXTRACT(gpu_device, '$.memory') AS memory,
+    CAST(JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.temperature')) AS DECIMAL(10, 2)) AS temperature,
+    JSON_EXTRACT(gpu_device, '$.labels') AS labels,
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.type')) AS type
+FROM
+    workers w,
+    JSON_TABLE(w.status, '$.gpu_devices[*]' COLUMNS(
+        gpu_device JSON PATH '$'
+    )) AS gpu_devices
+WHERE
+    JSON_LENGTH(w.status, '$.gpu_devices') > 0
+"""
+
 worker_after_drop_view_stmt_postgres = "DROP VIEW IF EXISTS gpu_devices_view CASCADE"
 worker_after_create_view_stmt_postgres = """
 CREATE VIEW gpu_devices_view AS

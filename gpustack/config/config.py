@@ -432,11 +432,13 @@ class Config(BaseSettings):
             self.database_url = f"sqlite:///{self.data_dir}/database.db"
             return
 
-        if not self.database_url.startswith(
-            "sqlite://"
-        ) and not self.database_url.startswith("postgresql://"):
+        if (
+            not self.database_url.startswith("sqlite://")
+            and not self.database_url.startswith("postgresql://")
+            and not self.database_url.startswith("mysql://")
+        ):
             raise Exception(
-                "Unsupported database scheme. Supported databases are sqlite and postgresql."
+                "Unsupported database scheme. Supported databases are sqlite, postgresql, and mysql."
             )
 
     @staticmethod
