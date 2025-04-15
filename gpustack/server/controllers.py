@@ -510,11 +510,12 @@ class ModelFileController:
             async with AsyncSession(self._engine) as session:
                 file = await ModelFile.one_by_id(session, file.id)
 
-                if not file:
-                    # In case the file is deleted
-                    return
+            if not file:
+                # In case the file is deleted
+                return
 
-                for instance in file.instances:
+            for instance in file.instances:
+                async with AsyncSession(self._engine) as session:
                     await sync_instance_files_state(session, instance, [file])
         except Exception as e:
             logger.error(f"Failed to reconcile model file {file.id}: {e}")
