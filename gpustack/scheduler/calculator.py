@@ -174,7 +174,7 @@ async def _gguf_parser_command(  # noqa: C901
     command_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(
         command
     )
-    execuable_command = [
+    executable_command = [
         command_path,
         "--in-max-ctx-size",
         "--skip-tokenizer",
@@ -193,98 +193,98 @@ async def _gguf_parser_command(  # noqa: C901
     if ctx_size is None:
         ctx_size = "8192"
 
-    execuable_command.extend(["--ctx-size", ctx_size])
+    executable_command.extend(["--ctx-size", ctx_size])
 
     add_bool_flag(
         model.backend_parameters,
         ["image-no-text-encoder-model-offload"],
-        execuable_command,
+        executable_command,
         "--image-no-text-encoder-model-offload",
     )
     add_bool_flag(
         model.backend_parameters,
         ["image-no-vae-model-offload"],
-        execuable_command,
+        executable_command,
         "--image-no-vae-model-offload",
     )
     add_bool_flag(
         model.backend_parameters,
         ["image-no-vae-tiling"],
-        execuable_command,
+        executable_command,
         "--image-no-vae-tiling",
     )
     add_bool_flag(
         model.backend_parameters,
         ["flash-attention", "flash-attn", "fa", "diffusion-fa"],
-        execuable_command,
+        executable_command,
         "--flash-attention",
     )
 
     add_parameter_with_value(
         model.backend_parameters,
         ["image-max-height"],
-        execuable_command,
+        executable_command,
         "--image-max-height",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["image-max-width"],
-        execuable_command,
+        executable_command,
         "--image-max-width",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["visual-max-image-size"],
-        execuable_command,
+        executable_command,
         "--visual-max-image-size",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["cache-type-k", "ctk"],
-        execuable_command,
+        executable_command,
         "--cache-type-k",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["cache-type-v", "ctv"],
-        execuable_command,
+        executable_command,
         "--cache-type-v",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["batch-size", "b"],
-        execuable_command,
+        executable_command,
         "--batch-size",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["ubatch-size", "ub"],
-        execuable_command,
+        executable_command,
         "--ubatch-size",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["split-mode", "sm"],
-        execuable_command,
+        executable_command,
         "--split-mode",
     )
     add_parameter_with_value(
         model.backend_parameters,
         ["platform-footprint"],
-        execuable_command,
+        executable_command,
         "--platform-footprint",
     )
 
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
-        execuable_command.extend(["--cache-path", cache_dir])
+        executable_command.extend(["--cache-path", cache_dir])
 
     if offload == GPUOffloadEnum.Full:
-        execuable_command.extend(["--gpu-layers", "-1"])
+        executable_command.extend(["--gpu-layers", "-1"])
     elif offload == GPUOffloadEnum.Partial:
-        execuable_command.extend(["--gpu-layers-step", "1"])
+        executable_command.extend(["--gpu-layers-step", "1"])
     elif offload == GPUOffloadEnum.Disable:
-        execuable_command.extend(["--gpu-layers", "0"])
+        executable_command.extend(["--gpu-layers", "0"])
 
     tensor_split = kwargs.get("tensor_split")
     if tensor_split:
@@ -296,16 +296,16 @@ async def _gguf_parser_command(  # noqa: C901
             tensor_split_str = ",".join(
                 [str(int(i / (1024 * 1024))) for i in tensor_split]
             )
-        execuable_command.extend(["--tensor-split", tensor_split_str])
+        executable_command.extend(["--tensor-split", tensor_split_str])
 
     rpc = kwargs.get("rpc")
     if rpc:
         rpc_str = ",".join([v for v in rpc])
-        execuable_command.extend(["--rpc", rpc_str])
+        executable_command.extend(["--rpc", rpc_str])
 
     source_args = await _gguf_parser_command_args_from_source(model, **kwargs)
-    execuable_command.extend(source_args)
-    return execuable_command
+    executable_command.extend(source_args)
+    return executable_command
 
 
 async def calculate_model_resource_claim(
