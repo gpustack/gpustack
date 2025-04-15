@@ -7,7 +7,7 @@ readme = "README.md"
 include = ["*/third_party/config/**/*","*/ui/**/*", "gpustack.pth"]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10,<3.13"
 fastapi = "^0.115.0"
 sqlmodel = "^0.0.18"
 pydantic = ">=2.9.0,<2.10.0"
@@ -39,7 +39,7 @@ cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = ">=1.22.3,<1.23"
 ray = {version = "2.43.0", extras = ["default"]} # Align with BUILTIN_RAY_VERSION in tools_manager.py
-vllm = {version = "0.8.3", optional = true}
+vllm = {version = "0.8.4", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
 transformers = "^4.51.1"
@@ -48,7 +48,7 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = {version = "0.0.12", optional = true}
+vox-box = {version = "0.0.13", optional = true}
 
 tenacity = "^9.0.0"
 aiocache = "^0.12.3"
