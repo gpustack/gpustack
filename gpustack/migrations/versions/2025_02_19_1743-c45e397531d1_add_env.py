@@ -143,14 +143,14 @@ def migrate_legacy_hf_cache():
             try:
                 if os.path.islink(src_path):
                     real_path = os.path.realpath(src_path)
-                    shutil.copy2(real_path, dst_path)
+                    shutil.move(real_path, dst_path)
                 else:
-                    shutil.copy2(src_path, dst_path)
+                    shutil.move(src_path, dst_path)
             except Exception as e:
-                logger.warning(f"Failed to copy {src_path} to {dst_path}: {e}")
+                logger.warning(f"Failed to move {src_path} to {dst_path}: {e}")
 
         shutil.rmtree(model_dir, ignore_errors=True)
-        logger.info(f"Migrated from {first_snapshot} to {target_path}")
+        logger.info(f"Migrated {first_snapshot} to {target_path}")
 
 
 def remove_legacy_ms_cache_locks():
