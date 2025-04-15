@@ -9,6 +9,7 @@ from gpustack.api.exceptions import (
 from gpustack.security import get_secret_hash
 from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
+from gpustack.server.services import UserService
 
 router = APIRouter()
 
@@ -83,12 +84,13 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
 
 @router.delete("/{id}")
 async def delete_user(session: SessionDep, id: int):
-    user = await User.one_by_id(session, id)
+    user_service = UserService(session)
+    user = await user_service.get_by_id(id)
     if not user:
         raise NotFoundException(message="User not found")
 
     try:
-        await user.delete(session)
+        await user_service.delete(user)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete user: {e}")
 
