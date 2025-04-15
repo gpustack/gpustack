@@ -392,7 +392,7 @@ class AscendMindIEServer(InferenceServer):
         # - Listening config
         server_config["ipAddress"] = "0.0.0.0"
         server_config["allowAllZeroIpListening"] = True
-        server_config["maxLinkNum"] = 2000
+        server_config["maxLinkNum"] = 1000
         server_config["port"] = self._model_instance.port
         server_config["managementPort"] = self._model_instance.port
         server_config["metricsPort"] = self._model_instance.port
