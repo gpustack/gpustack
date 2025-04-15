@@ -626,6 +626,9 @@ class ModelScopeDownloader:
         group_or_owner, name = model_id_to_group_owner_name(model_id)
         lock_filename = os.path.join(cache_dir, group_or_owner, f"{name}.lock")
 
+        if local_dir is None:
+            local_dir = os.path.join(cache_dir, group_or_owner, name)
+
         logger.info(f"Retriving file lock: {lock_filename}")
         with SoftFileLock(lock_filename):
             if file_path:
@@ -640,15 +643,12 @@ class ModelScopeDownloader:
                 model_dir = modelscope_snapshot_download(
                     model_id=model_id,
                     local_dir=local_dir,
-                    cache_dir=cache_dir,
                     allow_patterns=matching_files,
                 )
                 return [os.path.join(model_dir, file) for file in matching_files]
 
-            return [
-                modelscope_snapshot_download(
-                    model_id=model_id,
-                    local_dir=local_dir,
-                    cache_dir=cache_dir,
-                )
-            ]
+            modelscope_snapshot_download(
+                model_id=model_id,
+                local_dir=local_dir,
+            )
+            return [local_dir]
