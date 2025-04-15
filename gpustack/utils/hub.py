@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import List, Optional
 from pathlib import Path
 import fnmatch
@@ -153,7 +152,6 @@ def get_pretrained_config(model: Model, **kwargs):
             # https://github.com/modelscope/modelscope/issues/1302
             config_dir = snapshot_download(
                 model.model_scope_model_id,
-                cache_dir=os.path.join(global_config.cache_dir, "model_scope"),
                 allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
             )
             pretrained_config = AutoConfig.from_pretrained(
