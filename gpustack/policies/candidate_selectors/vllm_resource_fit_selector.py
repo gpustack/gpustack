@@ -14,6 +14,7 @@ from gpustack.policies.utils import (
     get_worker_model_instances,
 )
 from gpustack.schemas.models import (
+    BackendEnum,
     CategoryEnum,
     ComputedResourceClaim,
     Model,
@@ -200,16 +201,29 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._gpu_count = world_size
                 self._vram_claim = 0
 
+        self._set_gpu_memory_utilization()
+        self._set_num_attention_heads()
+
+    def _set_gpu_memory_utilization(self):
         self._gpu_memory_utilization = 0.9
+        model = self._model
         if model.categories and CategoryEnum.LLM not in model.categories:
             # gpu memory utilization is not used for non-LLM models
             self._gpu_memory_utilization = 0
 
-        gmu = find_parameter(model.backend_parameters, ["gpu-memory-utilization"])
+        self._gpu_memory_utilization_parameter_name = "gpu-memory-utilization"
+        if model.backend == BackendEnum.ASCEND_MINDIE:
+            # Ascend MindIE uses a different parameter name
+            self._gpu_memory_utilization_parameter_name = "npu-memory-fraction"
+
+        gmu = find_parameter(
+            model.backend_parameters, [self._gpu_memory_utilization_parameter_name]
+        )
         if gmu:
             self._gpu_memory_utilization = float(gmu)
 
-        self._num_attention_heads = get_model_num_attention_heads(model)
+    def _set_num_attention_heads(self):
+        self._num_attention_heads = get_model_num_attention_heads(self._model)
         if (
             self._gpu_count
             and self._num_attention_heads
@@ -226,7 +240,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             return
 
         messages = [
-            f"The model requires {self._gpu_memory_utilization * 100}%(--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
+            f"The model requires {self._gpu_memory_utilization * 100}%(--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
         ]
         if (
             self._selected_gpu_workers
@@ -235,15 +249,15 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         ):
             # Manually selected multiple GPUs
             messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The selected GPUs provide {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
+                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The selected GPUs provide {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
             ]
         elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization > 0:
             messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
+                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
             ]
         elif self._largest_single_gpu_vram > 0 and self._gpu_memory_utilization > 0:
             messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--gpu-memory-utilization={self._gpu_memory_utilization}) VRAM on a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM and {self._largest_single_gpu_vram_utilization * 100:.2f}% allocatable VRAM ratio."
+                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM on a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM and {self._largest_single_gpu_vram_utilization * 100:.2f}% allocatable VRAM ratio."
             ]
         elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization == 0:
             # Non-LLM models
