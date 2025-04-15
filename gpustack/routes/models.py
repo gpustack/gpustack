@@ -4,7 +4,8 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import col, or_
+from sqlalchemy.dialects.mysql import JSON
+from sqlmodel import col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
@@ -62,21 +63,8 @@ async def get_models(
 
     extra_conditions = []
     if categories:
-        if session.bind.dialect.name == "sqlite":
-            category_conditions = [
-                (
-                    col(Model.categories) == []
-                    if category == ""
-                    else col(Model.categories).contains(category)
-                )
-                for category in categories
-            ]
-            extra_conditions.append(or_(*category_conditions))
-        else:  # For PostgreSQL
-            category_conditions = [
-                build_pg_category_condition(category) for category in categories
-            ]
-            extra_conditions.append(or_(*category_conditions))
+        conditions = build_category_conditions(session, categories)
+        extra_conditions.append(or_(*conditions))
 
     return await Model.paginated_by_query(
         session=session,
@@ -93,6 +81,34 @@ def build_pg_category_condition(category: str):
     return cast(Model.categories, JSONB).op('?')(
         bindparam(f"category_{category}", category)
     )
+
+
+# 新增MySQL分类category条件构建函数
+def build_mysql_category_condition(category: str):
+    if category == "":
+        return func.json_length(Model.categories) == 0
+    return func.json_contains(
+        Model.categories, func.cast(func.json_quote(category), JSON), '$'
+    )
+
+
+def build_category_conditions(session, categories):
+    dialect = session.bind.dialect.name
+    if dialect == "sqlite":
+        return [
+            (
+                col(Model.categories) == []
+                if category == ""
+                else col(Model.categories).contains(category)
+            )
+            for category in categories
+        ]
+    elif dialect == "postgresql":
+        return [build_pg_category_condition(category) for category in categories]
+    elif dialect == "mysql":
+        return [build_mysql_category_condition(category) for category in categories]
+    else:
+        raise NotImplementedError(f'Unsupported database {dialect}')
 
 
 def categories_filter(data: Model, categories: Optional[List[str]]):

@@ -20,6 +20,8 @@ from gpustack.schemas.stmt import (
     worker_after_drop_view_stmt_sqlite,
     worker_after_create_view_stmt_postgres,
     worker_after_drop_view_stmt_postgres,
+    worker_after_create_view_stmt_mysql,
+    worker_after_drop_view_stmt_mysql,
 )
 
 _engine = None
@@ -55,6 +57,9 @@ async def init_db(db_url: str):
             db_url = re.sub(r'^sqlite://', 'sqlite+aiosqlite://', db_url)
         elif db_url.startswith("postgresql://"):
             db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+        elif db_url.startswith("mysql+pymysql://"):
+            # pymysql for alembic migration, asyncmy for sqlalchemy
+            db_url = re.sub(r'^mysql\+pymysql://', 'mysql+asyncmy://', db_url)
         else:
             raise Exception(f"Unsupported database URL: {db_url}")
 
@@ -90,6 +95,9 @@ def listen_events(engine: AsyncEngine):
     if engine.dialect.name == "postgresql":
         worker_after_drop_view_stmt = worker_after_drop_view_stmt_postgres
         worker_after_create_view_stmt = worker_after_create_view_stmt_postgres
+    elif engine.dialect.name == "mysql":
+        worker_after_drop_view_stmt = worker_after_drop_view_stmt_mysql
+        worker_after_create_view_stmt = worker_after_create_view_stmt_mysql
     else:
         worker_after_drop_view_stmt = worker_after_drop_view_stmt_sqlite
         worker_after_create_view_stmt = worker_after_create_view_stmt_sqlite
