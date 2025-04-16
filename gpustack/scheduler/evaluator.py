@@ -114,7 +114,12 @@ async def evaluate_model_with_cache(
         result = await evaluate_model(config, session, model, workers)
         evaluate_cache[cache_key] = result
     except Exception as e:
-        result = ModelEvaluationResult(error=True, error_message=str(e))
+        logger.error(
+            f"Error evaluating model {model.name or model.readable_source}: {e}"
+        )
+        result = ModelEvaluationResult(
+            compatible=False, error=True, error_message=str(e)
+        )
 
     return result
 
@@ -273,7 +278,7 @@ async def evaluate_model_metadata(
             await scheduler.evaluate_audio_model(config, model)
         else:
             await scheduler.evaluate_pretrained_config(model)
-    except Exception as e:
+    except ValueError as e:
         return False, [str(e)]
 
     return True, []

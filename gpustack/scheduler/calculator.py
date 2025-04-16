@@ -472,9 +472,13 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
         elif model.source == SourceEnum.LOCAL_PATH:
             return ["--path", model.local_path]
     except asyncio.TimeoutError:
-        raise Exception(f"Timeout when getting the file for model {model.name}")
+        raise Exception(
+            f"Timeout when getting the file for model {model.name or model.readable_source}"
+        )
     except Exception as e:
-        raise Exception(f"Failed to get the file for model {model.name}, error: {e}")
+        raise Exception(
+            f"Failed to get the file for model {model.name or model.readable_source}, error: {e}"
+        )
 
 
 def hf_model_filename(

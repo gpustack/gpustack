@@ -269,7 +269,12 @@ class Scheduler:
             candidate = None
             messages = []
             if workers and model:
-                candidate, messages = await find_candidate(self._config, model, workers)
+                try:
+                    candidate, messages = await find_candidate(
+                        self._config, model, workers
+                    )
+                except Exception as e:
+                    state_message = f"Failed to find candidate: {e}"
 
             model_instance = await ModelInstance.one_by_id(session, instance.id)
             if candidate is None:
@@ -328,50 +333,42 @@ async def find_candidate(
                 - The schedule candidate.
                 - A list of messages for the scheduling process.
     """
-    try:
-        filters = [
-            GPUMatchingFilter(model),
-            LabelMatchingFilter(model),
-            StatusFilter(model),
+    filters = [
+        GPUMatchingFilter(model),
+        LabelMatchingFilter(model),
+        StatusFilter(model),
+    ]
+
+    worker_filter_chain = WorkerFilterChain(filters)
+    workers, messages = await worker_filter_chain.filter(workers)
+
+    candidates_selector: ScheduleCandidatesSelector = None
+    if is_gguf_model(model):
+        candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
+    elif is_audio_model(model):
+        candidates_selector = VoxBoxResourceFitSelector(config, model, config.cache_dir)
+    else:
+        try:
+            candidates_selector = VLLMResourceFitSelector(config, model)
+        except Exception as e:
+            return None, [f"VLLM resource fit selector init failed: {e}"]
+
+    candidates = await candidates_selector.select_candidates(workers)
+
+    placement_scorer = PlacementScorer(model)
+    candidates = await placement_scorer.score(candidates)
+
+    candidate = pick_highest_score_candidate(candidates)
+
+    if candidate is None and len(workers) > 0:
+        resource_fit_messages = candidates_selector.get_messages() or [
+            "No workers meet the resource requirements."
         ]
+        messages.extend(resource_fit_messages)
+    elif candidate and candidate.overcommit:
+        messages.extend(candidates_selector.get_messages())
 
-        worker_filter_chain = WorkerFilterChain(filters)
-        workers, messages = await worker_filter_chain.filter(workers)
-
-        candidates_selector: ScheduleCandidatesSelector = None
-        if is_gguf_model(model):
-            candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
-        elif is_audio_model(model):
-            candidates_selector = VoxBoxResourceFitSelector(
-                config, model, config.cache_dir
-            )
-        else:
-            try:
-                candidates_selector = VLLMResourceFitSelector(config, model)
-            except Exception as e:
-                return None, [f"VLLM resource fit selector init failed: {e}"]
-
-        candidates = await candidates_selector.select_candidates(workers)
-
-        placement_scorer = PlacementScorer(model)
-        candidates = await placement_scorer.score(candidates)
-
-        candidate = pick_highest_score_candidate(candidates)
-
-        if candidate is None and len(workers) > 0:
-            resource_fit_messages = candidates_selector.get_messages() or [
-                "No workers meet the resource requirements."
-            ]
-            messages.extend(resource_fit_messages)
-        elif candidate and candidate.overcommit:
-            messages.extend(candidates_selector.get_messages())
-
-        return candidate, messages
-    except Exception as e:
-        state_message = (
-            f"Failed to find candidate for model {model.readable_source}: {e}"
-        )
-        logger.error(state_message)
+    return candidate, messages
 
 
 def pick_highest_score_candidate(candidates: List[ModelInstanceScheduleCandidate]):
@@ -471,7 +468,7 @@ async def evaluate_audio_model(
 
     supported = model_dict.get("supported", False)
     if not supported:
-        raise Exception("Not a supported model.")
+        raise ValueError("Not a supported model.")
 
     should_update = False
     task_type = model_dict.get("task_type")
@@ -524,12 +521,14 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
 
     architectures = getattr(pretrained_config, "architectures", []) or []
     if not architectures:
-        raise Exception("Unknown model architectures.")
+        raise ValueError("Not a supported model. Unrecognized architecture.")
 
     model_type = detect_model_type(architectures)
 
     if model_type == CategoryEnum.UNKNOWN:
-        raise Exception(f"Model architectures {architectures} are not supported.")
+        raise ValueError(
+            f"Not a supported model. Detected architectures: {architectures}."
+        )
 
     return set_model_categories(model, model_type)
 
@@ -556,19 +555,19 @@ def should_skip_architecture_check(model: Model) -> bool:
     return False
 
 
-def simplify_auto_config_value_error(e: ValueError) -> Exception:
+def simplify_auto_config_value_error(e: ValueError) -> ValueError:
     """
     Simplify the error message for ValueError exceptions.
     """
     message = str(e)
     if "option `trust_remote_code=True`" in message:
-        return Exception(
+        return ValueError(
             message.replace(
                 "option `trust_remote_code=True`",
                 "backend parameter `--trust-remote-code`",
             )
         )
-    return Exception("Not a supported model.")
+    return ValueError("Not a supported model.")
 
 
 def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
