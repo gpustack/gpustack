@@ -22,7 +22,7 @@ from gpustack.schemas.models import (
     is_audio_model,
     BackendEnum,
 )
-from gpustack.schemas.workers import VendorEnum, Worker
+from gpustack.schemas.workers import GPUDeviceInfo, VendorEnum, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
@@ -31,7 +31,7 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
-from gpustack.server.services import ModelService
+from gpustack.server.services import ModelService, WorkerService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
@@ -194,19 +194,21 @@ async def validate_gpu_ids(  # noqa: C901
         gpu_index = safe_int(matched.get("gpu_index"), -1)
         worker_name_set.add(worker_name)
 
-        worker = await Worker.one_by_field(session, "name", worker_name)
+        worker = await WorkerService(session).get_by_name(worker_name)
         if not worker:
             raise BadRequestException(message=f"Worker {worker_name} not found")
 
-        if audio_model:
-            for worker_gpu in worker.status.gpu_devices:
-                if (
-                    worker_gpu.index == gpu_index
-                    and worker_gpu.vendor != VendorEnum.NVIDIA.value
-                ):
-                    raise BadRequestException(
-                        "Audio models are supported only on NVIDIA GPUs and CPUs."
-                    )
+        gpu = (
+            next(
+                (gpu for gpu in worker.status.gpu_devices if gpu.index == gpu_index),
+                None,
+            )
+            if worker.status and worker.status.gpu_devices
+            else None
+        )
+        if gpu:
+            validate_gpu(gpu, is_audio_model=audio_model, model_backend=model_backend)
+
         worker_os = (
             worker.labels.get("os", "unknown")
             if worker.labels is not None
@@ -234,6 +236,32 @@ async def validate_gpu_ids(  # noqa: C901
             raise BadRequestException(
                 message="Use tensor-split and gpu-selector at the same time is not allowed."
             )
+
+
+def validate_gpu(
+    gpu_device: GPUDeviceInfo, is_audio_model: bool = False, model_backend: str = ""
+):
+    if is_audio_model and gpu_device.vendor != VendorEnum.NVIDIA.value:
+        raise BadRequestException(
+            "Audio models are supported only on NVIDIA GPUs and CPUs."
+        )
+
+    if (
+        model_backend == BackendEnum.ASCEND_MINDIE
+        and gpu_device.vendor != VendorEnum.Huawei.value
+    ):
+        raise BadRequestException(
+            f"Ascend MindIE backend requires Ascend NPUs. Selected {gpu_device.vendor} GPU is not supported."
+        )
+
+    if model_backend == BackendEnum.VLLM and gpu_device.vendor not in [
+        VendorEnum.NVIDIA.value,
+        VendorEnum.AMD.value,
+        VendorEnum.Hygon.value,
+    ]:
+        raise BadRequestException(
+            f"vLLM backend is not supported on {gpu_device.vendor} GPUs."
+        )
 
 
 async def validate_distributed_vllm_limit_per_worker(
