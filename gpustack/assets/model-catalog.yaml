@@ -407,6 +407,44 @@
       backend_parameters:
         - --enable-auto-tool-choice
         - --tool-call-parser=mistral
+- name: Mistral Small 3.1
+  description: Mistral Small 3.1 (2503) is built upon Mistral Small 3 (2501). It adds state-of-the-art vision understanding and enhances long context capabilities up to 128k tokens without compromising text performance. With 24 billion parameters, this model achieves top-tier capabilities in both text and vision tasks.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes:
+    - 24
+  licenses:
+    - apache-2.0
+  release_date: "2025-03-17"
+  templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      source: huggingface
+      huggingface_repo_id: unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/Mistral-Small-3.1-24B-Instruct-2503
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=mistral
 - name: Mistral Small
   description: Mistral Small is a lightweight model designed for cost-effective use in tasks like translation and summarization.
   home: https://mistral.ai
@@ -1269,6 +1307,27 @@
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: microsoft/Phi-3.5-vision-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+- name: InternVL3
+  description: InternVL3 is an advanced multimodal large language model (MLLM) series that demonstrates superior overall performance. InternVL3 exhibits superior multimodal perception and reasoning capabilities, while further extending its multimodal capabilities to encompass tool usage, GUI agents, industrial image analysis, 3D vision perception, and more.
+  home: https://github.com/opengvlab
+  icon: /static/catalog_icons/OpenGVLab.jpeg
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+    - vision
+  sizes: [1, 2, 8, 9, 14, 38, 78]
+  licenses:
+    - mit
+  release_date: "2025-04-11"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: OpenGVLab/InternVL3-{size}B
       replicas: 1
       backend: vllm
       backend_parameters:
