@@ -1,9 +1,0 @@
-ARG BASE_IMAGE=image.sourcefind.cn:5000/dcu/admin/base/pytorch:2.3.0-ubuntu22.04-dtk24.04.3-py3.10
-
-FROM $BASE_IMAGE
-
-ARG TARGETPLATFORM
-
-# Install vllm
-RUN pip3 install https://download.sourcefind.cn:65024/directlink/4/lmslim/DAS1.3/lmslim-0.1.2+das.dtk24043-cp310-cp310-manylinux_2_28_x86_64.whl \
-    && pip3 install https://download.sourcefind.cn:65024/directlink/4/vllm/DAS1.3/vllm-0.6.2+das.opt1.dtk24043-cp310-cp310-manylinux_2_28_x86_64.whl
