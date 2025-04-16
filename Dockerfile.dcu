@@ -1,33 +1,30 @@
-FROM image.sourcefind.cn:5000/dcu/admin/base/pytorch:2.4.1-ubuntu22.04-dtk25.04-py3.10-fixpy AS base
+FROM image.sourcefind.cn:5000/dcu/admin/base/pytorch:2.4.1-ubuntu22.04-dtk25.04-py3.10-fixpy
 
-ARG TARGETPLATFORM
-
-# Install vllm
-RUN pip3 install https://download.sourcefind.cn:65024/file/4/lmslim/DAS1.5/lmslim-0.2.1+das.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
-    && pip3 install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.6.2+das.opt3.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl
-
+ENV PATH="/root/.local/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && apt-get install -y \
     python3-venv \
     tzdata \
+    iproute2 \
+    iputils-ping \
     build-essential \
     tini \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace/gpustack
-RUN cd /workspace/gpustack && make build
 
-# Install GPUStack
-RUN python3 -m pip install pipx \
-    && USER_BASE_BIN=$(python3 -m site --user-base)/bin \
-    && export PATH="$USER_BASE_BIN:$PATH" \
-    && pipx ensurepath --force \
-    && WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio])" \
+RUN cd /workspace/gpustack && make build \
+    && pip install https://download.sourcefind.cn:65024/file/4/lmslim/DAS1.5/lmslim-0.2.1+das.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.6.2+das.opt3.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && python3 -m pip install pipx \
+    && WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" \
+    && echo $WHEEL_PACKAGE \
     && pipx install $WHEEL_PACKAGE \
+    && pip cache purge \
     && rm -rf /workspace/gpustack
 
-RUN /root/.local/bin/gpustack download-tools
+RUN gpustack download-tools --device dcu \
+    && ln -s $(which vllm) /root/.local/share/pipx/venvs/gpustack/bin/vllm
 
-RUN ln -s $(which vllm) /root/.local/share/pipx/venvs/gpustack/bin/vllm
-
-ENTRYPOINT [ "tini", "--", "/root/.local/bin/gpustack", "start" ]
+ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
