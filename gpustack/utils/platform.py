@@ -146,6 +146,16 @@ def get_cuda_version() -> str:
     """
     Returns the CUDA toolkit version installed on the system.
     """
+    if os.environ.get("CUDA_VERSION"):
+        return os.environ["CUDA_VERSION"]
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return torch.version.cuda
+    except ImportError:
+        pass
 
     if is_command_available("nvcc"):
         try:
