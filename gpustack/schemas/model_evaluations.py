@@ -22,6 +22,9 @@ class ModelEvaluationResult(BaseModel):
     default_spec: Optional[ModelSpec] = None
     resource_claim: Optional[ResourceClaim] = None
 
+    error: Optional[bool] = None
+    error_message: Optional[str] = None
+
     model_config = ConfigDict(protected_namespaces=())
 
 

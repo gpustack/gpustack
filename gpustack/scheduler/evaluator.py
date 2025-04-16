@@ -110,8 +110,12 @@ async def evaluate_model_with_cache(
         )
         return evaluate_cache[cache_key]
 
-    result = await evaluate_model(config, session, model, workers)
-    evaluate_cache[cache_key] = result
+    try:
+        result = await evaluate_model(config, session, model, workers)
+        evaluate_cache[cache_key] = result
+    except Exception as e:
+        result = ModelEvaluationResult(error=True, error_message=str(e))
+
     return result
 
 
