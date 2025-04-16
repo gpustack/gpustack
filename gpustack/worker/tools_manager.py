@@ -459,8 +459,6 @@ class ToolsManager:
         """
         Gets the appropriate CUDA version of the llama-box based on the system's CUDA version.
         """
-        if os.getenv("LLAMA_BOX_CUDA_VERSION", ""):
-            return os.getenv("LLAMA_BOX_CUDA_VERSION")
 
         default_version = "12.4"
         cuda_version = platform.get_cuda_version()
