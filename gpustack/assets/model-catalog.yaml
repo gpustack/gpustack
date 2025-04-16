@@ -335,8 +335,8 @@
       huggingface_repo_id: Qwen/Qwen2.5-Coder-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
-- name: QwQ Preview
-  description: QwQ-32B-Preview is an experimental research model developed by the Qwen Team, focused on advancing AI reasoning capabilities.
+- name: QwQ
+  description: QwQ is the reasoning model of the Qwen series. Compared with conventional instruction-tuned models, QwQ, which is capable of thinking and reasoning, can achieve significantly enhanced performance in downstream tasks, especially hard problems.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
   categories:
@@ -347,18 +347,16 @@
     - 32
   licenses:
     - apache-2.0
-  release_date: "2024-11-28"
+  release_date: "2025-03-06"
   templates:
     - quantizations:
-        - Q2_K_L
-        - Q3_K_L
-        - Q4_K_M
-        - Q5_K_M
-        - Q6_K_L
-        - Q8_0
-        - bf16
+        - q4_k_m
+        - q5_k_m
+        - q6_k
+        - q8_0
+        - fp16
       source: huggingface
-      huggingface_repo_id: bartowski/QwQ-32B-Preview-GGUF
+      huggingface_repo_id: Qwen/QwQ-32B-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
@@ -366,7 +364,7 @@
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: huggingface
-      huggingface_repo_id: Qwen/QwQ-32B-Preview
+      huggingface_repo_id: Qwen/QwQ-32B
       replicas: 1
       backend: vllm
 - name: Mistral
