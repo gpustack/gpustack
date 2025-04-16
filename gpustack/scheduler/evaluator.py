@@ -28,6 +28,7 @@ from gpustack.schemas.models import (
     is_gguf_model,
 )
 from gpustack.utils.hub import (
+    auth_check,
     get_hugging_face_model_min_gguf_path,
     get_model_scope_model_min_gguf_path,
 )
@@ -272,6 +273,12 @@ async def evaluate_model_metadata(
     model: ModelSpec,
 ) -> Tuple[bool, List[str]]:
     try:
+        await run_in_thread(
+            auth_check,
+            timeout=15,
+            model=model,
+            huggingface_token=config.huggingface_token,
+        )
         if is_gguf_model(model):
             await scheduler.evaluate_gguf_model(config, model)
         elif is_audio_model(model):

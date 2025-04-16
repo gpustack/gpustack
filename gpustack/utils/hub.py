@@ -7,6 +7,8 @@ from huggingface_hub.utils import validate_repo_id
 from modelscope.hub.api import HubApi
 from transformers import PretrainedConfig
 from huggingface_hub import HfApi
+from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
+from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, SourceEnum
@@ -291,6 +293,32 @@ def get_hugging_face_model_min_gguf_path(
                 return gguf_file
 
     return gguf_files[0]
+
+
+def auth_check(
+    model: Model,
+    huggingface_token: Optional[str] = None,
+):
+    if model.source == SourceEnum.HUGGING_FACE:
+        api = HfApi(token=huggingface_token)
+        try:
+            api.auth_check(model.huggingface_repo_id)
+        except GatedRepoError:
+            raise Exception(
+                "Access to the model is restricted. Please set a valid Huggingface token with proper permissions in the GPUStack server configuration."
+            )
+        except HfHubHTTPError as e:
+            if e.response.status_code in [401, 403]:
+                raise Exception(
+                    "Access to the model is restricted. Please set a valid Huggingface token with proper permissions in the GPUStack server configuration."
+                )
+    if model.source == SourceEnum.MODEL_SCOPE:
+        api = HubApi()
+        try:
+            api.get_model_files(model.model_scope_model_id)
+        except HTTPError as e:
+            if e.response.status_code in [401, 403, 404]:
+                raise Exception("Access to the model is restricted.")
 
 
 def get_model_scope_model_min_gguf_path(
