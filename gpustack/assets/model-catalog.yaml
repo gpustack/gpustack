@@ -1,3 +1,64 @@
+- name: Llama4
+  description: The Llama 4 collection of models are natively multimodal AI models that enable text and multimodal experiences. These models leverage a mixture-of-experts architecture to offer industry-leading performance in text and image understanding.
+  home: https://www.llama.com/
+  icon: /static/catalog_icons/meta.png
+  categories:
+    - llm
+  capabilities:
+    - context/10M
+    - vision
+  sizes:
+    - 109
+    - 400
+  licenses:
+    - llama4
+  release_date: "2025-04-05"
+  templates:
+    - quantizations:
+        - UD-IQ1_M
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      sizes: [109]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations:
+        - UD-IQ1_M
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+      sizes: [400]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      sizes: [109]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-4-Scout-17B-16E-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["BF16"]
+      sizes: [400]
+      source: huggingface
+      huggingface_repo_id: unsloth/Llama-4-Maverick-17B-128E-Instruct
+      replicas: 1
+      backend: vllm
 - name: Llama3.3
   description: The Meta Llama 3.3 multilingual large language model (LLM) is an instruction tuned generative model in 70B (text in/text out). The Llama 3.3 instruction tuned text only model is optimized for multilingual dialogue use cases and outperforms many of the available open source and closed chat models on common industry benchmarks.
   home: https://www.llama.com/
@@ -477,6 +538,41 @@
     - quantizations: ["BF16"]
       source: huggingface
       huggingface_repo_id: mistralai/Codestral-22B-v0.1
+      replicas: 1
+      backend: vllm
+- name: Gemma3
+  description: Gemma 3 models are multimodal, handling text and image input and generating text output, with open weights for both pre-trained variants and instruction-tuned variants. Gemma 3 has a large, 128K context window, multilingual support in over 140 languages, and is available in more sizes than previous versions. Gemma 3 models are well-suited for a variety of text generation and image understanding tasks, including question answering, summarization, and reasoning.
+  home: https://ai.google.dev/gemma
+  icon: /static/catalog_icons/google.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - vision
+  sizes: [1, 4, 12, 27]
+  licenses:
+    - gemma
+  release_date: "2025-03-12"
+  templates:
+    - quantizations:
+        - UD-IQ1_M
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      source: huggingface
+      huggingface_repo_id: unsloth/gemma-3-{size}b-it-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: unsloth/gemma-3-{size}b-it
       replicas: 1
       backend: vllm
 - name: Gemma2
