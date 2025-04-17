@@ -22,13 +22,6 @@ npu-smi info
 ```
 
 - [Docker](https://docs.docker.com/engine/install/)
-- [Ascend Docker Runtime](https://gitee.com/ascend/ascend-docker-runtime/releases)
-
-Check if Docker and Ascend Docker Runtime are installed:
-
-```bash
-docker info | grep Runtimes | grep ascend
-```
 
 ### Run GPUStack
 
@@ -36,15 +29,31 @@ When running GPUStack with Docker, it works out of the box in an air-gapped envi
 
 1. Pull GPUStack docker image in an online environment:
 
-```bash
-docker pull gpustack/gpustack:latest-npu
-```
+=== "Ascend 910B"
+
+    ```bash
+    docker pull gpustack/gpustack:latest-npu
+    ```
+
+=== "Ascend 310P"
+
+    ```bash
+    docker pull gpustack/gpustack:latest-npu-310p
+    ```
 
 If your online environment differs from the air-gapped environment in terms of OS or arch, specify the OS and arch of the air-gapped environment when pulling the image:
 
-```bash
-docker pull --platform linux/arm64 gpustack/gpustack:latest-npu
-```
+=== "Ascend 910B"
+
+    ```bash
+    docker pull --platform linux/arm64 gpustack/gpustack:latest-npu
+    ```
+
+=== "Ascend 310P"
+
+    ```bash
+    docker pull --platform linux/arm64 gpustack/gpustack:latest-npu-310p
+    ```
 
 2. Publish docker image to a private registry or load it directly in the air-gapped environment.
 3. Refer to the [Docker Installation](./online-installation.md#docker-installation) guide to run GPUStack using Docker.
