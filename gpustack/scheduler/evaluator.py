@@ -273,12 +273,26 @@ async def evaluate_model_metadata(
     model: ModelSpec,
 ) -> Tuple[bool, List[str]]:
     try:
-        await run_in_thread(
-            auth_check,
-            timeout=15,
-            model=model,
-            huggingface_token=config.huggingface_token,
-        )
+        if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
+            model.local_path
+        ):
+            # The local path model is not accessible from the server.
+            return False, [
+                "The model file path you specified does not exist on the server. "
+                "It's recommended to place the model file at the same path on both the server and the worker. This helps GPUStack make better decisions."
+            ]
+
+        if model.source in [
+            SourceEnum.HUGGING_FACE,
+            SourceEnum.MODEL_SCOPE,
+        ]:
+            await run_in_thread(
+                auth_check,
+                timeout=15,
+                model=model,
+                huggingface_token=config.huggingface_token,
+            )
+
         if is_gguf_model(model):
             await scheduler.evaluate_gguf_model(config, model)
         elif is_audio_model(model):
