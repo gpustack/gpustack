@@ -188,13 +188,6 @@ def set_vllm_env(
     gpu_indexes: List[int] = None,
     gpu_devices: GPUDevicesInfo = None,
 ):
-    if 'VLLM_USE_V1' not in env:
-        # Revisit this when vllm v1 engine is stable
-        # Ref: https://docs.vllm.ai/en/latest/getting_started/v1_user_guide.html
-        # Known issues:
-        # - https://github.com/vllm-project/vllm/issues/16141
-        env['VLLM_USE_V1'] = "0"
-
     system = platform.system()
     if not gpu_indexes or not gpu_devices:
         return
