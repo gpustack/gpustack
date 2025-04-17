@@ -3,6 +3,10 @@ FROM image.sourcefind.cn:5000/dcu/admin/base/pytorch:2.4.1-ubuntu22.04-dtk25.04-
 ENV PATH="/root/.local/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 
+RUN pip install https://download.sourcefind.cn:65024/file/4/lmslim/DAS1.5/lmslim-0.2.1+das.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.6.2+das.opt3.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip cache purge
+
 RUN apt-get update && apt-get install -y \
     python3-venv \
     tzdata \
@@ -12,19 +16,16 @@ RUN apt-get update && apt-get install -y \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /workspace/gpustack
-
-RUN cd /workspace/gpustack && make build \
-    && pip install https://download.sourcefind.cn:65024/file/4/lmslim/DAS1.5/lmslim-0.2.1+das.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
-    && pip install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.6.2+das.opt3.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+RUN --mount=type=bind,target=/workspace/gpustack,rw \
+    cd /workspace/gpustack && make build \
     && python3 -m pip install pipx \
+    && pipx ensurepath --force \
     && WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" \
     && echo $WHEEL_PACKAGE \
     && pipx install $WHEEL_PACKAGE \
-    && pip cache purge \
-    && rm -rf /workspace/gpustack
+    && pip cache purge
 
-RUN gpustack download-tools \
+RUN gpustack download-tools --device dcu \
     && ln -s $(which vllm) /root/.local/share/pipx/venvs/gpustack/bin/vllm
 
 ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
