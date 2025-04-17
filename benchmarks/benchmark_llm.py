@@ -268,6 +268,17 @@ def output_results(results, result_file=None):
         print(json.dumps(formatted_results, indent=2))
 
 
+def set_http_client(args):
+    if args.headers:
+        for header in args.headers:
+            if ":" not in header:
+                parser.error(f"Invalid header format: {header}. Expected Key:Value")
+            key, value = header.split(":", 1)
+            http_client.headers[key.strip()] = value.strip()
+
+    http_client.timeout = args.request_timeout
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark Chat Completions API")
     parser.add_argument(
@@ -311,7 +322,15 @@ if __name__ == "__main__":
         type=str,
         help="Result file path to save benchmark json results",
     )
+    parser.add_argument(
+        "-H",
+        "--header",
+        action="append",
+        dest="headers",
+        help="Custom HTTP header in Key:Value format. May be specified multiple times.",
+    )
     args = parser.parse_args()
+    set_http_client(args)
 
     results = asyncio.run(
         main(
