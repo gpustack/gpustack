@@ -298,20 +298,38 @@ RUN <<EOF
     source ${CANN_HOME}/nnal/atb/set_env.sh
 
     # Install dependencies
-    case "${ARCH}" in
-      amd64|x86_64)
-        pip install torch==${TORCH_VERSION}+cpu --index-url https://download.pytorch.org/whl/cpu
-        ;;
-      arm64|aarch64)
-        pip install torch==${TORCH_VERSION}
-        ;;
-      *)
-        echo "Unsupported arch: ${ARCH}"
-        exit 1
-        ;;
-    esac
-    pip install torch-npu==${TORCH_NPU_VERSION}
-    pip install torchvision==0.16.0
+    cat <<EOT >/tmp/requirements.txt
+absl-py==2.2.2
+attrs==24.3.0
+certifi==2019.11.28
+charset-normalizer==3.4.1
+click==8.1.8
+decorator==5.2.1
+filelock==3.18.0
+fsspec==2025.3.2
+greenlet==3.2.0
+grpcio==1.71.0
+idna==2.8
+Jinja2==3.1.6
+MarkupSafe==3.0.2
+networkx==3.4.2
+pillow==11.0.0
+packaging==24.2
+RapidFuzz==3.13.0
+regex==2024.11.6
+safetensors==0.5.3
+scipy==1.15.2
+six==1.17.0
+torchvision==0.16.0
+tqdm==4.67.1
+typing_extensions==4.13.2
+urllib3==2.4.0
+torch==${TORCH_VERSION}
+torch-npu==${TORCH_NPU_VERSION}
+EOT
+    pip install --no-cache-dir -r /tmp/requirements.txt \
+        && pip freeze \
+        && python -m site
 
     # Install MindIE
     MINDIE_FILE="Ascend-mindie_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
@@ -354,9 +372,10 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Download tools
     gpustack download-tools --device npu
 
-    # Post process
-    pip install transformers==4.46.3 pillow==11.0.0 \
-        && pip list \
+    # Post-process,
+    # override the required dependencies after installed.
+    pip install transformers==4.46.3 \
+        && pip freeze \
         && python -m site
 
     # Set up environment
