@@ -3,16 +3,13 @@
 ## Supported Devices
 
 - [x] Ascend 910B series (910B1 ~ 910B4)
+- [x] Ascend 310P3
 
 ## Supported Platforms
 
 | OS    | Arch  | Supported methods                                                                                        |
 | ----- | ----- | -------------------------------------------------------------------------------------------------------- |
 | Linux | ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script) |
-
-### Supported backends
-
-- [x] llama-box
 
 ## Prerequisites
 
@@ -27,47 +24,112 @@ npu-smi info
 
 ## Docker Installation
 
+### Supported backends
+
+- [x] llama-box (Only supports FP16 precision)
+- [x] MindIE
+
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/engine/install/)
-- [Ascend Docker Runtime](https://gitee.com/ascend/ascend-docker-runtime/releases)
-
-Check if Docker and Ascend Docker Runtime are installed:
-
-```bash
-docker info | grep Runtimes | grep ascend
-```
 
 ### Run GPUStack
 
-Run the following command to start the GPUStack server **and built-in worker** (Set `ASCEND_VISIBLE_DEVICES` to the required GPU indices):
+Run the following command to start the GPUStack server **and built-in worker** (Set `--device /dev/davinci{index}` to the required GPU indices):
 
-=== "Host Network"
+=== "Ascend 910B"
 
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        -e ASCEND_VISIBLE_DEVICES=0,1 \
-        --network=host \
-        --ipc=host \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-npu
-    ```
+    Follow the steps below to install GPUStack on the Ascend 910B:
 
-=== "Port Mapping"
+    === "Host Network"
 
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        -e ASCEND_VISIBLE_DEVICES=0,1 \
-        -p 80:80 \
-        -p 10150:10150 \
-        -p 40064-40131:40064-40131 \
-        --ipc=host \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-npu \
-        --worker-ip your_host_ip
-    ```
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            --network=host \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu
+        ```
+
+    === "Port Mapping"
+
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -p 80:80 \
+            -p 10150:10150 \
+            -p 40064-40131:40064-40131 \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu \
+            --worker-ip your_host_ip
+        ```
+
+=== "Ascend 310P"
+
+    Follow the steps below to install GPUStack on the Ascend 310P:
+
+    === "Host Network"
+
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            --network=host \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu-310p
+        ```
+
+    === "Port Mapping"
+
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -p 80:80 \
+            -p 10150:10150 \
+            -p 40064-40131:40064-40131 \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu-310p \
+            --worker-ip your_host_ip
+        ```
 
 You can refer to the [CLI Reference](../../cli-reference/start.md) for available startup flags.
 
@@ -95,32 +157,99 @@ docker exec -it gpustack cat /var/lib/gpustack/token
 
 To start GPUStack as a worker, and **register it with the GPUStack server** (Set `ASCEND_VISIBLE_DEVICES` to the required GPU indices), run the following command on the **worker node**. Be sure to replace the URL, token and node IP with your specific values:
 
-=== "Host Network"
+=== "Ascend 910B"
 
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        -e ASCEND_VISIBLE_DEVICES=0,1 \
-        --network=host \
-        --ipc=host \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-npu \
-        --server-url http://your_gpustack_url --token your_gpustack_token
-    ```
+    Follow the steps below to add workers on the Ascend 910B:
 
-=== "Port Mapping"
+    === "Host Network"
 
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        -e ASCEND_VISIBLE_DEVICES=0,1 \
-        -p 10150:10150 \
-        -p 40064-40131:40064-40131 \
-        --ipc=host \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-npu \
-        --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
-    ```
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            --network=host \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu \
+            --server-url http://your_gpustack_url --token your_gpustack_token
+        ```
+
+    === "Port Mapping"
+
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -p 10150:10150 \
+            -p 40064-40131:40064-40131 \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu \
+            --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
+        ```
+
+=== "Ascend 310P"
+
+    Follow the steps below to add workers on the Ascend 310P:
+
+    === "Host Network"
+
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            --network=host \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu-310p \
+            --server-url http://your_gpustack_url --token your_gpustack_token
+        ```
+
+    === "Port Mapping"
+
+        ```bash
+        docker run -d --name gpustack \
+            --restart=unless-stopped \
+            --device /dev/davinci0 \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -p 10150:10150 \
+            -p 40064-40131:40064-40131 \
+            --ipc=host \
+            -v gpustack-data:/var/lib/gpustack \
+            gpustack/gpustack:latest-npu-310p \
+            --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
+        ```
 
 !!! note
 
@@ -134,6 +263,10 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
     4. The  `-p 40064-40131:40064-40131` flag is used to ensure connectivity for distributed inference across workers. For more details, please refer to the [Port Requirements](../installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
 
 ## Installation Script
+
+### Supported backends
+
+- [x] llama-box (Only supports Ascend 910B and FP16 precision)
 
 ### Prerequites
 
