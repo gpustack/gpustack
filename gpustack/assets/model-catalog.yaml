@@ -1151,8 +1151,33 @@
       backend_parameters:
         - --trust-remote-code
 # Vision language models
+- name: Qwen2.5 VL
+  description: Qwen2.5-VL is a collection of vision-language models of Qwen, excelling in visual understanding, document analysis, and long-video comprehension. It accurately localizes objects, extracts structured data from images, and functions as an interactive visual agent capable of reasoning and tool use. It outperforms previous models and rivals GPT-4o in tasks like document and diagram understanding.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+    - vision
+  sizes: [3, 7, 32, 72]
+  licenses:
+    - apache-2.0
+    - qwen
+  release_date: "2025-01-26"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-VL-{size}B-Instruct
+      replicas: 1
+      backend: vllm
+    - quantizations: ["AWQ"]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen2.5-VL-{size}B-Instruct-{quantization}
+      replicas: 1
+      backend: vllm
 - name: Qwen2 VL
-  description: Qwen2-VL is the latest iteration of Qwen-VL models developed by Alibaba. Qwen2-VL achieves state-of-the-art performance on visual understanding benchmarks, including MathVista, DocVQA, RealWorldQA, MTVQA, etc.
+  description: Qwen2-VL is a collection of vision language models based on Qwen2 in the Qwen model familities. Qwen2-VL achieves state-of-the-art performance on visual understanding benchmarks, including MathVista, DocVQA, RealWorldQA, MTVQA, etc.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
   categories:
@@ -1287,6 +1312,28 @@
       backend: vllm
       backend_parameters:
         - --limit-mm-per-prompt=image=4
+- name: Phi4 Multimodal Instruct
+  description: Phi-4-multimodal-instruct is a lightweight open multimodal foundation model that leverages the language, vision, and speech research and datasets used for Phi-3.5 and 4.0 models. The model processes text, image, and audio inputs, generating text outputs, and comes with 128K token context length.
+  home: https://azure.microsoft.com/en-us/products/phi
+  icon: /static/catalog_icons/microsoft.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - vision
+  sizes:
+    - 5
+  licenses:
+    - mit
+  release_date: "2025-02-27"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: microsoft/Phi-4-multimodal-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 - name: Phi3.5 Vision
   description: Phi-3.5-vision is a lightweight, state-of-the-art open multimodal model built upon datasets which include - synthetic data and filtered publicly available websites - with a focus on very high-quality, reasoning dense data both on text and vision. The model belongs to the Phi-3 model family, and the multimodal version comes with 128K context length (in tokens) it can support. The model underwent a rigorous enhancement process, incorporating both supervised fine-tuning and direct preference optimization to ensure precise instruction adherence and robust safety measures.
   home: https://azure.microsoft.com/en-us/products/phi
