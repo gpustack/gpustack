@@ -1,5 +1,5 @@
 import asyncio
-from concurrent.futures import ProcessPoolExecutor, CancelledError
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import glob
 from itertools import chain
@@ -89,7 +89,7 @@ class ModelFileManager:
             future.cancel()
             try:
                 await future
-            except (asyncio.CancelledError, CancelledError):
+            except asyncio.CancelledError:
                 pass
             finally:
                 logger.info(
@@ -136,7 +136,7 @@ class ModelFileManager:
         async def _check_completion():
             try:
                 await asyncio.wrap_future(future)
-            except (asyncio.CancelledError, Exception) as e:
+            except Exception as e:
                 logger.error(f"Failed to download model file: {e}")
                 await self._update_model_file(
                     model_file.id,
@@ -184,11 +184,6 @@ class ModelFileDownloadTask:
             self._download_model_file()
         except asyncio.CancelledError:
             logger.info(f"Download cancelled for {self._model_file.readable_source}")
-            self._update_model_file(
-                self._model_file.id,
-                state=ModelFileStateEnum.ERROR,
-                state_message="Download cancelled",
-            )
         except Exception as e:
             logger.error(
                 f"Download failed for {self._model_file.readable_source}: {str(e)}"
@@ -242,7 +237,7 @@ class ModelFileDownloadTask:
             _original_update(self, n)
 
             if task_self._cancel_flag.is_set():
-                raise CancelledError("Download cancelled")
+                raise asyncio.CancelledError("Download cancelled")
 
             # This is the default for single tqdm downloader like ollama
             # TODO we may want to unify to always get the size before downloading.
