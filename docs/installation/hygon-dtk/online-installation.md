@@ -13,7 +13,7 @@
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
-- [DCU Driver rock-5.7.1-6.2.26](https://developer.sourcefind.cn/tool/)
+- [DCU Driver rock-6.3](https://developer.sourcefind.cn/tool/)
 
 Check if the driver is installed:
 
@@ -159,7 +159,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
 
 ### Prerequites
 
-- [DCU Toolkit 24.04](https://developer.sourcefind.cn/tool/)
+- [DCU Toolkit 25.04](https://developer.sourcefind.cn/tool/)
 
 Check if the GPU is listed as an agent:
 
