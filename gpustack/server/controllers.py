@@ -1,10 +1,8 @@
-import json
 import logging
 import random
 import string
 from typing import Any, Dict, List
 import httpx
-from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -27,7 +25,11 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.bus import Event, EventType
 from gpustack.server.db import get_engine
-from gpustack.server.services import ModelInstanceService, ModelService
+from gpustack.server.services import (
+    ModelFileService,
+    ModelInstanceService,
+    ModelService,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -260,21 +262,17 @@ async def get_model_files_for_instance(
             ray_actor.worker_id for ray_actor in instance.distributed_servers.ray_actors
         ]
 
-    model_files = await ModelFile.all_by_field(
-        session, "source_index", instance.model_source_index
+    model_files = await ModelFileService(session).get_by_source_index(
+        instance.model_source_index
     )
-
     model_files = [
         model_file for model_file in model_files if model_file.worker_id in worker_ids
     ]
 
     if instance.source == SourceEnum.LOCAL_PATH and instance.local_path:
         # If the source is local path, get the model files with the same local path.
-        local_path_model_files = await ModelFile.all_by_fields(
-            session,
-            extra_conditions=[
-                col(ModelFile.resolved_paths).contains(json.dumps(instance.local_path))
-            ],
+        local_path_model_files = await ModelFileService(session).get_by_resolved_path(
+            instance.local_path
         )
         local_path_model_files = [
             model_file
