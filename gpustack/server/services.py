@@ -1,12 +1,15 @@
 import asyncio
+import json
 import logging
 import functools
 from typing import Any, Callable, Dict, List, Optional, Union
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, bindparam, cast, col
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.dialects.postgresql import JSONB
 
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.schemas.users import User
@@ -286,3 +289,41 @@ class ModelUsageService:
         await set_cache_by_key(key, model_usage)
         usage_flush_buffer[key] = model_usage
         return model_usage
+
+
+class ModelFileService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_resolved_path(self, path: str) -> List[ModelFile]:
+        # sqlite
+        condition = col(ModelFile.resolved_paths).contains(json.dumps(path))
+        if self.session.bind.dialect.name == "postgresql":
+            condition = cast(ModelFile.resolved_paths, JSONB).op('?')(
+                bindparam("resolved_path", path)
+            )
+
+        results = await ModelFile.all_by_fields(
+            self.session,
+            extra_conditions=[condition],
+        )
+        if results is None:
+            return None
+
+        for result in results:
+            self.session.expunge(result)
+        return results
+
+    async def get_by_source_index(self, source_index: str) -> List[ModelFile]:
+        results = await ModelFile.all_by_field(
+            self.session, "source_index", source_index
+        )
+        if results is None:
+            return None
+
+        for result in results:
+            self.session.expunge(result)
+        return results
+
+    async def create(self, model_file: ModelFile):
+        return await ModelFile.create(self.session, model_file)
