@@ -407,6 +407,10 @@ class AscendMindIEServer(InferenceServer):
 
         # - Model config
         max_seq_len = self._get_model_max_seq_len()
+        # -- Mutate default max sequence length (aka. context length),
+        #    but allow to change it with below advanced parameters.
+        if max_seq_len > 8192:
+            max_seq_len = 8192
         model_deploy_config["maxSeqLen"] = max_seq_len
         model_deploy_config["maxInputTokenLen"] = max_seq_len
         model_deploy_config["truncation"] = False
