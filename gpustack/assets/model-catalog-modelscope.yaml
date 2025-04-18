@@ -691,10 +691,10 @@
     - context/128k
   sizes:
     - 3.8
-  licenses: 
+  licenses:
     - mit
   release_date: "2025-02-26"
-  templates: 
+  templates:
     - quantizations:
         - Q2_K_L
         - Q3_K_M
@@ -772,8 +772,8 @@
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: unsloth/phi-4
+      source: model_scope
+      model_scope_model_id: unsloth/phi-4
       replicas: 1
       backend: vllm
 - name: Deepseek V2.5
@@ -1226,13 +1226,13 @@
   release_date: "2025-01-26"
   templates:
     - quantizations: ["BF16"]
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen2.5-VL-{size}B-Instruct
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-VL-{size}B-Instruct
       replicas: 1
       backend: vllm
     - quantizations: ["AWQ"]
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen2.5-VL-{size}B-Instruct-{quantization}
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen2.5-VL-{size}B-Instruct-{quantization}
       replicas: 1
       backend: vllm
 - name: Qwen2 VL

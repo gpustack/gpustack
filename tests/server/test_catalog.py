@@ -1,4 +1,5 @@
 import os
+import time
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.scheduler.scheduler import SourceEnum
@@ -24,6 +25,7 @@ def test_model_catalog():
         assert model_set_id is not None
         assert len(model_specs) > 0
         for model_spec in model_specs:
+            time.sleep(0.01)  # mitigate rate limit
             if model_spec.source == SourceEnum.HUGGING_FACE:
                 print(model_spec.huggingface_repo_id, model_spec.huggingface_filename)
                 if model_spec.huggingface_filename is None:
