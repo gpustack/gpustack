@@ -56,7 +56,7 @@ def upgrade() -> None:
         sa.Column('model_scope_file_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('local_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('source_index', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.Column('size', sa.Integer(), nullable=True),
+        sa.Column('size', sa.BigInteger(), nullable=True),
         sa.Column('download_progress', sa.Float(), nullable=True),
         sa.Column('resolved_paths', sa.JSON(), nullable=True),
         sa.Column('state', sa.Enum('ERROR', 'DOWNLOADING', 'READY', name='modelfilestateenum'), nullable=False),
