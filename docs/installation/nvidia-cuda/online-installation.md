@@ -20,6 +20,28 @@
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
+- CPU support for llama-box backend: AMD64 with AVX2, or ARM64 with NEON
+
+=== "Linux"
+
+    Check if the CPU is supported:
+
+    === "AMD64"
+
+        ```bash
+        lscpu | grep avx2
+        ```
+
+    === "ARM64"
+
+        ```bash
+        grep -E -i "neon|asimd" /proc/cpuinfo
+        ```
+
+=== "Windows"
+
+    Windows users need to manually verify support for the above instructions.
+
 - [NVIDIA Driver](https://www.nvidia.com/en-us/drivers/)
 
 Check if the NVIDIA driver is installed:

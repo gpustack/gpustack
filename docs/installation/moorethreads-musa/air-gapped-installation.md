@@ -13,6 +13,14 @@ The following methods are available for installing GPUStack in an air-gapped env
 ### Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
+- CPU support for llama-box backend: AMD64 with AVX2
+
+Check if the CPU is supported:
+
+```bash
+lscpu | grep avx2
+```
+
 - [Driver for MTT S80/S3000/S4000](https://developer.mthreads.com/sdk/download/musa)
 
 Check if the driver is installed:

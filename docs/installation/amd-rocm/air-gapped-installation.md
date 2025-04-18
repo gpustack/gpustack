@@ -23,6 +23,17 @@ The following methods are available for installing GPUStack in an air-gapped env
 | gfx908: AMD Instinct MI100                          | llama-box          |
 | gfx906: AMD Instinct MI50                           | llama-box          |
 
+## Prerequisites
+
+- [Port Requirements](../installation-requirements.md#port-requirements)
+- CPU support for llama-box backend: AMD64 with AVX2
+
+Check if the CPU is supported:
+
+```bash
+lscpu | grep avx2
+```
+
 ## Docker Installation
 
 ### Prerequisites
