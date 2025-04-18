@@ -14,7 +14,7 @@ The following methods are available for installing GPUStack in an air-gapped env
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
 - [Docker](https://docs.docker.com/engine/install/)
-- [DCU Driver rock-5.7.1-6.2.26](https://developer.sourcefind.cn/tool/)
+- [DCU Driver rock-6.3](https://developer.sourcefind.cn/tool/)
 
 Check if the driver is installed:
 

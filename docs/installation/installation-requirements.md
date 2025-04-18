@@ -79,7 +79,6 @@ For Ascend CANN as an accelerator, ensure the following components are installed
 
 - [Ascend NPU Driver & Firmware](https://www.hiascend.com/hardware/firmware-drivers/community)
 - [Ascend CANN Toolkit & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.0.beta1) (Optional, required for non-Docker installations)
-- [Ascend Docker Runtime](https://gitee.com/ascend/ascend-docker-runtime/releases) (Optional, required for Docker installation)
 
 ### Hygon DTK
 
