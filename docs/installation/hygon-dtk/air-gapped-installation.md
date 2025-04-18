@@ -13,6 +13,14 @@ The following methods are available for installing GPUStack in an air-gapped env
 ### Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
+- CPU support for llama-box backend: AMD64 with AVX2
+
+Check if the CPU is supported:
+
+```bash
+lscpu | grep avx2
+```
+
 - [Docker](https://docs.docker.com/engine/install/)
 - [DCU Driver rock-6.3](https://developer.sourcefind.cn/tool/)
 

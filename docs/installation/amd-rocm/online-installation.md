@@ -14,6 +14,19 @@
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
+- CPU support for llama-box backend: AMD64 with AVX2
+
+=== "Linux"
+
+    Check if the CPU is supported:
+
+    ```bash
+    lscpu | grep avx2
+    ```
+
+=== "Windows"
+
+    Windows users need to manually verify support for the above instructions.
 
 ## Docker Installation
 

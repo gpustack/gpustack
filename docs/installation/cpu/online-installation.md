@@ -23,9 +23,9 @@ In GPUStack, `llama-box` and `vox-box` backends support CPU inference. However, 
 - [Port Requirements](../installation-requirements.md#port-requirements)
 - CPUs (AMD64 with AVX2 or ARM64 with NEON)
 
-Check if the CPU is supported:
-
 === "Linux"
+
+    Check if the CPU is supported:
 
     === "AMD64"
 

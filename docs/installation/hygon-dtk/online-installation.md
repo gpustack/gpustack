@@ -13,6 +13,14 @@
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
+- CPU support for llama-box backend: AMD64 with AVX2
+
+Check if the CPU is supported:
+
+```bash
+lscpu | grep avx2
+```
+
 - [DCU Driver rock-6.3](https://developer.sourcefind.cn/tool/)
 
 Check if the driver is installed:
