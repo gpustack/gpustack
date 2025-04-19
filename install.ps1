@@ -16,7 +16,7 @@
     You can add additional workers to form a GPUStack cluster by running the command on worker nodes.
 #>
 
-# Script updated at: 2025-02-19T08:16:49Z
+# Script updated at: 2025-04-07T02:16:49Z
 
 $ErrorActionPreference = "Stop"
 
@@ -135,7 +135,7 @@ function Get-Arg-Value {
 function Check-PortAvailability {
     param([int]$Port)
 
-    $connection = Get-NetTCPConnection -LocalPort $Port -LocalAddress '0.0.0.0' -State 'Listen' -ErrorAction SilentlyContinue
+    $connection = Get-NetTCPConnection -LocalPort $Port -State 'Listen' -ErrorAction SilentlyContinue
 
     if ($connection) {
         return $false  # Port is in use
@@ -153,11 +153,6 @@ function Check-Port {
     )
     if (Get-Command gpustack -ErrorAction SilentlyContinue) {
         # skip on upgrade
-        return
-    }
-
-    $configFile = Get-Arg-Value -ArgName "config-file" @ScriptArgs
-    if ($configFile) {
         return
     }
 
@@ -182,6 +177,19 @@ function Check-Port {
 
     if (-not (Check-PortAvailability -Port $workerPort)) {
         throw "Worker port $workerPort is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+    }
+
+    $disableMetrics = Get-Arg-Value -ArgName "disable-metrics" @ScriptArgs
+    # If metrics not disabled, check the metrics port
+    if ($disableMetrics -ne "true") {
+        $metricsPort = Get-Arg-Value -ArgName "metrics-port" @ScriptArgs
+        if (-not $metricsPort) {
+            $metricsPort = 10151
+        }
+
+        if (-not (Check-PortAvailability -Port $metricsPort)) {
+            throw "Metrics port $metricsPort is already in use! Please specify a different port by using --metrics-port <YOUR_PORT>."
+        }
     }
 }
 
