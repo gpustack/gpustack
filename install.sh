@@ -160,10 +160,26 @@ check_root() {
   fi
 }
 
+# Function to check if root user has set environment variables.
+check_root_env_vars() {
+  # check LD_LIBRARY_PATH
+  ROOT_LD_LIBRARY_PATH=$($SUDO sh -c "echo $LD_LIBRARY_PATH")
+  if [ -z "$ROOT_LD_LIBRARY_PATH" ]; then
+    fatal "LD_LIBRARY_PATH is not set for root user. This may cause issues with library loading."
+  else
+    info "Root user has LD_LIBRARY_PATH set to: $ROOT_LD_LIBRARY_PATH"
+  fi
+}
+
 # Function to detect the OS and package manager
 detect_os() {
   if [ "$(uname)" = "Darwin" ]; then
     OS="macos"
+  # macos version must greater than 14.
+  MACOS_VERSION=$(sw_vers -productVersion)
+  if version_compare "$MACOS_VERSION" "lt" "14.0"; then
+    fatal "Your macOS version $MACOS_VERSION is lower than the required 14.0. Please upgrade to macOS 14.0 or higher."
+  fi
   elif [ -f /etc/os-release ]; then
     # shellcheck disable=SC1091
     . /etc/os-release
@@ -173,16 +189,92 @@ detect_os() {
   fi
 }
 
+# Function to compare version strings.
+# Usage: version_compare_sort version1 operator version2
+# Operators: eq, ne, lt, le, gt, ge
+# Returns 0 (true) if condition met, 1 (false) otherwise
+version_compare() {
+  v1=$1
+  op=$2
+  v2=$3
+
+  if [ "$v1" = "$v2" ]; then
+    case $op in
+      eq|le|ge) return 0 ;; # True if equal
+      ne|lt|gt) return 1 ;; # False if equal
+      *) warn "Invalid operator '$op'"; return 1 ;;
+    esac
+  fi
+
+  # Use sort -V to determine order for non-equal versions
+  sorted_first=$(printf "%s\n%s\n" "$v1" "$v2" | sort -V | head -n 1)
+
+  result=1 # Default to false
+  case $op in
+    eq) result=1 ;;
+    ne) result=0 ;;
+    lt) [ "$sorted_first" = "$v1" ] && result=0 ;;
+    le) [ "$sorted_first" = "$v1" ] && result=0 ;;
+    gt) [ "$sorted_first" = "$v2" ] && result=0 ;;
+    ge) [ "$sorted_first" = "$v2" ] && result=0 ;;
+    *) warn "Invalid operator '$op'"; return 1 ;;
+  esac
+
+  return $result
+}
+
 # Function to detect the OS and package manager
 detect_device() {
   if check_command "nvidia-smi"; then
-    if ! check_command "nvcc" && ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
-      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+    # Get CUDA version from nvidia-smi
+    NVIDIA_SMI_CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | sed 's/.*CUDA Version: \([0-9.]*\).*/\1/')
+    if [ -n "$NVIDIA_SMI_CUDA_VERSION" ]; then
+      if version_compare "$NVIDIA_SMI_CUDA_VERSION" "lt" "12.4"; then
+        fatal "Your NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION is lower than the required 12.4. Please update your NVIDIA driver to support CUDA 12.4 or higher."
+      else
+        info "NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION detected."
+      fi
+    else
+      fatal "Can not detect supported CUDA version from nvidia-smi. Please install NVIDIA driver that supports CUDA 12.4 or higher."
+    fi
+
+    # Check nvcc version if available
+    if check_command "nvcc"; then
+      NVCC_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $6}' | cut -c2-)
+      if [ -n "$NVCC_CUDA_VERSION" ]; then
+        if version_compare "$NVCC_CUDA_VERSION" "lt" "12.4"; then
+          warn "CUDA Toolkit version $NVCC_CUDA_VERSION is less than 12.4. Please upgrading to CUDA 12.4 or higher."
+        else
+          info "CUDA Toolkit version $NVCC_CUDA_VERSION detected."
+        fi
+      fi
+    elif ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
+      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA 12.4 or higher."
     fi
     DEVICE="cuda"
     # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.
     if [ -f "/usr/lib/wsl/lib/nvidia-smi" ] && [ ! -e "/usr/local/bin/nvidia-smi" ]; then
       $SUDO ln -s /usr/lib/wsl/lib/nvidia-smi /usr/local/bin/nvidia-smi
+    fi
+  fi
+
+  if check_command "npu-smi"; then
+    # Only 910B1/910B2/910B3/910B4/310P1/310P3 supported.
+    npu_info=$(npu-smi info 2>/dev/null)
+    # This will handle multiple NPU devices that might have different names.
+    npu_names=$(echo "$npu_info" | grep -E '^\|\s+[0-9]+\s+[0-9]{3}[A-Z]?[0-9]?' | awk '{print $2}' | sort | uniq)
+    support=false
+    support_names="910B1 910B2 910B3 910B4 310P1 310P3"
+    for npu_name in $npu_names; do
+      if echo "$support_names" | grep -q "$npu_name"; then
+        support=true
+        break
+      fi
+    done
+    if [ "$support" = false ]; then
+      fatal "Your NPU model $npu_name is not supported. Only 910B1/910B2/910B3/910B4/310P1/310P3 are supported."
+    else
+      fatal "Docker installation is recommended for NPU. Please refer to https://docs.gpustack.ai/latest/tutorials/running-inference-with-ascend-npus for more details."
     fi
   fi
 
@@ -351,13 +443,80 @@ check_python_tools() {
   export PATH="$PIPX_BIN_DIR:$PATH"
 }
 
+# Function to calculate backoff.
+calculate_backoff() {
+    if [ $# -lt 2 ]; then
+        fatal "Usage: calculate_backoff <base_interval> <attempt_number> [max_wait_time]" >&2
+    fi
+
+    base_interval=$1
+    attempt=$2
+    max_wait=${3:-300} # default max wait time is 300 seconds.
+
+    # calculate 2 ^ (attempt - 1)
+    power=$(( attempt - 1 ))
+    result=$base_interval
+    i=1
+    while [ $i -le $power ]; do
+        result=$(( result * 2 ))
+        # if result is greater than max wait time, return max wait time.
+        if [ $result -gt "$max_wait" ]; then
+            echo "$max_wait"
+            return 0
+        fi
+        i=$(( i + 1 ))
+    done
+
+    echo "$result"
+    return 0
+}
+
+# Function to check if server is healthy for worker.
+check_server_health() {
+  server_url=$(get_param_value "server-url" "$@")
+  if [ -z "$server_url" ]; then
+      server_url=$(get_param_value "s" "$@") # try short form
+  fi
+
+  # Skip server health check if server-url is not set.
+  if [ -z "$server_url" ]; then
+    return 0
+  fi
+
+  base_interval=2
+  max_retries=3
+  max_wait=60
+  i=1
+
+  while [ $i -le $max_retries ]; do
+    response=$(curl -k --connect-timeout 5 --max-time 10 --write-out "\n%{http_code}" --silent "$server_url/healthz")
+
+    http_code=$(echo "$response" | tail -n1)
+    result=$(echo "$response" | sed '$d' | tr -d '"')
+    if [ "$result" = "ok" ]; then
+      info "Server at $server_url is healthy."
+      return 0
+    fi
+
+    if [ "$i" -lt $max_retries ]; then
+      wait_time=$(calculate_backoff "$base_interval" "$i" "$max_wait")
+      warn "Attempt $i: Failed to connect to $server_url. Retrying in $wait_time seconds..."
+      sleep "$wait_time"
+    fi
+    i=$((i+1))
+  done
+
+  fatal "Server at $server_url is not healthy, http code: $http_code, result: $result.\
+  Please check your server configuration."
+}
+
 # Function to install a specific version of a Homebrew application
 brew_install_with_version() {
   BREW_APP_NAME="$1"
   BREW_APP_VERSION="$2"
   BREW_APP_NAME_WITH_VERSION="$BREW_APP_NAME@$BREW_APP_VERSION"
   TAP_NAME="$USER/local-$BREW_APP_NAME-$BREW_APP_VERSION"
-  
+
   # Check current installed versions
   info "Checking installed versions of $BREW_APP_NAME."
   INSTALLED_VERSIONS=$(brew list --versions | grep "$BREW_APP_NAME" || true)
@@ -753,6 +912,8 @@ install_gpustack() {
   detect_device
   verify_system
   install_dependencies
+  check_server_health "$@"
+  check_root_env_vars
   check_python_tools
   check_ports "$@"
   check_and_reset_wired_limit_mb "$@"

@@ -65,10 +65,127 @@ function Check-OS {
     }
 }
 
+# Function to compare version strings
+# Usage: Compare-Version -Ver1 "1.2.3" -Ver2 "1.2.4" -Op "lt"
+# Operators: eq (equal), ne (not equal), lt (less than), le (less than or equal),
+#           gt (greater than), ge (greater than or equal)
+# Returns: $true if condition is met, $false otherwise
+function Compare-Version {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Ver1,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Ver2,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("eq", "ne", "lt", "le", "gt", "ge")]
+        [string]$Op
+    )
+
+    try {
+        # Quick check for empty version strings
+        if ([string]::IsNullOrWhiteSpace($Ver1) -or [string]::IsNullOrWhiteSpace($Ver2)) {
+            Log-Warn "Empty version string(s): '$Ver1' $Op '$Ver2'"
+            return $false
+        }
+
+        # Function to clean and validate version strings
+        function Format-VersionString {
+            param ([string]$ver)
+
+            # Keep only numbers and dots
+            $clean = ($ver -replace '[^\d\.]').Trim()
+
+            # Handle leading and trailing dots
+            $clean = $clean.TrimEnd('.')
+            if ($clean -match '^\.') { $clean = "0" + $clean }
+
+            # If empty after cleaning, return "0"
+            if ([string]::IsNullOrWhiteSpace($clean)) { return "0" }
+
+            return $clean
+        }
+
+        # Clean version strings
+        $cleanVer1 = Format-VersionString $Ver1
+        $cleanVer2 = Format-VersionString $Ver2
+
+        # Convert to version objects for comparison
+        $v1 = [version]$cleanVer1
+        $v2 = [version]$cleanVer2
+
+        # Use PowerShell's built-in version comparison
+        switch ($Op) {
+            "eq" { return $v1 -eq $v2 }
+            "ne" { return $v1 -ne $v2 }
+            "lt" { return $v1 -lt $v2 }
+            "le" { return $v1 -le $v2 }
+            "gt" { return $v1 -gt $v2 }
+            "ge" { return $v1 -ge $v2 }
+            default {
+                Log-Warn "Invalid operator '$Op'"
+                return $false
+            }
+        }
+    }
+    catch {
+        Log-Warn "Version comparison failed: '$Ver1' $Op '$Ver2'. Error: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Check-CUDA {
+    # First check if NVIDIA GPU exists (via nvidia-smi)
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        # If GPU exists but CUDA is not installed (via nvcc), prompt for installation
         if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) {
-            throw "NVIDIA GPU detected but CUDA is not installed. Please install CUDA."
+            throw "NVIDIA GPU detected but CUDA is not installed. Please install CUDA 12.4 or higher."
+        }
+
+        # Check nvidia-smi CUDA version
+        $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($nvidiaSmi) {
+            try {
+                $nvidiaSmiOutput = nvidia-smi | Out-String
+                if ($nvidiaSmiOutput -match 'CUDA Version:\s+(\d+\.\d+)') {
+                    $cudaVersion = $matches[1] -replace '[^\d\.]', ''
+                    if (Compare-Version -Ver1 $cudaVersion -Ver2 "12.4" -Op "lt") {
+                        throw "Current NVIDIA driver supported CUDA version ($cudaVersion) is too low. Please upgrade to a driver that supports CUDA 12.4 or higher."
+                    }
+                } else {
+                    throw "Could not parse CUDA version from nvidia-smi output."
+                }
+            }
+            catch {
+                throw "Failed to get NVIDIA driver supported CUDA version: $($_.Exception.Message)"
+            }
+        }
+
+        # Check nvcc CUDA version
+        $nvcc = Get-Command nvcc -ErrorAction SilentlyContinue
+        if ($nvcc) {
+            try {
+                $nvccOutput = nvcc --version | Out-String
+
+                # Try to find version with regex - match any X.Y pattern
+                if ($nvccOutput -match '(\d+\.\d+)') {
+                    $nvccVersion = $matches[1]
+                } else {
+                    # Fallback to original method
+                    $nvccVersion = (nvcc --version).Split(" ")[2]
+                }
+
+                # Clean and check
+                $nvccVersion = $nvccVersion -replace '[^\d\.]', ''
+
+                if (Compare-Version -Ver1 $nvccVersion -Ver2 "12.4" -Op "lt") {
+                    throw "Current CUDA version ($nvccVersion) is too low. Please upgrade to CUDA 12.4 or higher."
+                }
+            }
+            catch {
+                throw "Failed to get CUDA version: $($_.Exception.Message)"
+            }
         }
     }
 }
@@ -182,6 +299,131 @@ function Check-Port {
 
     if (-not (Check-PortAvailability -Port $workerPort)) {
         throw "Worker port $workerPort is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+    }
+}
+
+# Function to check if the server is healthy.
+function Check-Server-Health {
+    param (
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ScriptArgs
+    )
+
+    [int]$RetryCount = 3
+    [int]$RetryInterval = 2
+
+    $serverUrl = Get-Arg-Value -ArgName "server-url" @ScriptArgs
+    if ([string]::IsNullOrEmpty($serverUrl)) {
+        $serverUrl = Get-Arg-Value -ArgName "s" @ScriptArgs # try short form
+    }
+
+    # Skip server health check if server-url is not set.
+    if ([string]::IsNullOrEmpty($serverUrl)) {
+        return
+    }
+
+    $result = "unknown"
+    $httpCode = "unknown"
+
+    $attemptCount = 1
+    while ($attemptCount -le $RetryCount) {
+        try {
+            $response = Invoke-WebRequest -Uri "$serverUrl/healthz" -Method Get -TimeoutSec 10 -ErrorAction Stop
+            $result = $response.Content
+
+            if ($result -eq '"ok"') {
+                Log-Info "Server at $serverUrl is healthy."
+                return
+            }
+
+            $httpCode = $response.StatusCode
+
+            Log-Warn "Server returned non-healthy status - HTTP code: $httpCode, Result: $result"
+        } catch {
+            $httpCode = if ($_.Exception.Response) {
+                [int]$_.Exception.Response.StatusCode
+            } else {
+                "connection failed"
+            }
+            $result = $_.Exception.Message
+            Log-Warn "Failed to connect to server $serverUrl - Error: $result"
+        }
+
+        if ($attemptCount -lt $RetryCount) {
+            $currentInterval =$RetryInterval * [Math]::Pow(2, $attemptCount - 1)
+            Log-Warn "Attempt ${attemptCount}: Failed to connect to ${serverUrl}. Retrying in ${currentInterval} seconds..."
+            Start-Sleep -Seconds $currentInterval
+        }
+
+        $attemptCount++
+    }
+
+    throw "Server at $serverUrl is not healthy after $RetryCount attempts. Last status - HTTP code: $httpCode, Result: $result"
+}
+
+# Function to check if a Visual C++ package is already installed.
+function Is-VCRedistInstalled {
+    param(
+        [string]$partialName
+    )
+    try {
+        # Check installation status using registry
+        $uninstallKeys = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        foreach ($key in $uninstallKeys) {
+            $installed = Get-ItemProperty $key | Where-Object { $_.DisplayName -like "*$partialName*" }
+            if ($null -ne $installed) {
+                return $true
+            }
+        }
+        return $false
+    } catch {
+        Log-Warn "Error checking installation status for ${partialName}: $_"
+        return $false
+    }
+}
+
+function Install-VCRedist {
+    # Define Visual C++ Runtime packages with Chocolatey package names
+    $vcRedistPackages = @(
+        @{
+            Name = "Visual C++ 2015-2022 Redistributable";
+            ChocoPackage = "vcredist140";
+            CheckName = "Microsoft Visual C++ 2015-2022 Redistributable"
+        }
+    )
+
+    foreach ($package in $vcRedistPackages) {
+        Log-Info "Checking required installation of $($package.Name)..."
+        # Check if already installed
+        if (Is-VCRedistInstalled $package.CheckName) {
+            continue
+        }
+
+        # Install package using Chocolatey
+        try {
+            Log-Info "Installing $($package.Name) using Chocolatey, this may take a while..."
+
+            # Redirect output to null to suppress messages
+            $null = & choco install $package.ChocoPackage -y --force
+
+            # Exit code 0=success, 3010=success but reboot required
+            if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 3010) {
+                Refresh-ChocolateyProfile
+
+                if ($LASTEXITCODE -eq 3010) {
+                    Log-Info "$($package.Name) installed successfully. A system restart is required to complete the installation."
+                } else {
+                    Log-Info "$($package.Name) installation completed successfully."
+                }
+            } else {
+                Log-Warn "$($package.Name) installation completed with exit code: $LASTEXITCODE"
+            }
+        } catch {
+            Log-Warn "Failed to install $($package.Name): $_"
+        }
     }
 }
 
@@ -817,9 +1059,11 @@ try {
     Check-OS
     Check-CUDA
     Check-Port @args
+    Check-Server-Health @args
     Install-Chocolatey
     Install-Python
     Install-NSSM
+    Install-VCRedist
     Install-GPUStack
     Create-UninstallScript
     $argResult = Get-Arg @args
