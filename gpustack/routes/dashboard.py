@@ -247,6 +247,29 @@ def active_model_statement() -> select:
             func.json_extract(ModelInstance.computed_resource_claim, '$.ram'),
             BigInteger,
         )
+    elif dialect == 'mysql':
+        vram_case = case(
+            (
+                func.json_type(
+                    func.json_extract(ModelInstance.computed_resource_claim, '$.vram')
+                )
+                == 'OBJECT',
+                func.json_extract(ModelInstance.computed_resource_claim, '$.vram'),
+            ),
+            else_=func.cast(cast({"0": 0}, JSON), JSON),
+        )
+
+        # 使用text()保持原生SQL表达式
+        vram_values = func.json_table(
+            vram_case, text("""'$.*' COLUMNS (value BIGINT PATH '$')""")
+        ).table_valued('value')
+
+        ram_claim = func.cast(
+            func.json_unquote(
+                func.json_extract(ModelInstance.computed_resource_claim, '$.ram')
+            ),
+            BigInteger,
+        )
     elif dialect == 'postgresql':
         vram_values = func.json_each_text(
             case(
