@@ -223,24 +223,27 @@ async def process_chunk(
             yield "data: [DONE]\n\n".encode("utf-8")
             continue
 
-        response_dict = None
-        try:
-            response_dict = json.loads(data.strip())
-        except Exception as e:
-            raise e
-        response_chunk = response_class(**response_dict)
+        if '"usage":' in data:
+            response_dict = None
+            try:
+                response_dict = json.loads(data.strip())
+            except Exception as e:
+                raise e
+            response_chunk = response_class(**response_dict)
 
-        if is_usage_chunk(response_chunk):
-            await record_model_usage(request, response_chunk.usage, operation)
+            if is_usage_chunk(response_chunk):
+                await record_model_usage(request, response_chunk.usage, operation)
 
-            # Fill rate metrics. These are extended info not included in OAI APIs.
-            # llama-box provides them out-of-the-box. Align with other backends here.
-            if should_add_metrics(response_dict):
-                add_metrics(response_dict, request, response_chunk)
+                # Fill rate metrics. These are extended info not included in OAI APIs.
+                # llama-box provides them out-of-the-box. Align with other backends here.
+                if should_add_metrics(response_dict):
+                    add_metrics(response_dict, request, response_chunk)
 
-        yield f"data: {json.dumps(response_dict, separators=(',', ':'))}\n\n".encode(
-            "utf-8"
-        )
+            yield f"data: {json.dumps(response_dict, separators=(',', ':'))}\n\n".encode(
+                "utf-8"
+            )
+        else:
+            yield f"{line}\n\n".encode("utf-8")
 
 
 def should_add_metrics(response_dict):
