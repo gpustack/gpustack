@@ -152,6 +152,9 @@ class ToolsManager:
         logger.info(f"Loading dependency tools from {archive_path}")
         shutil.unpack_archive(archive_path, self.third_party_bin_path)
 
+        # Ensure the rpc server is linked correctly
+        self._link_llama_box_rpc_server()
+
     def prepare_versioned_backend(self, backend: str, version: str):
         if backend == BackendEnum.LLAMA_BOX:
             self.install_versioned_llama_box(version)
@@ -433,10 +436,6 @@ class ToolsManager:
 
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / target_file_name
-        if self._os == "windows":
-            target_rpc_server_file = target_dir / "llama-box-rpc-server.exe"
-        else:
-            target_rpc_server_file = target_dir / "llama-box-rpc-server"
         shutil.copy(llama_box_tmp_dir / file_name, target_file)
 
         # Make the file executable (non-Windows only)
@@ -444,16 +443,34 @@ class ToolsManager:
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
 
-        # To avoid same name for the RPC server and the inference service
-        if self._os != "windows" and not os.path.exists(target_rpc_server_file):
-            os.symlink(target_file, target_dir / target_rpc_server_file)
-        elif self._os == "windows" and not os.path.exists(target_rpc_server_file):
-            os.link(target_file, target_dir / target_rpc_server_file)
-        else:
-            logger.info(f"{target_rpc_server_file} already exists")
+        self._link_llama_box_rpc_server()
 
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
+
+    def _link_llama_box_rpc_server(self):
+        """
+        Create a symlink for llama-box-rpc-server in the bin directory.
+        This is used to help differentiate between the llama-box and llama-box-rpc-server processes.
+        """
+        target_dir = self.third_party_bin_path / "llama-box"
+        file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
+        llama_box_file = target_dir / file_name
+
+        if self._os == "windows":
+            target_rpc_server_file = target_dir / "llama-box-rpc-server.exe"
+        else:
+            target_rpc_server_file = target_dir / "llama-box-rpc-server"
+
+        if os.path.exists(target_rpc_server_file):
+            os.remove(target_rpc_server_file)
+
+        if self._os == "windows":
+            os.link(llama_box_file, target_dir / target_rpc_server_file)
+        else:
+            os.symlink(llama_box_file, target_dir / target_rpc_server_file)
+
+        logger.debug(f"Linked llama-box-rpc-server to {target_rpc_server_file}")
 
     def _get_llama_box_cuda_version(self) -> str:
         """
