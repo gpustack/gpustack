@@ -1106,6 +1106,43 @@
       model_scope_model_id: tiiuae/Falcon3-{size}B-Instruct
       replicas: 1
       backend: vllm
+- name: Granite3.3
+  description: Granite3.3 is a family of 128K context length language models fine-tuned for improved reasoning and instruction-following capabilities. The models demonstrate significant improvements on benchmarks for measuring generic performance including AlpacaEval-2.0 and Arena-Hard, as well as in mathematics, coding, and instruction following.
+  home: https://www.ibm.com/granite
+  icon: /static/catalog_icons/ibm.png
+  categories:
+    - llm
+  capabilities:
+    - context/128k
+    - tools
+  sizes: [2, 8]
+  licenses:
+    - apache-2.0
+  release_date: "2025-04-16"
+  templates:
+    - quantizations:
+        - Q2_K
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - f16
+      source: model_scope
+      model_scope_model_id: ibm-granite/granite-3.3-{size}b-instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: ibm-granite/granite-3.3-{size}b-instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --enable-auto-tool-choice
+        - --tool-call-parser=granite
 - name: Granite3.1
   description: Granite is a family of AI models purpose-built for business, engineered from the ground up to ensure trust and scalability in AI-driven applications.
   home: https://www.ibm.com/granite
