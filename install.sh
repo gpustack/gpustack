@@ -498,6 +498,7 @@ After=network-online.target
 [Service]
 EnvironmentFile=-/etc/default/%N
 ExecStart=$(which gpustack) start $_args
+LimitNOFILE=65535
 Restart=always
 StandardOutput=append:/var/log/gpustack.log
 StandardError=append:/var/log/gpustack.log
