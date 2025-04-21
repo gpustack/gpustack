@@ -462,13 +462,13 @@ class ToolsManager:
         else:
             target_rpc_server_file = target_dir / "llama-box-rpc-server"
 
-        if os.path.exists(target_rpc_server_file):
+        if os.path.lexists(target_rpc_server_file):
             os.remove(target_rpc_server_file)
 
         if self._os == "windows":
-            os.link(llama_box_file, target_dir / target_rpc_server_file)
+            os.link(llama_box_file, target_rpc_server_file)
         else:
-            os.symlink(llama_box_file, target_dir / target_rpc_server_file)
+            os.symlink(llama_box_file, target_rpc_server_file)
 
         logger.debug(f"Linked llama-box-rpc-server to {target_rpc_server_file}")
 
