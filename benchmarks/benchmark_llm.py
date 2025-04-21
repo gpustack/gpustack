@@ -307,8 +307,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-completion-tokens",
         type=int,
-        default=128,
-        help="Maximum number of tokens in the completion (default: 128)",
+        default=1024,
+        help="Maximum number of tokens in the completion (default: 1024)",
     )
     parser.add_argument(
         "--server-url",
