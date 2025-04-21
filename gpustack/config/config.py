@@ -159,6 +159,8 @@ class Config(BaseSettings):
         if self.system_reserved is None:
             self.system_reserved = {"ram": 2, "vram": 1}
 
+        self.make_dirs()
+
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901
         if 'PYTEST_CURRENT_TEST' in os.environ:
@@ -227,6 +229,12 @@ class Config(BaseSettings):
             raise Exception("Port range must be numeric")
         if int(ports[0]) > int(ports[1]):
             raise Exception(f"Invalid port range: {ports[0]} > {ports[1]}")
+
+    def make_dirs(self):
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.bin_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
 
     def get_system_info(self) -> SystemInfo:  # noqa: C901
         """get system info from resources
