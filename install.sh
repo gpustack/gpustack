@@ -44,6 +44,8 @@ INSTALL_IOGPU_WIRED_LIMIT_MB="${INSTALL_IOGPU_WIRED_LIMIT_MB:-}"
 BREW_APP_OPENFST_NAME="openfst"
 BREW_APP_OPENFST_VERSION="1.8.3"
 
+MIN_CUDA_VERSION="11.8"
+
 # --- helper functions for logs ---
 info()
 {
@@ -165,7 +167,7 @@ check_root_env_vars() {
   # check LD_LIBRARY_PATH
   ROOT_LD_LIBRARY_PATH=$($SUDO sh -c "echo $LD_LIBRARY_PATH")
   if [ -z "$ROOT_LD_LIBRARY_PATH" ]; then
-    fatal "LD_LIBRARY_PATH is not set for root user. This may cause issues with library loading."
+    warn "LD_LIBRARY_PATH is not set, this may cause issues with library loading."
   else
     info "Root user has LD_LIBRARY_PATH set to: $ROOT_LD_LIBRARY_PATH"
   fi
@@ -229,27 +231,27 @@ detect_device() {
     # Get CUDA version from nvidia-smi
     NVIDIA_SMI_CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | sed 's/.*CUDA Version: \([0-9.]*\).*/\1/')
     if [ -n "$NVIDIA_SMI_CUDA_VERSION" ]; then
-      if version_compare "$NVIDIA_SMI_CUDA_VERSION" "lt" "12.4"; then
-        fatal "Your NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION is lower than the required 12.4. Please update your NVIDIA driver to support CUDA 12.4 or higher."
+      if version_compare "$NVIDIA_SMI_CUDA_VERSION" "lt" "$MIN_CUDA_VERSION"; then
+        fatal "Your NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION is lower than the required $MIN_CUDA_VERSION. Please update your NVIDIA driver to support CUDA $MIN_CUDA_VERSION or higher."
       else
         info "NVIDIA driver supported version $NVIDIA_SMI_CUDA_VERSION detected."
       fi
     else
-      fatal "Can not detect supported CUDA version from nvidia-smi. Please install NVIDIA driver that supports CUDA 12.4 or higher."
+      fatal "Can not detect supported CUDA version from nvidia-smi. Please install NVIDIA driver that supports CUDA $MIN_CUDA_VERSION or higher."
     fi
 
     # Check nvcc version if available
     if check_command "nvcc"; then
       NVCC_CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $6}' | cut -c2-)
       if [ -n "$NVCC_CUDA_VERSION" ]; then
-        if version_compare "$NVCC_CUDA_VERSION" "lt" "12.4"; then
-          warn "CUDA Toolkit version $NVCC_CUDA_VERSION is less than 12.4. Please upgrading to CUDA 12.4 or higher."
+        if version_compare "$NVCC_CUDA_VERSION" "lt" "$MIN_CUDA_VERSION"; then
+          warn "CUDA Toolkit version $NVCC_CUDA_VERSION is less than $MIN_CUDA_VERSION. Please upgrading to CUDA $MIN_CUDA_VERSION or higher."
         else
           info "CUDA Toolkit version $NVCC_CUDA_VERSION detected."
         fi
       fi
     elif ! ($SUDO ldconfig -p | grep -q libcudart) && ! ls /usr/local/cuda >/dev/null 2>&1; then
-      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA 12.4 or higher."
+      warn "NVIDIA GPU detected but CUDA is not installed. Please install CUDA $MIN_CUDA_VERSION or higher."
     fi
     DEVICE="cuda"
     # Create a symlink for nvidia-smi to allow root users in WSL to detect GPU information.

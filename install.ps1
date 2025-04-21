@@ -65,6 +65,23 @@ function Check-OS {
     }
 }
 
+# Function to clean and validate version strings
+function Format-VersionString {
+    param ([string]$ver)
+
+    # Keep only numbers and dots
+    $clean = ($ver -replace '[^\d\.]').Trim()
+
+    # Handle leading and trailing dots
+    $clean = $clean.TrimEnd('.')
+    if ($clean -match '^\.') { $clean = "0" + $clean }
+
+    # If empty after cleaning, return "0"
+    if ([string]::IsNullOrWhiteSpace($clean)) { return "0" }
+
+    return $clean
+}
+
 # Function to compare version strings
 # Usage: Compare-Version -Ver1 "1.2.3" -Ver2 "1.2.4" -Op "lt"
 # Operators: eq (equal), ne (not equal), lt (less than), le (less than or equal),
@@ -84,19 +101,24 @@ function Compare-Version {
     )
 
     try {
-        # Convert version strings to [version] objects for proper comparison
-        $v1 = [version]$Ver1
-        $v2 = [version]$Ver2
-
-        # Handle equality cases first
-        if ($v1 -eq $v2) {
-            return $Op -in @("eq", "le", "ge")
+        # Quick check for empty version strings
+        if ([string]::IsNullOrWhiteSpace($Ver1) -or [string]::IsNullOrWhiteSpace($Ver2)) {
+            Log-Warn "Empty version string(s): '$Ver1' $Op '$Ver2'"
+            return $false
         }
 
-        # Handle other cases
+        # Clean version strings
+        $cleanVer1 = Format-VersionString $Ver1
+        $cleanVer2 = Format-VersionString $Ver2
+
+        # Convert to version objects for comparison
+        $v1 = [version]$cleanVer1
+        $v2 = [version]$cleanVer2
+
+        # Use PowerShell's built-in version comparison
         switch ($Op) {
-            "eq" { return $false }
-            "ne" { return $true }
+            "eq" { return $v1 -eq $v2 }
+            "ne" { return $v1 -ne $v2 }
             "lt" { return $v1 -lt $v2 }
             "le" { return $v1 -le $v2 }
             "gt" { return $v1 -gt $v2 }
@@ -108,7 +130,7 @@ function Compare-Version {
         }
     }
     catch {
-        Log-Warn "Version comparison failed: $($_.Exception.Message)"
+        Log-Warn "Version comparison failed: '$Ver1' $Op '$Ver2'. Error: $($_.Exception.Message)"
         return $false
     }
 }
@@ -125,13 +147,18 @@ function Check-CUDA {
         $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvidiaSmi) {
             try {
-                $cudaVersion = (nvidia-smi | Select-String "CUDA Version").Line -replace '.*CUDA Version: ([0-9.]*)',''
-                if (Compare-Version -Ver1 $cudaVersion -Ver2 "12.4" -Op "lt") {
-                    throw "Current NVIDIA driver version ($cudaVersion) is too low. Please upgrade to a driver that supports CUDA 12.4 or higher."
+                $nvidiaSmiOutput = nvidia-smi | Out-String
+                if ($nvidiaSmiOutput -match 'CUDA Version:\s+(\d+\.\d+)') {
+                    $cudaVersion = $matches[1] -replace '[^\d\.]', ''
+                    if (Compare-Version -Ver1 $cudaVersion -Ver2 "12.4" -Op "lt") {
+                        throw "Current NVIDIA driver supported CUDA version ($cudaVersion) is too low. Please upgrade to a driver that supports CUDA 12.4 or higher."
+                    }
+                } else {
+                    throw "Could not parse CUDA version from nvidia-smi output."
                 }
             }
             catch {
-                throw "Failed to get NVIDIA driver version: $($_.Exception.Message)"
+                throw "Failed to get NVIDIA driver supported CUDA version: $($_.Exception.Message)"
             }
         }
 
@@ -139,7 +166,19 @@ function Check-CUDA {
         $nvcc = Get-Command nvcc -ErrorAction SilentlyContinue
         if ($nvcc) {
             try {
-                $nvccVersion = (nvcc --version).Split(" ")[2]
+                $nvccOutput = nvcc --version | Out-String
+
+                # Try to find version with regex - match any X.Y pattern
+                if ($nvccOutput -match '(\d+\.\d+)') {
+                    $nvccVersion = $matches[1]
+                } else {
+                    # Fallback to original method
+                    $nvccVersion = (nvcc --version).Split(" ")[2]
+                }
+
+                # Clean and check
+                $nvccVersion = $nvccVersion -replace '[^\d\.]', ''
+
                 if (Compare-Version -Ver1 $nvccVersion -Ver2 "12.4" -Op "lt") {
                     throw "Current CUDA version ($nvccVersion) is too low. Please upgrade to CUDA 12.4 or higher."
                 }
@@ -356,30 +395,31 @@ function Install-VCRedist {
         }
     )
 
-    Log-Info "Checking for Visual C++ 2015-2022 Redistributable..."
-
     foreach ($package in $vcRedistPackages) {
-        Log-Info "Processing $($package.Name)..."
-
+        Log-Info "Checking required installation of $($package.Name)..."
         # Check if already installed
         if (Is-VCRedistInstalled $package.CheckName) {
-            Log-Info "$($package.Name) is already installed. Skipping."
             continue
         }
 
         # Install package using Chocolatey
         try {
-            Log-Info "Installing $($package.Name) using Chocolatey..."
-            $process = Start-Process -FilePath "choco" `
-                -ArgumentList "install", $package.ChocoPackage, "-y" `
-                -Wait -PassThru -NoNewWindow `
-                -ErrorAction Stop
+            Log-Info "Installing $($package.Name) using Chocolatey, this may take a while..."
 
-            if ($process.ExitCode -eq 0) {
+            # Redirect output to null to suppress messages
+            $null = & choco install $package.ChocoPackage -y --force
+
+            # Exit code 0=success, 3010=success but reboot required
+            if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 3010) {
                 Refresh-ChocolateyProfile
-                Log-Info "$($package.Name) installation completed successfully."
+
+                if ($LASTEXITCODE -eq 3010) {
+                    Log-Info "$($package.Name) installed successfully. A system restart is required to complete the installation."
+                } else {
+                    Log-Info "$($package.Name) installation completed successfully."
+                }
             } else {
-                Log-Warn "$($package.Name) installation completed with exit code: $($process.ExitCode)"
+                Log-Warn "$($package.Name) installation completed with exit code: $LASTEXITCODE"
             }
         } catch {
             Log-Warn "Failed to install $($package.Name): $_"
@@ -1018,8 +1058,8 @@ try {
     Check-AdminPrivilege
     Check-OS
     Check-CUDA
-    Check-Server-Health @args
     Check-Port @args
+    Check-Server-Health @args
     Install-Chocolatey
     Install-Python
     Install-NSSM
