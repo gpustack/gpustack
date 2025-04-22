@@ -66,7 +66,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 70
@@ -101,7 +101,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 1
@@ -141,7 +141,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes: [8, 70, 405]
   licenses:
@@ -200,7 +200,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes: [0.5, 1.5, 3, 7, 14, 32, 72]
   licenses:
@@ -263,7 +263,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes: [0.5, 1.5, 3, 7, 14, 32]
   licenses:
     - apache-2.0
@@ -342,7 +342,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 32
   licenses:
@@ -374,7 +374,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
     - tools
   sizes:
     - 7
@@ -412,7 +412,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 24
@@ -450,7 +450,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 22
@@ -481,7 +481,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 123
@@ -518,7 +518,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 12
@@ -549,7 +549,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
   sizes:
     - 22
   licenses:
@@ -583,7 +583,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - vision
   sizes: [1, 4, 12, 27]
   licenses:
@@ -618,7 +618,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes: [2, 9, 27]
   licenses:
     - gemma
@@ -650,7 +650,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 3.8
   licenses:
@@ -684,7 +684,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 3.8
   licenses:
@@ -718,7 +718,7 @@
   categories:
     - llm
   capabilities:
-    - context/16k
+    - context/16K
   sizes:
     - 14
   licenses:
@@ -745,7 +745,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 236
   licenses:
@@ -782,7 +782,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 671
   licenses:
@@ -819,7 +819,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 671
   licenses:
@@ -859,7 +859,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 1.5
     - 7
@@ -995,7 +995,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
   sizes: [6, 9, 34]
   licenses:
     - apache-2.0
@@ -1028,7 +1028,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 32
   licenses:
@@ -1055,7 +1055,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
   sizes: [1, 3, 7, 10]
   licenses:
     - falcon-llm-license
@@ -1081,7 +1081,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes: [2, 8]
   licenses:
@@ -1118,7 +1118,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes: [2, 8]
   licenses:
@@ -1148,7 +1148,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - tools
   sizes:
     - 70
@@ -1186,7 +1186,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
   sizes:
     - 9
   licenses:
@@ -1229,7 +1229,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
     - vision
   sizes: [3, 7, 32, 72]
   licenses:
@@ -1254,7 +1254,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
     - vision
   sizes: [2, 7, 72]
   licenses:
@@ -1307,7 +1307,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - vision
   sizes:
     - 72
@@ -1343,7 +1343,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - vision
   sizes:
     - 11
@@ -1368,7 +1368,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - vision
   sizes:
     - 12
@@ -1390,7 +1390,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - vision
   sizes:
     - 5
@@ -1412,7 +1412,7 @@
   categories:
     - llm
   capabilities:
-    - context/128k
+    - context/128K
     - vision
   sizes:
     - 4
@@ -1434,7 +1434,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
     - vision
   sizes: [1, 2, 8, 9, 14, 38, 78]
   licenses:
@@ -1455,7 +1455,7 @@
   categories:
     - llm
   capabilities:
-    - context/32k
+    - context/32K
     - vision
   sizes: [1, 2, 4, 8, 26, 38, 78]
   licenses:
