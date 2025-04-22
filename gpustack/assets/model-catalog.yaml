@@ -1287,6 +1287,83 @@
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
         - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
+- name: GLM4 0414
+  description: GLM-4-0414 is a family of models with performance comparable to OpenAI's GPT series and DeepSeek's V3/R1 series. It delivers strong results in engineering code generation, artifact creation, function calling, search-based question answering, and report generation.
+  home: https://github.com/THUDM/GLM-4
+  icon: /static/catalog_icons/ZhipuAI.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+  sizes:
+    - 9
+    - 32
+  licenses:
+    - mit
+  release_date: "2025-04-14"
+  templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - bf16
+      source: huggingface
+      huggingface_repo_id: bartowski/THUDM_GLM-4-{size}B-0414-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: THUDM/GLM-4-{size}B-0414
+      replicas: 1
+      backend: vllm
+- name: GLM4 Z1 0414
+  description: GLM-4-Z1 models are reasoning models with deep thinking capabilities in the GLM-4-0414 series. They demonstrate excellent performance in mathematical reasoning and general tasks.
+  home: https://github.com/THUDM/GLM-4
+  icon: /static/catalog_icons/ZhipuAI.png
+  categories:
+    - llm
+  capabilities:
+    - context/32k
+  sizes:
+    - 9
+    - 32
+  licenses:
+    - mit
+  release_date: "2025-04-14"
+  templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_L
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+        - bf16
+      source: huggingface
+      huggingface_repo_id: bartowski/THUDM_GLM-Z1-{size}B-0414-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+      backend_parameters:
+        - --ctx-size=32768
+        - --temp=0.6
+        - --top-p=0.95
+        - --top-k=40
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: THUDM/GLM-Z1-{size}B-0414
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --max-model-len=32768
 - name: GLM4
   description: GLM-4-9B is the open-source version of the latest generation of pre-trained models in the GLM-4 series launched by Zhipu AI. In the evaluation of data sets in semantics, mathematics, reasoning, code, and knowledge, GLM-4-9B and its human preference-aligned version GLM-4-9B-Chat have shown superior performance beyond Llama-3-8B.
   home: https://github.com/THUDM/GLM-4
