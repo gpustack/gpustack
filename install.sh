@@ -1,5 +1,5 @@
 #!/bin/sh
-# Script updated at: 2025-02-19T08:16:49Z
+# Script updated at: 2025-04-07T02:16:49Z
 set -e
 set -o noglob
 
@@ -203,6 +203,29 @@ check_port() {
   return 0
 }
 
+validate_port_range() {
+  port="$1"
+  case "$port" in
+    *[!0-9]*)
+      fatal "Port must be a number: $port" ;;
+    *)
+      if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        fatal "Port $port is invalid! Port must be between 1 and 65535."
+      fi
+      ;;
+  esac
+}
+
+check_port_availability() {
+  port_to_check="$1"
+  port_description="$2"
+  port_option_name="$3"
+  validate_port_range "$port_to_check"
+  if ! check_port "$port_to_check"; then
+    fatal "$port_description port $port_to_check is already in use! Please specify a different port by using --$port_option_name <YOUR_PORT>."
+  fi
+}
+
 # Function to check if the server and worker ports are available
 check_ports() {
   if check_command "gpustack"; then
@@ -210,33 +233,64 @@ check_ports() {
     return
   fi
 
-  config_file=$(get_param_value "config-file" "$@")
-  if [ -n "$config_file" ]; then
-    return
-  fi
-
   server_port=$(get_param_value "port" "$@")
   worker_port=$(get_param_value "worker-port" "$@")
   ssl_enabled=$(get_param_value "ssl-keyfile" "$@")
 
-  if [ -z "$server_port" ]; then
-    server_port="80"
-    if [ -n "$ssl_enabled" ]; then
-      server_port="443"
+  server_url=$(get_param_value "server-url" "$@")
+  if [ -z "$server_url" ]; then
+      server_url=$(get_param_value "s" "$@") # try short form
+  fi
+
+  # Server port is not required when install as a worker.
+  if [ -z "$server_url" ]; then
+    if [ -z "$server_port" ]; then
+      server_port="80"
+      if [ -n "$ssl_enabled" ]; then
+        server_port="443"
+      fi
     fi
+    check_port_availability "$server_port" "Server" "port"
   fi
 
   if [ -z "$worker_port" ]; then
     worker_port="10150"
   fi
+  check_port_availability "$worker_port" "Worker" "worker-port"
 
-  if ! check_port "$server_port"; then
-    fatal "Server port $server_port is already in use! Please specify a different port by using --port <YOUR_PORT>."
+  disable_metrics=$(get_param_value "disable-metrics" "$@")
+  if [ "$disable_metrics" != "true" ]; then
+    metrics_port=$(get_param_value "metrics-port" "$@")
+    if [ -z "$metrics_port" ]; then
+      metrics_port="10151"
+    fi
+
+    check_port_availability "$metrics_port" "Metrics" "metrics-port"
   fi
 
-  if ! check_port "$worker_port"; then
-    fatal "Worker port $worker_port is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+  # Check Ray related ports
+  ray_port=$(get_param_value "ray-port" "$@")
+  ray_client_server_port=$(get_param_value "ray-client-server-port" "$@")
+  ray_node_manager_port=$(get_param_value "ray-node-manager-port" "$@")
+  ray_object_manager_port=$(get_param_value "ray-object-manager-port" "$@")
+  if [ -z "$ray_port" ]; then
+    ray_port="40096"
   fi
+  if [ -z "$ray_client_server_port" ]; then
+    ray_client_server_port="40097"
+  fi
+  if [ -z "$ray_node_manager_port" ]; then
+    ray_node_manager_port="40098"
+  fi
+  if [ -z "$ray_object_manager_port" ]; then
+    ray_object_manager_port="40099"
+  fi
+
+  # Check Ray ports if they are being used
+  check_port_availability "$ray_port" "Ray" "ray-port"
+  check_port_availability "$ray_client_server_port" "Ray client server" "ray-client-server-port"
+  check_port_availability "$ray_node_manager_port" "Ray node manager" "ray-node-manager-port"
+  check_port_availability "$ray_object_manager_port" "Ray object manager" "ray-object-manager-port"
 }
 
 # Function to reset wired_limit_mb
@@ -357,7 +411,7 @@ brew_install_with_version() {
   BREW_APP_VERSION="$2"
   BREW_APP_NAME_WITH_VERSION="$BREW_APP_NAME@$BREW_APP_VERSION"
   TAP_NAME="$USER/local-$BREW_APP_NAME-$BREW_APP_VERSION"
-  
+
   # Check current installed versions
   info "Checking installed versions of $BREW_APP_NAME."
   INSTALLED_VERSIONS=$(brew list --versions | grep "$BREW_APP_NAME" || true)

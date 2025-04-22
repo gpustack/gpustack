@@ -16,7 +16,7 @@
     You can add additional workers to form a GPUStack cluster by running the command on worker nodes.
 #>
 
-# Script updated at: 2025-02-19T08:16:49Z
+# Script updated at: 2025-04-07T02:16:49Z
 
 $ErrorActionPreference = "Stop"
 
@@ -135,7 +135,7 @@ function Get-Arg-Value {
 function Check-PortAvailability {
     param([int]$Port)
 
-    $connection = Get-NetTCPConnection -LocalPort $Port -LocalAddress '0.0.0.0' -State 'Listen' -ErrorAction SilentlyContinue
+    $connection = Get-NetTCPConnection -LocalPort $Port -State 'Listen' -ErrorAction SilentlyContinue
 
     if ($connection) {
         return $false  # Port is in use
@@ -156,19 +156,26 @@ function Check-Port {
         return
     }
 
-    $configFile = Get-Arg-Value -ArgName "config-file" @ScriptArgs
-    if ($configFile) {
-        return
-    }
-
     $serverPort = Get-Arg-Value -ArgName "port" @ScriptArgs
     $workerPort = Get-Arg-Value -ArgName "worker-port" @ScriptArgs
     $sslEnabled = Get-Arg-Value -ArgName "ssl-keyfile" @ScriptArgs
 
-    if (-not $serverPort) {
-        $serverPort = 80
-        if ($sslEnabled) {
-            $serverPort = 443
+    $serverURL = Get-Arg-Value -ArgName "server-url" @ScriptArgs
+    if (-not $serverURL) {
+        $serverURL = Get-Arg-Value -ArgName "s" @ScriptArgs
+    }
+
+    # Server port is not required when install as a worker.
+    if (-not $serverURL) {
+        if (-not $serverPort) {
+            $serverPort = 80
+            if ($sslEnabled) {
+                $serverPort = 443
+            }
+        }
+
+        if (-not (Check-PortAvailability -Port $serverPort)) {
+            throw "Server port $serverPort is already in use! Please specify a different port by using --port <YOUR_PORT>."
         }
     }
 
@@ -176,12 +183,21 @@ function Check-Port {
         $workerPort = 10150
     }
 
-    if (-not (Check-PortAvailability -Port $serverPort)) {
-        throw "Server port $serverPort is already in use! Please specify a different port by using --port <YOUR_PORT>."
-    }
-
     if (-not (Check-PortAvailability -Port $workerPort)) {
         throw "Worker port $workerPort is already in use! Please specify a different port by using --worker-port <YOUR_PORT>."
+    }
+
+    $disableMetrics = Get-Arg-Value -ArgName "disable-metrics" @ScriptArgs
+    # If metrics not disabled, check the metrics port
+    if ([string]::IsNullOrEmpty($disableMetrics)) {
+        $metricsPort = Get-Arg-Value -ArgName "metrics-port" @ScriptArgs
+        if (-not $metricsPort) {
+            $metricsPort = 10151
+        }
+
+        if (-not (Check-PortAvailability -Port $metricsPort)) {
+            throw "Metrics port $metricsPort is already in use! Please specify a different port by using --metrics-port <YOUR_PORT>."
+        }
     }
 }
 
