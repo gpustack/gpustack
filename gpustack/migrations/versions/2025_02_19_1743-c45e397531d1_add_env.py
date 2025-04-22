@@ -88,6 +88,7 @@ def upgrade() -> None:
 
     migrate_legacy_hf_cache()
     remove_legacy_ms_cache_locks()
+    remove_legacy_ollama_model_locks()
     alter_users_table_autoincrement_keyword(True)
     delete_orphan_keys()
     alter_api_keys_foreign_key(True)
@@ -181,6 +182,24 @@ def remove_legacy_ms_cache_locks():
                         logger.info(f"Deleted lock file: {lock_path}")
                     except Exception as e:
                         logger.warning(f"Failed to delete lock file {lock_path}: {e}")
+
+def remove_legacy_ollama_model_locks():
+    config = get_global_config()
+    ollama_dir = os.path.join(config.cache_dir, "ollama")
+
+    if not os.path.isdir(ollama_dir):
+        return
+
+    for file in os.listdir(ollama_dir):
+        if file.endswith(".lock"):
+            lock_path = os.path.join(ollama_dir, file)
+            if os.path.isfile(lock_path):
+                try:
+                    os.remove(lock_path)
+                    logger.info(f"Deleted lock file: {lock_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete lock file {lock_path}: {e}")
+
 
 def alter_users_table_autoincrement_keyword(auto_increment=False) -> None:
     conn = op.get_bind()
