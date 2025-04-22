@@ -266,8 +266,18 @@ class AscendMindIEParameters:
 
 
 class AscendMindIEServer(InferenceServer):
-    def start(self):  # noqa: max-complexity=15
+    def start(self):
+        # Start
+        try:
+            self._start()
+        except Exception as e:
+            self._report_error(e)
+            raise e
 
+    def _start(self):  # noqa: max-complexity=15
+        """
+        Start Ascend MindIE service.
+        """
         version = self._model.backend_version
         if not version:
             # Allow to control the version installed by user,
@@ -285,6 +295,13 @@ class AscendMindIEServer(InferenceServer):
             ),
             None,
         )
+        if not root_path:
+            e = FileNotFoundError(
+                f"Ascend MindIE version {version} is not installed. "
+                "Please install it first."
+            )
+            raise e
+
         install_path = root_path.joinpath("mindie", version, "mindie-service")
 
         # Load config,
@@ -427,11 +444,7 @@ class AscendMindIEServer(InferenceServer):
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
             params = AscendMindIEParameters(max_seq_len=max_seq_len)
-            try:
-                params.from_args(self._model.backend_parameters)
-            except Exception as e:
-                logger.error(f"Failed to parse parameters: {e}")
-                raise e
+            params.from_args(self._model.backend_parameters)
 
             # -- Log config
             log_config["logLevel"] = params.log_level
@@ -527,26 +540,31 @@ class AscendMindIEServer(InferenceServer):
             self.exit_with_code(exit_code)
 
         except Exception as e:
-            # Handle exceptions and update model instance state
-            error_message = f"Failed to run Ascend MindIE: {e}"
-            logger.error(error_message)
-            try:
-                patch_dict = {
-                    "state_message": error_message,
-                    "state": ModelInstanceStateEnum.ERROR,
-                }
-                self._update_model_instance(self._model_instance.id, **patch_dict)
-            except Exception as ue:
-                logger.error(f"Failed to update model instance state: {ue}")
-
             raise e
 
         finally:
             # Finally, remove JSON configuration file.
             config_path.unlink(missing_ok=True)
 
+    def _report_error(self, ex: Exception):
+        """
+        Report error message to the model instance.
+        """
+        error_message = f"Failed to run Ascend MindIE: {ex}"
+        logger.error(error_message)
+        try:
+            patch_dict = {
+                "state_message": error_message,
+                "state": ModelInstanceStateEnum.ERROR,
+            }
+            self._update_model_instance(self._model_instance.id, **patch_dict)
+        except Exception as e:
+            logger.error(f"Failed to update model instance state: {e}")
+
     def _get_model_max_seq_len(self) -> Optional[int]:
-        """Get the maximum sequence length of the model."""
+        """
+        Get the maximum sequence length of the model.
+        """
         try:
             pretrained_config = get_pretrained_config(self._model)
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)

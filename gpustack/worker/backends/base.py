@@ -242,6 +242,11 @@ def set_ascend_mindie_env(
         ),
         None,
     )
+    if not root_path:
+        logger.error(
+            "Ascend MindIE root path not found. " "Please check the installation."
+        )
+        return
 
     # Extract the environment variables from the script
     # - Get the paths of Ascend MindIE set_env.sh
