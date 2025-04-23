@@ -159,6 +159,10 @@ class ServeManager:
             }
             self._update_model_instance(mi.id, **patch_dict)
 
+            logger.debug(
+                f"Started serving model instance {mi.name} on port {mi.port}, pid {process.pid}"
+            )
+
         except Exception as e:
             patch_dict = {
                 "state": ModelInstanceStateEnum.ERROR,

@@ -34,8 +34,8 @@ def add_signal_handlers_in_loop():
         )
 
 
-async def shutdown_event_loop(signal=None, loop=None):
-    logger.debug(f"Received signal: {signal}. Shutting down gracefully...")
+async def shutdown_event_loop(sig=None, loop=None):
+    logger.debug(f"Received signal: {sig}. Shutting down gracefully...")
 
     threading_stop_event.set()
 
@@ -49,10 +49,10 @@ async def shutdown_event_loop(signal=None, loop=None):
     except asyncio.CancelledError:
         pass
 
-    handle_termination_signal(signal=signal)
+    handle_termination_signal(sig=sig)
 
 
-def handle_termination_signal(signal=None, frame=None):
+def handle_termination_signal(sig=None, frame=None):
     """
     Terminate the current process and all its children.
     """
@@ -60,6 +60,8 @@ def handle_termination_signal(signal=None, frame=None):
     if termination_signal_handled:
         return
     termination_signal_handled = True
+
+    logger.debug(f"Received signal: {sig}. Terminating process tree...")
 
     threading_stop_event.set()
 
@@ -88,17 +90,17 @@ def terminate_processes(processes):
     Terminates a list of processes, attempting graceful termination first,
     then forcibly killing remaining ones if necessary.
     """
-    for proc in processes:
+    for process in processes:
         try:
-            proc.terminate()
+            process.terminate()
         except psutil.NoSuchProcess:
             continue
 
     # Wait for processes to terminate and kill if still alive
-    _, alive = psutil.wait_procs(processes, timeout=3)
-    for proc in alive:
+    _, alive_processes = psutil.wait_procs(processes, timeout=3)
+    for process in alive_processes:
         try:
-            proc.kill()
+            process.kill()
         except psutil.NoSuchProcess:
             continue
 
