@@ -2,9 +2,12 @@ import argparse
 import dataclasses
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import os
+import tempfile
+from pathlib import Path
 from typing import Optional, List
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.utils import envs
@@ -41,6 +44,12 @@ class AscendMindIEParameters:
     enable_prefix_caching: bool = False
     metrics: bool = False
     enforce_eager: bool = False
+    dtype: str = "auto"
+    rope_scaling: Optional[str] = None
+    rope_scaling_parsed: Optional[any] = None  # store JSON parsed result
+    rope_theta: Optional[float] = None
+    override_generation_config: Optional[str] = None
+    override_generation_config_parsed: Optional[any] = None  # store JSON parsed result
 
     def from_args(self, args: List[str]):
         parser = argparse.ArgumentParser(exit_on_error=False)
@@ -85,7 +94,7 @@ class AscendMindIEParameters:
             type=bool,
             action=argparse.BooleanOptionalAction,
             help="Truncate the input token length, "
-            "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len - 1`.",
+            "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len` - 1.",
         )
         #
         # Model config
@@ -209,9 +218,47 @@ class AscendMindIEParameters:
             action='store_true',
             help="Emit operators in eager mode.",
         )
+        parser.add_argument(
+            "--dtype",
+            type=str,
+            default=self.dtype,
+            choices=["auto", "half", "float16", "bfloat16", "float", "float32"],
+            help="Data type for model weights and activations. "
+            "- `auto`: use the default data type of the model config, "
+            "- `half`: for FP16, "
+            "- `float16`: is the same as `half`, "
+            "- `bfloat16`: for BF16, "
+            "- `float`: is the shorthand for `float32`, "
+            "- `float32`: for FP32. ",
+        )
+        parser.add_argument(
+            "--rope-scaling",
+            type=str,
+            required=False,
+            help="RoPE scaling configuration in JSON format. "
+            "For example: `{\"type\": \"yarn\", \"factor\" :4.0, \"original_max_position_embeddings\": 32768}`. "
+            "This will merge into the `config.json` of the model structure.",
+        )
+        parser.add_argument(
+            "--rope-theta",
+            type=float,
+            required=False,
+            help="RoPE theta configuration. "
+            "This will merge into the `config.json` of the model structure.",
+        )
+        parser.add_argument(
+            "--override-generation-config",
+            type=str,
+            required=False,
+            help="Overrides or sets generation config in JSON format. "
+            "For example: `{\"temperature\": 0.5}`. "
+            "This will merge into the `generation_config.json` of the model structure.",
+        )
 
         args_parsed = parser.parse_known_args(args=args)
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+            if attr_name.endswith("_parsed"):
+                continue
             if attr_value := getattr(args_parsed[0], attr_name):
                 setattr(self, attr_name, attr_value)
 
@@ -263,16 +310,47 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--max-queue-delay-microseconds must be in the range [500, 1000000]"
             )
+        if self.rope_scaling:
+            try:
+                self.rope_scaling_parsed = json.loads(self.rope_scaling)
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"--rope-scaling must be a valid JSON string: {self.rope_scaling_parsed}"
+                ) from e
+        if self.override_generation_config:
+            try:
+                self.override_generation_config_parsed = json.loads(
+                    self.override_generation_config
+                )
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"--override-generation-config must be a valid JSON string: {self.override_generation_config}"
+                ) from e
 
 
 class AscendMindIEServer(InferenceServer):
+    model_path_mapped: Optional[Path] = None
+
+    def __del__(self):
+        self.cleanup()
+
     def start(self):
+        # Prepare
+        self.model_path_mapped = self._map_model_path()
         # Start
         try:
             self._start()
         except Exception as e:
             self._report_error(e)
             raise e
+        finally:
+            self.cleanup()
+
+    def cleanup(self):
+        # Clean up
+        if self.model_path_mapped:
+            shutil.rmtree(self.model_path_mapped)
+        self.model_path_mapped = None
 
     def _start(self):  # noqa: max-complexity=15
         """
@@ -433,7 +511,7 @@ class AscendMindIEServer(InferenceServer):
         schedule_config["maxIterTimes"] = max_seq_len
         schedule_config["maxPrefillTokens"] = max_seq_len
         model_config["modelName"] = self._model.name
-        model_config["modelWeightPath"] = self._model_path
+        model_config["modelWeightPath"] = str(self.model_path_mapped)
 
         # - Customize config, translate to Ascend MindIE configuration language,
         #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0285.html,
@@ -488,12 +566,73 @@ class AscendMindIEServer(InferenceServer):
                 env["MIES_SERVICE_MONITOR_MODE"] = "1"
             # --- Emitting operators in synchronous way.
             env["TASK_QUEUE_ENABLE"] = "0" if params.enforce_eager else "1"
+            # --- Mutating model config.
+            model_config_path = self.model_path_mapped.joinpath("config.json")
+            with open(
+                model_config_path,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                model_path_config = json.load(f)
+            # Merge the updated model config with the existing one
+            if params.dtype != "auto":
+                dtype = params.dtype
+                if dtype == "half":
+                    dtype = "float16"
+                elif dtype == "float":
+                    dtype = "float32"
+                model_path_config["torch_dtype"] = dtype
+            if params.rope_scaling_parsed:
+                rope_scaling = model_path_config.get("rope_scaling")
+                if rope_scaling:
+                    # Merge the updated RoPE scaling config with the existing one
+                    rope_scaling.update(params.rope_scaling_parsed)
+                else:
+                    # Override the RoPE scaling config
+                    rope_scaling = params.rope_scaling_parsed
+                model_path_config["rope_scaling"] = rope_scaling
+            if params.rope_theta:
+                model_path_config["rope_theta"] = params.rope_theta
+            # Save the mutated model config
+            with open(
+                model_config_path,
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(model_path_config, f, indent=4, ensure_ascii=False)
+            logger.info(f"Saved model config to {model_config_path}")
+            # --- Mutating model generation config.
+            model_generation_config_path = self.model_path_mapped.joinpath(
+                "generation_config.json"
+            )
+            if params.override_generation_config_parsed:
+                if model_generation_config_path.exists():
+                    with open(
+                        model_generation_config_path,
+                        "r",
+                        encoding="utf-8",
+                    ) as f:
+                        generation_config = json.load(f)
+                    # Merge the updated generation config with the existing one
+                    generation_config.update(params.override_generation_config_parsed)
+                else:
+                    # Override the generation config
+                    generation_config = params.override_generation_config_parsed
+                # Save the new generation config
+                with open(
+                    model_generation_config_path,
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    json.dump(generation_config, f, indent=4, ensure_ascii=False)
+                logger.info(
+                    f"Saved model generation config to {model_generation_config_path}"
+                )
 
         # Generate JSON configuration file by model instance id
         config_path = install_path.joinpath(
             "conf", f"config-{self._model_instance.id}.json"
         )
-        logger.info(f"Writing Ascend MindIE config to {config_path}")
         config_str = json.dumps(config, indent=4, ensure_ascii=False)
         with open(
             config_path,
@@ -501,6 +640,7 @@ class AscendMindIEServer(InferenceServer):
             encoding="utf-8",
         ) as f:
             f.write(config_str)
+        logger.info(f"Saved Ascend MindIE config to {config_path}")
 
         # Start, configure environment variable to indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
@@ -545,6 +685,60 @@ class AscendMindIEServer(InferenceServer):
         finally:
             # Finally, remove JSON configuration file.
             config_path.unlink(missing_ok=True)
+
+    def _map_model_path(self) -> Path:
+        """
+        Map model path.
+
+        Since MindIE doesn't support fine-grained model configuration,
+        we need to construct a temporary model path with weight sort links,
+        and copy the model configurations, like "config.json", "generation_config.json".
+
+        First, create a temporary directory,
+        it should be a subdirectory of system temporary directory,
+        e.g. "/tmp/ascend-mindie-<model_id>-xxx".
+        Then, link all files and directories to the temporary directory,
+        excluding: "config.json" and "generation_config.json".
+        Finally, copy "config.json" and "generation_config.json" files to the temporary directory.
+        """
+
+        raw = Path(self._model_path)
+
+        # Check if the model path exists
+        if not raw.is_dir():
+            raise FileNotFoundError(f"Model path {raw} does not exist.")
+
+        # Create a temporary directory
+        mapped = tempfile.mkdtemp(prefix=f"ascend-mindie-{self._model_instance.id}-")
+        mapped = Path(mapped)
+
+        # Link all files and directories to the temporary directory
+        for item in raw.iterdir():
+            if item.name in ["config.json", "generation_config.json"]:
+                continue
+            link_path = mapped.joinpath(item.name)
+            try:
+                os.symlink(item, link_path)
+            except FileExistsError:
+                # If the link already exists, remove it and create a new one
+                link_path.unlink(missing_ok=True)
+                os.symlink(item, link_path)
+
+        # Copy config.json and generation_config.json to the temporary directory
+        for item in ["config.json", "generation_config.json"]:
+            src = raw.joinpath(item)
+            if not src.is_file():
+                continue
+            dst = mapped.joinpath(item)
+            # Copy the file to the temporary directory
+            with open(src, "rb") as src_file:
+                with open(dst, "wb") as dst_file:
+                    dst_file.write(src_file.read())
+
+        logger.info(
+            f"Mapped original model path {self._model_path} to {self.model_path_mapped}"
+        )
+        return mapped
 
     def _report_error(self, ex: Exception):
         """
