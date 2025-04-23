@@ -2,9 +2,10 @@
 
 GPUStack supports the following inference backends:
 
-- llama-box
-- vLLM
-- vox-box
+- [llama-box](#llama-box)
+- [vLLM](#vllm)
+- [vox-box](#vox-box)
+- [Ascend MindIE](#ascend-mindie)
 
 When users deploy a model, the backend is selected automatically based on the following criteria:
 
@@ -66,7 +67,7 @@ For more details, please refer to [vLLM documentation](https://docs.vllm.ai/en/s
 
 The vLLM backend works on AMD64 Linux.
 
-!!! note
+!!! Note
 
     1. When users install GPUStack on amd64 Linux using the installation script, vLLM is automatically installed.
     2. When users deploy a model using the vLLM backend, GPUStack sets worker label selectors to `{"os": "linux", "arch": "amd64"}` by default to ensure the model instance is scheduled to proper workers. You can customize the worker label selectors in the model configuration.
@@ -147,3 +148,50 @@ The vox-box backend supports Linux, macOS and Windows platforms.
 #### Allow GPU/CPU Offloading
 
 vox-box supports deploying models to NVIDIA GPUs. If GPU resources are insufficient, it will automatically deploy the models to the CPU.
+
+## Ascend MindIE
+
+[Ascend MindIE](https://www.hiascend.com/en/software/mindie) is a high-performance inference service 
+on [Ascend hardware](https://www.hiascend.com/en/hardware/product).
+
+### Supported Platforms
+
+The Ascend MindIE backend works on Linux platforms only, including ARM64 and x86_64 architectures.
+
+### Supported Models
+
+Ascend MindIE supports various models 
+listed [here](https://www.hiascend.com/document/detail/zh/mindie/100/whatismindie/mindie_what_0003.html).
+
+Within GPUStack, support
+[large language models (LLMs)](https://www.hiascend.com/document/detail/zh/mindie/100/whatismindie/mindie_what_0003.html)
+and 
+[multimodal language models (VLMs)](https://www.hiascend.com/document/detail/zh/mindie/100/whatismindie/mindie_what_0004.html)
+. However, _embedding models_ and _multimodal generation models_ are not supported yet.
+
+### Supported Features
+
+Ascend MindIE owns a variety of features
+outlined [here](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0001.html).
+
+At present, GPUStack supports a subset of these capabilities, including
+[Quantization](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0288.html), 
+[Mixture of Experts(MoE)](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0297.html),
+[Prefix Caching](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0302.html),
+[Function Calling](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0303.html),
+[Multimodal Understanding](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0304.html),
+[Multi-head Latent Attention(MLA)](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0305.html).
+
+!!! Note
+
+    1. Quantization needs specific weight, and must adjust the model's `config.json`, 
+       please follow the [reference(guide)](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0288.html) to prepare the correct weight.
+    2. For Multimodal Understanding feature, some versions of Ascend MindIE's API are incompatible with OpenAI, 
+       please track this [issue](https://github.com/gpustack/gpustack/issues/1803) for more support.
+    3. [Extending Context Size](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0295.html) feature is WIP,
+       please track this [issue](https://github.com/gpustack/gpustack/issues/1864) for more details.
+    4. Some features are mutually exclusive, so be careful when using them.
+
+### Parameters Reference
+
+!!! TODO
