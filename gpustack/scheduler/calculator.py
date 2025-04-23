@@ -176,7 +176,6 @@ async def _gguf_parser_command(  # noqa: C901
     )
     executable_command = [
         command_path,
-        "--in-max-ctx-size",
         "--skip-tokenizer",
         "--skip-architecture",
         "--skip-metadata",
