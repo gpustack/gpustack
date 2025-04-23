@@ -87,8 +87,8 @@ vLLM supports distributed inference across multiple workers using [Ray](https://
 
 !!! warning "Known Limitations"
 
-    1. Both the GPUStack server and all participating workers must run on Linux.
-    2. Model files must be accessible at the same path on all participating workers. Currently, GPUStack downloads model files only to the main worker. You must either use a shared file system or manually copy the model files to the same path on all participating workers.
+    1. The GPUStack server and all participating workers must run on Linux and use the same version of Python, which is a requirement of Ray.
+    2. Model files must be accessible at the same path on all participating workers. You must either use a shared file system or download the model files to the same path on all participating workers.
     3. Each worker can only be assigned to one distributed vLLM model instance at a time.
 
 Auto-scheduling is supported with the following conditions:
