@@ -201,6 +201,10 @@ For example, use `--ctx-size=8192` for llama-box.
 
 For full list of supported parameters, please refer to the [Inference Backends](./inference-backends.md) section.
 
+### Environment Variables
+
+Environment variables used when running the model. These variables are passed to the backend process at startup.
+
 ### Allow CPU Offloading
 
 !!! note
