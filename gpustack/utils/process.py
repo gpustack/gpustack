@@ -61,8 +61,6 @@ def handle_termination_signal(sig=None, frame=None):
         return
     termination_signal_handled = True
 
-    logger.debug(f"Received signal: {sig}. Terminating process tree...")
-
     threading_stop_event.set()
 
     pid = os.getpid()
