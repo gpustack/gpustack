@@ -42,8 +42,13 @@ extra:
   generator: false
   version:
     provider: mike
+extra_javascript:
+  - javascripts/katex.js
+  - https://unpkg.com/katex@0/dist/katex.min.js
+  - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
 extra_css:
   - stylesheets/extra.css
+  - https://unpkg.com/katex@0/dist/katex.min.css
 markdown_extensions:
   - pymdownx.highlight
   - pymdownx.superfences
@@ -58,6 +63,8 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.tasklist:
       custom_checkbox: true
+  - pymdownx.arithmatex:
+      generic: true
 repo_url: https://github.com/gpustack/gpustack
 edit_uri: edit/main/docs/
 nav:
@@ -102,6 +109,7 @@ nav:
       - User Management: user-guide/user-management.md
       - Inference Backends: user-guide/inference-backends.md
       - Pinned Backend Versions: user-guide/pinned-backend-versions.md
+      - Compatibility Check: user-guide/compatibility-check.md
       - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
       - Image Generation APIs: user-guide/image-generation-apis.md
       - Rerank API: user-guide/rerank-api.md
