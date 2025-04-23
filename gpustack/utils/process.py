@@ -98,11 +98,13 @@ def terminate_processes(processes):
 
     # Wait for processes to terminate and kill if still alive
     _, alive_processes = psutil.wait_procs(processes, timeout=3)
-    for process in alive_processes:
-        try:
-            process.kill()
-        except psutil.NoSuchProcess:
-            continue
+    while alive_processes:
+        for process in alive_processes:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                continue
+        _, alive_processes = psutil.wait_procs(alive_processes, timeout=1)
 
 
 def terminate_process(process):
@@ -119,5 +121,6 @@ def terminate_process(process):
         except psutil.TimeoutExpired:
             try:
                 process.kill()
-            except psutil.NoSuchProcess:
+                process.wait(timeout=1)
+            except (psutil.NoSuchProcess, psutil.TimeoutExpired):
                 pass
