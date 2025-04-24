@@ -235,8 +235,9 @@ async def evaluate_environment(
     model: ModelSpec,
     workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
+    backend = get_backend(model)
     has_linux_workers = any(worker.labels.get("os") == "linux" for worker in workers)
-    if get_backend(model) == BackendEnum.VLLM and not has_linux_workers:
+    if backend == BackendEnum.VLLM and not has_linux_workers:
         return False, [
             "The model requires Linux workers but none are available. Use GGUF models instead."
         ]
@@ -246,14 +247,19 @@ async def evaluate_environment(
     )
     if (
         only_windows_workers
-        and model.backend == BackendEnum.VOX_BOX
+        and backend == BackendEnum.VOX_BOX
         and CategoryEnum.TEXT_TO_SPEECH.value in model.categories
     ):
         return False, ["The model is not supported on Windows workers."]
 
-    if model.backend == BackendEnum.ASCEND_MINDIE and not has_ascend_npu(workers):
+    if backend == BackendEnum.ASCEND_MINDIE and not has_ascend_npu(workers):
         return False, [
-            "The MindIE backend requires Ascend NPUs but none are available."
+            "The Ascend MindIE backend requires Ascend NPUs but none are available."
+        ]
+
+    if backend == BackendEnum.VLLM and only_ascend_npu(workers):
+        return False, [
+            "The vLLM backend is not supported on Ascend NPUs at the moment. Use the Ascend MindIE or llama-box backend instead."
         ]
 
     return True, []
@@ -266,6 +272,19 @@ def has_ascend_npu(workers: List[Worker]) -> bool:
                 if gpu.vendor == VendorEnum.Huawei.value:
                     return True
     return False
+
+
+def only_ascend_npu(workers: List[Worker]) -> bool:
+    has_ascend_npu = False
+    has_other_gpu = False
+    for worker in workers:
+        if worker.status and worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                if gpu.vendor == VendorEnum.Huawei.value:
+                    has_ascend_npu = True
+                else:
+                    has_other_gpu = True
+    return has_ascend_npu and not has_other_gpu
 
 
 async def evaluate_model_metadata(
