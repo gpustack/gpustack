@@ -82,7 +82,7 @@ Please refer to the vLLM [documentation](https://docs.vllm.ai/en/stable/models/s
 
 vLLM supports multimodal language models listed [here](https://docs.vllm.ai/en/stable/models/supported_models.html#multimodal-language-models). When users deploy a vision language model using the vLLM backend, image inputs are supported in the chat completion API.
 
-#### Distributed Inference Across Workers
+#### Distributed Inference Across Workers (Experimental)
 
 vLLM supports distributed inference across multiple workers using [Ray](https://ray.io). You can enable a Ray cluster in GPUStack by using the `--enable-ray` start parameter, allowing vLLM to run distributed inference across multiple workers.
 
@@ -149,9 +149,9 @@ The vox-box backend supports Linux, macOS and Windows platforms.
 
 vox-box supports deploying models to NVIDIA GPUs. If GPU resources are insufficient, it will automatically deploy the models to the CPU.
 
-## Ascend MindIE
+## Ascend MindIE (Experimental)
 
-[Ascend MindIE](https://www.hiascend.com/en/software/mindie) is a high-performance inference service 
+[Ascend MindIE](https://www.hiascend.com/en/software/mindie) is a high-performance inference service
 on [Ascend hardware](https://www.hiascend.com/en/hardware/product).
 
 ### Supported Platforms
@@ -160,12 +160,12 @@ The Ascend MindIE backend works on Linux platforms only, including ARM64 and x86
 
 ### Supported Models
 
-Ascend MindIE supports various models 
+Ascend MindIE supports various models
 listed [here](https://www.hiascend.com/document/detail/zh/mindie/100/whatismindie/mindie_what_0003.html).
 
 Within GPUStack, support
 [large language models (LLMs)](https://www.hiascend.com/document/detail/zh/mindie/100/whatismindie/mindie_what_0003.html)
-and 
+and
 [multimodal language models (VLMs)](https://www.hiascend.com/document/detail/zh/mindie/100/whatismindie/mindie_what_0004.html)
 . However, _embedding models_ and _multimodal generation models_ are not supported yet.
 
@@ -175,7 +175,7 @@ Ascend MindIE owns a variety of features
 outlined [here](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0001.html).
 
 At present, GPUStack supports a subset of these capabilities, including
-[Quantization](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0288.html), 
+[Quantization](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0288.html),
 [Mixture of Experts(MoE)](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0297.html),
 [Prefix Caching](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0302.html),
 [Function Calling](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0303.html),
@@ -184,9 +184,9 @@ At present, GPUStack supports a subset of these capabilities, including
 
 !!! Note
 
-    1. Quantization needs specific weight, and must adjust the model's `config.json`, 
+    1. Quantization needs specific weight, and must adjust the model's `config.json`,
        please follow the [reference(guide)](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0288.html) to prepare the correct weight.
-    2. For Multimodal Understanding feature, some versions of Ascend MindIE's API are incompatible with OpenAI, 
+    2. For Multimodal Understanding feature, some versions of Ascend MindIE's API are incompatible with OpenAI,
        please track this [issue](https://github.com/gpustack/gpustack/issues/1803) for more support.
     3. [Extending Context Size](https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0295.html) feature is WIP,
        please track this [issue](https://github.com/gpustack/gpustack/issues/1864) for more details.
@@ -194,4 +194,26 @@ At present, GPUStack supports a subset of these capabilities, including
 
 ### Parameters Reference
 
-!!! TODO
+| Parameter                        | Default | Description                                                                                                                                                                    |
+| -------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--trust-remote-code`            |         | Trust remote code (for model loading).                                                                                                                                         |
+| `--npu-memory-fraction`          | 0.9     | Fraction of NPU memory to be used for the model executor (0 to 1). Example: 0.5 means 50% memory utilization.                                                                  |
+| `--max-link-num`                 | 1000    | Maximum number of parallel requests.                                                                                                                                           |
+| `--max-seq-len`                  | 8192    | Model context length. If unspecified, it will be derived from the model config.                                                                                                |
+| `--max-input-token-len`          |         | Maximum input token length. If unspecified, it will be derived from `--max-seq-len`.                                                                                           |
+| `--truncation`                   |         | Truncate the input token length when it exceeds the minimum of `--max-input-token-len` and `--max-seq-len - 1`.                                                                |
+| `--cpu-mem-size`                 | 5       | CPU swap space size in GiB. If unspecified, the default value will be used.                                                                                                    |
+| `--cache-block-size`             | 128     | KV cache block size. Must be a power of 2.                                                                                                                                     |
+| `--max-batch-size`               | 200     | Maximum number of requests batched during decode stage.                                                                                                                        |
+| `--max-prefill-batch-size`       | 50      | Maximum number of requests batched during prefill stage. Must be less than `--max-batch-size`.                                                                                 |
+| `--max-preempt-count`            | 0       | Maximum number of preempted requests allowed during decoding. Must be less than `--max-batch-size`.                                                                            |
+| `--max-queue-delay-microseconds` | 5000    | Maximum queue wait time in microseconds.                                                                                                                                       |
+| `--prefill-time-ms-per-req`      | 150     | Estimated prefill time per request (ms). Used to decide between prefill and decode stage.                                                                                      |
+| `--prefill-policy-type`          | 0       | Prefill stage strategy: <br> `0`: FCFS (First Come First Serve) <br> `1`: STATE (same as FCFS) <br> `2`: PRIORITY (priority queue) <br> `3`: MLFQ (Multi-Level Feedback Queue) |
+| `--decode-time-ms-per-req`       | 50      | Estimated decode time per request (ms). Used with `--prefill-time-ms-per-req` for batch selection.                                                                             |
+| `--decode-policy-type`           | 0       | Decode stage strategy: <br> `0`: FCFS <br> `1`: STATE (prioritize preempted or swapped requests) <br> `2`: PRIORITY <br> `3`: MLFQ                                             |
+| `--support-select-batch`         |         | Enable batch selection. Determines execution priority based on `--prefill-time-ms-per-req` and `--decode-time-ms-per-req`.                                                     |
+| `--enable-prefix-caching`        |         | Enable prefix caching. Use `--no-enable-prefix-caching` to disable explicitly.                                                                                                 |
+| `--enforce-eager`                |         | Emit operators in eager mode.                                                                                                                                                  |
+| `--metrics`                      |         | Expose metrics at `/metrics` endpoint.                                                                                                                                         |
+| `--log-level`                    | Info    | Log level for MindIE. Options: `Verbose`, `Info`, `Warning`, `Warn`, `Error`, `Debug`.                                                                                         |
