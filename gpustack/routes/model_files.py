@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from sqlmodel import String, cast, func, or_
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -33,30 +34,82 @@ async def get_model_files(
     if worker_id:
         fields["worker_id"] = worker_id
 
-    fuzzy_fields = {}
-    if search:
-        fuzzy_fields = {
-            "huggingface_repo_id": search,
-            "huggingface_filename": search,
-            "ollama_library_model_name": search,
-            "model_scope_model_id": search,
-            "model_scope_file_path": search,
-            "local_path": search,
-        }
-
     if params.watch:
         return StreamingResponse(
-            ModelFile.streaming(session, fields=fields, fuzzy_fields=fuzzy_fields),
+            ModelFile.streaming(
+                session,
+                fields=fields,
+                filter_func=lambda data: (
+                    search_model_file_filter(data, search) if search else None
+                ),
+            ),
             media_type="text/event-stream",
+        )
+
+    extra_conditions = []
+    if search:
+        lower_search = search.lower()
+        extra_conditions.append(
+            or_(
+                *[
+                    func.lower(cast(ModelFile.resolved_paths, String)).like(
+                        f"%{lower_search}%"
+                    ),
+                    func.lower(ModelFile.huggingface_repo_id).like(f"%{lower_search}%"),
+                    func.lower(ModelFile.huggingface_filename).like(
+                        f"%{lower_search}%"
+                    ),
+                    func.lower(ModelFile.ollama_library_model_name).like(
+                        f"%{lower_search}%"
+                    ),
+                    func.lower(ModelFile.model_scope_model_id).like(
+                        f"%{lower_search}%"
+                    ),
+                    func.lower(ModelFile.model_scope_file_path).like(
+                        f"%{lower_search}%"
+                    ),
+                    func.lower(ModelFile.local_path).like(f"%{lower_search}%"),
+                ]
+            )
         )
 
     return await ModelFile.paginated_by_query(
         session=session,
         fields=fields,
-        fuzzy_fields=fuzzy_fields,
+        extra_conditions=extra_conditions,
         page=params.page,
         per_page=params.perPage,
     )
+
+
+def search_model_file_filter(data: ModelFile, search: str) -> bool:
+    if (
+        (
+            data.huggingface_repo_id
+            and search.lower() in data.huggingface_repo_id.lower()
+        )
+        or (
+            data.huggingface_filename
+            and search.lower() in data.huggingface_filename.lower()
+        )
+        or (
+            data.ollama_library_model_name
+            and search.lower() in data.ollama_library_model_name.lower()
+        )
+        or (
+            data.model_scope_model_id
+            and search.lower() in data.model_scope_model_id.lower()
+        )
+        or (
+            data.model_scope_file_path
+            and search.lower() in data.model_scope_file_path.lower()
+        )
+        or (data.local_path and search.lower() in data.local_path.lower())
+        or (data.resolved_paths and search.lower() in data.resolved_paths[0].lower())
+    ):
+        return True
+
+    return False
 
 
 @router.get("/{id}", response_model=ModelFilePublic)
