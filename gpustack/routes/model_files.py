@@ -34,14 +34,17 @@ async def get_model_files(
     if worker_id:
         fields["worker_id"] = worker_id
 
+    def get_filter_func(search):
+        if search:
+            return lambda data: search_model_file_filter(data, search)
+        return None
+
     if params.watch:
         return StreamingResponse(
             ModelFile.streaming(
                 session,
                 fields=fields,
-                filter_func=lambda data: (
-                    search_model_file_filter(data, search) if search else None
-                ),
+                filter_func=get_filter_func(search),
             ),
             media_type="text/event-stream",
         )
