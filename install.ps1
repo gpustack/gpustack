@@ -16,7 +16,7 @@
     You can add additional workers to form a GPUStack cluster by running the command on worker nodes.
 #>
 
-# Script updated at: 2025-02-19T08:16:49Z
+# Script updated at: 2025-04-24T06:27:59Z
 
 $ErrorActionPreference = "Stop"
 
