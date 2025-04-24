@@ -3,3 +3,11 @@
     --md-primary-fg-color--light: #2997FF;
     --md-primary-fg-color--dark:  #0062d9;
   }
+
+
+.center-table {
+  text-align: center;
+}
+.md-typeset .center-table :is(td,th):not([align]) {
+  text-align: initial; /* Reset alignment for table cells */
+}
