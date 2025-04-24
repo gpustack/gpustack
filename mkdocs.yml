@@ -50,6 +50,7 @@ extra_css:
   - stylesheets/extra.css
   - https://unpkg.com/katex@0/dist/katex.min.css
 markdown_extensions:
+  - md_in_html
   - pymdownx.highlight
   - pymdownx.superfences
   - pymdownx.tabbed:
@@ -123,6 +124,7 @@ nav:
       - Editing Images: using-models/editing-images.md
       - Using Audio Models: using-models/using-audio-models.md
   - Tutorials:
+      - Running DeepSeek R1 671B with Distributed vLLM: tutorials/running-deepseek-r1-671b-with-distributed-vllm.md
       - Performing Distributed Inference Across Workers (llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
       - Inference On CPUs: tutorials/inference-on-cpus.md
       - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
