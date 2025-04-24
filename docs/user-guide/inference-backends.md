@@ -5,7 +5,7 @@ GPUStack supports the following inference backends:
 - [llama-box](#llama-box)
 - [vLLM](#vllm)
 - [vox-box](#vox-box)
-- [Ascend MindIE](#ascend-mindie)
+- [Ascend MindIE](#ascend-mindie-experimental)
 
 When users deploy a model, the backend is selected automatically based on the following criteria:
 
