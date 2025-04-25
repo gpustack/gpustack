@@ -11,7 +11,7 @@ function lint() {
   local path="$1"
 
   gpustack::log::info "linting ${path}"
-  pre-commit run --all-files
+  pre-commit run --all-files --show-diff-on-failure
 }
 
 #
