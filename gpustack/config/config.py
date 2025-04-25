@@ -100,6 +100,7 @@ class Config(BaseSettings):
     force_auth_localhost: bool = False
     ollama_library_base_url: Optional[str] = "https://registry.ollama.ai"
     disable_update_check: bool = False
+    disable_openapi_docs: bool = False
     update_check_url: Optional[str] = None
     model_catalog_file: Optional[str] = None
     ray_port: int = 40096
