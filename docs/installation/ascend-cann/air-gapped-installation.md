@@ -21,7 +21,7 @@ Check if the CPU is supported:
 grep -E -i "neon|asimd" /proc/cpuinfo
 ```
 
-- [NPU Driver and Firmware](https://www.hiascend.com/hardware/firmware-drivers/community?product=4&model=26&cann=8.0.0.beta1&driver=1.0.28.alpha) (Must supports CANN 8.0.0.beta1)
+- [NPU Driver and Firmware](https://www.hiascend.com/hardware/firmware-drivers/community?product=4&model=26&cann=8.0.0.beta1&driver=1.0.28.alpha) (Must support CANN 8.0.0.beta1)
 
 Check if the NPU driver is installed:
 
