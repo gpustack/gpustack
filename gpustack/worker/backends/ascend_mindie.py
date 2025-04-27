@@ -735,9 +735,7 @@ class AscendMindIEServer(InferenceServer):
                 with open(dst, "wb") as dst_file:
                     dst_file.write(src_file.read())
 
-        logger.info(
-            f"Mapped original model path {self._model_path} to {self.model_path_mapped}"
-        )
+        logger.info(f"Mapped original model path {self._model_path} to {mapped}")
         return mapped
 
     def _report_error(self, ex: Exception):
