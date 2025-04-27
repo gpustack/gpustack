@@ -25,6 +25,12 @@ For example, to upgrade GPUStack to the latest version on a Linux system and mac
 curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
 ```
 
+!!! Note
+
+    `<EXISTING_INSTALL_ENV>` are the environment variables you set during the initial installation, and `<EXISTING_GPUSTACK_ARGS>` are the startup parameters you configured back then.
+
+    **Simply execute the same installation command again, and the system will automatically perform an upgrade.**
+
 To upgrade to a specific version, specify the `INSTALL_PACKAGE_SPEC` environment variable similar to the `pip install` command:
 
 ```bash
@@ -39,6 +45,12 @@ To upgrade GPUStack to the latest version on a Windows system:
 $env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
 Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
 ```
+
+!!! Note
+
+    `<EXISTING_INSTALL_ENV>` are the environment variables you set during the initial installation, and `<EXISTING_GPUSTACK_ARGS>` are the startup parameters you configured back then.
+
+    **Simply execute the same installation command again, and the system will automatically perform an upgrade.**
 
 To upgrade to a specific version:
 
