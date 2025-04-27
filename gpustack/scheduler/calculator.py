@@ -1,4 +1,6 @@
+import argparse
 import asyncio
+import dataclasses
 from enum import Enum
 import logging
 import os
@@ -15,7 +17,6 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_mmproj_filename,
 )
-from gpustack.utils.command import find_bool_parameter, find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 from gpustack.utils import platform
@@ -117,44 +118,6 @@ def _get_empty_estimate(n_gpu: int = 1) -> estimate:
     )
 
 
-def add_bool_flag(
-    parameters: Optional[List[str]],
-    keys: List[str],
-    command_list: List[str],
-    flag_name: str,
-) -> None:
-    """
-    Adds a boolean flag to the command list if the parameter is found.
-
-    :param parameters: A list of parameters, or None.
-    :param keys: A list of keys to search for in the parameters.
-    :param command_list: The list of commands to which the flag should be added.
-    :param flag_name: The name of the flag to add to the command list.
-    """
-    if parameters and find_bool_parameter(parameters, keys):
-        command_list.append(flag_name)
-
-
-def add_parameter_with_value(
-    parameters: Optional[List[str]],
-    keys: List[str],
-    command_list: List[str],
-    flag_name: str,
-) -> None:
-    """
-    Adds a parameter and its value to the command list if the parameter is found.
-
-    :param parameters: A list of parameters, or None.
-    :param keys: A list of keys to search for in the parameters.
-    :param command_list: The list of commands to which the parameter and value should be added.
-    :param flag_name: The name of the parameter to add to the command list.
-    """
-    if parameters:
-        value = find_parameter(parameters, keys)
-        if value:
-            command_list.extend([flag_name, value])
-
-
 def _gguf_parser_env(model: Model) -> dict:
     env = os.environ.copy()
     if model.source == SourceEnum.HUGGING_FACE:
@@ -164,6 +127,262 @@ def _gguf_parser_env(model: Model) -> dict:
     return env
 
 
+@dataclass
+class GGUFParserCommandMutableParameters:
+    # NB(thxCode): Partial options are not applied to backend, but to the parser.
+    # We can receive these options from the backend advanced config.
+
+    # Estimate
+    flash_attention: Optional[bool] = None
+    main_gpu: Optional[int] = None
+    parallel_size: int = 4
+    platform_footprint: str = "150,500"
+    # Estimate/LLaMACpp
+    batch_size: Optional[int] = None
+    cache_type_k: Optional[str] = None
+    cache_type_v: Optional[str] = None
+    ctx_size: int = 8192
+    gpu_layers_draft: Optional[int] = None
+    mmap: bool = False
+    no_kv_offload: Optional[bool] = None
+    split_mode: Optional[str] = None
+    ubatch_size: Optional[int] = None
+    visual_max_image_size: [int] = None
+    # Estimate/StableDiffusionCpp
+    image_autoencoder_tiling: bool = True
+    image_batch_count: Optional[int] = None
+    image_free_compute_memory_immediately: Optional[bool] = None
+    image_height: Optional[int] = None
+    image_no_autoencoder_offload: Optional[bool] = None
+    image_no_conditioner_offload: Optional[bool] = None
+    image_no_control_net_offload: Optional[bool] = None
+    image_width: Optional[int] = None
+    # Load
+    cache_expiration: str = "168h0m0s"
+    skip_cache: Optional[bool] = None
+    skip_dns_cache: Optional[bool] = None
+    skip_proxy: Optional[bool] = None
+    skip_range_download_detect: Optional[bool] = None
+    skip_tls_verify: Optional[bool] = None
+
+    def from_args(self, args: List[str]):
+        parser = argparse.ArgumentParser(exit_on_error=False)
+
+        # Estimate
+        parser.add_argument(
+            "--flash-attention",
+            "--flash-attn",
+            "--diffusion-fa",
+            "-fa",
+            type=bool,
+            action=argparse.BooleanOptionalAction,  # generated "--no-flash-attention", "--no-flash-attn", "--no-diffusion-fa"
+            required=False,
+        )
+        parser.add_argument(
+            "--main-gpu",
+            "-mg",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--parallel-size",
+            "--parallel",
+            "-np",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--platform-footprint",
+            type=str,
+            required=False,
+        )
+        # Estimate/LLaMACpp
+        parser.add_argument(
+            "--batch-size",
+            "-b",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--cache-type-k",
+            "-ctk",
+            type=str,
+            required=False,
+        )
+        parser.add_argument(
+            "--cache-type-v",
+            "-ctv",
+            type=str,
+            required=False,
+        )
+        parser.add_argument(
+            "--ctx-size",
+            "-c",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--gpu-layers-draft",
+            "--n-gpu-layers-draft",
+            "-ngld",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--mmap",
+            type=bool,
+            action=argparse.BooleanOptionalAction,  # generated "--no-mmap"
+            required=False,
+        )
+        parser.add_argument(
+            "--no-kv-offload",
+            "-nkvo",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--split-mode",
+            "-sm",
+            type=str,
+            required=False,
+        )
+        parser.add_argument(
+            "--ubatch-size",
+            "-ub",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--visual-max-image-size",
+            type=int,
+            required=False,
+        )
+        # Estimate/StableDiffusionCpp
+        parser.add_argument(
+            "--image-autoencoder-tiling",
+            "--image-vae-tiling",
+            "--vae-tiling",
+            action='store_true',
+            dest="image_autoencoder_tiling",
+            required=False,
+        )
+        parser.add_argument(
+            "--image-no-autoencoder-tiling",
+            "--image-no-vae-tiling",
+            action='store_false',
+            dest="image_autoencoder_tiling",
+            required=False,
+        )
+        parser.add_argument(
+            "--image-batch-count",
+            "--batch-count",
+            "--image-max-batch",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--image-free-compute-memory-immediately",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--image-height",
+            "--height",
+            "--image-max-height",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--image-no-autoencoder-offload",
+            "--vae-on-cpu",
+            "--image-no-vae-model-offload",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--image-no-conditioner-offload",
+            "--clip-on-cpu",
+            "--image-no-text-encoder-model-offload",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--image-no-control-net-offload",
+            "--control-net-cpu",
+            "--image-no-control-net-model-offload",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--image-width",
+            "--width",
+            "--image-max-width",
+            type=int,
+            required=False,
+        )
+        # Load
+        parser.add_argument(
+            "--cache-expiration",
+            type=str,
+            required=False,
+        )
+        parser.add_argument(
+            "--skip-cache",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--skip-dns-cache",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--skip-proxy",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--skip-range-download-detect",
+            action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--skip-tls-verify",
+            action='store_true',
+            required=False,
+        )
+
+        slogger = logger.getChild("gguf_parser_command")
+
+        try:
+            args_parsed = parser.parse_known_args(args=args)
+            for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+                if attr_value := getattr(args_parsed[0], attr_name):
+                    try:
+                        setattr(self, attr_name, attr_value)
+                    except ValueError as e:
+                        slogger.warning(
+                            f"Failed to receive mutable parameter {attr_name}: {e}"
+                        )
+        except (argparse.ArgumentError, argparse.ArgumentTypeError) as e:
+            slogger.warning(f"Failed to parse mutable parameters: {e}")
+
+    def extend_command(self, command: List[str]):
+        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+            attr_value = getattr(self, attr_name)
+            if attr_value is not None:
+                if isinstance(attr_value, bool):
+                    command.append(
+                        f"--{attr_name.replace('_', '-')}={'true' if attr_value else 'false'}"
+                    )
+                elif isinstance(attr_value, int):
+                    command.append(f"--{attr_name.replace('_', '-')}={str(attr_value)}")
+                else:
+                    command.extend(
+                        [f"--{attr_name.replace('_', '-')}", str(attr_value)]
+                    )
+
+
 async def _gguf_parser_command(  # noqa: C901
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
@@ -171,106 +390,21 @@ async def _gguf_parser_command(  # noqa: C901
         "gguf-parser" + (".exe" if platform.system() == "windows" else "")
     )
 
+    # Preset the command with immutable arguments.
     command = [
         bin_path,
         "--skip-tokenizer",
         "--skip-architecture",
         "--skip-metadata",
-        "--image-vae-tiling",
-        "--cache-expiration",
-        "168h0m0s",
-        "--platform-footprint",
-        "150,500",
-        "--no-mmap",
         "--json",
     ]
 
-    ctx_size = find_parameter(model.backend_parameters, ["ctx-size", "c"])
-    if ctx_size is None:
-        ctx_size = "8192"
+    # Extend the command with mutable arguments.
+    params = GGUFParserCommandMutableParameters()
+    params.from_args(model.backend_parameters)
+    params.extend_command(command)
 
-    command.extend(["--ctx-size", ctx_size])
-
-    add_bool_flag(
-        model.backend_parameters,
-        ["image-no-text-encoder-model-offload"],
-        command,
-        "--image-no-text-encoder-model-offload",
-    )
-    add_bool_flag(
-        model.backend_parameters,
-        ["image-no-vae-model-offload"],
-        command,
-        "--image-no-vae-model-offload",
-    )
-    add_bool_flag(
-        model.backend_parameters,
-        ["image-no-vae-tiling"],
-        command,
-        "--image-no-vae-tiling",
-    )
-    add_bool_flag(
-        model.backend_parameters,
-        ["flash-attention", "flash-attn", "fa", "diffusion-fa"],
-        command,
-        "--flash-attention",
-    )
-
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["image-max-height"],
-        command,
-        "--image-max-height",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["image-max-width"],
-        command,
-        "--image-max-width",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["visual-max-image-size"],
-        command,
-        "--visual-max-image-size",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["cache-type-k", "ctk"],
-        command,
-        "--cache-type-k",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["cache-type-v", "ctv"],
-        command,
-        "--cache-type-v",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["batch-size", "b"],
-        command,
-        "--batch-size",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["ubatch-size", "ub"],
-        command,
-        "--ubatch-size",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["split-mode", "sm"],
-        command,
-        "--split-mode",
-    )
-    add_parameter_with_value(
-        model.backend_parameters,
-        ["platform-footprint"],
-        command,
-        "--platform-footprint",
-    )
-
+    # Extend the command with controlled arguments.
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
         command.extend(["--cache-path", cache_dir])
