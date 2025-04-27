@@ -68,6 +68,7 @@ class LlamaBoxServer(InferenceServer):
             self._model_path,
             "--alias",
             self._model.name,
+            "--no-mmap",
             "--no-warmup",
         ]
 

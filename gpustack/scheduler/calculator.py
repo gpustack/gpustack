@@ -184,6 +184,7 @@ async def _gguf_parser_command(  # noqa: C901
         "168h0m0s",
         "--platform-footprint",
         "150,500",
+        "--no-mmap",
         "--json",
     ]
 
