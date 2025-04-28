@@ -53,7 +53,7 @@ class WorkerStatusCollector:
 
     """A class for collecting worker status information."""
 
-    def collect(self) -> Worker:  # noqa: C901
+    def collect(self, initial: bool = False) -> Worker:  # noqa: C901
         """Collect worker status information."""
         status = WorkerStatus()
 
@@ -69,11 +69,12 @@ class WorkerStatusCollector:
         except Exception as e:
             logger.error(f"Failed to detect system info: {e}")
 
-        try:
-            gpu_devices = self._detector_factory.detect_gpus()
-            status.gpu_devices = gpu_devices
-        except Exception as e:
-            logger.error(f"Failed to detect GPU devices: {e}")
+        if not initial:
+            try:
+                gpu_devices = self._detector_factory.detect_gpus()
+                status.gpu_devices = gpu_devices
+            except Exception as e:
+                logger.error(f"Failed to detect GPU devices: {e}")
 
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
@@ -88,12 +89,14 @@ class WorkerStatusCollector:
                 )
             status.rpc_servers = rps_server
 
+        state = WorkerStateEnum.NOT_READY if initial else WorkerStateEnum.READY
+
         return Worker(
             name=self._worker_name,
             hostname=self._hostname,
             ip=self._worker_ip,
             port=self._worker_port,
-            state=WorkerStateEnum.READY,
+            state=state,
             status=status,
         )
 
