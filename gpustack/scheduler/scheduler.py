@@ -585,6 +585,10 @@ def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
     elif model_type == CategoryEnum.LLM:
         model.categories = [CategoryEnum.LLM]
         return True
+    elif model_type == CategoryEnum.UNKNOWN:
+        # Default to LLM for unknown architectures
+        model.categories = [CategoryEnum.LLM]
+        return True
 
     return False
 
