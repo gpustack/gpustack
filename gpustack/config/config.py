@@ -1,6 +1,6 @@
 import os
 import secrets
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
@@ -207,20 +207,6 @@ class Config(BaseSettings):
         system = platform.system()
         if system != "linux":
             raise Exception("Ray is only supported on Linux.")
-
-        if not TYPE_CHECKING:
-            try:
-                from vllm.platforms import current_platform
-            except ImportError:
-                raise Exception(
-                    "vLLM is not installed. Please install vLLM to work with Ray."
-                )
-
-            device_str = current_platform.ray_device_key
-            if not device_str:
-                raise Exception(
-                    f"current platform {current_platform.device_name} does not support Ray."
-                )
 
     def check_port_range(self, port_range: str):
         ports = port_range.split("-")
