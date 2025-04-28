@@ -40,19 +40,19 @@ jobs:
           #
           - device: cuda
             dockerfile: "Dockerfile"
-            platforms: "linux/amd64"
+            platforms: "linux/amd64,linux/arm64"
             tag_suffix: ""
             build_args:
               - "CUDA_VERSION=12.4.1"
           - device: cuda
             dockerfile: "Dockerfile"
-            platforms: "linux/amd64"
+            platforms: "linux/amd64,linux/arm64"
             tag_suffix: "-cuda12.8"
             build_args:
               - "CUDA_VERSION=12.8.1"
           - device: cuda
             dockerfile: "Dockerfile"
-            platforms: "linux/amd64"
+            platforms: "linux/amd64,linux/arm64"
             tag_suffix: "-cuda11.8"
             build_args:
               - "CUDA_VERSION=11.8.0"
