@@ -346,6 +346,7 @@ EOT
     rm -f "${MINDIE_PATH}" \
         && rm -rf /var/log/mindie_log \
         && rm -rf ~/log \
+        && rm -rf /tmp/* \
         && pip cache purge
 EOF
 
@@ -366,7 +367,7 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && make build
 
     # Install
-    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[mindie]"
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]"
     pip install $WHEEL_PACKAGE
 
     # Download tools
@@ -374,7 +375,11 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
 
     # Post-process,
     # override the required dependencies after installed.
-    pip install transformers==4.46.3 \
+    cat <<EOT >/tmp/requirements.txt
+transformers==4.46.3
+pipx==1.7.1
+EOT
+    pip install --no-cache-dir -r /tmp/requirements.txt \
         && pip freeze \
         && python -m site
 
@@ -384,6 +389,7 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
 
     # Cleanup
     rm -rf /workspace/gpustack/dist \
+        && rm -rf /tmp/* \
         && pip cache purge
 EOF
 
