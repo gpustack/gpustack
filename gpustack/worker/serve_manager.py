@@ -1,6 +1,5 @@
 import asyncio
 from datetime import datetime, timezone
-import multiprocessing
 import psutil
 import requests
 import setproctitle
@@ -15,7 +14,11 @@ from gpustack.logging import (
     RedirectStdoutStderr,
 )
 from gpustack.utils import network, platform
-from gpustack.utils.process import terminate_process_tree, add_signal_handlers
+from gpustack.utils.process import (
+    add_signal_handlers,
+    terminate_process_tree,
+    Process,
+)
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.vllm import VLLMServer
@@ -45,7 +48,7 @@ class ServeManager:
         self._worker_id = worker_id
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
-        self._serving_model_instances: Dict[int, multiprocessing.Process] = {}
+        self._serving_model_instances: Dict[int, Process] = {}
         self._serving_model_instance_ports: Dict[int, int] = {}
         self._starting_model_instances: Dict[int, ModelInstance] = {}
         self._error_model_instances: Dict[int, ModelInstance] = {}
@@ -136,7 +139,7 @@ class ServeManager:
             model = self._get_model_with_cache(mi)
             backend = get_backend(model)
 
-            process = multiprocessing.Process(
+            process = Process(
                 target=ServeManager.serve_model_instance,
                 args=(
                     mi,

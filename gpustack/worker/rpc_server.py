@@ -1,6 +1,5 @@
 from contextlib import redirect_stderr, redirect_stdout
 import logging
-import multiprocessing
 import os
 import subprocess
 import sys
@@ -10,7 +9,7 @@ import setproctitle
 
 from gpustack.utils import platform
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils.process import add_signal_handlers
+from gpustack.utils.process import add_signal_handlers, Process
 from gpustack.worker.backends.base import get_env_name_by_vendor
 
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class RPCServerProcessInfo:
-    def __init__(self, process: multiprocessing.Process, port: int, gpu_index: int):
+    def __init__(self, process: Process, port: int, gpu_index: int):
         self.process = process
         self.port = port
         self.gpu_index = gpu_index

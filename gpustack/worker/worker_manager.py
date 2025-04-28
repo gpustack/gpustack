@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-import multiprocessing
 import os
 import logging
 from typing import Dict
@@ -19,7 +18,7 @@ from gpustack.schemas.workers import (
 )
 from gpustack.utils import network
 from gpustack.utils import platform
-from gpustack.utils.process import terminate_process_tree
+from gpustack.utils.process import Process, terminate_process_tree
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.rpc_server import RPCServer, RPCServerProcessInfo
 from gpustack.detectors.detector_factory import DetectorFactory
@@ -199,7 +198,7 @@ class WorkerManager:
                 port_range=self._cfg.rpc_server_port_range,
                 unavailable_ports=self.get_occupied_ports(),
             )
-            process = multiprocessing.Process(
+            process = Process(
                 target=RPCServer.start,
                 args=(
                     port,

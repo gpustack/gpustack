@@ -6,7 +6,7 @@ import sysconfig
 from urllib.parse import urlsplit
 from gpustack.config import Config
 from gpustack.utils.network import parse_port_range
-
+from gpustack.utils.process import Popen
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class RayManager:
 
         logger.debug(f"Run Ray with arguments: {' '.join([command_path] + arguments)}")
 
-        proc = subprocess.Popen(
+        proc = Popen(
             [command_path] + arguments,
             stdout=open(self._log_file_path, "w"),
             stderr=subprocess.STDOUT,

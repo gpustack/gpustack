@@ -2,13 +2,13 @@ import glob
 import logging
 import os
 from pathlib import Path
-import subprocess
 import sys
 from typing import Dict, List, Tuple
 import psutil
 
 from gpustack.schemas.workers import Worker
 from gpustack.utils import platform
+from gpustack.utils.process import Popen
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
@@ -139,7 +139,7 @@ class LlamaBoxServer(InferenceServer):
                 )
 
             env = self.get_inference_running_env()
-            proc = subprocess.Popen(
+            proc = Popen(
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
