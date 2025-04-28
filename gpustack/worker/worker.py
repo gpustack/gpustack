@@ -109,7 +109,7 @@ class Worker:
         return worker_name
 
     @tenacity.retry(
-        stop=tenacity.stop_after_attempt(3),
+        stop=tenacity.stop_after_attempt(5),
         wait=tenacity.wait_fixed(2),
         reraise=True,
         before_sleep=lambda retry_state: logger.debug(
@@ -117,6 +117,8 @@ class Worker:
         ),
     )
     def _get_current_worker_id(self):
+        self._worker_manager.register_with_server()
+        # Worker ID is available after the worker registration.
         workers = self._clientset.workers.list()
 
         if workers and workers.items:
@@ -170,6 +172,7 @@ class Worker:
 
         add_signal_handlers_in_loop()
 
+        self._get_current_worker_id()
         if self._exporter_enabled:
             # Start the metric exporter with retry.
             run_periodically_in_thread(self._exporter.start, 15)
@@ -195,8 +198,6 @@ class Worker:
         # Start the worker server to expose APIs.
         self._create_async_task(self._serve_apis())
 
-        # Worker ID is available after the worker registration.
-        self._get_current_worker_id()
         serve_manager = ServeManager(
             worker_id=self._worker_id,
             clientset=self._clientset,

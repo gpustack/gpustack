@@ -23,7 +23,7 @@ from gpustack.utils.process import terminate_process_tree
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.rpc_server import RPCServer, RPCServerProcessInfo
 from gpustack.detectors.detector_factory import DetectorFactory
-
+from gpustack.utils.profiling import time_decorator
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +57,6 @@ class WorkerManager:
         Should be called periodically to sync the worker node status with the server.
         It registers the worker node with the server if necessary.
         """
-
-        # Register the worker node with the server.
-        self.register_with_server()
-        self._update_worker_status()
-
-    def _update_worker_status(self):
         collector = WorkerStatusCollector(
             worker_ip=self._worker_ip,
             worker_name=self._worker_name,
@@ -123,10 +117,11 @@ class WorkerManager:
             return
         except Exception as e:
             logger.error(f"Failed to register worker: {e}")
-            return
+            raise e
 
         logger.info(f"Worker {worker.name} registered.")
 
+    @time_decorator
     def _initialize_worker(self):
         try:
             collector = WorkerStatusCollector(
@@ -138,7 +133,7 @@ class WorkerManager:
                 gpu_devices=self._gpu_devices,
                 system_info=self._system_info,
             )
-            worker = collector.collect()
+            worker = collector.collect(initial=True)
 
             worker.system_reserved = self._system_reserved
             ensure_builtin_labels(worker)
@@ -146,7 +141,7 @@ class WorkerManager:
             return worker
         except Exception as e:
             logger.error(f"Failed to initialize worker: {e}")
-            return
+            raise e
 
     def _register_shutdown_hooks(self):
         pass
