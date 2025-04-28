@@ -520,12 +520,12 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         )
 
     architectures = getattr(pretrained_config, "architectures", []) or []
-    if not architectures:
+    if not architectures and not model.backend_version:
         raise ValueError("Not a supported model. Unrecognized architecture.")
 
     model_type = detect_model_type(architectures)
 
-    if model_type == CategoryEnum.UNKNOWN:
+    if model_type == CategoryEnum.UNKNOWN and not model.backend_version:
         raise ValueError(
             f"Not a supported model. Detected architectures: {architectures}."
         )
