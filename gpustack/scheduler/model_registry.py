@@ -1,9 +1,11 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.8.4/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.8.5/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 vllm_supported_embedding_architectures = [
     "BertModel",
+    "GteModel",
     "Gemma2Model",
     "MistralModel",
+    "NomicBertModel",
     "LlamaModel",
     "Qwen2Model",
     "RobertaModel",
@@ -15,6 +17,7 @@ vllm_supported_reranker_architectures = [
     "BertForSequenceClassification",
     "RobertaForSequenceClassification",
     "XLMRobertaForSequenceClassification",
+    "ModernBertForSequenceClassification",
 ]
 
 vllm_supported_llm_architectures = [
@@ -82,6 +85,7 @@ vllm_supported_llm_architectures = [
     "Phi3ForCausalLM",
     "Phi3SmallForCausalLM",
     "PhiMoEForCausalLM",
+    "Plamo2ForCausalLM",
     "QWenLMHeadModel",
     "Qwen2ForCausalLM",
     "Qwen2MoeForCausalLM",
@@ -107,10 +111,12 @@ vllm_supported_llm_architectures = [
     "FuyuForCausalLM",
     "Gemma3ForConditionalGeneration",
     "GLM4VForCausalLM",
+    "GraniteSpeechForConditionalGeneration",
     "H2OVLChatModel",
     "InternVLChatModel",
     "Idefics3ForConditionalGeneration",
     "SmolVLMForConditionalGeneration",
+    "KimiVLForConditionalGeneration",
     "LlavaForConditionalGeneration",
     "LlavaNextForConditionalGeneration",
     "LlavaNextVideoForConditionalGeneration",
@@ -128,6 +134,7 @@ vllm_supported_llm_architectures = [
     "Qwen2VLForConditionalGeneration",
     "Qwen2_5_VLForConditionalGeneration",
     "Qwen2AudioForConditionalGeneration",
+    "Qwen2_5OmniModel",
     "UltravoxModel",
     "Phi4MMForCausalLM",
     "Florence2ForConditionalGeneration",
