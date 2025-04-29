@@ -99,6 +99,18 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         action='append',
         help="Arguments to pass to Ray.",
     )
+    group.add_argument(
+        "--ray-node-manager-port",
+        type=int,
+        help="Port of Ray node manager. Used when Ray is enabled. The default is 40098.",
+        default=get_gpustack_env("RAY_NODE_MANAGER_PORT"),
+    )
+    group.add_argument(
+        "--ray-object-manager-port",
+        type=int,
+        help="Port of Ray object manager. Used when Ray is enabled. The default is 40099.",
+        default=get_gpustack_env("RAY_OBJECT_MANAGER_PORT"),
+    )
 
     group = parser_server.add_argument_group("Server settings")
     group.add_argument(
@@ -230,18 +242,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40064-40095'.",
         default=get_gpustack_env("RPC_SERVER_PORT_RANGE"),
-    )
-    group.add_argument(
-        "--ray-node-manager-port",
-        type=int,
-        help="Port of Ray node manager. Used when Ray is enabled. The default is 40098.",
-        default=get_gpustack_env("RAY_NODE_MANAGER_PORT"),
-    )
-    group.add_argument(
-        "--ray-object-manager-port",
-        type=int,
-        help="Port of Ray object manager. Used when Ray is enabled. The default is 40099.",
-        default=get_gpustack_env("RAY_OBJECT_MANAGER_PORT"),
     )
     group.add_argument(
         "--ray-worker-port-range",
@@ -424,6 +424,8 @@ def set_common_options(args, config_data: dict):
         "huggingface_token",
         "enable_ray",
         "ray_args",
+        "ray_node_manager_port",
+        "ray_object_manager_port",
     ]
 
     for option in options:
@@ -473,8 +475,6 @@ def set_worker_options(args, config_data: dict):
         "rpc_server_args",
         "system_reserved",
         "tools_download_base_url",
-        "ray_node_manager_port",
-        "ray_object_manager_port",
         "ray_worker_port_range",
         "enable_hf_transfer",
     ]

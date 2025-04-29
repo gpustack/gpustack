@@ -52,7 +52,14 @@ class RayManager:
         logger.info(f"Starting Ray {self._role}.")
 
         command_path = os.path.join(sysconfig.get_path("scripts"), "ray")
-        arguments = ["start", "--block"]
+        arguments = [
+            "start",
+            "--block",
+            "--node-manager-port",
+            str(self._cfg.ray_node_manager_port),
+            "--object-manager-port",
+            str(self._cfg.ray_object_manager_port),
+        ]
         if self._head:
             arguments.extend(
                 [
@@ -71,10 +78,6 @@ class RayManager:
                 [
                     "--address",
                     self._ray_address,
-                    "--node-manager-port",
-                    str(self._cfg.ray_node_manager_port),
-                    "--object-manager-port",
-                    str(self._cfg.ray_object_manager_port),
                     "--min-worker-port",
                     str(min_worker_port),
                     "--max-worker-port",
