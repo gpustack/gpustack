@@ -31,6 +31,16 @@ class GPUCoreInfo(UtilizationInfo):
     pass
 
 
+class GPUNetworkInfo(BaseModel):
+    status: str = Field(default="up")  # Network status (up/down)
+    inet: str = Field(default="")  # IPv4 address
+    netmask: str = Field(default="")  # Subnet mask
+    mac: str = Field(default="")  # MAC address
+    gateway: str = Field(default="")  # Default gateway
+    iface: Optional[str] = Field(default=None)  # Network interface name
+    mtu: Optional[int] = Field(default=None)  # Maximum Transmission Unit
+
+
 class SwapInfo(UtilizationInfo):
     used: Optional[int] = Field(default=None)
     pass
@@ -43,6 +53,7 @@ class GPUDeviceInfo(BaseModel):
     index: Optional[int] = Field(default=None)
     core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
     memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
+    network: Optional[GPUNetworkInfo] = Field(sa_column=Column(JSON), default=None)
     temperature: Optional[float] = Field(default=None)  # in celsius
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
     type: Optional[str] = Field(default="")
