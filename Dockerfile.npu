@@ -416,6 +416,11 @@ RUN <<EOF
     echo "${SOURCE_ATB_MODEL_ENV}" >> /etc/profile
     echo "${SOURCE_ATB_MODEL_ENV}" >> ~/.bashrc
 
+    # Export Driver Tools
+    EXPORT_DRIVER_TOOLS="export PATH=${CANN_HOME}/driver/tools:\${PATH}"
+    echo "${EXPORT_DRIVER_TOOLS}" >> /etc/profile
+    echo "${EXPORT_DRIVER_TOOLS}" >> ~/.bashrc
+
     # NB(thxCode): For specific MindIE version supporting,
     # we need to process environment setting up during GPUStack deployment.
 EOF
