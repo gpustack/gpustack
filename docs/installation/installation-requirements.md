@@ -119,11 +119,13 @@ GPUStack uses the following ports for communication:
 
 The following ports are used on GPUStack server when Ray is enabled for distributed vLLM across workers:
 
-| Ray Port  | Description                        |
-| --------- | ---------------------------------- |
-| TCP 8265  | Default Port for Ray dashboard     |
-| TCP 40096 | Default port for Ray (GCS server)  |
-| TCP 40097 | Default port for Ray Client Server |
+| Ray Port  | Description                         |
+| --------- | ----------------------------------- |
+| TCP 8265  | Default Port for Ray dashboard      |
+| TCP 40096 | Default port for Ray (GCS server)   |
+| TCP 40097 | Default port for Ray Client Server  |
+| TCP 40098 | Default port for Ray node manager   |
+| TCP 40099 | Default port for Ray object manager |
 
 The default ports in GPUStack may differ from Ray’s default ports to simplify port exposure, especially when using Docker. For more information about Ray ports, refer to the [Ray documentation](https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations).
 

@@ -86,6 +86,8 @@ class Config(BaseSettings):
     huggingface_token: Optional[str] = None
     enable_ray: bool = False
     ray_args: Optional[List[str]] = None
+    ray_node_manager_port: int = 40098
+    ray_object_manager_port: int = 40099
 
     # Server options
     host: Optional[str] = "0.0.0.0"
@@ -121,8 +123,6 @@ class Config(BaseSettings):
     metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
     rpc_server_port_range: Optional[str] = "40064-40095"
-    ray_node_manager_port: int = 40098
-    ray_object_manager_port: int = 40099
     ray_worker_port_range: Optional[str] = "40100-40131"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
