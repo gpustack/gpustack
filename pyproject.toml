@@ -39,7 +39,7 @@ cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = ">=1.22.3,<1.23"
 ray = {version = "2.43.0", extras = ["default"]} # Align with BUILTIN_RAY_VERSION in tools_manager.py
-vllm = {version = "0.8.4", optional = true}
+vllm = {version = "0.8.5", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
 transformers = "^4.51.1"
