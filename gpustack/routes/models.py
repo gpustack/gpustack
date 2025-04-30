@@ -241,9 +241,11 @@ async def validate_gpu_ids(  # noqa: C901
     if model_backend == BackendEnum.VLLM:
         cfg = get_global_config()
         if len(worker_name_set) > 1 and not cfg.enable_ray:
+            # REVIEW BEFORE RELEASE: Check if the documentation link needs to be updated.
             raise BadRequestException(
                 message="Selected GPUs are on different workers, but Ray is not enabled. "
-                "Please enable Ray to make vLLM work across multiple workers."
+                "Please enable Ray to make vLLM work across multiple workers. "
+                "For more information, please refer to the <a href='https://docs.gpustack.ai/latest/user-guide/inference-backends/#distributed-inference-across-workers-experimental'>documentation</a>."
             )
 
     if model_backend == BackendEnum.LLAMA_BOX:
