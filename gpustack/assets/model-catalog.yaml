@@ -109,7 +109,6 @@
   licenses:
     - llama3.2
   release_date: "2024-09-25"
-  order: 2
   templates:
     - quantizations:
         - Q3_K_L
@@ -193,8 +192,117 @@
         - --enable-auto-tool-choice
         - --tool-call-parser=llama3_json
         - --chat-template={data_dir}/chat_templates/tool_chat_template_llama3.1_json.jinja
+- name: Qwen3
+  description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - tools
+  sizes: [0.6, 1.7, 4, 8, 14, 30, 32, 235]
+  licenses:
+    - apache-2.0
+  release_date: "2025-04-29"
+  order: 1
+  templates:
+    - quantizations: &default_bf16_gguf_quantizations
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      sizes: [0.6, 1.7, 4, 8, 14, 32]
+      source: huggingface
+      huggingface_repo_id: unsloth/Qwen3-{size}B-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+      backend_parameters: &qwen3_thinking_gguf_parameters
+        - --temp=0.6
+        - --top-k=20
+        - --top-p=0.95
+        - --min-p=0
+    - quantizations: *default_bf16_gguf_quantizations
+      sizes: [30]
+      source: huggingface
+      huggingface_repo_id: unsloth/Qwen3-30B-A3B-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+      backend_parameters: *qwen3_thinking_gguf_parameters
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_S
+        - Q4_0
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      sizes: [235]
+      source: huggingface
+      huggingface_repo_id: unsloth/Qwen3-235B-A22B-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+      backend_parameters: *qwen3_thinking_gguf_parameters
+    - quantizations: ["BF16"]
+      source: huggingface
+      sizes: [0.6, 1.7, 4, 8, 14, 32]
+      huggingface_repo_id: Qwen/Qwen3-{size}B
+      replicas: 1
+      backend: vllm
+      backend_parameters: &qwen3_thinking_vllm_parameters
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+        - --enable-reasoning
+        - --reasoning-parser=deepseek_r1
+    - quantizations: ["FP8"]
+      source: huggingface
+      sizes: [0.6, 1.7, 4, 8, 14, 32]
+      huggingface_repo_id: Qwen/Qwen3-{size}B-FP8
+      replicas: 1
+      backend: vllm
+      backend_parameters: *qwen3_thinking_vllm_parameters
+    - quantizations: ["BF16"]
+      source: huggingface
+      sizes: [30]
+      huggingface_repo_id: Qwen/Qwen3-30B-A3B
+      replicas: 1
+      backend: vllm
+      backend_parameters: *qwen3_thinking_vllm_parameters
+    - quantizations: ["FP8"]
+      source: huggingface
+      sizes: [30]
+      huggingface_repo_id: Qwen/Qwen3-30B-A3B-FP8
+      replicas: 1
+      backend: vllm
+      backend_parameters: *qwen3_thinking_vllm_parameters
+    - quantizations: ["BF16"]
+      source: huggingface
+      sizes: [235]
+      huggingface_repo_id: Qwen/Qwen3-235B-A22B
+      replicas: 1
+      backend: vllm
+      backend_parameters: *qwen3_thinking_vllm_parameters
+    - quantizations: ["FP8"]
+      source: huggingface
+      sizes: [235]
+      huggingface_repo_id: Qwen/Qwen3-235B-A22B-FP8
+      replicas: 1
+      backend: vllm
+      backend_parameters: *qwen3_thinking_vllm_parameters
 - name: Qwen2.5
-  description: Qwen2.5 is the latest series of Qwen large language models developed by Alibaba. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
+  description: Qwen2.5 is a family of large language models in Qwen series. Qwen2.5-instruct includes a number of instruction-tuned language models ranging from 0.5 to 72 billion parameters.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
   categories:
@@ -207,7 +315,6 @@
     - apache-2.0
     - qwen-research
   release_date: "2024-09-19"
-  order: 1
   templates:
     - quantizations:
         - q2_k
@@ -871,6 +978,7 @@
   licenses:
     - deepseek
   release_date: "2025-01-20"
+  order: 2
   templates:
     - quantizations:
         - Q2_K_L
