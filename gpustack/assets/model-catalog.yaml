@@ -1654,6 +1654,44 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: DeepSeek VL2
+  description: >
+    DeepSeek-VL2 is an advanced series of large Mixture-of-Experts (MoE) Vision-Language Models. DeepSeek-VL2 demonstrates superior capabilities across various tasks, including but not limited to visual question answering, optical character recognition, document/table/chart understanding, and visual grounding. It is composed of three variants: DeepSeek-VL2-Tiny, DeepSeek-VL2-Small and DeepSeek-VL2, with 1.0B, 2.8B and 4.5B activated parameters respectively.
+  home: https://github.com/opengvlab
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/4K
+    - vision
+  sizes: [3, 16, 27]
+  licenses:
+    - mit
+  release_date: "2024-12-13"
+  templates:
+    - quantizations: ["BF16"]
+      sizes: [27]
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/deepseek-vl2
+      replicas: 1
+      backend: vllm
+      backend_parameters: &deepseek_vl2_vllm_parameters
+        - '--hf-overrides={"architectures": ["DeepseekVLV2ForCausalLM"]}'
+        - --chat-template={data_dir}/chat_templates/template_deepseek_vl2.jinja
+    - quantizations: ["BF16"]
+      sizes: [16]
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/deepseek-vl2-small
+      replicas: 1
+      backend: vllm
+      backend_parameters: *deepseek_vl2_vllm_parameters
+    - quantizations: ["BF16"]
+      sizes: [3]
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/deepseek-vl2-tiny
+      replicas: 1
+      backend: vllm
+      backend_parameters: *deepseek_vl2_vllm_parameters
 - name: Kimi VL Instruct
   description: Kimi-VL is an efficient open-source Mixture-of-Experts (MoE) vision-language model (VLM) that offers advanced multimodal reasoning, long-context understanding, and strong agent capabilities.
   home: https://github.com/opengvlab
