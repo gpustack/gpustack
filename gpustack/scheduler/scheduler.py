@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 import os
 import queue
@@ -35,12 +36,14 @@ from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import (
+    BackendEnum,
     CategoryEnum,
     DistributedServers,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
     SourceEnum,
+    get_backend,
     is_gguf_model,
     is_audio_model,
 )
@@ -504,35 +507,38 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     Returns:
         True if the model's categories are updated, False otherwise.
     """
-    try:
-        pretrained_config = await run_in_thread(
-            get_pretrained_config, timeout=30, model=model
-        )
-    except ValueError as e:
-        # Skip value error exceptions and defaults to LLM catagory for certain cases.
-        if should_skip_architecture_check(model):
-            model.categories = model.categories or [CategoryEnum.LLM]
-            return True
+    # Check overrided architectures if specified in backend parameters.
+    architectures = get_vllm_override_architectures(model)
+    if not architectures:
+        try:
+            pretrained_config = await run_in_thread(
+                get_pretrained_config, timeout=30, model=model
+            )
+        except ValueError as e:
+            # Skip value error exceptions and defaults to LLM catagory for certain cases.
+            if should_skip_architecture_check(model):
+                model.categories = model.categories or [CategoryEnum.LLM]
+                return True
 
-        if raise_raw:
-            raise
+            if raise_raw:
+                raise
 
-        logger.debug(
-            f"Failed to get config for model {model.name or model.readable_source}: {e}"
-        )
-        raise simplify_auto_config_value_error(e)
-    except TimeoutError:
-        raise Exception(
-            f"Timeout while getting config for model {model.name or model.readable_source}."
-        )
-    except Exception as e:
-        raise Exception(
-            f"Failed to get config for model {model.name or model.readable_source}: {e}"
-        )
+            logger.debug(
+                f"Failed to get config for model {model.name or model.readable_source}: {e}"
+            )
+            raise simplify_auto_config_value_error(e)
+        except TimeoutError:
+            raise Exception(
+                f"Timeout while getting config for model {model.name or model.readable_source}."
+            )
+        except Exception as e:
+            raise Exception(
+                f"Failed to get config for model {model.name or model.readable_source}: {e}"
+            )
 
-    architectures = getattr(pretrained_config, "architectures", []) or []
-    if not architectures and not model.backend_version:
-        raise ValueError("Not a supported model. Unrecognized architecture.")
+        architectures = getattr(pretrained_config, "architectures", []) or []
+        if not architectures and not model.backend_version:
+            raise ValueError("Not a supported model. Unrecognized architecture.")
 
     model_type = detect_model_type(architectures)
 
@@ -542,6 +548,25 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         )
 
     return set_model_categories(model, model_type)
+
+
+def get_vllm_override_architectures(model: Model) -> List[str]:
+    """
+    Get the vLLM override architectures from the model's backend parameters.
+    Args:
+        model: Model to check.
+    Returns:
+        List of override architectures.
+    """
+    backend = get_backend(model)
+    if backend != BackendEnum.VLLM:
+        return []
+
+    hf_overrides = find_parameter(model.backend_parameters, ["hf-overrides"])
+    if hf_overrides:
+        overrides_dict = json.loads(hf_overrides)
+        return overrides_dict.get("architectures", [])
+    return []
 
 
 def should_skip_architecture_check(model: Model) -> bool:
