@@ -154,19 +154,30 @@ class Scheduler:
                     return
 
                 should_update_model = False
-                if is_gguf_model(model):
-                    should_update_model = await evaluate_gguf_model(self._config, model)
-                    if await self.check_model_distributability(
-                        session, model, instance
-                    ):
-                        return
-                elif is_audio_model(model):
-                    should_update_model = await evaluate_audio_model(
-                        self._config, model
-                    )
-                else:
-                    should_update_model = await evaluate_pretrained_config(
-                        model, raise_raw=True
+                try:
+                    if is_gguf_model(model):
+                        should_update_model = await evaluate_gguf_model(
+                            self._config, model
+                        )
+                        if await self.check_model_distributability(
+                            session, model, instance
+                        ):
+                            return
+                    elif is_audio_model(model):
+                        should_update_model = await evaluate_audio_model(
+                            self._config, model
+                        )
+                    else:
+                        should_update_model = await evaluate_pretrained_config(
+                            model, raise_raw=True
+                        )
+                except Exception as e:
+                    # Even if the evaluation failed, we still want to proceed to deployment.
+                    # Cases can be:
+                    # 1. Model config is not valid, but is overridable by backend parameters.
+                    # 2. It may not be required to be transformer-compatible for certain backends.
+                    logger.error(
+                        f"Failed to evaluate model {model.name or model.readable_source}: {e}"
                     )
 
                 if should_update_model:
