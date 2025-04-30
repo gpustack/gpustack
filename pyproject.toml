@@ -20,7 +20,7 @@ prometheus-client = "^0.20.0"
 colorama = "^0.4.6"
 psutil = "^7.0.0"
 requests = "^2.32.3"
-huggingface-hub = "^0.30.0"
+huggingface-hub = {extras = ["hf-xet"], version = "^0.30.2"}
 attrs = "^24.2.0"
 aiosqlite = "^0.20.0"
 sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
@@ -62,6 +62,8 @@ pymysql = "^1.1.1"
 
 pyarrow = "*"
 pandas = "*"
+blobfile = "^3.0.0"
+timm = {version = "^1.0.15", optional = true}
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
@@ -94,7 +96,7 @@ force-exclude = '''
 '''
 
 [tool.poetry.extras]
-vllm = ["vllm", "mistral_common", "bitsandbytes"]
+vllm = ["vllm", "mistral_common", "bitsandbytes", "timm"]
 audio = ["vox-box"]
 all = ["vllm", "mistral_common", "bitsandbytes", "vox-box"]
 
