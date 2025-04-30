@@ -1,6 +1,0 @@
-NPU ID             Chip ID            Chip Logic ID       Chip Name
-215                 0                  0                   MiniD
-215                 1                  1                   MiniD
-215                 2                  2                   MiniD
-215                 3                  3                   MiniD
-https://support.huawei.com/enterprise/zh/doc/EDOC1100115618/fbf20fed#ZH-CN_TOPIC_0000001264656717
