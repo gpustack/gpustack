@@ -21,23 +21,33 @@ def test_model_catalog():
 
     Hfapi = HfApi()
 
+    model_name_filter = os.getenv("TEST_CATALOG_MODEL_NAME_FILTER")
     for model_set_id, model_specs in model_set_specs.items():
         assert model_set_id is not None
         assert len(model_specs) > 0
         for model_spec in model_specs:
+            if model_spec.source != SourceEnum.HUGGING_FACE:
+                continue
+
+            if (
+                model_name_filter is not None
+                and model_name_filter not in model_spec.huggingface_repo_id
+            ):
+                continue
+
             time.sleep(0.01)  # mitigate rate limit
-            if model_spec.source == SourceEnum.HUGGING_FACE:
-                print(model_spec.huggingface_repo_id, model_spec.huggingface_filename)
-                if model_spec.huggingface_filename is None:
-                    model_info = Hfapi.model_info(model_spec.huggingface_repo_id)
-                    assert model_info is not None
-                else:
-                    match_files = match_hugging_face_files(
-                        model_spec.huggingface_repo_id, model_spec.huggingface_filename
-                    )
-                    assert (
-                        len(match_files) > 0
-                    ), f"Failed to find model files: {model_spec.huggingface_repo_id}, {model_spec.huggingface_filename}"
+
+            print(model_spec.huggingface_repo_id, model_spec.huggingface_filename)
+            if model_spec.huggingface_filename is None:
+                model_info = Hfapi.model_info(model_spec.huggingface_repo_id)
+                assert model_info is not None
+            else:
+                match_files = match_hugging_face_files(
+                    model_spec.huggingface_repo_id, model_spec.huggingface_filename
+                )
+                assert (
+                    len(match_files) > 0
+                ), f"Failed to find model files: {model_spec.huggingface_repo_id}, {model_spec.huggingface_filename}"
 
 
 @pytest.mark.skipif(
@@ -55,23 +65,32 @@ def test_model_catalog_modelscope():
 
     Msapi = HubApi()
 
+    model_name_filter = os.getenv("TEST_CATALOG_MODEL_NAME_FILTER")
     for model_set_id, model_specs in model_set_specs.items():
         assert model_set_id is not None
         assert len(model_specs) > 0
         for model_spec in model_specs:
-            if model_spec.source == SourceEnum.MODEL_SCOPE:
-                print(model_spec.model_scope_model_id, model_spec.model_scope_file_path)
-                if model_spec.model_scope_file_path is None:
-                    model_info = Msapi.get_model(model_spec.model_scope_model_id)
-                    assert model_info is not None
-                else:
-                    match_files = match_model_scope_file_paths_with_retry(
-                        model_spec.model_scope_model_id,
-                        model_spec.model_scope_file_path,
-                    )
-                    assert (
-                        len(match_files) > 0
-                    ), f"Failed to find model files: {model_spec.model_scope_model_id}, {model_spec.model_scope_file_path}"
+            if model_spec.source != SourceEnum.MODEL_SCOPE:
+                continue
+
+            if (
+                model_name_filter is not None
+                and model_name_filter not in model_spec.model_scope_model_id
+            ):
+                continue
+
+            print(model_spec.model_scope_model_id, model_spec.model_scope_file_path)
+            if model_spec.model_scope_file_path is None:
+                model_info = Msapi.get_model(model_spec.model_scope_model_id)
+                assert model_info is not None
+            else:
+                match_files = match_model_scope_file_paths_with_retry(
+                    model_spec.model_scope_model_id,
+                    model_spec.model_scope_file_path,
+                )
+                assert (
+                    len(match_files) > 0
+                ), f"Failed to find model files: {model_spec.model_scope_model_id}, {model_spec.model_scope_file_path}"
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
