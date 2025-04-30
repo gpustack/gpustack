@@ -1654,6 +1654,48 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: Kimi VL Instruct
+  description: Kimi-VL is an efficient open-source Mixture-of-Experts (MoE) vision-language model (VLM) that offers advanced multimodal reasoning, long-context understanding, and strong agent capabilities.
+  home: https://github.com/opengvlab
+  icon: /static/catalog_icons/kimi.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+  sizes: [16]
+  licenses:
+    - mit
+  release_date: "2025-04-10"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: moonshotai/Kimi-VL-A3B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+- name: Kimi VL Thinking
+  description: Kimi-VL is an efficient open-source Mixture-of-Experts (MoE) vision-language model (VLM) that offers advanced multimodal reasoning, long-context understanding, and strong agent capabilities.
+  home: https://github.com/opengvlab
+  icon: /static/catalog_icons/kimi.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+    - vision
+  sizes: [16]
+  licenses:
+    - mit
+  release_date: "2025-04-10"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: moonshotai/Kimi-VL-A3B-Thinking
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
 # Embedding models
 - name: BGE M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
