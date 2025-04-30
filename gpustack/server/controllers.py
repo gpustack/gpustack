@@ -109,8 +109,17 @@ class ModelInstanceController:
                     event.type == EventType.UPDATED
                     and model_instance.state == ModelInstanceStateEnum.RUNNING
                 ):
+                    worker = await Worker.one_by_id(session, model_instance.worker_id)
+                    if not worker:
+                        logger.error(
+                            f"Failed to find worker {model_instance.worker_id} for model instance {model_instance.name}"
+                        )
+                        return
+
                     # fetch meta from running instance, if it's different from the model meta update it
-                    meta = await get_meta_from_running_instance(model_instance)
+                    meta = await self.get_meta_from_running_instance(
+                        model_instance, worker
+                    )
                     if meta and meta != model.meta:
                         model.meta = meta
 
@@ -120,6 +129,49 @@ class ModelInstanceController:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
             )
+
+    async def get_meta_from_running_instance(
+        self, mi: ModelInstance, w: Worker
+    ) -> Dict[str, Any]:
+        """
+        Get the meta information from the running instance.
+        """
+        if mi.state != ModelInstanceStateEnum.RUNNING:
+            return {}
+
+        async with httpx.AsyncClient() as client:
+            try:
+                url = f"http://{w.ip}:{w.port}/proxy/v1/models"
+                headers = {
+                    "X-Target-Port": str(mi.port),
+                    "Authorization": f"Bearer {self._config.token}",
+                }
+                response = await client.get(
+                    url=url,
+                    headers=headers,
+                )
+                response.raise_for_status()
+
+                models = response.json()
+                if "data" not in models or not models["data"]:
+                    return {}
+
+                first_model = models["data"][0]
+                meta_info = first_model.get("meta", {})
+
+                # Optional keys from different backends
+                optional_keys = [
+                    "voices",
+                    "max_model_len",
+                ]
+                for key in optional_keys:
+                    if key in first_model:
+                        meta_info[key] = first_model[key]
+
+                return meta_info
+            except Exception as e:
+                logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
+                return {}
 
 
 async def set_default_worker_selector(session: AsyncSession, model: Model):
@@ -346,41 +398,6 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
     if model.ready_replicas != ready_replicas:
         model.ready_replicas = ready_replicas
         await ModelService(session).update(model)
-
-
-async def get_meta_from_running_instance(mi: ModelInstance) -> Dict[str, Any]:
-    """
-    Get the meta information from the running instance.
-    """
-
-    if mi.state != ModelInstanceStateEnum.RUNNING:
-        return {}
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(f"http://{mi.worker_ip}:{mi.port}/v1/models")
-            response.raise_for_status()
-
-            models = response.json()
-            if "data" not in models or not models["data"]:
-                return {}
-
-            first_model = models["data"][0]
-            meta_info = first_model.get("meta", {})
-
-            # Optional keys from different backends
-            optional_keys = [
-                "voices",
-                "max_model_len",
-            ]
-            for key in optional_keys:
-                if key in first_model:
-                    meta_info[key] = first_model[key]
-
-            return meta_info
-        except Exception as e:
-            logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
-            return {}
 
 
 class WorkerController:
