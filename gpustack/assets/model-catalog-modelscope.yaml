@@ -1444,6 +1444,20 @@
     - qwen
   release_date: "2025-01-26"
   templates:
+    - quantizations:
+        - Q4_K_M
+        - Q8_0
+        - f16
+      sizes: [3, 7, 72] # 32B is missing in modelscope
+      source: model_scope
+      model_scope_model_id: ggml-org/Qwen2.5-VL-{size}B-Instruct-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --visual-max-image-size=1344
+      cpu_offloading: true
+      distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: model_scope
       model_scope_model_id: Qwen/Qwen2.5-VL-{size}B-Instruct
@@ -1583,6 +1597,20 @@
     - apache-2.0
   release_date: "2024-09-11"
   templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K_L
+        - Q8_0
+      source: model_scope
+      model_scope_model_id: bartowski/mistral-community_pixtral-12b-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
     - quantizations: ["BF16"]
       source: model_scope
       model_scope_model_id: unsloth/Pixtral-12B-2409
