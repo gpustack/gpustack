@@ -9407,4 +9407,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "b713363f7d6ceef8335b50fc56ab0af077bbd2fb3af13fd8e9d55b959f845174"
+content-hash = "5cd4325cc20271355221daecb28a33c807843dafe248dce7d3382a3ecef79074"
