@@ -735,16 +735,14 @@
   release_date: "2025-03-12"
   templates:
     - quantizations:
-        - UD-IQ1_M
         - Q2_K_L
         - Q3_K_M
         - Q4_K_M
         - Q5_K_M
-        - Q6_K
+        - Q6_K_L
         - Q8_0
-        - BF16
       source: model_scope
-      model_scope_model_id: unsloth/gemma-3-{size}b-it-GGUF
+      model_scope_model_id: bartowski/google_gemma-3-{size}b-it-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
