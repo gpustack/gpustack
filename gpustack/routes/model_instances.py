@@ -127,7 +127,8 @@ async def get_serving_logs(
                         status_code=resp.status,
                         detail="Error fetching serving logs",
                     )
-            return PlainTextResponse(content=await resp.text(), status_code=resp.status)
+                content = await resp.text()
+            return PlainTextResponse(content=content, status_code=resp.status)
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Error fetching serving logs: {str(e)}\n"
