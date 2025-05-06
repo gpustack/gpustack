@@ -106,9 +106,9 @@ def test_get_hub_model_weight_size():
         (
             Model(
                 source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="iic/CosyVoice2-0.5B",
+                model_scope_model_id="gpustack/CosyVoice2-0.5B",
             ),
-            3_995_851_361,
+            3_545_354_370,
         ),
     ]
 
