@@ -318,10 +318,25 @@ async def evaluate_model_metadata(
             await scheduler.evaluate_audio_model(config, model)
         else:
             await scheduler.evaluate_pretrained_config(model)
+
+        set_default_worker_selector(model)
     except ValueError as e:
         return False, [str(e)]
 
     return True, []
+
+
+def set_default_worker_selector(
+    model: ModelSpec,
+) -> ModelSpec:
+    if (
+        not model.worker_selector
+        and not model.gpu_selector
+        and get_backend(model) == BackendEnum.VLLM
+    ):
+        # vLLM models are only supported on Linux
+        model.worker_selector = {"os": "linux"}
+    return model
 
 
 async def evaluate_model_input(
