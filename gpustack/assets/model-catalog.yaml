@@ -521,6 +521,7 @@
   capabilities:
     - context/128K
     - tools
+    - vision
   sizes:
     - 24
   licenses:
@@ -534,12 +535,14 @@
         - Q5_K_M
         - Q6_K
         - Q8_0
-        - BF16
       source: huggingface
       huggingface_repo_id: unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF
       huggingface_filename: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      backend_parameters:
+        # Remove when Mistral Small vision is available in llama-box
+        - --mmproj=
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
