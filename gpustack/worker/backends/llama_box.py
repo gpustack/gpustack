@@ -175,7 +175,7 @@ class LlamaBoxServer(InferenceServer):
         for i, param in enumerate(self._model.backend_parameters):
             if '=' in param:
                 key, value = param.split('=', 1)
-                if key == mmproj_param and not Path(value).is_absolute():
+                if key == mmproj_param and value and not Path(value).is_absolute():
                     self._model.backend_parameters[i] = (
                         f"{mmproj_param}={model_dir / value}"
                     )
@@ -184,7 +184,7 @@ class LlamaBoxServer(InferenceServer):
                     self._model.backend_parameters
                 ):
                     value = self._model.backend_parameters[i + 1]
-                    if not Path(value).is_absolute():
+                    if value and not Path(value).is_absolute():
                         self._model.backend_parameters[i + 1] = str(model_dir / value)
 
 

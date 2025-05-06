@@ -558,6 +558,7 @@
   capabilities:
     - context/128K
     - tools
+    - vision
   sizes:
     - 24
   licenses:
@@ -571,12 +572,14 @@
         - Q5_K_M
         - Q6_K
         - Q8_0
-        - BF16
       source: model_scope
       model_scope_model_id: unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      backend_parameters:
+        # Remove when Mistral Small vision is available in llama-box
+        - --mmproj=
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
