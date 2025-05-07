@@ -23,7 +23,7 @@ requests = "^2.32.3"
 huggingface-hub = "^0.30.2"
 attrs = "^24.2.0"
 aiosqlite = "^0.20.0"
-sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.38"}
 pyjwt = "^2.8.0"
 argon2-cffi = "^23.1.0"
 python-multipart = "^0.0.17"
