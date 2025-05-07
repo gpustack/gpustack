@@ -2,6 +2,8 @@ import logging
 from typing import List, Optional
 from pathlib import Path
 import fnmatch
+from threading import Lock
+from functools import cache
 from huggingface_hub import HfFileSystem
 from huggingface_hub.utils import validate_repo_id
 from modelscope.hub.api import HubApi
@@ -20,6 +22,12 @@ MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
     '*.json',
     '*.py',
 ]
+
+
+@cache
+def get_model_lock(model_id: str) -> Lock:
+    """Get or create a lock for the given model_id. The model_id is used as the key to store Lock in cache."""
+    return Lock()
 
 
 def match_hugging_face_files(
@@ -149,17 +157,20 @@ def get_pretrained_config(model: Model, **kwargs):
         from modelscope import AutoConfig, snapshot_download
 
         try:
-            # Download first then load config locally.
-            # A temporary workaround for the issue:
-            # https://github.com/modelscope/modelscope/issues/1302
-            config_dir = snapshot_download(
-                model.model_scope_model_id,
-                allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
-            )
-            pretrained_config = AutoConfig.from_pretrained(
-                config_dir,
-                trust_remote_code=trust_remote_code,
-            )
+
+            with get_model_lock(model.model_scope_model_id):
+                # Download first then load config locally.
+                # A temporary workaround for the issue:
+                # https://github.com/modelscope/modelscope/issues/1302
+                config_dir = snapshot_download(
+                    model.model_scope_model_id,
+                    allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
+                )
+
+                pretrained_config = AutoConfig.from_pretrained(
+                    config_dir,
+                    trust_remote_code=trust_remote_code,
+                )
         except ValueError as e:
             if config_dir in str(e):
                 # Make the message not confusing.
