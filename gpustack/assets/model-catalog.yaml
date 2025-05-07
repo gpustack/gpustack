@@ -1426,7 +1426,7 @@
         - f16
       source: huggingface
       huggingface_repo_id: ggml-org/Qwen2.5-VL-{size}B-Instruct-GGUF
-      huggingface_filename: "*-{quantization}*.gguf"
+      huggingface_filename: "Qwen2.5-VL-*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       backend_parameters:
@@ -1738,6 +1738,8 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "92341796864" # Claim 86GB VRAM
 - name: Kimi VL Thinking
   description: Kimi-VL is an efficient open-source Mixture-of-Experts (MoE) vision-language model (VLM) that offers advanced multimodal reasoning, long-context understanding, and strong agent capabilities.
   home: https://github.com/opengvlab
@@ -1759,6 +1761,8 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "92341796864" # Claim 86GB VRAM
 # Embedding models
 - name: BGE M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
