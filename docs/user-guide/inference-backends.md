@@ -39,9 +39,19 @@ Enable distributed inference across multiple workers. The primary Model Instance
 
 #### Multimodal Language Models
 
-Llama-box supports the following multimodal language models. When using a vision language model, image inputs are supported in the chat completion API.
+Llama-box supports the following vision language models. When using a vision language model, image inputs are supported in the chat completion API.
 
-- Qwen2-VL
+- LLaVA Series
+- MiniCPM VL Series
+- Qwen2 VL Series
+- GLM-Edge-V Series
+- Granite VL Series
+- Gemma3 VL Series
+- SmolVLM Series
+- Pixtral Series
+- MobileVLM Series
+- Mistral Small 3.1
+- Qwen2.5 VL Series
 
 !!! Note
 
@@ -200,7 +210,7 @@ and [environment variables](https://www.hiascend.com/document/detail/zh/mindie/1
 To avoid directly configuring JSON, GPUStack provides a set of command line parameters as below.
 
 | Parameter                        | Default | Description                                                                                                                                                                                            |
-|----------------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| -------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--trust-remote-code`            |         | Trust remote code (for model loading).                                                                                                                                                                 |
 | `--npu-memory-fraction`          | 0.9     | Fraction of NPU memory to be used for the model executor (0 to 1). For example: `0.5` means 50% memory utilization.                                                                                    |
 | `--max-link-num`                 | 1000    | Maximum number of parallel requests.                                                                                                                                                                   |
