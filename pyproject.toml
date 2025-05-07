@@ -65,6 +65,7 @@ pandas = "*"
 hf-xet = "*"
 blobfile = "^3.0.0"
 timm = {version = "^1.0.15", optional = true}
+aiolimiter = "^1.2.1"
 [tool.poetry.group.dev.dependencies]
 coverage = {extras = ["toml"], version = "^7.5.1"}
 flake8 = "^7.0.0"
