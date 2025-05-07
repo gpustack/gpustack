@@ -6,6 +6,7 @@ import os
 from typing import List, Tuple
 from sqlmodel.ext.asyncio.session import AsyncSession
 from cachetools import TTLCache
+from aiolimiter import AsyncLimiter
 
 from gpustack.api.exceptions import HTTPException
 from gpustack.config.config import Config, VendorEnum
@@ -42,6 +43,10 @@ EVALUATION_CACHE_MAX_SIZE = int(
 )
 EVALUATION_CACHE_TTL = int(os.environ.get("GPUSTACK_MODEL_EVALUATION_CACHE_TTL", 3600))
 evaluate_cache = TTLCache(maxsize=EVALUATION_CACHE_MAX_SIZE, ttl=EVALUATION_CACHE_TTL)
+
+# To reduce the likelihood of hitting the Hugging Face API rate limit (600 RPM)
+# Limit the number of concurrent evaluations to 50 per 10 seconds
+evaluate_model_limiter = AsyncLimiter(50, 10)
 
 
 @time_decorator
@@ -112,8 +117,9 @@ async def evaluate_model_with_cache(
         return evaluate_cache[cache_key]
 
     try:
-        result = await evaluate_model(config, session, model, workers)
-        evaluate_cache[cache_key] = result
+        async with evaluate_model_limiter:
+            result = await evaluate_model(config, session, model, workers)
+            evaluate_cache[cache_key] = result
     except Exception as e:
         logger.error(
             f"Error evaluating model {model.name or model.readable_source}: {e}"
