@@ -38,6 +38,7 @@ class ClientSet:
         http_client = HTTPClient(base_url=base_url, verify_ssl=verify).with_headers(
             headers
         )
+        self.http_client = http_client
 {% for class_name in class_names %}
         self.{{ class_name | to_underscore_plural }} = {{ class_name }}Client(http_client)
 {%- endfor %}{{ "\n" }}
