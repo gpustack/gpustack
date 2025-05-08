@@ -3,7 +3,6 @@ import dataclasses
 import json
 import logging
 import shutil
-import subprocess
 import sys
 import os
 import tempfile
@@ -17,6 +16,7 @@ from gpustack.utils.hub import (
     get_max_model_len,
     get_pretrained_config,
 )
+from gpustack.utils.process import Popen
 
 logger = logging.getLogger(__name__)
 
@@ -668,7 +668,7 @@ class AscendMindIEServer(InferenceServer):
             )
 
             # Fork, inject environment variables and set working directory.
-            proc = subprocess.Popen(
+            proc = Popen(
                 [str(service_bin_path)],
                 stdout=sys.stdout,
                 stderr=sys.stderr,
