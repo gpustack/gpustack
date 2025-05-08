@@ -17,7 +17,9 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from gpustack.schemas.models import BackendEnum, ModelCreate, SourceEnum
+from gpustack.schemas.common import PaginatedList
+from gpustack.schemas.model_sets import ModelSetPublic, ModelSpec
+from gpustack.schemas.models import ModelCreate
 
 
 def print_completion_result(message):
@@ -67,13 +69,35 @@ class ChatCLIClient(BaseCLIClient):
                 print_error(e)
 
     def create_model(self):
+        data = (
+            self._clientset.http_client.get_httpx_client()
+            .get(f"{self._clientset.base_url}/v1/model-sets")
+            .json()
+        )
+        model_sets = PaginatedList[ModelSetPublic](**data)
+        found_model_set = None
+        for model_set in model_sets.items:
+            if model_set.name.lower() == self._model_name.lower():
+                found_model_set = model_set
+                break
+
+        if not found_model_set:
+            raise Exception(f"Model {self._model_name} not found.")
+
+        data = (
+            self._clientset.http_client.get_httpx_client()
+            .get(f"{self._clientset.base_url}/v1/model-sets/{found_model_set.id}/specs")
+            .json()
+        )
+        model_specs = PaginatedList[ModelSpec](**data)
+        pick_model_spec = model_specs.items[0]
+        for spec in model_specs.items:
+            if spec.quantization.lower() == "q4_k_m":
+                pick_model_spec = spec
+                break
+
         model_create = ModelCreate(
-            name=self._model_name,
-            source=SourceEnum.OLLAMA_LIBRARY,
-            ollama_library_model_name=self._model_name,
-            cpu_offloading=True,
-            distributed_inference_across_workers=True,
-            backend=BackendEnum.LLAMA_BOX,
+            **pick_model_spec.model_dump(exclude={"name"}), name=self._model_name
         )
         self._model = self._clientset.models.create(model_create=model_create)
 

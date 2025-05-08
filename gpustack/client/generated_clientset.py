@@ -41,6 +41,7 @@ class ClientSet:
         http_client = HTTPClient(base_url=base_url, verify_ssl=verify).with_headers(
             headers
         )
+        self.http_client = http_client
 
         self.workers = WorkerClient(http_client)
         self.models = ModelClient(http_client)
