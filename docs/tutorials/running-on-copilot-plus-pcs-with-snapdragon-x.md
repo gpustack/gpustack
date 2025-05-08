@@ -26,14 +26,14 @@ After installation, follow the on-screen instructions to obtain credentials and 
 ## Deploying a Model
 
 1. Navigate to the `Models` page in the GPUStack UI.
-2. Click on the `Deploy Model` button and select `Ollama Library` from the dropdown.
-3. Enter `llama3.2` in the `Name` field.
-4. Select `llama3.2` from the `Ollama Model` dropdown.
+2. Click on the `Deploy Model` button and select `Hugging Face` from the dropdown.
+3. Enable the `GGUF` checkbox to filter models by GGUF format.
+4. Use the search bar in the top left to search for the model name `Qwen/Qwen2.5-0.5B-Instruct-GGUF`.
 5. Click `Save` to deploy the model.
 
 Once deployed, you can monitor the model's status on the `Models` page.
 
-![llama3.2](../assets/tutorials/running-on-copilot-plus-pcs-with-snapdragon-x/llama3.2.png)
+![llama3.2](../assets/tutorials/running-on-copilot-plus-pcs-with-snapdragon-x/qwen2.5.png)
 
 ## Running Inference
 

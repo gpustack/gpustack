@@ -36,6 +36,10 @@ Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](http
 
 ### Deploying an Ollama Model
 
+!!! warning
+
+    As of version v0.6.1, Ollama model source is deprecated. For more context, please refer to the [GitHub issue](https://github.com/gpustack/gpustack/issues/1979).
+
 1. Click the `Deploy Model` button, then select `Ollama Library` in the dropdown.
 
 2. Fill in the `Name` of the model.
@@ -128,6 +132,10 @@ Starting a model is equivalent to scaling up the model to one replica.
 4. Click the `View Logs` button for the model instance in the `Operations` column.
 
 ## Use Self-hosted Ollama Models
+
+!!! warning
+
+    As of version v0.6.1, Ollama model source is deprecated. For more context, please refer to the [GitHub issue](https://github.com/gpustack/gpustack/issues/1979).
 
 You can deploy self-hosted Ollama models by configuring the `--ollama-library-base-url` option in the GPUStack server. The `Ollama Library` URL should point to the base URL of the Ollama model registry. For example, `https://registry.mycompany.com`.
 
