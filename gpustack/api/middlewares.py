@@ -14,7 +14,6 @@ from openai.types.audio.transcription_create_response import (
     Transcription,
 )
 from openai.types.create_embedding_response import (
-    CreateEmbeddingResponse,
     Usage as EmbeddingUsage,
 )
 from gpustack.routes.rerank import RerankResponse, RerankUsage
@@ -28,6 +27,8 @@ from gpustack.server.db import get_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.server.services import ModelUsageService
+from gpustack.api.types.openai_ext import CreateEmbeddingResponseExt
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                 return await process_request(
                     request,
                     response,
-                    CreateEmbeddingResponse,
+                    CreateEmbeddingResponseExt,
                     OperationEnum.EMBEDDING,
                 )
             elif (
@@ -104,7 +105,7 @@ async def process_request(
         Union[
             ChatCompletion,
             Completion,
-            CreateEmbeddingResponse,
+            CreateEmbeddingResponseExt,
             RerankResponse,
             ImagesResponse,
             FileResponse,
