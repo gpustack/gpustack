@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 class AscendMindIEParameters:
     log_level: str = "Info"
     max_link_num: int = 1000
+    token_timeout: int = 600
+    e2e_timeout: int = 600
     max_seq_len: int = 8192
     max_input_token_len: int = -1
     truncation: bool = False
@@ -71,6 +73,18 @@ class AscendMindIEParameters:
             type=int,
             default=self.max_link_num,
             help="Maximum parallel requests",
+        )
+        parser.add_argument(
+            "--token-timeout",
+            type=int,
+            default=self.token_timeout,
+            help="Timeout for a token generation in seconds.",
+        )
+        parser.add_argument(
+            "--e2e-timeout",
+            type=int,
+            default=self.e2e_timeout,
+            help="E2E (from request accepted to inference stopped) timeout in seconds.",
         )
         #
         # Model deploy config
@@ -274,6 +288,14 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--max-link-num must be in the range [1, 1000]"
             )
+        if not (1 <= self.token_timeout <= 3600):
+            raise argparse.ArgumentTypeError(
+                "--token-timeout must be in the range [1, 3600]"
+            )
+        if not (1 <= self.e2e_timeout <= 3600):
+            raise argparse.ArgumentTypeError(
+                "--e2e-timeout must be in the range [1, 3600]"
+            )
         if self.max_seq_len <= 0:
             raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
         if self.max_input_token_len > self.max_seq_len:
@@ -398,7 +420,7 @@ class AscendMindIEServer(InferenceServer):
             install_path.joinpath("conf", "config.json"), "r", encoding="utf-8"
         ) as f:
             config = json.load(f)
-        log_config = config["LogConfig"]
+        log_config = config.get("LogConfig", {})  # Deprecated since MindIE 2.0.RC1
         server_config = config["ServerConfig"]
         backend_config = config["BackendConfig"]
         model_deploy_config = backend_config["ModelDeployConfig"]
@@ -430,6 +452,7 @@ class AscendMindIEServer(InferenceServer):
         env["NPU_MEMORY_FRACTION"] = "0.9"
         # -- Pop conflict configuration items.
         env.pop("RANKTABLEFILE", "")  # TODO need for host-across deployment.
+        env.pop("RANK_TABLE_FILE", "")  # TODO need for host-across deployment.
         env.pop("NPU_VISIBLE_DEVICES", "")
         env.pop("NPU-VISIBLE-DEVICES", "")
         env.pop("NPU_DEVICE_IDS", "")
@@ -712,9 +735,11 @@ class AscendMindIEServer(InferenceServer):
         mapped = tempfile.mkdtemp(prefix=f"ascend-mindie-{self._model_instance.id}-")
         mapped = Path(mapped)
 
-        # Link all files and directories to the temporary directory
+        mutable_files = ["config.json", "generation_config.json"]
+
+        # Link all files and directories to the temporary directory, excluding mutable files
         for item in raw.iterdir():
-            if item.name in ["config.json", "generation_config.json"]:
+            if item.name in mutable_files:
                 continue
             link_path = mapped.joinpath(item.name)
             try:
@@ -724,8 +749,8 @@ class AscendMindIEServer(InferenceServer):
                 link_path.unlink(missing_ok=True)
                 os.symlink(item, link_path)
 
-        # Copy config.json and generation_config.json to the temporary directory
-        for item in ["config.json", "generation_config.json"]:
+        # Copy mutable files to the temporary directory
+        for item in mutable_files:
             src = raw.joinpath(item)
             if not src.is_file():
                 continue
