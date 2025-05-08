@@ -165,9 +165,7 @@ GPUStack 使用 [llama-box](https://github.com/gpustack/llama-box)（基于 [lla
 
 2. [ModelScope](https://modelscope.cn/)
 
-3. [Ollama Library](https://ollama.com/library)
-
-4. 本地文件路径
+3. 本地文件路径
 
 ### 示例模型
 

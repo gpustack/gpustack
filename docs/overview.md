@@ -45,9 +45,7 @@ GPUStack uses [llama-box](https://github.com/gpustack/llama-box) (bundled [llama
 
 2. [ModelScope](https://modelscope.cn/)
 
-3. [Ollama Library](https://ollama.com/library)
-
-4. Local File Path
+3. Local File Path
 
 ### Example Models:
 

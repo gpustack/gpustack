@@ -27,6 +27,10 @@ GPUStack currently supports models from [Hugging Face](https://huggingface.co), 
 
 ### Add an Ollama Model
 
+!!! warning
+
+    As of version v0.6.1, Ollama model source is deprecated. For more context, please refer to the [GitHub issue](https://github.com/gpustack/gpustack/issues/1979).
+
 1. Click the `Add Model File` button and select `Ollama Library` from the dropdown.
 2. Select a model from the dropdown list or input a custom Ollama model, e.g., `llama3`, `llama3:70b`, or `youraccount/llama3:70b`.
 3. Select the target worker to download the model file.
