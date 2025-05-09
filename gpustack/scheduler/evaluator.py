@@ -140,9 +140,7 @@ async def evaluate_model(
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
-    default_backend_parameters = get_catalog_model_spec_backend_parameter(model)
-    if default_backend_parameters and not model.backend_parameters:
-        model.backend_parameters = default_backend_parameters
+    if set_default_spec(model):
         result.default_spec = model.model_copy()
 
     await set_gguf_model_file_path(config, model)
@@ -359,8 +357,20 @@ async def evaluate_model_input(
     return True, []
 
 
-def get_catalog_model_spec_backend_parameter(model: ModelSpec) -> List[str]:
+def set_default_spec(model: ModelSpec) -> bool:
+    """
+    Set the default spec for the model if it matches the catalog spec.
+    """
     model_spec_in_catalog = model_set_specs_by_key.get(model.model_source_key)
+
+    modified = False
     if model_spec_in_catalog:
-        return model_spec_in_catalog.backend_parameters
-    return []
+        if model_spec_in_catalog.backend_parameters and not model.backend_parameters:
+            model.backend_parameters = model_spec_in_catalog.backend_parameters
+            modified = True
+
+        if model_spec_in_catalog.env and not model.env:
+            model.env = model_spec_in_catalog.env
+            modified = True
+
+    return modified
