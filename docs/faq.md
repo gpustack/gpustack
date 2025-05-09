@@ -124,7 +124,7 @@ docker run -d --name gpustack \
     --gpus all \
     -p 9090:80 \
     -p 10150:10150 \
-    -p 40064-40131:40064-40131 \
+    -p 40064-40095:40064-40095 \
     --ipc=host \
     -v gpustack-data:/var/lib/gpustack \
     gpustack/gpustack \

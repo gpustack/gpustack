@@ -101,6 +101,7 @@ vLLM supports distributed inference across multiple workers using [Ray](https://
     1. The GPUStack server and all participating workers must run on Linux and use the same version of Python, which is a requirement of Ray.
     2. Model files must be accessible at the same path on all participating workers. You must either use a shared file system or download the model files to the same path on all participating workers.
     3. Each worker can only be assigned to one distributed vLLM model instance at a time.
+    4. If you install GPUStack with Docker, you need to use the host network mode to leverage RDMA/InfiniBand and ensure connectivity between Ray nodes.
 
 Auto-scheduling is supported with the following conditions:
 
@@ -210,7 +211,7 @@ and [environment variables](https://www.hiascend.com/document/detail/zh/mindie/2
 To avoid directly configuring JSON, GPUStack provides a set of command line parameters as below.
 
 | Parameter                        | Default | Description                                                                                                                                                                                            |
-|----------------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| -------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--trust-remote-code`            |         | Trust remote code (for model loading).                                                                                                                                                                 |
 | `--npu-memory-fraction`          | 0.9     | Fraction of NPU memory to be used for the model executor (0 to 1). For example: `0.5` means 50% memory utilization.                                                                                    |
 | `--max-link-num`                 | 1000    | Maximum number of parallel requests.                                                                                                                                                                   |
