@@ -4,7 +4,7 @@ ENV PATH="/root/.local/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN pip install https://download.sourcefind.cn:65024/file/4/lmslim/DAS1.5/lmslim-0.2.1+das.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
-    && pip install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.6.2+das.opt3.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip install https://download.sourcefind.cn:65024/file/4/vllm/DAS1.5/vllm-0.7.2+das.opt1.dtk2504-cp310-cp310-manylinux_2_28_x86_64.whl \
     && pip cache purge
 
 RUN apt-get update && apt-get install -y \
