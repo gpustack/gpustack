@@ -313,7 +313,7 @@ class ToolsManager:
 
         try:
             logger.info(f"Installing {package} {version} using pipx")
-            subprocess.run(install_command, capture_output=True, check=True, text=True)
+            subprocess.run(install_command, check=True, text=True)
 
             installed_bin_path = pipx_bin_path / f"{package}{suffix}"
             if not installed_bin_path.exists():
@@ -345,7 +345,6 @@ class ToolsManager:
             logger.info(f"Injecting {package} into pipx environment '{env_name}'")
             subprocess.run(
                 [pipx_path, "inject", env_name, package, "--force"],
-                capture_output=True,
                 check=True,
                 text=True,
             )
