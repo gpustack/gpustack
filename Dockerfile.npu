@@ -304,6 +304,12 @@ RUN <<EOF
     source ${CANN_HOME}/nnal/atb/set_env.sh
 
     # Install dependencies
+    if [ ${ARCH} == "x86_64" ]; then
+        pip install --no-cache-dir --root-user-action ignore torch==${TORCH_VERSION}+cpu --index-url https://download.pytorch.org/whl/cpu
+    else
+        pip install --no-cache-dir --root-user-action ignore torch==${TORCH_VERSION}
+    fi
+    pip install --no-cache-dir --root-user-action ignore torch-npu==${TORCH_NPU_VERSION}
     cat <<EOT >/tmp/requirements.txt
 absl-py==2.2.2
 attrs==24.3.0
@@ -339,8 +345,6 @@ python-rapidjson==1.20
 requests==2.32.3
 sacrebleu==2.4.3
 tornado==6.4.2
-torch==${TORCH_VERSION}
-torch-npu==${TORCH_NPU_VERSION}
 torchvision==0.16.0
 transformers==4.46.3
 tiktoken==0.7.0
