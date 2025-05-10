@@ -577,6 +577,15 @@ GPUStack supports multiple versions of inference backends. When deploying a mode
 
 ![pin-vllm-backend-version](assets/faq/pin-vllm-backend-version.png)
 
+Or you can manually install the custom version, including using a custom PyPI mirror, and then link the executable to `/var/lib/gpustack/bin/`. After that, configure and use it as described above.
+
+```bash
+python3 -m venv $(pipx environment --value PIPX_LOCAL_VENVS)/vllm-v0-8-5-post1
+$(pipx environment --value PIPX_LOCAL_VENVS)/vllm-v0-8-5-post1/bin/python -m pip install vllm==v0.8.5.post1 -i https://mirrors.aliyun.com/pypi/simple
+sudo mkdir -p /var/lib/gpustack/bin
+sudo ln -s $(pipx environment --value PIPX_LOCAL_VENVS)/vllm-v0-8-5-post1/bin/vllm /var/lib/gpustack/bin/vllm_v0.8.5.post1
+```
+
 If you still need to upgrade the built-in vLLM, you can upgrade vLLM on all worker nodes using the following method:
 
 **Script Installation**

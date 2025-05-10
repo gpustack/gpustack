@@ -4,7 +4,18 @@ RAGFlow can integrate with GPUStack to leverage locally deployed LLMs, embedding
 
 ## Deploying Models
 
-In GPUStack UI, navigate to the `Models` page and click on `Deploy Model` to deploy the models you need.
+1. In GPUStack UI, navigate to the `Models` page and click on `Deploy Model` to deploy the models you need. Here are some example models:
+
+- qwen3-8b
+- qwen2.5-vl-3b-instruct
+- bge-m3
+- bge-reranker-v2-m3
+
+![gpustack-models](../assets/integrations/integration-gpustack-models.png)
+
+2. In the model’s Operations, open `API Access Info` to see how to integrate with this model.
+
+![gpustack-api-access-info](../assets/integrations/integration-gpustack-api-access-info.png)
 
 ## Create an API Key
 
@@ -16,22 +27,44 @@ In GPUStack UI, navigate to the `Models` page and click on `Deploy Model` to dep
 
 ## Integrating GPUStack into RAGFlow
 
-Go to `Profile > Model Providers > GPUStack` and fill in:
+1. Access the RAGFlow UI, go to the top right corner and click the avatar, select `Model Providers > GPUStack`, then select `Add the model` and fill in:
 
 - Model type: Select the model type based on the model.
 
 - Model name: The name must match the model name deployed on GPUStack.
 
-- Base url: `http://your-gpustack-url`, the URL should not include the path and cannot be `localhost`, as `localhost` is limited to the container’s internal network. Ensure the URL is accessible from within the RAGFlow container. You can test this by using `curl`.
+- Base URL: `http://your-gpustack-url`, the URL should not include the path and cannot be `localhost`, as `localhost` is limited to the container’s internal network. Ensure the URL is accessible from within the RAGFlow container. You can test this by using `curl`.
 
 - API-Key: Input the API key you copied from previous steps.
 
-Click `Save` to add the model:
+- Max Tokens: Input the max tokens supported by current model configuration.
+
+Click `OK` to add the model:
 
 ![ragflow-add-model](../assets/integrations/integration-ragflow-add-model.png)
 
-Select the added models in the `System Model Settings` and save:
+2. Add other models as needed, then select the added models in the `Set default models` and save:
 
-![ragflow-add-model](../assets/integrations/integration-ragflow-system-model-settings.png)
+![ragflow-set-default-models](../assets/integrations/integration-ragflow-set-default-models.png)
 
-You can now use the models in the application.
+You can now use the models in the `Chat` and `Knowledge Base`, here is a simple case:
+
+1. Go to `Knowledge base` to create a new knowledge base and add your file:
+
+![ragflow-create-knowledge-base](../assets/integrations/integration-ragflow-create-knowledge-base.png)
+
+2. Navigate to `Retrieval testing` and set the rerank model to `bge-reranker-v2-m3`:
+
+![ragflow-set-rerank-model](../assets/integrations/integration-ragflow-set-rerank-model.png)
+
+3. In `Chat`, create an assistant, link the previously created knowledge base, and select a chat model:
+
+![ragflow-create-assistant](../assets/integrations/integration-ragflow-create-assistant.png)
+
+4. Create a chat session — you can now interact with the model and query the knowledge base:
+
+![ragflow-chat-with-model](../assets/integrations/integration-ragflow-chat-with-model.png)
+
+5. Edit the assistant and switch the model to `qwen2.5-vl-3b-instruct`. After saving, create a new chat and upload an image to enable multimodal input:
+
+![ragflow-chat-with-vlm](../assets/integrations/integration-ragflow-chat-with-vlm.png)
