@@ -67,7 +67,7 @@ Run the following command to start the GPUStack server **and built-in worker**:
         --restart=unless-stopped \
         -p 80:80 \
         -p 10150:10150 \
-        -p 40064-40131:40064-40131 \
+        -p 40064-40095:40064-40095 \
         --ipc=host \
         -v gpustack-data:/var/lib/gpustack \
         gpustack/gpustack:latest-musa \
@@ -118,7 +118,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
     docker run -d --name gpustack \
         --restart=unless-stopped \
         -p 10150:10150 \
-        -p 40064-40131:40064-40131 \
+        -p 40064-40095:40064-40095 \
         --ipc=host \
         -v gpustack-data:/var/lib/gpustack \
         gpustack/gpustack:latest-musa \
@@ -132,7 +132,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
     2. You can set additional flags for the `gpustack start` command by appending them to the docker run command.
     For configuration details, please refer to the [CLI Reference](../../cli-reference/start.md).
 
-    3. The  `-p 40064-40131:40064-40131` flag is used to ensure connectivity for distributed inference across workers. For more details, please refer to the [Port Requirements](../installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
+    3. The  `-p 40064-40095:40064-40095` flag is used to ensure connectivity for distributed inference across workers running llama-box RPC servers. For more details, please refer to the [Port Requirements](../installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
 
 ## Installation Script
 

@@ -85,7 +85,7 @@ Run the following command to start the GPUStack server **and built-in worker** (
             -v /etc/ascend_install.info:/etc/ascend_install.info \
             -p 80:80 \
             -p 10150:10150 \
-            -p 40064-40131:40064-40131 \
+            -p 40064-40095:40064-40095 \
             --ipc=host \
             -v gpustack-data:/var/lib/gpustack \
             gpustack/gpustack:latest-npu \
@@ -132,7 +132,7 @@ Run the following command to start the GPUStack server **and built-in worker** (
             -v /etc/ascend_install.info:/etc/ascend_install.info \
             -p 80:80 \
             -p 10150:10150 \
-            -p 40064-40131:40064-40131 \
+            -p 40064-40095:40064-40095 \
             --ipc=host \
             -v gpustack-data:/var/lib/gpustack \
             gpustack/gpustack:latest-npu-310p \
@@ -205,7 +205,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
             -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
             -v /etc/ascend_install.info:/etc/ascend_install.info \
             -p 10150:10150 \
-            -p 40064-40131:40064-40131 \
+            -p 40064-40095:40064-40095 \
             --ipc=host \
             -v gpustack-data:/var/lib/gpustack \
             gpustack/gpustack:latest-npu \
@@ -252,7 +252,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
             -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
             -v /etc/ascend_install.info:/etc/ascend_install.info \
             -p 10150:10150 \
-            -p 40064-40131:40064-40131 \
+            -p 40064-40095:40064-40095 \
             --ipc=host \
             -v gpustack-data:/var/lib/gpustack \
             gpustack/gpustack:latest-npu-310p \
@@ -268,7 +268,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
 
-    4. The  `-p 40064-40131:40064-40131` flag is used to ensure connectivity for distributed inference across workers. For more details, please refer to the [Port Requirements](../installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
+    4. The  `-p 40064-40095:40064-40095` flag is used to ensure connectivity for distributed inference across workers running llama-box RPC servers. For more details, please refer to the [Port Requirements](../installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
 
 ## Installation Script
 
