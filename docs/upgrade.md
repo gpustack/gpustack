@@ -7,6 +7,10 @@ You can upgrade GPUStack using the installation script or by manually installing
     1. When upgrading, upgrade the GPUStack server first, then upgrade the workers.
     2. Please **DO NOT** upgrade from/to the main(dev) version or a release candidate(rc) version, as they may contain breaking changes. Use a fresh installation if you want to try the main or rc versions.
 
+!!! note
+
+    Before proceeding with an upgrade, it’s strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of the file located at `/var/lib/gpustack/database.db`.
+
 ## Upgrade GPUStack Using the Installation Script
 
 To upgrade GPUStack from an older version, re-run the installation script using the same configuration options you originally used.

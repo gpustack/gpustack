@@ -78,7 +78,7 @@ To use AMD ROCm as an accelerator, ensure the following components are installed
 For Ascend CANN as an accelerator, ensure the following components are installed:
 
 - [Ascend NPU Driver & Firmware](https://www.hiascend.com/hardware/firmware-drivers/community)
-- [Ascend CANN Toolkit & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.0.beta1) (Optional, required for non-Docker installations)
+- [Ascend CANN Toolkit & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.1.RC1.beta1) (Optional, required for non-Docker installations)
 
 ### Hygon DTK
 
@@ -95,6 +95,12 @@ To use Moore Threads MUSA as an accelerator, ensure the following components are
 - [MT Container Toolkits](https://developer.mthreads.com/sdk/download/CloudNative) (Optional, required for docker installation)
 
 ## Networking Requirements
+
+### Network Architecture
+
+The following diagram shows the network architecture of GPUStack:
+
+![gpustack-network-architecture](../assets/gpustack-network-architecture.png)
 
 ### Connectivity Requirements
 

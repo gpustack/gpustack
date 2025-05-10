@@ -208,9 +208,9 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
 
 ## Installation Script
 
-=== "Linux"
+#### Supported Devices
 
-    #### Supported Devices
+=== "Linux"
 
     | Devices                                             | Supported Backends |
     | --------------------------------------------------- | ------------------ |
@@ -227,7 +227,22 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
 
     View more details [here](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-6.2.4/reference/system-requirements.html).
 
-    #### Prerequisites
+=== "Windows"
+
+    | Devices                                             | Supported Backends |
+    | --------------------------------------------------- | ------------------ |
+    | gfx1100: AMD Radeon RX 7900 XTX/7900 XT             | llama-box          |
+    | gfx1101: AMD Radeon RX 7800 XT/7700 XT              | llama-box          |
+    | gfx1102: AMD Radeon RX 7600 XT/7600                 | llama-box          |
+    | gfx1030: AMD Radeon RX 6950 XT/6900 XT/6800 XT/6800 | llama-box          |
+    | gfx1031: AMD Radeon RX 6750 XT/6700 XT/6700         | llama-box          |
+    | gfx1032: AMD Radeon RX 6650 XT/6600 XT/6600         | llama-box          |
+
+    View more details [here](https://rocm.docs.amd.com/projects/install-on-windows/en/docs-6.2.4/reference/system-requirements.html).
+
+#### Prerequisites
+
+=== "Linux"
 
     - [ROCm 6.2.4](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-6.2.4/install/install-overview.html)
 
@@ -276,21 +291,6 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
 
 === "Windows"
 
-    #### Supported Devices
-
-    | Devices                                             | Supported Backends |
-    | --------------------------------------------------- | ------------------ |
-    | gfx1100: AMD Radeon RX 7900 XTX/7900 XT             | llama-box          |
-    | gfx1101: AMD Radeon RX 7800 XT/7700 XT              | llama-box          |
-    | gfx1102: AMD Radeon RX 7600 XT/7600                 | llama-box          |
-    | gfx1030: AMD Radeon RX 6950 XT/6900 XT/6800 XT/6800 | llama-box          |
-    | gfx1031: AMD Radeon RX 6750 XT/6700 XT/6700         | llama-box          |
-    | gfx1032: AMD Radeon RX 6650 XT/6600 XT/6600         | llama-box          |
-
-    View more details [here](https://rocm.docs.amd.com/projects/install-on-windows/en/docs-6.2.4/reference/system-requirements.html).
-
-    #### Prerequisites
-
     - [HIP SDK 6.2.4](https://rocm.docs.amd.com/projects/install-on-windows/en/docs-6.2.4/how-to/install.html)
 
     1. Type the following command on your system from PowerShell to confirm that the obtained information matches that listed in [Supported SKUs](https://rocm.docs.amd.com/projects/install-on-windows/en/docs-6.2.4/reference/system-requirements.html#supported-skus-win):
@@ -308,8 +308,6 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
 GPUStack provides a script to install it as a service with default port 80.
 
 === "Linux"
-
-    - Install Server
 
     ```bash
     curl -sfL https://get.gpustack.ai | sh -s -
@@ -331,7 +329,30 @@ GPUStack provides a script to install it as a service with default port 80.
 
     If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
 
-    - (Optional) Add Worker
+=== "Windows"
+
+    ```powershell
+    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+    ```
+
+    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
+
+    After installed, ensure that the GPUStack startup logs are normal:
+
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
+    ```
+
+    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+
+    ```powershell
+    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
+    ```
+    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
+
+### (Optional) Add Worker
+
+=== "Linux"
 
     To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
 
@@ -356,29 +377,6 @@ GPUStack provides a script to install it as a service with default port 80.
     ```
 
 === "Windows"
-
-    - Install Server
-
-    ```powershell
-    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-    ```
-
-    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
-
-    After installed, ensure that the GPUStack startup logs are normal:
-
-    ```powershell
-    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
-    ```
-
-    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
-
-    ```powershell
-    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
-    ```
-    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
-
-    - (Optional) Add Worker
 
     To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
 

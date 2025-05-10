@@ -32,16 +32,20 @@ GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。
 
 ### 核心特性
 
-- **广泛的硬件兼容性**：支持管理 Apple Mac、Windows PC 和 Linux 服务器上不同品牌的 GPU。
-- **广泛的模型支持**：从大语言模型 LLM、多模态模型 VLM 到 Diffusion 扩散模型、STT 与 TTS 语音模型、文本嵌入和重排序模型的广泛支持。
-- **异构 GPU 支持与扩展**：轻松添加异构 GPU 资源，按需扩展算力规模。
-- **分布式推理**：支持单机多卡并行和多机多卡并行推理。
-- **多推理后端支持**：支持 llama-box（基于 llama.cpp 和 stable-diffusion.cpp）、vox-box 和 vLLM 作为推理后端。
-- **轻量级 Python 包**：最小的依赖和操作开销。
-- **OpenAI 兼容 API**：提供兼容 OpenAI 标准的 API 服务。
-- **用户和 API 密钥管理**：简化用户和 API 密钥的管理流程。
-- **GPU 指标监控**：实时监控 GPU 性能和利用率。
-- **Token 使用和速率统计**：有效跟踪 token 使用情况，并管理速率限制。
+- **广泛的 GPU 兼容性**：无缝支持 Apple Mac、Windows PC 和 Linux 服务器上各种供应商的 GPU。
+- **广泛的模型支持**：支持各种模型，包括 LLM、多模态 VLM、图像模型、语音模型、文本嵌入模型和重排序模型。
+- **灵活的推理后端**：与 llama-box（llama.cpp 和 stable-diffusion.cpp）、vox-box、vLLM 和 Ascend MindIE 集成。
+- **多版本后端支持**：同时运行推理后端的多个版本，以满足不同模型的不同运行依赖。
+- **分布式推理**：支持单机和多机多卡并行推理，包括跨供应商和运行环境的异构 GPU。
+- **可扩展的 GPU 架构**：通过向基础设施添加更多 GPU 或节点轻松进行扩展。
+- **强大的模型稳定性**：通过自动故障恢复、多实例冗余和推理请求的负载平衡确保高可用性。
+- **智能部署评估**：自动评估模型资源需求、后端和架构兼容性、操作系统兼容性以及其他与部署相关的因素。
+- **自动调度**：根据可用资源动态分配模型。
+- **轻量级 Python 包**：最小依赖性和低操作开销。
+- **OpenAI 兼容 API**：完全兼容 OpenAI 的 API 规范，实现无缝集成。
+- **用户和 API 密钥管理**：简化用户和 API 密钥的管理。
+- **实时 GPU 监控**：实时跟踪 GPU 性能和利用率。
+- **令牌和速率指标**：监控 Token 使用情况和 API 请求速率。
 
 ## 安装
 
@@ -159,7 +163,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
 
 ## 模型支持
 
-GPUStack 使用 [llama-box](https://github.com/gpustack/llama-box)（基于 [llama.cpp](https://github.com/ggml-org/llama.cpp) 和 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)）、[vLLM](https://github.com/vllm-project/vllm) 和 [vox-box](https://github.com/gpustack/vox-box) 作为后端并提供广泛的模型支持。支持从以下来源部署模型：
+GPUStack 使用 [llama-box](https://github.com/gpustack/llama-box)（基于 [llama.cpp](https://github.com/ggml-org/llama.cpp) 和 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)）、[vLLM](https://github.com/vllm-project/vllm)、 [Ascend MindIE](https://www.hiascend.com/en/software/mindie) 和 [vox-box](https://github.com/gpustack/vox-box) 作为后端并提供广泛的模型支持。支持从以下来源部署模型：
 
 1. [Hugging Face](https://huggingface.co/)
 

@@ -22,7 +22,7 @@ Check if the CPU is supported:
 grep -E -i "neon|asimd" /proc/cpuinfo
 ```
 
-- [NPU Driver and Firmware](https://www.hiascend.com/hardware/firmware-drivers/community?product=4&model=26&cann=8.0.0.beta1&driver=1.0.28.alpha) (Must support CANN 8.0.0.beta1)
+- [NPU Driver and Firmware](https://www.hiascend.com/hardware/firmware-drivers/community) (Must support CANN 8.1.RC1.beta1)
 
 Check if the NPU driver is installed:
 
@@ -163,7 +163,7 @@ To get the token used for adding workers, run the following command on the GPUSt
 docker exec -it gpustack cat /var/lib/gpustack/token
 ```
 
-To start GPUStack as a worker, and **register it with the GPUStack server** (Set `ASCEND_VISIBLE_DEVICES` to the required GPU indices), run the following command on the **worker node**. Be sure to replace the URL, token and node IP with your specific values:
+To start GPUStack as a worker, and **register it with the GPUStack server** (Set `--device /dev/davinci{index}` to the required GPU indices), run the following command on the **worker node**. Be sure to replace the URL, token and node IP with your specific values:
 
 === "Ascend 910B"
 
@@ -278,15 +278,15 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
 
 ### Prerequites
 
-- [Ascend CANN Toolkit 8.0.0.beta1 & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.0.beta1)
+- [Ascend CANN Toolkit 8.1.RC1.beta1 & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.0.beta1)
 
-Check if CANN is installed and verify that its version is 8.0.0:
+Check if CANN is installed and verify that its version is 8.1.RC1:
 
 ```bash
 cat /usr/local/Ascend/ascend-toolkit/latest/version.cfg
 ```
 
-Check if CANN kernels are installed and verify that its version is 8.0.0:
+Check if CANN kernels are installed and verify that its version is 8.1.RC1:
 
 ```bash
 cat /usr/local/Ascend/ascend-toolkit/latest/version.cfg | grep opp

@@ -2,7 +2,7 @@
 
 The following diagram shows the architecture of GPUStack:
 
-![gpustack-architecture](assets/gpustack-architecture.svg)
+![gpustack-architecture](assets/gpustack-architecture.png)
 
 ### Server
 
@@ -11,7 +11,7 @@ The GPUStack server consists of the following components:
 - **API Server**: Provides a RESTful interface for clients to interact with the system. It handles authentication and authorization.
 - **Scheduler**: Responsible for assigning model instances to workers.
 - **Model Controller**: Manages the rollout and scaling of model instances to match the desired model replicas.
-- **HTTP Proxy**: Routes completion API requests to backend inference servers.
+- **HTTP Proxy**: Routes inference API requests to workers.
 
 ### Worker
 
@@ -19,6 +19,7 @@ GPUStack workers are responsible for:
 
 - Running inference servers for model instances assigned to the worker.
 - Reporting status to the server.
+- Routes inference API requests to backend inference servers.
 
 ### SQL Database
 
@@ -26,7 +27,7 @@ The GPUStack server connects to a SQL database as the datastore. GPUStack uses S
 
 ### Inference Server
 
-Inference servers are the backends that performs the inference tasks. GPUStack supports [llama-box](https://github.com/gpustack/llama-box), [vLLM](https://github.com/vllm-project/vllm) and [vox-box](https://github.com/gpustack/vox-box) as the inference server.
+Inference servers are the backends that performs the inference tasks. GPUStack supports [llama-box](https://github.com/gpustack/llama-box), [vLLM](https://github.com/vllm-project/vllm), [Ascend MindIE](https://www.hiascend.com/en/software/mindie) and [vox-box](https://github.com/gpustack/vox-box) as the inference server.
 
 ### RPC Server
 
