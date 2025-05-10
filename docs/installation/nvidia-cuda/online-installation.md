@@ -98,8 +98,6 @@ GPUStack provides a script to install it as a service with default port 80.
 
 === "Linux"
 
-    - Install Server
-
     ```bash
     curl -sfL https://get.gpustack.ai | sh -s -
     ```
@@ -120,7 +118,30 @@ GPUStack provides a script to install it as a service with default port 80.
 
     If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
 
-    - (Optional) Add Worker
+=== "Windows"
+
+    ```powershell
+    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+    ```
+
+    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
+
+    After installed, ensure that the GPUStack startup logs are normal:
+
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
+    ```
+
+    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+
+    ```powershell
+    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
+    ```
+    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
+
+### (Optional) Add Worker
+
+=== "Linux"
 
     To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
 
@@ -145,29 +166,6 @@ GPUStack provides a script to install it as a service with default port 80.
     ```
 
 === "Windows"
-
-    - Install Server
-
-    ```powershell
-    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-    ```
-
-    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
-
-    After installed, ensure that the GPUStack startup logs are normal:
-
-    ```powershell
-    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
-    ```
-
-    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
-
-    ```powershell
-    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
-    ```
-    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
-
-    - (Optional) Add Worker
 
     To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
 

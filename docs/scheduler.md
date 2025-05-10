@@ -28,8 +28,8 @@ The Resource Fit Policy is a critical strategy in the scheduling system, used to
 
 - Single Worker Node, Single GPU Full Offload: Identifies candidates where a single GPU on a single worker can fully offload the model, which usually offers the best performance.
 - Single Worker Node, Multiple GPU Full Offload: Identifies candidates where multiple GPUs on a single worker can fully the offload the model.
-- Single Worker Node Partial Offload: Identifies candidates on a single worker that can handle a partial offload, used only when partial offloading is allowed.
 - Distributed Inference Across Multiple Workers: Identifies candidates where a combination of GPUs across multiple workers can handle full or partial offloading, used only when distributed inference across nodes is permitted.
+- Single Worker Node Partial Offload: Identifies candidates on a single worker that can handle a partial offload, used only when partial offloading is allowed.
 - Single Worker Node, CPU: When no GPUs are available, the system will use the CPU for inference, identifying candidates where memory resources on a single worker are sufficient.
 
 ### Scoring Phase
