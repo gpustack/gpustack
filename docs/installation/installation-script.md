@@ -107,8 +107,8 @@ You can set environment variables for the GPUStack service in an environment fil
 The following is an example of the content of the file:
 
 ```bash
-HF_TOKEN="mytoken"
-HF_ENDPOINT="https://my-hf-endpoint"
+HF_TOKEN="your_hf_token"
+HF_ENDPOINT="https://your_hf_endpoint"
 ```
 
 !!!note

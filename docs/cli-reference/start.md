@@ -30,12 +30,12 @@ gpustack start [OPTIONS]
 ### Server Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                         |
-|-------------------------------------| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ----------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--host` value                      | `0.0.0.0`                              | Host to bind the server to.                                                                                                                         |
 | `--port` value                      | `80`                                   | Port to bind the server to.                                                                                                                         |
-| `--disable-worker`                  | `False`                                | Disable embedded worker.                                                                                                                            |
+| `--disable-worker`                  | `False`                                | Disable built-in worker.                                                                                                                            |
 | `--bootstrap-password` value        | Auto-generated.                        | Initial password for the default admin user.                                                                                                        |
-| `--database-url` value              | `sqlite:///<data-dir>/database.db`     | URL of the database. Example: postgresql://user:password@hostname:port/db_name or mysql://user:password@host:port/db_name                   |
+| `--database-url` value              | `sqlite:///<data-dir>/database.db`     | URL of the database. Example: postgresql://user:password@hostname:port/db_name or mysql://user:password@host:port/db_name                           |
 | `--ssl-keyfile` value               | (empty)                                | Path to the SSL key file.                                                                                                                           |
 | `--ssl-certfile` value              | (empty)                                | Path to the SSL certificate file.                                                                                                                   |
 | `--force-auth-localhost`            | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication. |
