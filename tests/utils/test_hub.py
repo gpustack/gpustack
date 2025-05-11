@@ -140,7 +140,7 @@ def test_get_hf_min_gguf_file():
         ),
         (
             "unsloth/Llama-3.3-70B-Instruct-GGUF",
-            "Llama-3.3-70B-Instruct-Q2_K.gguf",
+            "Llama-3.3-70B-Instruct-UD-IQ1_M.gguf",
         ),
         (
             "unsloth/DeepSeek-R1-GGUF",
@@ -171,7 +171,7 @@ def test_get_ms_min_gguf_file():
         ),
         (
             "unsloth/Llama-3.3-70B-Instruct-GGUF",
-            "Llama-3.3-70B-Instruct-Q2_K.gguf",
+            "Llama-3.3-70B-Instruct-UD-IQ1_M.gguf",
         ),
         (
             "unsloth/DeepSeek-R1-GGUF",
