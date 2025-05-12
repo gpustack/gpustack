@@ -22,7 +22,7 @@ COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
     make build
 
-ARG VLLM_VERSION=0.8.4
+ARG VLLM_VERSION=0.8.5.post1
 RUN <<EOF
     if [ "$TARGETPLATFORM" = "linux/amd64" ]; then
         # Install vllm dependencies for x86_64
