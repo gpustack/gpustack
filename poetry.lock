@@ -9411,11 +9411,11 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 type = ["pytest-mypy"]
 
 [extras]
-all = ["bitsandbytes", "mistral_common", "vllm", "vox-box"]
+all = ["bitsandbytes", "mistral_common", "timm", "vllm", "vox-box"]
 audio = ["vox-box"]
 vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "e93109a40a280816b743124ef24bef186a4177552e9aea9bd4c761c96da7ad33"
+content-hash = "ed08362b2ced52153d5be1552ed84706f67df77bb0fa8adaea3e94e43510632e"

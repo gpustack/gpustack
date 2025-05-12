@@ -100,7 +100,7 @@ force-exclude = '''
 [tool.poetry.extras]
 vllm = ["vllm", "mistral_common", "bitsandbytes", "timm"]
 audio = ["vox-box"]
-all = ["vllm", "mistral_common", "bitsandbytes", "vox-box"]
+all = ["vllm", "mistral_common", "bitsandbytes", "timm", "vox-box"]
 
 [tool.poetry.scripts]
 gpustack = "gpustack.main:main"
