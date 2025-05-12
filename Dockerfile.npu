@@ -20,17 +20,12 @@
 # - MINDIE_VERSION is the version of Ascend MindIE,
 #   which is used to install the Ascend MindIE,
 #   please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
-# - According to Ascend Extension Installation,
-#   TORCH_VERSION and TORCH_NPU_VERSION have the mapping requirements for the CANN_VERSION,
-#   please check https://www.hiascend.com/document/detail/zh/Pytorch/600/configandinstg/instg/insg_0001.html for details.
 # - PYTHON_VERSION is the version of Python,
 #   which should be properly set, it must be 3.x.
 
 ARG CANN_VERSION=8.1.rc1.beta1
 ARG CANN_CHIP=910b
 ARG MINDIE_VERSION=2.0.rc1
-ARG TORCH_VERSION=2.1.0
-ARG TORCH_NPU_VERSION=2.1.0.post12
 ARG PYTHON_VERSION=3.11
 
 #
@@ -266,7 +261,7 @@ RUN <<EOF
         && pip cache purge
 EOF
 
-COPY --from=thxcode/mindie:2.0.RC1-800I-A2-py311-openeuler24.03-lts --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
+COPY --from=thxcode/mindie:2.0.T17-800I-A2-py311-openeuler24.03-lts --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
 RUN <<EOF
     # ATB Models
 
@@ -282,13 +277,9 @@ EOF
 
 ## Install MindIE
 
-ARG TORCH_VERSION
-ARG TORCH_NPU_VERSION
 ARG MINDIE_VERSION
 
-ENV TORCH_VERSION=${TORCH_VERSION} \
-    TORCH_NPU_VERSION=${TORCH_NPU_VERSION} \
-    MINDIE_VERSION=${MINDIE_VERSION}
+ENV MINDIE_VERSION=${MINDIE_VERSION}
 
 RUN <<EOF
     # MindIE
@@ -303,14 +294,17 @@ RUN <<EOF
     source ${CANN_HOME}/ascend-toolkit/set_env.sh
     source ${CANN_HOME}/nnal/atb/set_env.sh
 
-    # Install dependencies
+    # Install dependencies,
+    # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
+    # please check https://www.hiascend.com/document/detail/zh/Pytorch/700/configandinstg/instg/insg_0004.html for details.
     if [ ${ARCH} == "x86_64" ]; then
-        pip install --no-cache-dir --root-user-action ignore torch==${TORCH_VERSION}+cpu --index-url https://download.pytorch.org/whl/cpu
+        pip install --no-cache-dir --root-user-action ignore torch==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
     else
-        pip install --no-cache-dir --root-user-action ignore torch==${TORCH_VERSION}
+        pip install --no-cache-dir --root-user-action ignore torch==2.1.0
     fi
-    pip install --no-cache-dir --root-user-action ignore torch-npu==${TORCH_NPU_VERSION}
+    pip install --no-cache-dir --root-user-action ignore torch-npu==2.1.0.post12 torchvision==0.16.0
     cat <<EOT >/tmp/requirements.txt
+av==14.3.0
 absl-py==2.2.2
 attrs==24.3.0
 certifi==2024.8.30
@@ -345,7 +339,6 @@ python-rapidjson==1.20
 requests==2.32.3
 sacrebleu==2.4.3
 tornado==6.4.2
-torchvision==0.16.0
 transformers==4.46.3
 tiktoken==0.7.0
 typing_extensions==4.13.2
