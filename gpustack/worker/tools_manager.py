@@ -17,6 +17,7 @@ from gpustack.schemas.models import BackendEnum
 from gpustack.utils.command import get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform, envs
+from gpustack.config.config import get_global_config
 
 logger = logging.getLogger(__name__)
 
@@ -750,7 +751,8 @@ class ToolsManager:
         """Install Ascend MindIE run package to the target directory."""
 
         # Create a virtual environment to collect the new Python packages.
-        venv_parent_dir = Path("/var/lib/gpustack/venvs/mindie")
+        cfg = get_global_config()
+        venv_parent_dir = Path(cfg.data_dir).joinpath("venvs", "mindie")
         venv_parent_dir.mkdir(parents=True, exist_ok=True)
         try:
             subprocess.check_call(
