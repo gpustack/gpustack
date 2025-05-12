@@ -8,7 +8,7 @@ from typing import Dict, List
 from abc import ABC, abstractmethod
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.config.config import Config, set_global_config
+from gpustack.config.config import Config, set_global_config, get_global_config
 from gpustack.logging import setup_logging
 from gpustack.schemas.models import (
     BackendEnum,
@@ -257,7 +257,8 @@ def set_ascend_mindie_env(
         root_path.joinpath("mindie", version, "mindie-llm", "set_env.sh"),
     ]
     # - Get the paths of Ascend MindIE virtual environment if needed
-    venv_dir = Path("/var/lib/gpustack/venvs/mindie").joinpath(version)
+    cfg = get_global_config()
+    venv_dir = Path(cfg.data_dir).joinpath("venvs", "mindie", version)
     venv_path = venv_dir.joinpath("bin", "activate")
     if venv_dir.is_dir() and venv_path.is_file():
         script_paths.append(venv_path)
