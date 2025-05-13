@@ -263,6 +263,7 @@ def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
     framework_mapping = {
         "Bark": Bark,
         "CosyVoice": CosyVoice,
+        "Dia": Dia,
         "FasterWhisper": FasterWhisper,
         "FunASR": FunASR,
     }
@@ -380,6 +381,17 @@ class CosyVoice(BaseModelResourceEstimator):
         return {
             "cuda": {"vram": 3 * Gib, "ram": 7 * Gib},
             "cpu": {"ram": 6 * Gib},
+        }
+
+
+class Dia(BaseModelResourceEstimator):
+    def get_required_resource(self) -> Dict:
+        # The required resource values used here are based on test estimates
+        # and may not accurately reflect actual requirements. Adjustments might be
+        # necessary based on real-world scenarios in feature.
+        return {
+            "cuda": {"vram": 10 * Gib, "ram": 1 * Gib},
+            "cpu": {"ram": 10 * Gib},
         }
 
 
