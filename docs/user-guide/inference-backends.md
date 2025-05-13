@@ -101,7 +101,8 @@ vLLM supports distributed inference across multiple workers using [Ray](https://
     1. The GPUStack server and all participating workers must run on Linux and use the same version of Python, which is a requirement of Ray.
     2. Model files must be accessible at the same path on all participating workers. You must either use a shared file system or download the model files to the same path on all participating workers.
     3. Each worker can only be assigned to one distributed vLLM model instance at a time.
-    4. If you install GPUStack with Docker, you need to use the host network mode to leverage RDMA/InfiniBand and ensure connectivity between Ray nodes.
+    4. A custom vLLM version may not work if its Ray distributed executor implementation is incompatible with the built-in vLLM version.
+    5. If you install GPUStack with Docker, you must use the host network mode to leverage RDMA/InfiniBand and ensure connectivity between nodes.
 
 Auto-scheduling is supported with the following conditions:
 
