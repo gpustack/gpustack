@@ -2511,3 +2511,20 @@
       huggingface_repo_id: FunAudioLLM/CosyVoice-300M-SFT
       replicas: 1
       backend: vox-box
+- name: Dia
+  description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
+  home: https://narilabs.org
+  icon: /static/catalog_icons/narilabs.png
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  sizes:
+    - 1.6
+  release_date: "2025-04-21"
+  templates:
+    - quantizations: ["FP32"]
+      source: model_scope
+      model_scope_model_id: nari-labs/Dia-1.6B
+      replicas: 1
+      backend: vox-box

@@ -42,4 +42,7 @@ EOF
 
 RUN gpustack download-tools
 
+# Download dac weights used by audio models like Dia
+RUN python3 -m dac download
+
 ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
