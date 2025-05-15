@@ -69,7 +69,7 @@ def upgrade() -> None:
         sa.Column('download_progress', sa.Float(), nullable=True),
         sa.Column('resolved_paths', sa.JSON(), nullable=True),
         sa.Column('state', sa.Enum('ERROR', 'DOWNLOADING', 'READY', name='modelfilestateenum'), nullable=False),
-        sa.Column('state_message', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('state_message', sa.Text(), nullable=True),
         sa.Column('cleanup_on_delete', sa.Boolean(), nullable=True),
         sa.Column('local_dir', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column('worker_id', sa.Integer(), nullable=True),

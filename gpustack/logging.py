@@ -49,6 +49,7 @@ def setup_logging(debug: bool = False):
         "alembic.runtime.migration",
         "python_multipart.multipart",
         "filelock",
+        "fastapi-cdn-host",
     ]
 
     for logger_name in disable_logger_names:

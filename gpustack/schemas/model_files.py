@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
-from sqlmodel import JSON, BigInteger, Column, Field, Relationship, SQLModel
+from sqlmodel import JSON, BigInteger, Column, Field, Relationship, SQLModel, Text
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList
@@ -24,7 +24,9 @@ class ModelFileBase(SQLModel, ModelSource):
     download_progress: Optional[float] = None
     resolved_paths: List[str] = Field(sa_column=Column(JSON), default=[])
     state: ModelFileStateEnum = ModelFileStateEnum.DOWNLOADING
-    state_message: Optional[str] = None
+    state_message: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
 
 
 class ModelFile(ModelFileBase, BaseModelMixin, table=True):
