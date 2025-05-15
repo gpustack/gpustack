@@ -33,7 +33,7 @@ RAGFlow can integrate with GPUStack to leverage locally deployed LLMs, embedding
 
 - Model name: The name must match the model name deployed on GPUStack.
 
-- Base URL: `http://your-gpustack-url`, the URL should not include the path and cannot be `localhost`, as `localhost` is limited to the container’s internal network. Ensure the URL is accessible from within the RAGFlow container. You can test this by using `curl`.
+- Base URL: `http://your-gpustack-url`, the URL should not include the path and do not use `localhost`, as it refers to the container’s internal network. If you’re using a custom port, make sure to include it. Also, ensure the URL is accessible from inside the RAGFlow container (you can test this with `curl`).
 
 - API-Key: Input the API key you copied from previous steps.
 

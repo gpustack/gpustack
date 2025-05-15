@@ -116,21 +116,6 @@ docker run -d --name gpustack \
     --port 9090
 ```
 
-If the host network is not used, only the mapped host port needs to be modified:
-
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    -p 9090:80 \
-    -p 10150:10150 \
-    -p 40064-40095:40064-40095 \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --worker-ip your_host_ip
-```
-
 **pip Installation**
 
 Add the `--port` parameter at the end of the `gpustack start`:

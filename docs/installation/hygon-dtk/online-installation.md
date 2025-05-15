@@ -42,48 +42,44 @@ lsmod | grep dcu
 
 ### Run GPUStack
 
-Run the following command to start the GPUStack server **and built-in worker**:
+Run the following command to start the GPUStack server **and built-in worker** (host network mode is recommended):
 
-=== "Host Network"
+```bash
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --device=/dev/kfd \
+    --device=/dev/mkfd \
+    --device=/dev/dri \
+    -v /opt/hyhal:/opt/hyhal:ro \
+    --network=host \
+    --ipc=host \
+    --group-add video \
+    --cap-add=SYS_PTRACE \
+    --security-opt seccomp=unconfined \
+    -v gpustack-data:/var/lib/gpustack \
+    gpustack/gpustack:latest-dcu
+```
 
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        --device=/dev/kfd \
-        --device=/dev/mkfd \
-        --device=/dev/dri \
-        -v /opt/hyhal:/opt/hyhal:ro \
-        --network=host \
-        --ipc=host \
-        --group-add video \
-        --cap-add=SYS_PTRACE \
-        --security-opt seccomp=unconfined \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-dcu
-    ```
+If you need to change the default server port 80, please use the `--port` parameter:
 
-=== "Port Mapping"
+```bash
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --device=/dev/kfd \
+    --device=/dev/mkfd \
+    --device=/dev/dri \
+    -v /opt/hyhal:/opt/hyhal:ro \
+    --network=host \
+    --ipc=host \
+    --group-add video \
+    --cap-add=SYS_PTRACE \
+    --security-opt seccomp=unconfined \
+    -v gpustack-data:/var/lib/gpustack \
+    gpustack/gpustack:latest-dcu \
+    --port 9090
+```
 
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        --device=/dev/kfd \
-        --device=/dev/mkfd \
-        --device=/dev/dri \
-        -v /opt/hyhal:/opt/hyhal:ro \
-        -p 80:80 \
-        -p 10150:10150 \
-        -p 40064-40095:40064-40095 \
-        --ipc=host \
-        --group-add video \
-        --cap-add=SYS_PTRACE \
-        --security-opt seccomp=unconfined \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-dcu \
-        --worker-ip your_host_ip
-    ```
-
-You can refer to the [CLI Reference](../../cli-reference/start.md) for available startup flags.
+If other ports are in conflict, or if you want to customize startup options, refer to the [CLI Reference](../../cli-reference/start.md) for available flags and configuration instructions.
 
 Check if the startup logs are normal:
 
@@ -107,46 +103,24 @@ To get the token used for adding workers, run the following command on the GPUSt
 docker exec -it gpustack cat /var/lib/gpustack/token
 ```
 
-To start GPUStack as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL, token and node IP with your specific values:
+To start GPUStack as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
 
-=== "Host Network"
-
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        --device=/dev/kfd \
-        --device=/dev/mkfd \
-        --device=/dev/dri \
-        -v /opt/hyhal:/opt/hyhal:ro \
-        --network=host \
-        --ipc=host \
-        --group-add video \
-        --cap-add=SYS_PTRACE \
-        --security-opt seccomp=unconfined \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-dcu \
-        --server-url http://your_gpustack_url --token your_gpustack_token
-    ```
-
-=== "Port Mapping"
-
-    ```bash
-    docker run -d --name gpustack \
-        --restart=unless-stopped \
-        --device=/dev/kfd \
-        --device=/dev/mkfd \
-        --device=/dev/dri \
-        -v /opt/hyhal:/opt/hyhal:ro \
-        -p 10150:10150 \
-        -p 40064-40095:40064-40095 \
-        --ipc=host \
-        --group-add video \
-        --cap-add=SYS_PTRACE \
-        --security-opt seccomp=unconfined \
-        -v gpustack-data:/var/lib/gpustack \
-        gpustack/gpustack:latest-dcu \
-        --server-url http://your_gpustack_url --token your_gpustack_token --worker-ip your_worker_host_ip
-    ```
+```bash
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --device=/dev/kfd \
+    --device=/dev/mkfd \
+    --device=/dev/dri \
+    -v /opt/hyhal:/opt/hyhal:ro \
+    --network=host \
+    --ipc=host \
+    --group-add video \
+    --cap-add=SYS_PTRACE \
+    --security-opt seccomp=unconfined \
+    -v gpustack-data:/var/lib/gpustack \
+    gpustack/gpustack:latest-dcu \
+    --server-url http://your_gpustack_url --token your_gpustack_token
+```
 
 !!! note
 
@@ -156,8 +130,6 @@ To start GPUStack as a worker, and **register it with the GPUStack server**, run
     For configuration details, please refer to the [CLI Reference](../../cli-reference/start.md).
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
-
-    4. The  `-p 40064-40095:40064-40095` flag is used to ensure connectivity for distributed inference across workers running llama-box RPC servers. For more details, please refer to the [Port Requirements](../installation-requirements.md#port-requirements). You can omit this flag if you don't need distributed inference across workers.
 
 ## Installation Script
 
