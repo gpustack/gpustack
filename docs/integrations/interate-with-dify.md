@@ -37,7 +37,7 @@ Dify can integrate with GPUStack to leverage locally deployed LLMs, embeddings, 
 
 - Model Name: The name must match the model name deployed on GPUStack.
 
-- Server URL: `http://your-gpustack-url`, the URL cannot be `localhost`, as `localhost` is limited to the container’s internal network. Ensure the URL is accessible from within the Dify container. You can test this by using `curl`.
+- Server URL: `http://your-gpustack-url`, do not use `localhost`, as it refers to the container’s internal network. If you’re using a custom port, make sure to include it. Also, ensure the URL is accessible from inside the Dify container (you can test this with `curl`).
 
 - API Key: Input the API key you copied from previous steps.
 
