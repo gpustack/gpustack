@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional
 import httpx
 import logging
@@ -36,6 +37,8 @@ load_balancer = LoadBalancer()
 
 
 aliasable_router = APIRouter()
+
+PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
 
 
 @aliasable_router.post("/chat/completions")
@@ -348,7 +351,6 @@ async def handle_standard_request(
     form_files: Optional[list],
     extra_headers: Optional[dict] = None,
 ):
-    timeout = 600
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
@@ -361,7 +363,7 @@ async def handle_standard_request(
             json=body_json if body_json else None,
             data=form_data if form_data else None,
             files=form_files if form_files else None,
-            timeout=timeout,
+            timeout=PROXY_TIMEOUT,
         )
         return Response(
             status_code=resp.status_code,
