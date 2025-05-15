@@ -1,7 +1,0 @@
-NPU ID                         Chip ID                        Chip Logic ID                  Chip Name
-6                              0                              0                              MiniD
-6                              1                              1                              MiniD
-6                              2                              2                              MiniD
-6                              3                              3                              MiniD
-6                              4                              -                              Mcu
-https://support.huawei.com/enterprise/zh/doc/EDOC1100115618/51e048c4
