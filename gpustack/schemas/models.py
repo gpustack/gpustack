@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticField
 from sqlalchemy import JSON, Column
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, Relationship, SQLModel, Text
 
 from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
@@ -136,7 +136,9 @@ class ModelSource(BaseModel):
 
 class ModelSpecBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
-    description: Optional[str] = None
+    description: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     meta: Optional[Dict[str, Any]] = Field(sa_column=Column(JSON), default={})
 
     replicas: int = Field(default=1, ge=0)
@@ -315,7 +317,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
         sa_column=Column(UTCDateTime), default=None
     )
     state: ModelInstanceStateEnum = ModelInstanceStateEnum.PENDING
-    state_message: Optional[str] = None
+    state_message: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
     )

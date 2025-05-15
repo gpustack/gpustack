@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Optional
 from pydantic import ConfigDict, BaseModel
-from sqlmodel import Field, SQLModel, JSON, Column
+from sqlmodel import Field, SQLModel, JSON, Column, Text
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
@@ -137,7 +137,9 @@ class WorkerBase(SQLModel):
         sa_column=Column(pydantic_column_type(SystemReserved))
     )
     state: WorkerStateEnum = WorkerStateEnum.NOT_READY
-    state_message: Optional[str] = None
+    state_message: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     status: Optional[WorkerStatus] = Field(
         sa_column=Column(pydantic_column_type(WorkerStatus))
     )

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import Column, UniqueConstraint
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Text
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, UTCDateTime
@@ -9,7 +9,9 @@ from gpustack.schemas.common import PaginatedList, UTCDateTime
 
 class ApiKeyBase(SQLModel):
     name: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
 
 
 class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
