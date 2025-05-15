@@ -2524,7 +2524,7 @@
   release_date: "2025-04-21"
   templates:
     - quantizations: ["FP32"]
-      source: model_scope
-      model_scope_model_id: nari-labs/Dia-1.6B
+      source: huggingface
+      huggingface_repo_id: nari-labs/Dia-1.6B
       replicas: 1
       backend: vox-box
