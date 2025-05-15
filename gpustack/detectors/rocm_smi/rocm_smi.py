@@ -60,7 +60,7 @@ class RocmSMI(GPUDetector):
 
     def decode_rocm_smi(self, result) -> GPUDevicesInfo:
         """
-        amd gpu result example:
+        AMD gpu result example:
         $rocm-smi -i --showmeminfo vram --showpower --showserial --showuse --showtemp --showproductname --showuniqueid --json
         {
             "card0": {
@@ -86,6 +86,43 @@ class RocmSMI(GPUDetector):
                 "GFX Version": "gfx11001"
             }
         }
+        Hygon gpu result example:
+        {
+            "card0":
+            {
+                "Device ID": "0x55b7",
+                "Card Series": "Z100L",
+                "Card Vendor": "Chengdu Haiguang IC Design Co., Ltd.",
+                "Serial Number": "TRCW200000000000",
+                "Unique ID": "a000000000000000",
+                "Average Graphics Package Power (W)": "38.0",
+                "Temperature (Sensor edge) (C)": "38.0",
+                "Temperature (Sensor junction) (C)": "41.0",
+                "Temperature (Sensor mem) (C)": "39.0",
+                "DCU use (%)": "0.0",
+                "vram Total Memory (MiB)": "32752",
+                "vram Total Used Memory (MiB)": "2"
+            }
+        }
+        With driver newer than dtk2504,
+        {
+            "card0":
+            {
+                "Device ID": "0x6210",
+                "Card Series": "K100_AI",
+                "Card Vendor": "Chengdu Haiguang IC Design Co., Ltd.",
+                "Serial Number": "TRCW200000000000",
+                "Unique ID": "a000000000000000",
+                "Average Graphics Package Power (W)": "77.0",
+                "Temperature (Sensor edge) (C)": "37.0",
+                "Temperature (Sensor junction) (C)": "35.0",
+                "Temperature (Sensor mem) (C)": "38.0",
+                "Temperature (Sensor core) (C)": "35.0",
+                "HCU use (%)": "0.0",
+                "vram Total Memory (MiB)": "65520",
+                "vram Total Used Memory (MiB)": "2"
+            }
+        }
         """
 
         devices = []
@@ -93,7 +130,9 @@ class RocmSMI(GPUDetector):
         keys = parsed_json.keys()
         for key in keys:
             info = parsed_json.get(key)
-            is_hygon = any("dcu" in ik.lower() for ik in info.keys())
+            is_hygon = any(
+                "dcu" in ik.lower() or "hcu" in ik.lower() for ik in info.keys()
+            )
 
             # common
             index = key.removeprefix("card")
@@ -108,7 +147,9 @@ class RocmSMI(GPUDetector):
                 memory_used = (
                     safe_int(info.get("vram Total Used Memory (MiB)", 0)) * 1024 * 1024
                 )
-                utilization_gpu = safe_float(info.get("DCU use (%)", 0))
+                utilization_gpu = safe_float(
+                    info.get("DCU use (%)") or info.get("HCU use (%)") or 0
+                )
                 temperature_gpu = safe_float(
                     info.get("Temperature (Sensor mem) (C)", 0)
                 )
