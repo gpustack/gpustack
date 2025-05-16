@@ -1,16 +1,19 @@
 import logging
+import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 import httpx
 from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
+from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableException
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
 logger = logging.getLogger(__name__)
 
-client = httpx.AsyncClient(timeout=600)
+PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
+client = httpx.AsyncClient(timeout=PROXY_TIMEOUT)
 
 
 @router.api_route(
@@ -43,8 +46,19 @@ async def proxy(path: str, request: Request):
             background=BackgroundTask(resp_proxy.aclose),
         )
 
-    except httpx.RequestError as e:
-        logger.error(f"Error during request to {url}: {e}")
-        raise HTTPException(
-            status_code=502, detail=f"Error connecting to target service: {e}"
+    except httpx.TimeoutException as e:
+        error_message = f"Request to {url} timed out"
+        if str(e):
+            error_message += f": {e}"
+        raise GatewayTimeoutException(
+            message=error_message,
+            is_openai_exception=True,
+        )
+    except Exception as e:
+        error_message = "An unexpected error occurred"
+        if str(e):
+            error_message += f": {e}"
+        raise ServiceUnavailableException(
+            message=error_message,
+            is_openai_exception=True,
         )
