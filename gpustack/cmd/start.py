@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from gpustack import __version__, __git_commit__
 from gpustack.config.config import set_global_config
 from gpustack.logging import setup_logging
 from gpustack.worker.worker import Worker
@@ -342,6 +343,8 @@ def run(args: argparse.Namespace):
         debug_env_info()
         set_third_party_env(cfg=cfg)
         multiprocessing.set_start_method('spawn')
+
+        logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
 
         if cfg.server_url:
             run_worker(cfg)
