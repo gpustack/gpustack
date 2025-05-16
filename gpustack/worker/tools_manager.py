@@ -94,7 +94,7 @@ class ToolsManager:
                 elapsed_time = time.time() - start_time
                 download_tests.append((url, elapsed_time))
                 logger.debug(f"Tested {url}, elapsed time {elapsed_time:.2f} seconds")
-            except requests.exceptions.RequestException as e:
+            except Exception as e:
                 logger.debug(f"Failed to connect to {url}: {e}")
 
         if not download_tests:
@@ -701,12 +701,12 @@ class ToolsManager:
         headers: Optional[Dict[str, str]] = None,
     ):
         """Download a file from the URL to the target path."""
-        if not self._download_base_url:
+        if not base_url and not self._download_base_url:
             self._check_and_set_download_base_url()
 
-        url = f"{self._download_base_url}/{url_path}"
-        if base_url:
-            url = f"{base_url}/{url_path}"
+        final_base_url = base_url or self._download_base_url
+        url = f"{final_base_url}/{url_path}"
+
         max_retries = 5
         retries = 0
         while retries < max_retries:
