@@ -179,7 +179,7 @@ RUN <<EOF
     TOOLKIT_FILE="Ascend-cann-toolkit_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
     TOOLKIT_PATH="/tmp/${TOOLKIT_FILE}"
     TOOLKIT_URL="${URL_PREFIX}/${TOOLKIT_FILE}?${URL_SUFFIX}"
-    curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' --retry 30 --retry-delay 5 --retry-connrefused -fL -o "${TOOLKIT_PATH}" "${TOOLKIT_URL}"
     chmod a+x "${TOOLKIT_PATH}"
     printf "Y\n" | "${TOOLKIT_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
 
@@ -206,13 +206,13 @@ RUN <<EOF
 
     # Install kernels
     KERNELS_FILE="Ascend-cann-kernels-${CANN_CHIP}_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
-    if ! curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fsSIL "${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}" >/dev/null 2>&1; then
+    if ! curl -H 'Referer: https://www.hiascend.com/' --retry 30 --retry-delay 5 --retry-connrefused -fsSIL "${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}" >/dev/null 2>&1; then
         # Fallback to generic kernels
         KERNELS_FILE="Ascend-cann-kernels-${CANN_CHIP}_${DOWNLOAD_VERSION}_${OS}.run"
     fi
     KERNELS_PATH="/tmp/${KERNELS_FILE}"
     KERNELS_URL="${URL_PREFIX}/${KERNELS_FILE}?${URL_SUFFIX}"
-    curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL -o "${KERNELS_PATH}" "${KERNELS_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' --retry 30 --retry-delay 5 --retry-connrefused -fL -o "${KERNELS_PATH}" "${KERNELS_URL}"
     chmod a+x "${KERNELS_PATH}"
     printf "Y\n" |"${KERNELS_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
 
@@ -250,7 +250,7 @@ RUN <<EOF
     NNAL_FILE="Ascend-cann-nnal_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
     NNAL_PATH="/tmp/${NNAL_FILE}"
     NNAL_URL="${URL_PREFIX}/${NNAL_FILE}?${URL_SUFFIX}"
-    curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL -o "${NNAL_PATH}" "${NNAL_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' --retry 30 --retry-delay 5 --retry-connrefused -fL -o "${NNAL_PATH}" "${NNAL_URL}"
     chmod a+x "${NNAL_PATH}"
     printf "Y\n" | "${NNAL_PATH}" --install --install-path="${CANN_HOME}"
 
@@ -355,7 +355,7 @@ EOT
     MINDIE_FILE="Ascend-mindie_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
     MINDIE_PATH="/tmp/${MINDIE_FILE}"
     MINDIE_URL="${URL_PREFIX}/${MINDIE_FILE}?${URL_SUFFIX}"
-    curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL -o "${MINDIE_PATH}" "${MINDIE_URL}"
+    curl -H 'Referer: https://www.hiascend.com/' --retry 30 --retry-delay 5 --retry-connrefused -fL -o "${MINDIE_PATH}" "${MINDIE_URL}"
     chmod a+x "${MINDIE_PATH}"
     printf "Y\n" | "${MINDIE_PATH}" --install --install-path="${CANN_HOME}"
 
