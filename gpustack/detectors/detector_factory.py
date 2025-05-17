@@ -10,6 +10,7 @@ from gpustack.detectors.fastfetch.fastfetch import Fastfetch
 from gpustack.detectors.npu_smi.npu_smi import NPUSMI
 from gpustack.detectors.rocm_smi.rocm_smi import RocmSMI
 from gpustack.detectors.regredit.regredit import Regredit
+from gpustack.detectors.ixsmi.ixsmi import IXSMI
 from gpustack.utils import platform
 
 
@@ -40,6 +41,7 @@ class DetectorFactory:
             platform.DeviceTypeEnum.MUSA.value: [fastfetch],
             platform.DeviceTypeEnum.ROCM.value: [RocmSMI(), Regredit()],
             platform.DeviceTypeEnum.DCU.value: [RocmSMI()],
+            platform.DeviceTypeEnum.COREX.value: [IXSMI()],
         }
 
     def _validate_detectors(self):
