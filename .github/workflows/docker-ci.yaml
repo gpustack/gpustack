@@ -155,7 +155,7 @@ jobs:
           done
           echo "EOF" >> $GITHUB_OUTPUT
       - name: Package
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         id: package
         with:
           push: ${{ github.event_name != 'pull_request' }}
@@ -171,4 +171,4 @@ jobs:
           cache-from: |
             type=registry,ref=gpustack/build-cache:gpustack${{ matrix.tag_suffix }}
           cache-to: |
-            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,oci-mediatypes=false,compression=gzip,ref=gpustack/build-cache:gpustack{0},ignore-error=true', matrix.tag_suffix) || '' }}
+            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref=gpustack/build-cache:gpustack{0},ignore-error=true', matrix.tag_suffix) || '' }}
