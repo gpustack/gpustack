@@ -782,6 +782,30 @@ Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the a
 docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
 ```
 
+### How can I view the Ray logs?
+
+Ray is used for distributed inference of vLLM. If the model starts abnormally or if there are issues with distributed inference, you can check the Ray logs on the server and corresponding workers. If installed via container, the following refers to the directory inside the container.
+
+The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
+
+Ray head startup logs:
+
+```bash
+tail -200f /var/lib/gpustack/log/ray-head.log
+```
+
+Ray worker startup logs:
+
+```bash
+tail -200f /var/lib/gpustack/log/ray-worker.log
+```
+
+Ray component logs:
+
+```bash
+/tmp/ray/session_*/logs
+```
+
 ### Where are the model logs stored?
 
 The model instance logs are stored in the `/var/lib/gpustack/log/serve/` directory of the corresponding worker node or worker container, with the log file named `id.log`, where id is the model instance ID. If the `--data-dir` or `--log-dir` parameter is set, the logs will be stored in the actual path specified by the parameter.
