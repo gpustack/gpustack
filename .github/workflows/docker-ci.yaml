@@ -105,6 +105,14 @@ jobs:
             platforms: "linux/amd64,linux/arm64"
             tag_suffix: "-cpu"
             build_args: []
+          #
+          # Iluvatar Corex
+          #
+          - device: corex
+            dockerfile: "Dockerfile.corex"
+            platforms: "linux/amd64"
+            tag_suffix: ""
+            build_args: []
 
     steps:
       - name: Checkout
