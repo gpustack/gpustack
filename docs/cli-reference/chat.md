@@ -17,6 +17,8 @@ gpustack chat model [prompt]
 | ------ | ------------------------------------------- |
 | model  | The model to use for chat.                  |
 | prompt | The prompt to send to the model. [Optional] |
+| --system-prompt | The system prompt to send to the model.[Optional] |
+| --user-prompt | The user prompt to send to the model.[Optional] |
 
 ## One-time Chat with a Prompt
 
@@ -32,6 +34,14 @@ Example output:
 Why couldn't the bicycle stand up by itself?
 
 Because it was two-tired!
+```
+
+## Chat with System Prompt and User Prompt
+
+If you wanna system plays a role, you can give it system prompt and user prompt.For example:
+
+```bash
+gpustack chat llama3 --system-prompt "you are good at telling joke" --user-prompt "tell me a joke"
 ```
 
 ## Interactive Chat
