@@ -166,3 +166,43 @@ def get_cuda_version() -> str:
         except Exception as e:
             logger.error(f"Error running nvcc: {e}")
     return ""
+
+
+def get_cann_version() -> str:
+    """
+    Returns the CANN version installed on the system.
+    """
+
+    env_cann_version = os.getenv("CANN_VERSION", "")
+    if env_cann_version:
+        return env_cann_version
+
+    try:
+        # Borrowed from https://gitee.com/ascend/pytorch/blob/master/test/npu/test_cann_version.py.
+        import torch  # noqa: F401
+        import torch_npu  # noqa: F401
+        from torch_npu.utils.collect_env import (
+            get_cann_version as get_cann_version_from_env,
+        )
+        from torch_npu.npu.utils import get_cann_version
+
+        cann_version = get_cann_version_from_env()
+        if cann_version:
+            return cann_version.lower()
+        cann_version = get_cann_version()
+        if cann_version:
+            return cann_version.lower()
+    except ImportError:
+        pass
+
+    return ""
+
+
+def get_cann_chip() -> str:
+    """
+    Returns the CANN chip version installed on the system.
+    """
+
+    # TODO(thxCode): figure out a way to discover the CANN chip version
+
+    return os.getenv("CANN_CHIP", "")
