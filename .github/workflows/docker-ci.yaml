@@ -113,7 +113,7 @@ jobs:
           - device: corex
             dockerfile: "Dockerfile.corex"
             platforms: "linux/amd64"
-            tag_suffix: ""
+            tag_suffix: "-corex"
             build_args: []
 
     steps:
