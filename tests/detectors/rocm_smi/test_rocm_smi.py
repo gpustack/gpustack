@@ -93,6 +93,8 @@ def gpu_device(
     return GPUDeviceInfo(
         uuid=uuid,
         index=index,
+        device_index=index,
+        device_chip_index=0,
         name=name,
         vendor=vendor,
         core=GPUCoreInfo(

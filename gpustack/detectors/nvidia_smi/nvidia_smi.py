@@ -55,6 +55,8 @@ class NvidiaSMI(GPUDetector):
 
             device = GPUDeviceInfo(
                 index=index,
+                device_index=index,
+                device_chip_index=0,
                 name=name,
                 vendor=VendorEnum.NVIDIA.value,
                 memory=MemoryInfo(

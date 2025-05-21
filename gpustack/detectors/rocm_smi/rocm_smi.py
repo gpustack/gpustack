@@ -178,6 +178,8 @@ class RocmSMI(GPUDetector):
                 device_type = platform.DeviceTypeEnum.ROCM.value
             device = GPUDeviceInfo(
                 index=index,
+                device_index=index,
+                device_chip_index=0,
                 name=name,
                 uuid=uuid,
                 vendor=vendor,

@@ -47,10 +47,21 @@ class SwapInfo(UtilizationInfo):
 
 
 class GPUDeviceInfo(BaseModel):
+    # GPU index, which is the logic ID of the GPU chip,
+    # which is a human-readable index and counted from 0 generally.
+    # It might be recognized as the GPU device ID in some cases, when there is no more than one GPU chip on the same card.
+    index: Optional[int] = Field(default=None)
+    # GPU device index, which is the index of the onboard GPU device.
+    # In Linux, it can be retrieved under the /dev/ path.
+    # For example, /dev/nvidia0 (the first Nvidia card), /dev/davinci2(the third Ascend card), etc.
+    device_index: Optional[int] = Field(default=0)
+    # GPU device chip index, which is the index of the GPU chip on the card.
+    # It works with `device_index` to identify a GPU chip uniquely.
+    # For example, the first chip on the first card is 0, and the second chip on the first card is 1.
+    device_chip_index: Optional[int] = Field(default=0)
     name: str = Field(default="")
     uuid: Optional[str] = Field(default="")
     vendor: Optional[str] = Field(default="")
-    index: Optional[int] = Field(default=None)
     core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
     memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
     network: Optional[GPUNetworkInfo] = Field(sa_column=Column(JSON), default=None)

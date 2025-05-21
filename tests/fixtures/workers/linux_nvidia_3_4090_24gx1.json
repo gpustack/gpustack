@@ -89,6 +89,8 @@
                 "uuid": "",
                 "vendor": "NVIDIA",
                 "index": 0,
+                "device_index": 0,
+                "device_chip_index": 0,
                 "core": {
                     "total": 0,
                     "utilization_rate": 0.0

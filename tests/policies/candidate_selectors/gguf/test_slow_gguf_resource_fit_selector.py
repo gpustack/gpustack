@@ -1331,6 +1331,8 @@ def create_worker(
                     "name": "test",
                     "vendor": gpu_vendor,
                     "index": index,
+                    "device_index": index,
+                    "device_chip_index": 0,
                     "core": GPUCoreInfo(
                         total=0,
                     ),
