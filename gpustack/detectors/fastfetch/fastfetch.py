@@ -211,10 +211,12 @@ class Fastfetch(GPUDetector, SystemInfoDetector):
             # Append.
             devices.append(
                 GPUDeviceInfo(
+                    index=index,
+                    device_index=index,
+                    device_chip_index=0,
                     name=name,
                     uuid=self._get_value(value, "uuid"),
                     vendor=vendor,
-                    index=index,
                     core=core,
                     memory=memory,
                     temperature=self._get_value(value, "temperature"),

@@ -356,6 +356,8 @@ class Config(BaseSettings):
             - name: Apple M1 Pro
               vendor: Apple
               index: 0
+              device_index: 0              # optional
+              device_chip_index: 0         # optional
               memory:
                   total: 22906503168
                   is_unified_memory: true
@@ -366,6 +368,8 @@ class Config(BaseSettings):
             - name: Ascend CANN 910b
               vendor: Huawei
               index: 0
+              device_index: 0              # optional
+              device_chip_index: 0         # optional
               memory:
                   total: 22906503168
                   is_unified_memory: true
@@ -390,6 +394,8 @@ class Config(BaseSettings):
         for gd in gpu_device_dict:
             name = gd.get("name")
             index = gd.get("index")
+            device_index = gd.get("device_index", index)
+            device_chip_index = gd.get("device_chip_index", 0)
             vendor = gd.get("vendor")
             memory = gd.get("memory")
             network = gd.get("network")
@@ -436,8 +442,10 @@ class Config(BaseSettings):
 
             gpu_devices.append(
                 GPUDeviceInfo(
-                    name=name,
                     index=index,
+                    device_index=device_index,
+                    device_chip_index=device_chip_index,
+                    name=name,
                     vendor=vendor,
                     memory=MemoryInfo(
                         total=memory.get("total"),

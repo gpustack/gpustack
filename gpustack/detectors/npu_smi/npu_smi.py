@@ -87,11 +87,13 @@ async def _gather_gpu_info() -> GPUDevicesInfo:
         # Add to list.
         devs.append(
             GPUDeviceInfo(
+                index=chip_logic_id,
+                device_index=npu_id,
+                device_chip_index=chip_id,
                 vendor=VendorEnum.Huawei.value,
                 type=platform.DeviceTypeEnum.NPU.value,
                 name=dev_name,
                 uuid=dev_uuid,
-                index=chip_logic_id,
                 core=dev_core,
                 memory=dev_memory,
                 network=dev_network,

@@ -125,8 +125,10 @@ class Regredit(GPUDetector):
                 continue
 
             device_info = GPUDeviceInfo(
-                uuid=str(luid),
                 index=index,
+                device_index=index,
+                device_chip_index=0,
+                uuid=str(luid),
                 name=name,
                 vendor=vendor,
                 memory=MemoryInfo(

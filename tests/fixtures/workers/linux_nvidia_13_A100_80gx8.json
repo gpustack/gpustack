@@ -24,6 +24,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 0,
+                "device_index": 0,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -43,6 +45,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 1,
+                "device_index": 1,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -62,6 +66,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 2,
+                "device_index": 2,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -81,6 +87,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 3,
+                "device_index": 3,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -100,6 +108,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 4,
+                "device_index": 4,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -119,6 +129,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 5,
+                "device_index": 5,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -138,6 +150,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 6,
+                "device_index": 6,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0
@@ -157,6 +171,8 @@
                 "name": "A100 SXM4",
                 "vendor": "NVIDIA",
                 "index": 7,
+                "device_index": 7,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10240,
                     "utilization_rate": 0.0

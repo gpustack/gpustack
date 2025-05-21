@@ -143,6 +143,8 @@
                 "uuid": null,
                 "vendor": "Apple",
                 "index": 0,
+                "device_index": 0,
+                "device_chip_index": 0,
                 "core": {
                     "total": 10,
                     "utilization_rate": 10.0
