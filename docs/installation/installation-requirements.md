@@ -55,6 +55,7 @@ GPUStack supports the following accelerators:
 - [x] Ascend CANN
 - [x] Hygon DTK
 - [x] Moore Threads MUSA
+- [x] Iluvatar Corex
 
 Ensure all necessary drivers and libraries are installed on the system prior to installing GPUStack.
 
@@ -93,6 +94,13 @@ To use Moore Threads MUSA as an accelerator, ensure the following components are
 
 - [MUSA SDK](https://developer.mthreads.com/sdk/download/musa)
 - [MT Container Toolkits](https://developer.mthreads.com/sdk/download/CloudNative) (Optional, required for docker installation)
+
+### Iluvatar Corex
+
+To use Iluvatar Corex as an accelerator, ensure the following components are installed:
+
+- [Corex driver](https://support.iluvatar.com/#/ProductLine?id=2)
+- [Corex Toolkits](https://support.iluvatar.com/#/ProductLine?id=2)
 
 ## Networking Requirements
 

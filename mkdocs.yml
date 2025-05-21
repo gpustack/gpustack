@@ -89,6 +89,9 @@ nav:
       - Moore Threads MUSA:
           - Online Installation: installation/moorethreads-musa/online-installation.md
           - Air-Gapped Installation: installation/moorethreads-musa/air-gapped-installation.md
+      - Iluvatar Corex:
+          - Online Installation: installation/moorethreads-musa/online-installation.md
+          - Air-Gapped Installation: installation/moorethreads-musa/air-gapped-installation.md
       - CPU:
           - Online Installation: installation/cpu/online-installation.md
           - Air-Gapped Installation: installation/cpu/air-gapped-installation.md
