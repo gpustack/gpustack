@@ -23,16 +23,31 @@ logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class AscendMindIEParameters:
+    #
+    # Log config
+    #
     log_level: str = "Info"
+    #
+    # Server config
+    #
     max_link_num: int = 1000
     token_timeout: int = 600
     e2e_timeout: int = 600
+    #
+    # Model deploy config
+    #
     max_seq_len: int = 8192
     max_input_token_len: int = -1
     truncation: bool = False
+    #
+    # Model config
+    #
     cpu_mem_size: int = 5
     npu_memory_fraction: float = 0.9
     trust_remote_code: bool = False
+    #
+    # Schedule config
+    #
     cache_block_size: int = 128
     max_prefill_batch_size: int = 50
     prefill_time_ms_per_req: int = 150
@@ -43,15 +58,36 @@ class AscendMindIEParameters:
     max_preempt_count: int = 0
     support_select_batch: bool = False
     max_queue_delay_microseconds: int = 5000
-    enable_prefix_caching: bool = False
-    metrics: bool = False
+    #
+    # Extends or Features
+    #
+    override_generation_config: Optional[str] = None
+    override_generation_config_parsed: Optional[any] = None  # store JSON parsed result
     enforce_eager: bool = False
+    metrics: bool = False
     dtype: str = "auto"
     rope_scaling: Optional[str] = None
     rope_scaling_parsed: Optional[any] = None  # store JSON parsed result
     rope_theta: Optional[float] = None
-    override_generation_config: Optional[str] = None
-    override_generation_config_parsed: Optional[any] = None  # store JSON parsed result
+    enable_split: bool = False
+    policy_type: int = 0
+    split_chunk_tokens: int = 512
+    split_start_batch_size: int = 16
+    enable_memory_decoding: bool = False
+    memory_decoding_length: int = 16
+    memory_decoding_dynamic_algo: bool = False
+    enable_lookahead: bool = False
+    lookahead_level: int = 4
+    lookahead_window: int = 5
+    lookahead_guess_set_size: int = 5
+    enable_prefix_caching: bool = False
+    world_size: int = 1  # store validation input
+    tensor_parallel_size: int = -1
+    data_parallel_size: int = -1
+    enable_expert_parallel: bool = False
+    enable_buffer_response: bool = False
+    prefill_expected_time_ms: Optional[int] = None
+    decode_expected_time_ms: Optional[int] = None
 
     def from_args(self, args: List[str]):
         parser = argparse.ArgumentParser(exit_on_error=False)
@@ -205,7 +241,8 @@ class AscendMindIEParameters:
             action=argparse.BooleanOptionalAction,
             help="Enable batch selecting. "
             "According to `--prefill-time-ms-per-req` and `--decode-time-ms-per-req`, "
-            "select the execution priority for this batch.",
+            "select the execution priority for this batch. "
+            "Use `--no-support-select-batch` to disable explicitly.",
         )
         parser.add_argument(
             "--max-queue-delay-microseconds",
@@ -213,8 +250,109 @@ class AscendMindIEParameters:
             help="Maximum microseconds of queue waiting.",
         )
         #
-        # Features
+        # Extends or Features
         #
+        parser.add_argument(
+            "--override-generation-config",
+            type=str,
+            required=False,
+            help="Overrides or sets generation config in JSON format. "
+            "For example: `{\"temperature\": 0.5}`. "
+            "This will merge into the `generation_config.json` of the model structure.",
+        )
+        parser.add_argument(
+            "--enable-memory-decoding",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable memory decoding speculation. "
+            "Use `--no-enable-memory-decoding` to disable explicitly.",
+        )
+        parser.add_argument(
+            "--memory-decoding-length",
+            type=int,
+            default=self.memory_decoding_length,
+            help="Length for memory decoding speculation.",
+        )
+        parser.add_argument(
+            "--memory-decoding-dynamic-algo",
+            action="store_true",
+            help="Enable dynamic algorithm for memory decoding speculation.",
+        )
+        parser.add_argument(
+            "--enable-lookahead",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable lookahead speculation. "
+            "Use `--no-enable-lookahead` to disable explicitly.",
+        )
+        parser.add_argument(
+            "--lookahead-level",
+            type=int,
+            default=self.lookahead_level,
+            help="Level for lookahead speculation.",
+        )
+        parser.add_argument(
+            "--lookahead-window",
+            type=int,
+            default=self.lookahead_window,
+            help="Window size for lookahead speculation.",
+        )
+        parser.add_argument(
+            "--lookahead-guess-set-size",
+            type=int,
+            default=self.lookahead_guess_set_size,
+            help="Guess set size for lookahead speculation.",
+        )
+        parser.add_argument(
+            "--enable-buffer-response",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable buffer response. "
+            "Use `--no-enable-buffer-response` to disable explicitly.",
+        )
+        parser.add_argument(
+            "--prefill-expected-time-ms",
+            type=int,
+            required=False,
+            help="Expected latency (SLO) for Time to First Token (TTFT) in milliseconds.",
+        )
+        parser.add_argument(
+            "--decode-expected-time-ms",
+            type=int,
+            required=False,
+            help="Expected latency (SLO) for Time Per Output Token (TPOT) in milliseconds.",
+        )
+        parser.add_argument(
+            "--enable-split",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable split fuse, something like chunked prefill. "
+            "Use `--no-enable-split` to disable explicitly.",
+        )
+        parser.add_argument(
+            "--policy-type",
+            type=int,
+            choices=[0, 4, 5, 6, 7],
+            default=self.policy_type,
+            help="Strategy of split fuse. "
+            "- `0`: FCFS, first come first serving, "
+            "- `4`: SJF, shortest job first, "
+            "- `5`: LJF, longest job first, "
+            "- `6`: Skip-Join MLFQ, skip-Join multi-levels feedback queue, "
+            "- `7`: SJF-MLFQ, shortest job first and multi-levels feedback queue.",
+        )
+        parser.add_argument(
+            "--split-chunk-tokens",
+            type=int,
+            default=self.split_chunk_tokens,
+            help="Tokens size to batch for split fuse.",
+        )
+        parser.add_argument(
+            "--split-start-batch-size",
+            type=int,
+            default=self.split_start_batch_size,
+            help="Batch size to start splitting for split fuse.",
+        )
         parser.add_argument(
             "--enable-prefix-caching",
             type=bool,
@@ -246,6 +384,32 @@ class AscendMindIEParameters:
             "- `float32`: for FP32. ",
         )
         parser.add_argument(
+            "--tensor-parallel-size",
+            "-tp",
+            type=int,
+            default=self.tensor_parallel_size,
+            required=False,
+            help="Number of tensor parallel groups."
+            "`-1` means using world size as tensor parallel size, otherwise, must be a power of 2.",
+        )
+        parser.add_argument(
+            "--data-parallel-size",
+            "-dp",
+            type=int,
+            default=self.data_parallel_size,
+            required=False,
+            help="Number of data parallel groups. "
+            "`-1` means disabling data parallelism, otherwise, must be a power of 2. "
+            "MoE layers will be sharded according to the product of the tensor parallel size and data parallel size.",
+        )
+        parser.add_argument(
+            "--enable-expert-parallel",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Use expert parallelism instead of tensor parallelism for MoE layers. "
+            "Use `--no-enable-expert-parallel` to disable explicitly.",
+        )
+        parser.add_argument(
             "--rope-scaling",
             type=str,
             required=False,
@@ -260,30 +424,34 @@ class AscendMindIEParameters:
             help="RoPE theta configuration. "
             "This will merge into the `config.json` of the model structure.",
         )
-        parser.add_argument(
-            "--override-generation-config",
-            type=str,
-            required=False,
-            help="Overrides or sets generation config in JSON format. "
-            "For example: `{\"temperature\": 0.5}`. "
-            "This will merge into the `generation_config.json` of the model structure.",
-        )
 
         args_parsed = parser.parse_known_args(args=args)
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
-            if attr_name.endswith("_parsed"):
-                continue
-            if attr_value := getattr(args_parsed[0], attr_name):
-                setattr(self, attr_name, attr_value)
+            try:
+                if attr_value := getattr(args_parsed[0], attr_name):
+                    setattr(self, attr_name, attr_value)
+            except AttributeError:
+                # If reach here, that means the field is an internal property,
+                # which would not register in the argument parser.
+                pass
 
         self._default()
         self._validate()
 
     def _default(self):
+        # Model deploy config
         if self.max_input_token_len <= 0:
             self.max_input_token_len = self.max_seq_len
+        # Extends or Features
+        # -- Data parallelism
+        if self.tensor_parallel_size <= 0:
+            if self.data_parallel_size > 0:
+                self.tensor_parallel_size = self.world_size // self.data_parallel_size
+            else:
+                self.tensor_parallel_size = self.world_size
 
     def _validate(self):  # noqa: max-complexity=14
+        # Server config
         if not (1 <= self.max_link_num <= 1000):
             raise argparse.ArgumentTypeError(
                 "--max-link-num must be in the range [1, 1000]"
@@ -296,11 +464,12 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--e2e-timeout must be in the range [1, 3600]"
             )
+        # Model deploy config
         if self.max_seq_len <= 0:
             raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
-        if self.max_input_token_len > self.max_seq_len:
+        if not (0 < self.max_input_token_len <= self.max_seq_len):
             raise argparse.ArgumentTypeError(
-                "--max-input-token-len must be less or equal than --max-seq-len"
+                "--max-input-token-len must be in the range (0, --max-seq-len]"
             )
         if not (0 < self.npu_memory_fraction < 1):
             raise argparse.ArgumentTypeError(
@@ -308,14 +477,6 @@ class AscendMindIEParameters:
             )
         if self.cache_block_size & (self.cache_block_size - 1) != 0:
             raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
-        if not (1 <= self.max_batch_size <= 5000):
-            raise argparse.ArgumentTypeError(
-                "--max-batch-size must be in the range [1, 5000]"
-            )
-        if not (0 <= self.max_preempt_count <= self.max_batch_size):
-            raise argparse.ArgumentTypeError(
-                "--max-preempt-count must be in the range [0, --max-batch-size]"
-            )
         if not (1 <= self.max_prefill_batch_size <= self.max_batch_size):
             raise argparse.ArgumentTypeError(
                 "--max-prefill-batch-size must be in the range [1, --max-batch-size]"
@@ -324,21 +485,23 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--prefill-time-ms-per-req must be in the range [0, 1000]"
             )
+        if not (1 <= self.max_batch_size <= 5000):
+            raise argparse.ArgumentTypeError(
+                "--max-batch-size must be in the range [1, 5000]"
+            )
         if not (0 <= self.decode_time_ms_per_req <= 1000):
             raise argparse.ArgumentTypeError(
                 "--decode-time-ms-per-req must be in the range [0, 1000]"
+            )
+        if not (0 <= self.max_preempt_count <= self.max_batch_size):
+            raise argparse.ArgumentTypeError(
+                "--max-preempt-count must be in the range [0, --max-batch-size]"
             )
         if not (500 <= self.max_queue_delay_microseconds <= 1000000):
             raise argparse.ArgumentTypeError(
                 "--max-queue-delay-microseconds must be in the range [500, 1000000]"
             )
-        if self.rope_scaling:
-            try:
-                self.rope_scaling_parsed = json.loads(self.rope_scaling)
-            except json.JSONDecodeError as e:
-                raise argparse.ArgumentTypeError(
-                    f"--rope-scaling must be a valid JSON string: {self.rope_scaling_parsed}"
-                ) from e
+        # Extends or Features
         if self.override_generation_config:
             try:
                 self.override_generation_config_parsed = json.loads(
@@ -348,6 +511,124 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     f"--override-generation-config must be a valid JSON string: {self.override_generation_config}"
                 ) from e
+        # -- Extending context size
+        if self.rope_scaling:
+            try:
+                self.rope_scaling_parsed = json.loads(self.rope_scaling)
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"--rope-scaling must be a valid JSON string: {self.rope_scaling_parsed}"
+                ) from e
+        # -- Split fuse
+        if self.enable_split:
+            if not (512 <= self.split_chunk_tokens <= self.max_input_token_len):
+                raise argparse.ArgumentTypeError(
+                    "--split-chunk-tokens must be in the range [512, --max-input-token-len]"
+                )
+            if not (0 <= self.split_start_batch_size <= self.max_batch_size):
+                raise argparse.ArgumentTypeError(
+                    "--split-start-batch-size must be in the range [0, --max-batch-size]"
+                )
+        # -- Data parallelism
+        if self.tensor_parallel_size > self.world_size:
+            raise argparse.ArgumentTypeError(
+                f"--tensor-parallel-size must be less or equal to world size: {self.world_size}"
+            )
+        elif self.tensor_parallel_size > 0:
+            if self.tensor_parallel_size & (self.tensor_parallel_size - 1) != 0:
+                raise argparse.ArgumentTypeError(
+                    "--tensor-parallel-size must be the power of 2"
+                )
+        if self.data_parallel_size > self.world_size:
+            raise argparse.ArgumentTypeError(
+                f"--data-parallel-size must be less or equal to world size: {self.world_size}"
+            )
+        elif self.data_parallel_size > 0:
+            if self.data_parallel_size & (self.data_parallel_size - 1) != 0:
+                raise argparse.ArgumentTypeError(
+                    "--data-parallel-size must be the power of 2"
+                )
+            elif self.data_parallel_size * self.tensor_parallel_size != self.world_size:
+                raise argparse.ArgumentTypeError(
+                    "--data-parallel-size and --tensor-parallel-size must be "
+                    f"multiples of world size: {self.world_size}"
+                )
+        # -- Speculative decoding
+        if self.enable_memory_decoding:
+            if not (1 <= self.memory_decoding_length <= 16):
+                raise argparse.ArgumentTypeError(
+                    "--memory-decoding-length must be in the range [1, 16]"
+                )
+        if self.enable_lookahead:
+            if not (3 <= self.lookahead_level <= 16):
+                raise argparse.ArgumentTypeError(
+                    "--lookahead-level must be in the range [3, 16]"
+                )
+            if not (1 <= self.lookahead_window <= 16):
+                raise argparse.ArgumentTypeError(
+                    "--lookahead-window must be in the range [1, 16]"
+                )
+            if not (1 <= self.lookahead_guess_set_size <= 16):
+                raise argparse.ArgumentTypeError(
+                    "--lookahead-guess-set-size must be in the range [1, 16]"
+                )
+        # -- Buffer response
+        if self.enable_buffer_response:
+            if self.prefill_expected_time_ms is None:
+                raise argparse.ArgumentTypeError(
+                    "--prefill-expected-time-ms is required when --enable-buffer-response is enabled"
+                )
+            elif self.prefill_expected_time_ms <= 0:
+                raise argparse.ArgumentTypeError(
+                    "--prefill-expected-time-ms must be greater than 0"
+                )
+            if self.decode_expected_time_ms is None:
+                raise argparse.ArgumentTypeError(
+                    "--decode-expected-time-ms is required when --enable-buffer-response is enabled"
+                )
+            elif self.decode_expected_time_ms <= 0:
+                raise argparse.ArgumentTypeError(
+                    "--decode-expected-time-ms must be greater than 0"
+                )
+
+        # Feature compatibility check
+        if self.enable_split:
+            if self.enable_memory_decoding or self.enable_lookahead:
+                raise argparse.ArgumentTypeError(
+                    "--enable-memory-decoding and --enable-lookahead are not supported when --enable-split is enabled"
+                )
+            if self.rope_scaling:
+                raise argparse.ArgumentTypeError(
+                    "--rope-scaling is not supported when --enable-split is enabled"
+                )
+        if self.enable_memory_decoding:
+            if self.enable_lookahead:
+                raise argparse.ArgumentTypeError(
+                    "--enable-lookahead is not supported when --enable-memory-decoding is enabled"
+                )
+            if self.rope_scaling:
+                raise argparse.ArgumentTypeError(
+                    "--rope-scaling is not supported when --enable-memory-decoding is enabled"
+                )
+        elif self.enable_lookahead:
+            if self.rope_scaling:
+                raise argparse.ArgumentTypeError(
+                    "--rope-scaling is not supported when --enable-lookahead is enabled"
+                )
+        if self.enable_prefix_caching:
+            if self.rope_scaling:
+                raise argparse.ArgumentTypeError(
+                    "--rope-scaling is not supported when --enable-prefix-caching is enabled"
+                )
+        if self.data_parallel_size > 1:
+            if self.enable_split:
+                raise argparse.ArgumentTypeError(
+                    "--enable-split is not supported when --data-parallel-size > 1"
+                )
+            if self.enable_prefix_caching:
+                raise argparse.ArgumentTypeError(
+                    "--enable-prefix-caching is not supported when --data-parallel-size > 1"
+                )
 
 
 class AscendMindIEServer(InferenceServer):
@@ -409,13 +690,13 @@ class AscendMindIEServer(InferenceServer):
         logger.info("Loading Ascend MindIE config")
 
         # - Load environment variables,
-        #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0416.html,
-        #       https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0300.html.
+        #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0416.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0300.html.
         env = self.get_inference_running_env(version=version)
 
         # - Load JSON configuration,
-        #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0004.html,
-        #       https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0285.html.
+        #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0004.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0285.html.
         with open(
             install_path.joinpath("conf", "config.json"), "r", encoding="utf-8"
         ) as f:
@@ -517,13 +798,15 @@ class AscendMindIEServer(InferenceServer):
         server_config["interCommTLSEnabled"] = False
 
         # - Device config
+        world_size = len(self._model_instance.gpu_indexes)
         backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
         backend_config["multiNodesInferEnabled"] = False
         backend_config["interNodeTLSEnabled"] = False
-        model_config["worldSize"] = len(self._model_instance.gpu_indexes)
+        model_config["worldSize"] = world_size
 
         # - Model config
-        max_seq_len = self._get_model_max_seq_len()
+        derived_max_seq_len = self._get_model_max_seq_len()
+        max_seq_len = derived_max_seq_len
         # -- Mutate default max sequence length (aka. context length),
         #    but allow to change it with below advanced parameters.
         if max_seq_len > 8192:
@@ -537,14 +820,21 @@ class AscendMindIEServer(InferenceServer):
         model_config["modelWeightPath"] = str(self.model_path_mapped)
 
         # - Customize config, translate to Ascend MindIE configuration language,
-        #   see https://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0285.html,
-        #       https://www.hiascend.com/document/detail/zh/mindie/100/mindiellm/llmdev/mindie_llm0302.html,
-        #       ttps://www.hiascend.com/document/detail/zh/mindie/100/mindieservice/servicedev/mindie_service0300.html.
+        #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0285.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0300.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0302.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0424.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0009.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0300.html,
+        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
         if self._model.backend_parameters:
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
-            params = AscendMindIEParameters(max_seq_len=max_seq_len)
+            params = AscendMindIEParameters(
+                world_size=world_size,
+                max_seq_len=max_seq_len,
+            )
             params.from_args(self._model.backend_parameters)
 
             # -- Log config
@@ -552,17 +842,17 @@ class AscendMindIEServer(InferenceServer):
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
             # -- Server config
             server_config["maxLinkNum"] = params.max_link_num
-            # -- Model deploy config.
+            # -- Model deploy config
             model_deploy_config["maxSeqLen"] = params.max_seq_len
             model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
             schedule_config["maxIterTimes"] = params.max_seq_len
             schedule_config["maxPrefillTokens"] = params.max_seq_len
             model_deploy_config["truncation"] = params.truncation
-            # -- Model config.
+            # -- Model config
             model_config["cpuMemSize"] = params.cpu_mem_size
             env["NPU_MEMORY_FRACTION"] = str(params.npu_memory_fraction)
             model_config["trustRemoteCode"] = params.trust_remote_code
-            # -- Schedule config.
+            # -- Schedule config
             schedule_config["cacheBlockSize"] = params.cache_block_size
             schedule_config["maxPrefillBatchSize"] = params.max_prefill_batch_size
             schedule_config["prefillTimeMsPerReq"] = params.prefill_time_ms_per_req
@@ -575,16 +865,8 @@ class AscendMindIEServer(InferenceServer):
             schedule_config["maxQueueDelayMicroseconds"] = (
                 params.max_queue_delay_microseconds
             )
-            # -- Features
-            # --- Prefix cache.
-            if params.enable_prefix_caching:
-                schedule_config["enablePrefixCache"] = True
-                model_config["plugin_params"] = json.dumps(
-                    {
-                        "plugin_type": "prefix_cache",
-                    }
-                )
-            # --- Exposing metrics.
+            # -- Extends or Features
+            # --- Exposing metrics
             if params.metrics:
                 env["MIES_SERVICE_MONITOR_MODE"] = "1"
             # --- Emitting operators in synchronous way.
@@ -624,7 +906,7 @@ class AscendMindIEServer(InferenceServer):
             ) as f:
                 json.dump(model_path_config, f, indent=4, ensure_ascii=False)
             logger.info(f"Saved model config to {model_config_path}")
-            # --- Mutating model generation config.
+            # --- Mutating model generation config
             model_generation_config_path = self.model_path_mapped.joinpath(
                 "generation_config.json"
             )
@@ -651,6 +933,70 @@ class AscendMindIEServer(InferenceServer):
                 logger.info(
                     f"Saved model generation config to {model_generation_config_path}"
                 )
+            # --- Split fuse
+            if params.enable_split:
+                schedule_config["enableSplit"] = True
+                schedule_config["templateType"] = "Mix"
+                schedule_config["policyType"] = params.policy_type
+                schedule_config["splitType"] = False
+                schedule_config["splitStartType"] = False
+                schedule_config["splitChunkTokens"] = params.split_chunk_tokens
+                schedule_config["splitStartBatchSize"] = params.split_start_batch_size
+                model_config["plugin_params"] = json.dumps(
+                    {
+                        "plugin_type": "splitfuse",
+                    }
+                )
+            # --- Speculative decoding
+            if params.enable_memory_decoding:
+                model_deploy_config["speculationGamma"] = params.memory_decoding_length
+                if max_seq_len < derived_max_seq_len:
+                    schedule_config["maxIterTimes"] = (
+                        max_seq_len + params.memory_decoding_length
+                    )
+                model_config["plugin_params"] = json.dumps(
+                    {
+                        "plugin_type": "memory_decoding",
+                        "decoding_length": params.memory_decoding_length,
+                        "dynamic_algo": params.memory_decoding_dynamic_algo,
+                    }
+                )
+            if params.enable_lookahead:
+                model_deploy_config["speculationGamma"] = (
+                    params.lookahead_level - 1
+                ) * (params.lookahead_window + params.lookahead_guess_set_size)
+                model_config["plugin_params"] = json.dumps(
+                    {
+                        "plugin_type": "la",
+                        "level": params.lookahead_level,
+                        "window": params.lookahead_window,
+                        "guess_set_size": params.lookahead_guess_set_size,
+                    }
+                )
+            # --- Prefix cache
+            if params.enable_prefix_caching:
+                schedule_config["enablePrefixCache"] = True
+                model_config["plugin_params"] = json.dumps(
+                    {
+                        "plugin_type": "prefix_cache",
+                    }
+                )
+            # --- Data Parallelism
+            dp = params.data_parallel_size
+            tp = params.tensor_parallel_size
+            if dp > 0:
+                model_config["dp"] = dp
+            if tp > 0:
+                model_config["tp"] = tp
+                model_config["moe_tp"] = tp if dp <= 0 else dp * tp
+                if params.enable_expert_parallel:
+                    model_config["moe_ep"] = model_config["moe_tp"]
+                    model_config["moe_tp"] = 1
+            # --- Buffer response
+            if params.enable_buffer_response:
+                schedule_config["bufferResponseEnabled"] = True
+                schedule_config["prefillExpectedTime"] = params.prefill_expected_time_ms
+                schedule_config["decodeExpectedTime"] = params.decode_expected_time_ms
 
         # Generate JSON configuration file by model instance id
         config_path = install_path.joinpath(
