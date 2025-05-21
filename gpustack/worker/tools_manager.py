@@ -60,8 +60,6 @@ class ToolsManager:
         self._os = system if system else platform.system()
         self._arch = arch if arch else platform.arch()
         self._device = device if device else platform.device()
-        if self._device == platform.DeviceTypeEnum.CUDA.value:
-            self._llama_box_cuda_version = self._get_llama_box_cuda_version()
         self._download_base_url = tools_download_base_url
         self._bin_dir = bin_dir
         self._pipx_path = pipx_path
@@ -426,7 +424,7 @@ class ToolsManager:
             shutil.rmtree(llama_box_tmp_dir)
         os.makedirs(llama_box_tmp_dir, exist_ok=True)
 
-        platform_name = self._get_llama_box_platform_name()
+        platform_name = self._get_llama_box_platform_name(version)
         tmp_file = llama_box_tmp_dir / f"llama-box-{version}-{platform_name}.zip"
         url_path = f"gpustack/llama-box/releases/download/{version}/llama-box-{platform_name}.zip"
 
@@ -472,95 +470,81 @@ class ToolsManager:
 
         logger.debug(f"Linked llama-box-rpc-server to {target_rpc_server_file}")
 
-    def _get_llama_box_cuda_version(self) -> str:
+    def _get_llama_box_platform_name(self, version: str) -> str:  # noqa C901
         """
-        Gets the appropriate CUDA version of the llama-box based on the system's CUDA version.
+        Get the platform name for llama-box based on the OS, architecture, and device type.
         """
 
-        default_version = "12.4"
-        cuda_version = platform.get_cuda_version()
-        match = re.match(r"(\d+)\.(\d+)", cuda_version)
-        if not match:
-            return default_version
-
-        major, minor = map(int, match.groups())
-        if major == 11:
-            return "11.8"
-        elif major == 12 and minor >= 8:
-            return "12.8"
-
-        return default_version
-
-    def _get_llama_box_platform_name(self) -> str:  # noqa C901
-        platform_name = ""
-        if (
-            self._os == "darwin"
-            and self._arch == "arm64"
-            and self._device == platform.DeviceTypeEnum.MPS.value
-        ):
-            platform_name = "darwin-arm64-metal"
-        elif self._os == "darwin":
-            platform_name = "darwin-amd64-avx2"
-        elif (
-            self._os in ["linux", "windows"]
-            and self._arch in ["amd64", "arm64"]
-            and self._device == platform.DeviceTypeEnum.CUDA.value
-        ):
-            # Only amd64 for windows
-            normalized_arch = "amd64" if self._os == "windows" else self._arch
-            platform_name = (
-                f"{self._os}-{normalized_arch}-cuda-{self._llama_box_cuda_version}"
-            )
-        elif (
-            self._os == "linux"
-            and self._arch == "amd64"
-            and self._device == platform.DeviceTypeEnum.MUSA.value
-        ):
-            platform_name = "linux-amd64-musa-rc3.1"
-        elif self._os == "linux" and self._device == platform.DeviceTypeEnum.NPU.value:
-            # Available version: 8.0.0(.beta1) [default] / 8.0.rc2(.beta1) / 8.0.rc3(.beta1)
-            version = "8.0"
-            if ".rc2" in os.getenv("CANN_VERSION", ""):
-                version = "8.0.rc2"
-            elif ".rc3" in os.getenv("CANN_VERSION", ""):
-                version = "8.0.rc3"
-            # Available variant: 910b [default] / 310p
-            variant = ""
-            if os.getenv("CANN_CHIP", "") == "310p":
-                variant = "-310p"
-            platform_name = f"linux-{self._arch}-cann-{version}{variant}"
-        elif (
-            self._os == "linux"
-            and self._arch == "amd64"
-            and self._device == platform.DeviceTypeEnum.ROCM.value
-        ):
-            platform_name = "linux-amd64-hip-6.2"
-        elif (
-            self._os == "linux"
-            and self._arch == "amd64"
-            and self._device == platform.DeviceTypeEnum.DCU.value
-        ):
-            platform_name = "linux-amd64-dtk-24.04"
-        elif self._os == "linux" and self._arch == "amd64":
-            platform_name = "linux-amd64-avx2"
-        elif self._os == "linux" and self._arch == "arm64":
-            platform_name = "linux-arm64-neon"
-        elif (
-            self._os == "windows"
-            and self._arch == "amd64"
-            and self._device == platform.DeviceTypeEnum.ROCM.value
-        ):
-            platform_name = "windows-amd64-hip-6.2"
-        elif self._os == "windows" and self._arch == "amd64":
-            platform_name = "windows-amd64-avx2"
-        elif self._os == "windows" and self._arch == "arm64":
-            platform_name = "windows-arm64-neon"
+        # Get the toolkit based on the device type.
+        device_toolkit_mapper = {
+            platform.DeviceTypeEnum.CUDA.value: "cuda",
+            platform.DeviceTypeEnum.NPU.value: "cann",
+            platform.DeviceTypeEnum.MPS.value: "metal",
+            platform.DeviceTypeEnum.ROCM.value: "hip",
+            platform.DeviceTypeEnum.MUSA.value: "musa",
+            platform.DeviceTypeEnum.DCU.value: "dtk",
+        }
+        if self._device in device_toolkit_mapper:
+            toolkit = device_toolkit_mapper[self._device]
+        elif self._arch == "amd64":
+            toolkit = "avx2"
+        elif self._arch == "arm64":
+            toolkit = "neon"
         else:
             raise Exception(
                 f"unsupported platform, os: {self._os}, arch: {self._arch}, device: {self._device}"
             )
 
-        return platform_name
+        # Get the toolkit version based on the toolkit,
+        # support fetching from environment variable or using default values.
+        toolkit_version = ""
+        if toolkit == "cuda":
+            # Since llama-box v0.0.145, llama-box no longer supports CUDA 11.8.
+            toolkit_version = "12.4"
+            cuda_version = platform.get_cuda_version()
+            match = re.match(r"(\d+)\.(\d+)", cuda_version)
+            if match:
+                major, minor = map(int, match.groups())
+                if major == 11 and version <= "v0.0.144":
+                    toolkit_version = "11.8"
+                elif major == 12 and minor >= 8:
+                    toolkit_version = "12.8"
+        elif toolkit == "cann":
+            # Since llama-box v0.0.145, llama-box supports CANN 8.1.
+            toolkit_version = "8.0"
+            cann_version = platform.get_cann_version()
+            match = re.match(r"(\d+)\.(\d+)", cann_version)
+            if match:
+                major, minor = map(int, match.groups())
+                if major == 8 and minor >= 1 and version > "v0.0.144":
+                    toolkit_version = "8.1"
+            # Currently, llama-box only supports release candidate version of CANN 8.1.
+            if toolkit_version == "8.1":
+                match = re.search(r"\.rc\d+", cann_version)
+                if match:
+                    rc = match.group(0)
+                    if rc:
+                        toolkit_version += rc
+            cann_chip = platform.get_cann_chip()
+            if cann_chip and "310p" == cann_chip:
+                toolkit_version += "-310p"
+        elif toolkit == "hip":
+            toolkit_version = "6.2"
+        elif toolkit == "musa":
+            toolkit_version = "rc3.1"
+        elif toolkit == "dtk":
+            toolkit_version = "24.04"
+
+        # The name conversation of llama-box is `${os}-${arch}-${toolkit}[-${toolkit_version}]`,
+        # for example: linux-amd64-cuda-12.4, linux-arm64-cann-8.0.rc2-310p.
+        segments = [
+            self._os,
+            self._arch,
+            toolkit,
+        ]
+        if toolkit_version:
+            segments.append(toolkit_version)
+        return "-".join(segments)
 
     def download_gguf_parser(self):
         version = BUILTIN_GGUF_PARSER_VERSION
