@@ -22,8 +22,8 @@ from gpustack.config.config import get_global_config
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.144"
-BUILTIN_GGUF_PARSER_VERSION = "v0.17.5"
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.147"
+BUILTIN_GGUF_PARSER_VERSION = "v0.17.6"
 BUILTIN_RAY_VERSION = "2.43.0"
 
 
