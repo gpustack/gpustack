@@ -21,6 +21,7 @@ from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
+from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.serve_manager import ServeManager
@@ -138,6 +139,8 @@ class Worker:
 
         if self._is_embedded:
             setproctitle.setproctitle("gpustack_worker")
+
+        check_glibc_version()
 
         tools_manager = ToolsManager(
             tools_download_base_url=self._config.tools_download_base_url,
