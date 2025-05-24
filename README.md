@@ -154,6 +154,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
 - [x] Ascend CANN
 - [x] Hygon DTK
 - [x] Moore Threads MUSA
+- [x] Iluvatar Corex
 
 We plan to support the following accelerators in future releases.
 
