@@ -1609,6 +1609,8 @@
       model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
+      backend_parameters:
+        - --visual-max-image-size=1344
       cpu_offloading: true
       distributed_inference_across_workers: true
     - quantizations: ["BF16"]
