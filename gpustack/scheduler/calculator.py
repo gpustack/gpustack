@@ -132,6 +132,8 @@ class GGUFParserCommandMutableParameters:
     # NB(thxCode): Partial options are not applied to backend, but to the parser.
     # We can receive these options from the backend advanced config.
 
+    backend_version: Optional[str] = None
+
     # Estimate
     flash_attention: Optional[bool] = None
     main_gpu: Optional[int] = None
@@ -148,6 +150,8 @@ class GGUFParserCommandMutableParameters:
     split_mode: Optional[str] = None
     ubatch_size: Optional[int] = None
     visual_max_image_size: [int] = None
+    max_projected_cache: [int] = None
+    swa_full: bool = False
     # Estimate/StableDiffusionCpp
     image_autoencoder_tiling: bool = True
     image_batch_count: Optional[int] = None
@@ -257,6 +261,17 @@ class GGUFParserCommandMutableParameters:
             type=int,
             required=False,
         )
+        parser.add_argument(
+            "--max-projected-cache",
+            "--visual-max-image-cache",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--swa-full",
+            action='store_true',
+            required=False,
+        )
         # Estimate/StableDiffusionCpp
         parser.add_argument(
             "--image-autoencoder-tiling",
@@ -357,18 +372,32 @@ class GGUFParserCommandMutableParameters:
         try:
             args_parsed = parser.parse_known_args(args=args)
             for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
-                if attr_value := getattr(args_parsed[0], attr_name):
-                    try:
-                        setattr(self, attr_name, attr_value)
-                    except ValueError as e:
-                        slogger.warning(
-                            f"Failed to receive mutable parameter {attr_name}: {e}"
-                        )
+                try:
+                    attr_value = getattr(args_parsed[0], attr_name)
+                    if attr_value is not None:
+                        try:
+                            setattr(self, attr_name, attr_value)
+                        except ValueError as e:
+                            slogger.warning(
+                                f"Failed to receive mutable parameter {attr_name}: {e}"
+                            )
+                except AttributeError:
+                    # If reach here, that means the field is an internal property,
+                    # which would not register in the argument parser.
+                    pass
         except (argparse.ArgumentError, argparse.ArgumentTypeError) as e:
             slogger.warning(f"Failed to parse mutable parameters: {e}")
 
     def extend_command(self, command: List[str]):
+        internal_properties = [
+            "backend_version",
+        ]
+
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+            if attr_name in internal_properties:
+                # Skip internal properties.
+                continue
+
             attr_value = getattr(self, attr_name)
             if attr_value is not None:
                 if isinstance(attr_value, bool):
@@ -381,6 +410,13 @@ class GGUFParserCommandMutableParameters:
                     command.extend(
                         [f"--{attr_name.replace('_', '-')}", str(attr_value)]
                     )
+
+        if self.backend_version:
+            # Parser v0.18.0+ supports estimating Sliding Window Attention (SWA) usage,
+            # however, llama-box treats `--batch-size` as the same as `--ctx-size` within [v0.0.140, v0.0.148],
+            # so we need to set `--batch-size` to `--ctx-size` to avoid wrong RAM/VRAM estimation.
+            if "v0.0.139" < self.backend_version < "v0.0.149":
+                command.append(f"--batch-size={self.ctx_size}")
 
 
 async def _gguf_parser_command(  # noqa: C901
@@ -400,7 +436,7 @@ async def _gguf_parser_command(  # noqa: C901
     ]
 
     # Extend the command with mutable arguments.
-    params = GGUFParserCommandMutableParameters()
+    params = GGUFParserCommandMutableParameters(backend_version=model.backend_version)
     params.from_args(model.backend_parameters)
     params.extend_command(command)
 
