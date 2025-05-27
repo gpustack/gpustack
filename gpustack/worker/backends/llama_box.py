@@ -83,6 +83,10 @@ class LlamaBoxServer(InferenceServer):
         default_mmproj = get_mmproj_file(self._model_path)
         if mmproj is None and default_mmproj:
             arguments.extend(["--mmproj", default_mmproj])
+            # Enable `--max-projected-cache` to optimize chatting experience,
+            # cause llama-box will ignore unknown parameters,
+            # we can safely add this parameter without breaking previous version.
+            arguments.extend(["--max-projected-cache", "10"])
 
         if rpc_servers:
             rpc_servers_argument = ",".join(rpc_servers)
