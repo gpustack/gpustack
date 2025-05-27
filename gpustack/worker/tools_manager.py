@@ -22,7 +22,7 @@ from gpustack.config.config import get_global_config
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.149"
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.150"
 BUILTIN_GGUF_PARSER_VERSION = "v0.18.1"
 BUILTIN_RAY_VERSION = "2.43.0"
 
@@ -499,7 +499,7 @@ class ToolsManager:
         # support fetching from environment variable or using default values.
         toolkit_version = ""
         if toolkit == "cuda":
-            # Since llama-box v0.0.145, llama-box no longer supports CUDA 11.8.
+            # Since v0.0.145, llama-box no longer supports CUDA 11.8.
             toolkit_version = "12.4"
             cuda_version = platform.get_cuda_version()
             match = re.match(r"(\d+)\.(\d+)", cuda_version)
@@ -510,7 +510,8 @@ class ToolsManager:
                 elif major == 12 and minor >= 8:
                     toolkit_version = "12.8"
         elif toolkit == "cann":
-            # Since llama-box v0.0.145, llama-box supports CANN 8.1.
+            # Since v0.0.145, llama-box supports CANN 8.1 by default,
+            # and supports CANN 8.0 only for backward compatibility.
             toolkit_version = "8.0"
             cann_version = platform.get_cann_version()
             match = re.match(r"(\d+)\.(\d+)", cann_version)
@@ -531,7 +532,11 @@ class ToolsManager:
         elif toolkit == "hip":
             toolkit_version = "6.2"
         elif toolkit == "musa":
+            # Since v0.0.150, llama-box supports MUSA rc4.0,
+            # and no longer supports MUSA rc3.1.
             toolkit_version = "rc3.1"
+            if version > "v0.0.149":
+                toolkit_version = "rc4.0"
         elif toolkit == "dtk":
             toolkit_version = "24.04"
 
