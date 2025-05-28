@@ -1,0 +1,65 @@
+---
+name: Bug report
+about: Create a bug report to help us improve
+title: "vllm分布式部署时，部署模型报GLOO相关错误"
+labels: ""
+assignees: ""
+type: "Bug"
+---
+
+**Describe the bug**
+
+<!-- A clear and concise description of what the bug is. -->
+(RayWorkerWrapper pid=933, ip=50.147.43.24) [rank1]:[E528 08:52:46.164295950 ProcessGroupGloo.cpp:145] Gloo connectFullMesh failed with [/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:144] no error
+**Steps to reproduce**
+
+1.有2台服务器，分别有8张英伟达T4显卡，并且GPUStack都在安装在Docker中
+2.在主节点上部署Qwen3的8b模型，手动选择了2个节点的第一张显卡
+3.在安装时，报上面的错误
+
+**Result**
+(RayWorkerWrapper pid=933, ip=50.147.43.24) [rank1]:[E528 08:52:46.164295950 ProcessGroupGloo.cpp:145] Gloo connectFullMesh failed with [/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:144] no error
+安装失败
+<!-- What happened. -->
+
+**Expected behavior**
+
+<!-- What you expected to happen. -->
+
+**Environment**
+2台服务器配置：
+- GPUStack version:v0.6.0
+- OS:乌班图24.04
+- GPU:T4
+- NVIDIA驱动：570
+- Python：3.12.3
+- 显卡：8张英伟达T4显卡
+**Additional context**
+日志内容：
+2025-05-28T08:51:43+00:00 - gpustack.worker.backends.base - INFO - Preparing model files...
+2025-05-28T08:51:43+00:00 - gpustack.worker.backends.base - INFO - Model files are ready.
+2025-05-28T08:51:43+00:00 - gpustack.worker.backends.vllm - INFO - Starting vllm server
+INFO 2025-05-28T08:51:46+00:00 [__init__.py:239] Automatically detected platform cuda.
+INFO 05-28 08:51:52 [__init__.py:239] Automatically detected platform cuda.
+INFO 05-28 08:51:54 [api_server.py:1034] vLLM API server version 0.8.4
+INFO 05-28 08:51:54 [api_server.py:1035] args: Namespace(subparser='serve', model_tag='/var/lib/gpustack/cache/model_scope/Qwen/Qwen3-8B', config='', host='0.0.0.0', port=40013, uvicorn_log_level='info', disable_uvicorn_access_log=False, allow_credentials=False, allowed_origins=['*'], allowed_methods=['*'], allowed_headers=['*'], api_key=None, lora_modules=None, prompt_adapters=None, chat_template=None, chat_template_content_format='auto', response_role='assistant', ssl_keyfile=None, ssl_certfile=None, ssl_ca_certs=None, enable_ssl_refresh=False, ssl_cert_reqs=0, root_path=None, middleware=[], return_tokens_as_token_ids=False, disable_frontend_multiprocessing=False, enable_request_id_headers=False, enable_auto_tool_choice=False, tool_call_parser=None, tool_parser_plugin='', model='/var/lib/gpustack/cache/model_scope/Qwen/Qwen3-8B', task='auto', tokenizer=None, hf_config_path=None, skip_tokenizer_init=False, revision=None, code_revision=None, tokenizer_revision=None, tokenizer_mode='auto', trust_remote_code=False, allowed_local_media_path=None, load_format='auto', download_dir=None, model_loader_extra_config=None, use_tqdm_on_load=True, config_format=<ConfigFormat.AUTO: 'auto'>, dtype='half', kv_cache_dtype='auto', max_model_len=8192, guided_decoding_backend='auto', logits_processor_pattern=None, model_impl='auto', distributed_executor_backend='ray', pipeline_parallel_size=2, tensor_parallel_size=1, data_parallel_size=1, enable_expert_parallel=False, max_parallel_loading_workers=None, ray_workers_use_nsight=False, disable_custom_all_reduce=False, block_size=None, enable_prefix_caching=None, prefix_caching_hash_algo='builtin', disable_sliding_window=False, use_v2_block_manager=True, num_lookahead_slots=0, seed=None, swap_space=4, cpu_offload_gb=0, gpu_memory_utilization=0.9, num_gpu_blocks_override=None, max_num_batched_tokens=None, max_num_partial_prefills=1, max_long_partial_prefills=1, long_prefill_token_threshold=0, max_num_seqs=None, max_logprobs=20, disable_log_stats=False, quantization=None, rope_scaling=None, rope_theta=None, hf_token=None, hf_overrides=None, enforce_eager=False, max_seq_len_to_capture=8192, tokenizer_pool_size=0, tokenizer_pool_type='ray', tokenizer_pool_extra_config=None, limit_mm_per_prompt=None, mm_processor_kwargs=None, disable_mm_preprocessor_cache=False, enable_lora=False, enable_lora_bias=False, max_loras=1, max_lora_rank=16, lora_extra_vocab_size=256, lora_dtype='auto', long_lora_scaling_factors=None, max_cpu_loras=None, fully_sharded_loras=False, enable_prompt_adapter=False, max_prompt_adapters=1, max_prompt_adapter_token=0, device='auto', num_scheduler_steps=1, multi_step_stream_outputs=True, scheduler_delay_factor=0.0, enable_chunked_prefill=None, speculative_config=None, ignore_patterns=[], preemption_mode=None, served_model_name=['qwen3-8b'], qlora_adapter_name_or_path=None, show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, disable_async_output_proc=False, scheduling_policy='fcfs', scheduler_cls='vllm.core.scheduler.Scheduler', override_neuron_config=None, override_pooler_config=None, compilation_config=None, kv_transfer_config=None, worker_cls='auto', worker_extension_cls='', generation_config='auto', override_generation_config=None, enable_sleep_mode=False, calculate_kv_scales=False, additional_config=None, enable_reasoning=False, reasoning_parser=None, disable_cascade_attn=False, disable_chunked_mm_input=False, disable_log_requests=False, max_log_len=None, disable_fastapi_docs=False, enable_prompt_tokens_details=False, enable_server_load_tracking=False, dispatch_function=<function ServeSubcommand.cmd at 0x758554f14d30>)
+WARNING 05-28 08:51:54 [config.py:2836] Casting torch.bfloat16 to torch.float16.
+INFO 05-28 08:52:05 [config.py:689] This model supports multiple tasks: {'generate', 'embed', 'classify', 'reward', 'score'}. Defaulting to 'generate'.
+WARNING 05-28 08:52:05 [arg_utils.py:1731] Compute Capability < 8.0 is not supported by the V1 Engine. Falling back to V0. 
+INFO 05-28 08:52:05 [llm_engine.py:243] Initializing a V0 LLM engine (v0.8.4) with config: model='/var/lib/gpustack/cache/model_scope/Qwen/Qwen3-8B', speculative_config=None, tokenizer='/var/lib/gpustack/cache/model_scope/Qwen/Qwen3-8B', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=2, disable_custom_all_reduce=False, quantization=None, enforce_eager=False, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='auto', reasoning_backend=None), observability_config=ObservabilityConfig(show_hidden_metrics=False, otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=None, served_model_name=qwen3-8b, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=None, chunked_prefill_enabled=False, use_async_output_proc=False, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"splitting_ops":[],"compile_sizes":[],"cudagraph_capture_sizes":[256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1],"max_capture_size":256}, use_cached_outputs=False, 
+2025-05-28 08:52:05,729	INFO worker.py:1654 -- Connecting to existing Ray cluster at address: 50.147.43.23:40096...
+2025-05-28 08:52:05,741	INFO worker.py:1832 -- Connected to Ray cluster. View the dashboard at 127.0.0.1:8265 
+INFO 05-28 08:52:06 [ray_utils.py:314] Using the existing placement group
+INFO 05-28 08:52:06 [ray_distributed_executor.py:176] use_ray_spmd_worker: False
+(pid=1932) INFO 05-28 08:52:11 [__init__.py:239] Automatically detected platform cuda.
+INFO 05-28 08:52:13 [ray_distributed_executor.py:352] non_carry_over_env_vars from config: set()
+INFO 05-28 08:52:13 [ray_distributed_executor.py:354] Copying the following environment variables to workers: ['LD_LIBRARY_PATH', 'VLLM_WORKER_MULTIPROC_METHOD', 'VLLM_USE_V1', 'VLLM_RAY_BUNDLE_INDICES']
+INFO 05-28 08:52:13 [ray_distributed_executor.py:357] If certain env vars should NOT be copied to workers, add them to /root/.config/vllm/ray_non_carry_over_env_vars.json file
+INFO 05-28 08:52:15 [cuda.py:240] Cannot use FlashAttention-2 backend for Volta and Turing GPUs.
+INFO 05-28 08:52:15 [cuda.py:289] Using XFormers backend.
+[W528 08:52:26.775669033 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+(RayWorkerWrapper pid=933, ip=50.147.43.24) [W528 08:52:26.130233523 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W528 08:52:36.785457157 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W528 08:52:46.791131680 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+(RayWorkerWrapper pid=933, ip=50.147.43.24) [rank1]:[E528 08:52:46.164295950 ProcessGroupGloo.cpp:145] Gloo connectFullMesh failed with [/pytorch/third_party/gloo/gloo/transport/tcp/pair.cc:144] no error
+
