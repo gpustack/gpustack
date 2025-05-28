@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
+      - "v*-dev"
     paths:
       - "install.sh"
       - ".github/workflows/install-script.yml"
   pull_request:
     branches:
       - main
+      - "v*-dev"
     paths:
       - "install.sh"
       - ".github/workflows/install-script.yml"

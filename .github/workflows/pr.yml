@@ -2,7 +2,9 @@ name: PR Checking
 
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - "v*-dev"
     paths-ignore:
       - "mkdocs.yml"
       - "docs/**"
