@@ -18,7 +18,9 @@ on:
       - "Dockerfile.rocm.base"
       - "Dockerfile.dcu.base"
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - "v*-dev"
     paths:
       - "Dockerfile"
       - "Dockerfile.*"
