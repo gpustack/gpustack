@@ -1,4 +1,5 @@
 import argparse
+from multiprocessing import freeze_support
 
 from gpustack.cmd import setup_start_cmd
 from gpustack.cmd.chat import setup_chat_cmd
@@ -36,4 +37,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # When using multiprocessing with 'spawn' mode, freeze_support() must be called in the main module
+    # to ensure the main process environment is correctly initialized when child processes are spawned.
+    # See: https://docs.python.org/3/library/multiprocessing.html#the-spawn-and-forkserver-start-methods
+    freeze_support()
     main()
