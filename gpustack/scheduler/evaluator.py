@@ -261,11 +261,6 @@ async def evaluate_environment(
             "The Ascend MindIE backend requires Ascend NPUs but none are available."
         ]
 
-    if backend == BackendEnum.VLLM and only_ascend_npu(workers):
-        return False, [
-            "The vLLM backend is not supported on Ascend NPUs at the moment. Use the Ascend MindIE or llama-box backend instead."
-        ]
-
     return True, []
 
 

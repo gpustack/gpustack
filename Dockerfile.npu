@@ -20,12 +20,19 @@
 # - MINDIE_VERSION is the version of Ascend MindIE,
 #   which is used to install the Ascend MindIE,
 #   please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
+# - VLLM_VERSION is the version of vLLM,
+#   which is used to install the vLLM,
+# - VLLM_ASCEND_VERSION is the version of vLLM Ascend,
+#   which is used to install the vLLM Ascend,
+#   please check https://vllm-ascend.readthedocs.io/en/stable/installation.html for details.
 # - PYTHON_VERSION is the version of Python,
 #   which should be properly set, it must be 3.x.
 
 ARG CANN_VERSION=8.1.rc1.beta1
 ARG CANN_CHIP=910b
 ARG MINDIE_VERSION=2.0.rc1
+ARG VLLM_VERSION=0.7.3
+ARG VLLM_ASCEND_VERSION=0.7.3.post1
 ARG PYTHON_VERSION=3.11
 
 #
@@ -375,13 +382,75 @@ EOT
 EOF
 
 #
+# Stage vLLM Ascend Install
+#
+# Example build command:
+#   docker build --tag=gpustack/gpustack:npu-vllm-ascend-install --file=Dockerfile.npu --target vllm-ascend-install --progress=plain .
+#
+
+FROM mindie-install AS vllm-ascend-install
+
+## Install Dependencies
+
+RUN <<EOF
+    # Dependencies
+
+    # Install
+    apt-get install -y --no-install-recommends \
+        libnuma-dev
+
+    # Cleanup
+    rm -rf /var/lib/apt/lists/*
+EOF
+
+## Install vLLM Ascend
+
+ARG VLLM_VERSION
+ARG VLLM_ASCEND_VERSION
+
+ENV VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION}
+
+RUN <<EOF
+    # Install pipx
+    pip install --no-cache-dir --root-user-action ignore pipx==1.7.1
+
+    ARCH="$(uname -m)"
+    VENV_PATH="$(pipx environment --value PIPX_LOCAL_VENVS)"
+    URL_PREFIX="https://repo.oepkgs.net/ascend/pytorch/vllm/torch"
+
+    if [[ "$ARCH" == "aarch64" && "$CANN_CHIP" == "910b" ]]; then
+        wget https://gpustack-1303613262.cos.ap-guangzhou.myqcloud.com/gpustack/ascend/python-3.11.12-bisheng.tar.gz
+        tar -zxvf python-3.11.12-bisheng.tar.gz -C ${VENV_PATH}
+        mv ${VENV_PATH}/python-3.11.12-bisheng ${VENV_PATH}/vllm-ascend
+        sed -i "1c#\!${VENV_PATH}/vllm-ascend/bin/python3.11" ${VENV_PATH}/vllm-ascend/bin/pip3
+        sed -i "1c#\!${VENV_PATH}/vllm-ascend/bin/python3.11" ${VENV_PATH}/vllm-ascend/bin/pip3.11
+        ln -sf ${VENV_PATH}/vllm-ascend/bin/python3.11 ${VENV_PATH}/vllm-ascend/bin/python
+        ln -sf ${VENV_PATH}/vllm-ascend/bin/pip3.11 ${VENV_PATH}/vllm-ascend/bin/pip
+        rm -f python-3.11.12-bisheng.tar.gz
+
+        wget -P $(pipx environment --value PIPX_LOCAL_VENVS)/vllm-ascend/lib/python3.11/site-packages/torch/lib https://repo.oepkgs.net/ascend/pytorch/vllm/lib/libomp.so
+
+        pipx runpip vllm-ascend install vllm==${VLLM_VERSION}
+        pipx runpip vllm-ascend install vllm-ascend==${VLLM_ASCEND_VERSION}
+        pipx runpip vllm-ascend install mindie_turbo==2.0rc1
+        pipx runpip vllm-ascend install ${URL_PREFIX}/torch-2.5.1-cp311-cp311-linux_aarch64.whl --force-reinstall --no-deps
+        pipx runpip vllm-ascend install ${URL_PREFIX}/torch_npu-2.5.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl --force-reinstall --no-deps
+
+        ln -s ${VENV_PATH}/vllm-ascend/bin/vllm /usr/local/bin/vllm
+    fi
+
+    # Cleanup
+    pip cache purge
+EOF
+
+#
 # Stage GPUStack
 #
 # Example build command:
 #   docker build --tag=gpustack/gpustack:npu --file=Dockerfile.npu --progress=plain .
 #
 
-FROM mindie-install AS gpustack
+FROM vllm-ascend-install AS gpustack
 
 ## Install GPUStack
 
@@ -397,13 +466,6 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
 
     # Download tools
     gpustack download-tools --device npu
-
-    # Post-process,
-    # override the required dependencies after installed.
-    cat <<EOT >/tmp/requirements.txt
-pipx==1.7.1
-EOT
-    pip install --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
 
     # Set up environment
     mkdir -p /var/lib/gpustack \
@@ -446,6 +508,20 @@ RUN <<EOF
     EXPORT_DRIVER_TOOLS="export PATH=${CANN_HOME}/driver/tools:\${PATH}"
     echo "${EXPORT_DRIVER_TOOLS}" >> /etc/profile
     echo "${EXPORT_DRIVER_TOOLS}" >> ~/.bashrc
+
+    # vLLM Ascend lib
+    ARCH="$(uname -m)"
+    if [[ "$ARCH" == "aarch64" && "$CANN_CHIP" == "910b" ]]; then
+        EXPORT_PYTHON_LIB="export LD_LIBRARY_PATH=$(pipx environment --value PIPX_LOCAL_VENVS)/vllm-ascend/lib/python3.11/site-packages/torch/lib:\${LD_LIBRARY_PATH}"
+        echo "${EXPORT_PYTHON_LIB}" >> /etc/profile
+        echo "${EXPORT_PYTHON_LIB}" >> ~/.bashrc
+
+        # vLLM Ascend Tuning
+        echo 'export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"' >> /etc/profile
+        echo 'export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"' >> ~/.bashrc
+        echo 'export TASK_QUEUE_ENABLE=2' >> /etc/profile
+        echo 'export TASK_QUEUE_ENABLE=2' >> ~/.bashrc
+    fi
 
     # NB(thxCode): For specific MindIE version supporting,
     # we need to process environment setting up during GPUStack deployment.
