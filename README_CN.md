@@ -35,7 +35,7 @@ GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。
 
 - **广泛的 GPU 兼容性**：无缝支持 Apple Mac、Windows PC 和 Linux 服务器上各种供应商的 GPU。
 - **广泛的模型支持**：支持各种模型，包括 LLM、多模态 VLM、图像模型、语音模型、文本嵌入模型和重排序模型。
-- **灵活的推理后端**：与 llama-box（llama.cpp 和 stable-diffusion.cpp）、vox-box、vLLM 和 Ascend MindIE 集成。
+- **灵活的推理后端**：支持与 llama-box（llama.cpp 和 stable-diffusion.cpp）、vox-box、vLLM 和 Ascend MindIE 等多种推理后端的灵活集成。
 - **多版本后端支持**：同时运行推理后端的多个版本，以满足不同模型的不同运行依赖。
 - **分布式推理**：支持单机和多机多卡并行推理，包括跨供应商和运行环境的异构 GPU。
 - **可扩展的 GPU 架构**：通过向基础设施添加更多 GPU 或节点轻松进行扩展。

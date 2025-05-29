@@ -4,7 +4,7 @@
 
 ### Hybird Cluster Support
 
-It supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 and arm64 architectures. Additionally, It also supports various GPUs, including NVIDIA, Apple Metal, AMD, Ascend, Hygon and Moore Threads.
+GPUStack supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 and arm64 architectures. Additionally, It also supports various GPUs, including NVIDIA, Apple Metal, AMD, Ascend, Hygon and Moore Threads.
 
 ### Distributed Inference Support
 
