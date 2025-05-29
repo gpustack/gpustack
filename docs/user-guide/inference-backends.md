@@ -75,12 +75,12 @@ For more details, please refer to [vLLM documentation](https://docs.vllm.ai/en/s
 
 ### Supported Platforms
 
-The vLLM backend works on AMD64 Linux.
+The vLLM backend works on Linux.
 
 !!! Note
 
     1. When users install GPUStack on amd64 Linux using the installation script, vLLM is automatically installed.
-    2. When users deploy a model using the vLLM backend, GPUStack sets worker label selectors to `{"os": "linux", "arch": "amd64"}` by default to ensure the model instance is scheduled to proper workers. You can customize the worker label selectors in the model configuration.
+    2. When users deploy a model using the vLLM backend, GPUStack sets worker label selectors to `{"os": "linux"}` by default to ensure the model instance is scheduled to proper workers. You can customize the worker label selectors in the model configuration.
 
 ### Supported Models
 

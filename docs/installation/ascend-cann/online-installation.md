@@ -36,6 +36,7 @@ npu-smi info
 
 - [x] llama-box (Only supports FP16 precision)
 - [x] MindIE
+- [x] vLLM (Only supports Ascend 910B series)
 
 ### Prerequisites
 
