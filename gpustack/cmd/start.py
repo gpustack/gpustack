@@ -14,6 +14,7 @@ from gpustack.logging import setup_logging
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
 from gpustack.server.server import Server
+from gpustack.utils.process import Process
 
 
 logger = logging.getLogger(__name__)
@@ -365,7 +366,7 @@ def run_server(cfg: Config):
             f"{scheme}127.0.0.1:{cfg.port}" if cfg.port else f"{scheme}127.0.0.1"
         )
         worker = Worker(cfg, is_embedded=True)
-        worker_process = multiprocessing.Process(target=worker.start)
+        worker_process = Process(target=worker.start)
         sub_processes = [worker_process]
 
     server = Server(config=cfg, sub_processes=sub_processes)
