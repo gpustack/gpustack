@@ -990,6 +990,102 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: Deepseek R1 0528 Qwen3 8B
+  description: DeepSeek-R1-0528-Qwen3-8B is a post-trained model derived by distilling the chain-of-thought reasoning patterns from DeepSeek-R1-0528 into the Qwen3 8B Base model. As a result, it achieves state-of-the-art (SOTA) performance among open-source models on the AIME 2024 benchmark, outperforming the original Qwen3 8B by 10.0% and reaching the level of Qwen3-235B-thinking.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  sizes:
+    - 8
+  licenses:
+    - mit
+  release_date: "2025-05-28"
+  templates:
+    - quantizations:
+        - UD-IQ1_M
+        - UD-IQ1_S
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q6_K
+        - Q8_0
+        - BF16
+      source: model_scope
+      model_scope_model_id: unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        # give R1 more default context to think
+        - --ctx-size=32768
+        # recommended temperature and top_p for R1
+        - --temp=0.6
+        - --top-p=0.95
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
+- name: Deepseek R1 0528
+  description: DeepSeek-R1-0528 is a minor version of the DeepSeek R1 model that features enhanced reasoning depth and inference capabilities. These improvements are achieved through increased computational resources and algorithmic optimizations applied during post-training. The model delivers strong performance across a range of benchmark evaluations, including mathematics, programming, and general logic, with overall capabilities approaching those of leading models such as O3 and Gemini 2.5 Pro.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  sizes:
+    - 671
+  licenses:
+    - mit
+  release_date: "2025-05-28"
+  templates:
+    - quantizations:
+        - UD-IQ1_M
+        - UD-IQ1_S
+        - UD-Q2_K_XL
+        - UD-Q3_K_XL
+        - Q4_K_M
+        - Q8_0
+        - BF16
+      source: model_scope
+      model_scope_model_id: unsloth/DeepSeek-R1-0528-GGUF
+      model_scope_file_path: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        # give R1 more default context to think
+        - --ctx-size=32768
+        # recommended temperature and top_p for R1
+        - --temp=0.6
+        - --top-p=0.95
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["FP8"]
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1-0528
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
+    - quantizations: ["BF16"]
+      source: model_scope
+      model_scope_model_id: unsloth/DeepSeek-R1-0528-BF16
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
 - name: Deepseek R1
   description: DeepSeek's first-generation reasoning model that delivers superior performance in math, code, and reasoning tasks. It effectively overcomes reasoning challenges and achieves performance comparable to OpenAI-o1 across various benchmarks. This includes six dense models distilled from DeepSeek-R1 based on Llama and Qwen.
   home: https://www.deepseek.com
@@ -1009,7 +1105,6 @@
   licenses:
     - deepseek
   release_date: "2025-01-20"
-  order: 2
   templates:
     - quantizations: ["FP8"]
       sizes:
