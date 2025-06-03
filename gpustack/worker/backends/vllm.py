@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 import sysconfig
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
 from gpustack.utils.command import find_parameter, get_versioned_command
 from gpustack.utils.hub import (
@@ -96,14 +96,6 @@ class VLLMServer(InferenceServer):
             return
 
         device_str = "GPU"
-        if not TYPE_CHECKING:
-            from vllm.platforms import current_platform
-
-            device_str = current_platform.ray_device_key
-            if not device_str:
-                raise RuntimeError(
-                    f"current platform {current_platform.device_name} does not support ray."
-                )
 
         ray_placement_group_bundles: List[Dict[str, float]] = []
         bundle_indexes = []

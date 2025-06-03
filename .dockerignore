@@ -5,3 +5,4 @@ dist/
 .mypy_cache/
 
 **/third_party/bin
+*.ma
