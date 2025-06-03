@@ -169,49 +169,50 @@ on [Ascend hardware](https://www.hiascend.com/en/hardware/product).
 
 ### Supported Platforms
 
-The Ascend MindIE backend works on Linux platforms only, including ARM64 and x86_64 architectures.
+The Ascend MindIE backend defaults to Ascend MindIE 2.0.RC2, 
+which is compatible with Linux platforms only, including both ARM64 and x86_64 architectures.
 
 ### Supported Models
 
 Ascend MindIE supports various models
-listed [here](https://www.hiascend.com/document/detail/zh/mindie/20RC1/modellist/mindie_modellist_0001.html).
+listed [here](https://www.hiascend.com/software/mindie/modellist).
 
 Within GPUStack, support
-[large language models (LLMs)](https://www.hiascend.com/document/detail/zh/mindie/20RC1/modellist/mindie_modellist_0001.html)
+[large language models (LLMs)](https://www.hiascend.com/software/mindie/modellist)
 and
-[multimodal language models (VLMs)](https://www.hiascend.com/document/detail/zh/mindie/20RC1/modellist/mindie_modellist_0002.html)
+[multimodal language models (VLMs)](https://www.hiascend.com/software/mindie/modellist)
 . However, _embedding models_ and _multimodal generation models_ are not supported yet.
 
 ### Supported Features
 
 Ascend MindIE owns a variety of features
-outlined [here](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0001.html).
+outlined [here](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0001.html).
 
 At present, GPUStack supports a subset of these capabilities, including
-[Quantization](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0288.html),
-[Extending Context Size](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0295.html),
-[Mixture of Experts(MoE)](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0297.html),
-[Split Fuse](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0300.html),
-[Speculative Decoding](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0301.html),
-[Prefix Caching](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0302.html),
-[Function Calling](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0303.html),
-[Multimodal Understanding](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0304.html),
-[Multi-head Latent Attention(MLA)](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0305.html),
-[Data Parallelism](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0424.html),
-[Buffer Response(Since Ascend MindIE 2.0.RC1)](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html).
+[Quantization](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0288.html),
+[Extending Context Size](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0295.html),
+[Mixture of Experts(MoE)](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0297.html),
+[Split Fuse](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0300.html),
+[Speculative Decoding](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0301.html),
+[Prefix Caching](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0302.html),
+[Function Calling](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0303.html),
+[Multimodal Understanding](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0304.html),
+[Multi-head Latent Attention(MLA)](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0305.html),
+[Data Parallelism](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0424.html),
+[Buffer Response(Since Ascend MindIE 2.0.RC1)](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0425.html).
 
 !!! Note
 
     1. Quantization needs specific weight, and must adjust the model's `config.json`,
-       please follow the [reference(guide)](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0288.html) to prepare the correct weight.
+       please follow the [reference(guide)](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0288.html) to prepare the correct weight.
     2. Some features are mutually exclusive, so be careful when using them. 
        For example, with Prefix Caching enabled, the Extending Context Size feature cannot be used.
 
 ### Parameters Reference
 
 Ascend MindIE has
-configurable [parameters](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0004.html)
-and [environment variables](https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0416.html).
+configurable [parameters](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0004.html)
+and [environment variables](https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0416.html).
 
 To avoid directly configuring JSON, GPUStack provides a set of command line parameters as below.
 
