@@ -17,7 +17,6 @@ from gpustack.schemas.models import BackendEnum
 from gpustack.utils.command import get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform, envs
-from gpustack.config.config import get_global_config
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +370,25 @@ class ToolsManager:
                 f"Failed to execute 'pipx environment --value PIPX_BIN_DIR': {e}"
             )
 
+    def _get_pipx_local_venvs(self, pipx_path: str) -> Path:
+        """
+        Use `pipx environment --value PIPX_LOCAL_VENVS` to get the directory where pipx installs local virtual environments.
+        """
+        try:
+            result = subprocess.run(
+                [pipx_path, "environment", "--value", "PIPX_LOCAL_VENVS"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            pipx_local_venv_dir = result.stdout.strip()
+            if pipx_local_venv_dir:
+                return Path(pipx_local_venv_dir)
+        except subprocess.CalledProcessError as e:
+            raise Exception(
+                f"Failed to execute 'pipx environment --value PIPX_LOCAL_VENVS': {e}"
+            )
+
     def _download_acsend_mindie(self, version: str, target_dir: Path):
         # Check if the system is supported
         if self._os != "linux" or self._arch not in ["amd64", "arm64"]:
@@ -451,24 +469,26 @@ class ToolsManager:
         Create a symlink for llama-box-rpc-server in the bin directory.
         This is used to help differentiate between the llama-box and llama-box-rpc-server processes.
         """
+        src_file_name = "llama-box"
+        dst_file_name = "llama-box-rpc-server"
+        if self._os == "windows":
+            src_file_name += ".exe"
+            dst_file_name += ".exe"
+
         target_dir = self.third_party_bin_path / "llama-box"
-        file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
-        llama_box_file = target_dir / file_name
+        src_file = target_dir / src_file_name
+        dst_file = target_dir / dst_file_name
+
+        if os.path.lexists(dst_file):
+            os.remove(dst_file)
 
         if self._os == "windows":
-            target_rpc_server_file = target_dir / "llama-box-rpc-server.exe"
+            os.link(src_file, dst_file)
         else:
-            target_rpc_server_file = target_dir / "llama-box-rpc-server"
+            target_dir_fd = os.open(target_dir, os.O_RDONLY)
+            os.symlink(src_file_name, dst_file_name, dir_fd=target_dir_fd)
 
-        if os.path.lexists(target_rpc_server_file):
-            os.remove(target_rpc_server_file)
-
-        if self._os == "windows":
-            os.link(llama_box_file, target_rpc_server_file)
-        else:
-            os.symlink(llama_box_file, target_rpc_server_file)
-
-        logger.debug(f"Linked llama-box-rpc-server to {target_rpc_server_file}")
+        logger.debug(f"Linked llama-box-rpc-server to {dst_file}")
 
     def _get_llama_box_platform_name(self, version: str) -> str:  # noqa C901
         """
@@ -739,20 +759,33 @@ class ToolsManager:
     ):
         """Install Ascend MindIE run package to the target directory."""
 
+        pipx_path = shutil.which("pipx")
+        if self._pipx_path:
+            pipx_path = self._pipx_path
+
+        if not pipx_path:
+            raise Exception(
+                "pipx is required to install versioned Ascend MindIE but not found in system PATH. "
+                "Please install pipx first or provide the path to pipx using the server option `--pipx-path`. "
+                "Alternatively, you can install Ascend MindIE manually."
+            )
+
+        pipx_local_venvs = self._get_pipx_local_venvs(pipx_path)
+        if not pipx_local_venvs:
+            raise Exception(
+                "Failed to determine pipx local venvs. Ensure pipx is correctly installed."
+            )
+
         # Create a virtual environment to collect the new Python packages.
-        cfg = get_global_config()
-        venv_parent_dir = Path(cfg.data_dir).joinpath("venvs", "mindie")
-        venv_parent_dir.mkdir(parents=True, exist_ok=True)
+        venv_dir = Path(pipx_local_venvs).joinpath(f"mindie_{version}")
         try:
             subprocess.check_call(
-                [sys.executable, "-m", "venv", "--system-site-packages", version],
-                cwd=venv_parent_dir,
+                [sys.executable, "-m", "venv", "--system-site-packages", venv_dir],
             )
         except subprocess.CalledProcessError as e:
             raise Exception(
                 f"Failed to create a virtual environment for Ascend MindIE installation: {e}"
             )
-        venv_dir = venv_parent_dir.joinpath(version)
         venv_path = venv_dir.joinpath("bin", "activate")
         logger.info(
             f"Created virtual environment for Ascend MindIE installation: {venv_dir}"
@@ -784,6 +817,27 @@ class ToolsManager:
                 stderr=out,
                 env=env,
                 cwd=target_dir,
+            )
+            logger.info(f"Installed Ascend MindIE '{version}' to {target_dir}")
+
+            # Post process, inject the virtual environment activation script into set_env.sh.
+            logger.info(
+                "Injecting virtual environment activation into Ascend MindIE launch"
+            )
+            set_env_script = target_dir.joinpath(
+                "mindie", version, "mindie-service", "set_env.sh"
+            )
+            # - Enable set_env.sh writable permission
+            st = os.stat(set_env_script)
+            old_mode = st.st_mode
+            new_mode = old_mode | stat.S_IWUSR
+            os.chmod(set_env_script, new_mode)
+            with open(set_env_script, 'a', encoding='utf-8') as f:
+                f.write(f"\nsource {venv_path} || true\n")
+            # - Disable set_env.sh writable permission
+            os.chmod(set_env_script, old_mode)
+            logger.info(
+                f"Injected virtual environment activation into Ascend MindIE launch: {set_env_script}"
             )
         except subprocess.CalledProcessError as e:
             raise Exception(f"Failed to install Ascend MindIE {command}: {e}")
