@@ -250,8 +250,6 @@
       replicas: 1
       backend: vllm
       backend_parameters: &qwen3_thinking_vllm_parameters
-        - --enable-auto-tool-choice
-        - --tool-call-parser=hermes
         - --enable-reasoning
         - --reasoning-parser=deepseek_r1
     - quantizations: ["FP8"]
