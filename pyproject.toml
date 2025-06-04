@@ -20,7 +20,7 @@ prometheus-client = "^0.20.0"
 colorama = "^0.4.6"
 psutil = "^7.0.0"
 requests = "^2.32.3"
-huggingface-hub = "^0.30.2"
+huggingface-hub = ">=0.32.0"
 attrs = "^24.2.0"
 aiosqlite = "^0.20.0"
 sqlalchemy = {extras = ["asyncio"], version = "^2.0.38"}
@@ -39,7 +39,7 @@ cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = ">=1.22.3,<1.23"
 ray = {version = "2.43.0", extras = ["default"]} # Align with BUILTIN_RAY_VERSION in tools_manager.py
-vllm = {version = "0.8.5.post1", optional = true}
+vllm = {version = "0.9.0.1", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"
 transformers = "^4.51.1"
@@ -48,7 +48,7 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = {version = "0.0.15", optional = true}
+vox-box = {version = "0.0.16", optional = true}
 
 tenacity = "^9.0.0"
 aiocache = "^0.12.3"
