@@ -9,6 +9,7 @@ import psutil
 
 from gpustack.schemas.workers import Worker
 from gpustack.utils import platform
+from gpustack.utils.platform import get_executable_suffix as exe
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
@@ -19,22 +20,21 @@ from gpustack.schemas.models import (
 from gpustack.utils.command import find_parameter, get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.worker.backends.base import InferenceServer
+from gpustack.worker.tools_manager import get_llama_box_command
 
 logger = logging.getLogger(__name__)
 
 
 class LlamaBoxServer(InferenceServer):
     def start(self):  # noqa: C901
-        command_path = pkg_resources.files(
-            "gpustack.third_party.bin.llama-box"
-        ).joinpath(get_llama_box_command())
-
+        base_path = pkg_resources.files("gpustack.third_party.bin").joinpath(
+            'llama-box'
+        )
+        command_path = get_llama_box_command(str(base_path))
         if self._model.backend_version:
             command_path = os.path.join(
                 self._config.bin_dir,
-                get_versioned_command(
-                    get_llama_box_command(), self._model.backend_version
-                ),
+                get_versioned_command(f'llama-box{exe()}', self._model.backend_version),
             )
 
         layers = -1
@@ -214,13 +214,6 @@ def set_priority(pid: int):
         pass
     except Exception as e:
         logger.error(f"Failed to set priority for process {pid}: {e}")
-
-
-def get_llama_box_command():
-    command = "llama-box"
-    if platform.system() == "windows":
-        command += ".exe"
-    return command
 
 
 def get_rpc_servers(
