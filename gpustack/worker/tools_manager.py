@@ -9,7 +9,7 @@ import shutil
 import stat
 import subprocess
 import time
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 import zipfile
 import requests
 
@@ -17,6 +17,7 @@ from gpustack.schemas.models import BackendEnum
 from gpustack.utils.command import get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform, envs
+from gpustack.utils.platform import get_executable_suffix as exe
 from gpustack.config.config import get_global_config
 
 logger = logging.getLogger(__name__)
@@ -171,8 +172,8 @@ class ToolsManager:
     def download_llama_box(self):
         version = BUILTIN_LLAMA_BOX_VERSION
         target_dir = self.third_party_bin_path / "llama-box"
-        file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
-        target_file = target_dir / file_name
+        target_file = Path(get_llama_box_command(target_dir))
+        file_name = os.path.basename(target_file)
 
         if (
             target_file.is_file()
@@ -441,19 +442,17 @@ class ToolsManager:
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
 
-        self._link_llama_box_rpc_server()
+        self._link_llama_box_rpc_server(target_file)
 
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
 
-    def _link_llama_box_rpc_server(self):
+    def _link_llama_box_rpc_server(self, llama_box_file: Path):
         """
         Create a symlink for llama-box-rpc-server in the bin directory.
         This is used to help differentiate between the llama-box and llama-box-rpc-server processes.
         """
         target_dir = self.third_party_bin_path / "llama-box"
-        file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
-        llama_box_file = target_dir / file_name
 
         if self._os == "windows":
             target_rpc_server_file = target_dir / "llama-box-rpc-server.exe"
@@ -787,3 +786,21 @@ class ToolsManager:
             )
         except subprocess.CalledProcessError as e:
             raise Exception(f"Failed to install Ascend MindIE {command}: {e}")
+
+
+def get_llama_box_command(
+    base_path: Union[
+        str,
+        Path,
+    ]
+) -> str:
+    system = platform.system()
+    arch = platform.arch()
+    device = platform.device()
+    device = f'-{device}' if device != '' else ''
+    full_path = os.path.join(base_path, f"llama-box-{system}-{arch}{device}{exe()}")
+    default_path = os.path.join(base_path, f"llama-box{exe()}")
+    # If both full_path and default_path do not exist, return full_path.
+    if not os.path.exists(full_path) and not os.path.exists(default_path):
+        return full_path
+    return full_path if os.path.exists(full_path) else default_path

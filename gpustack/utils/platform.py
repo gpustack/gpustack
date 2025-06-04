@@ -212,3 +212,7 @@ def get_cann_chip() -> str:
     # TODO(thxCode): figure out a way to discover the CANN chip version
 
     return os.getenv("CANN_CHIP", "")
+
+
+def get_executable_suffix() -> str:
+    return '.exe' if system() == 'windows' else ''
