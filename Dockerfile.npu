@@ -436,7 +436,12 @@ RUN <<EOF
         pipx runpip vllm-ascend install ${URL_PREFIX}/torch-2.5.1-cp311-cp311-linux_aarch64.whl --force-reinstall --no-deps
         pipx runpip vllm-ascend install ${URL_PREFIX}/torch_npu-2.5.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl --force-reinstall --no-deps
 
-        ln -s ${VENV_PATH}/vllm-ascend/bin/vllm /usr/local/bin/vllm
+        ln -sf ${VENV_PATH}/vllm-ascend/bin/vllm /usr/local/bin/vllm
+
+        # Install Ray
+        rm -f /usr/local/bin/ray 
+        pipx runpip vllm-ascend install ray[client]==2.43.0
+        ln -sf ${VENV_PATH}/vllm-ascend/bin/ray /usr/local/bin/ray
     fi
 
     # Cleanup
