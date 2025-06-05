@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Request
-from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pathlib import Path
+from tenacity import RetryError
 
+from gpustack.api.exceptions import NotFoundException
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.worker.logs import log_generator
 from gpustack.utils import file
@@ -17,7 +18,7 @@ async def get_serve_logs(request: Request, id: int, log_options: LogOptionsDep):
 
     try:
         file.check_file_with_retries(path)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Log file not found")
+    except (FileNotFoundError, RetryError):
+        raise NotFoundException(message="Log file not found")
 
     return StreamingResponse(log_generator(path, log_options), media_type="text/plain")
