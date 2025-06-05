@@ -308,29 +308,29 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--enable-cors",
         action=OptionalBoolAction,
-        help="Enable CORS in server.",
+        help="Enable Cross-Origin Resource Sharing (CORS) on the server.",
         default=get_gpustack_env_bool("ENABLE_CORS"),
-    )
-    group.add_argument(
-        "--allow-origins",
-        action='append',
-        help="A list of origins that should be permitted to make cross-origin requests.",
     )
     group.add_argument(
         "--allow-credentials",
         action=OptionalBoolAction,
-        help="Indicate that cookies should be supported for cross-origin requests.",
+        help="Allow cookies and credentials in cross-origin requests.",
         default=get_gpustack_env_bool("ALLOW_CREDENTIALS"),
+    )
+    group.add_argument(
+        "--allow-origins",
+        action='append',
+        help='Origins allowed for cross-origin requests. Specify the flag multiple times for multiple origins. Example: --allow-origins https://example.com --allow-origins https://api.example.com. Default: ["*"] (all origins allowed).',
     )
     group.add_argument(
         "--allow-methods",
         action='append',
-        help="A list of HTTP methods that should be allowed for cross-origin requests.",
+        help='HTTP methods allowed in cross-origin requests. Specify the flag multiple times for multiple methods. Example: --allow-methods GET --allow-methods POST. Default: ["GET", "POST"].',
     )
     group.add_argument(
         "--allow-headers",
         action='append',
-        help="A list of HTTP request headers that should be supported for cross-origin requests.",
+        help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers Content-Type. Default: ["Authorization", "Content-Type"].',
     )
 
     parser_server.set_defaults(func=run)
