@@ -105,10 +105,10 @@ async def get_serving_logs(
             try:
                 async with client.get(model_instance_log_url, timeout=timeout) as resp:
                     if resp.status != 200:
-                        raise HTTPException(
-                            status_code=resp.status,
-                            detail=f"Error fetching serving logs: {resp.reason}",
-                        )
+                        body = await resp.read()
+                        yield body, resp.headers, resp.status
+                        return
+
                     async for chunk in resp.content.iter_any():
                         yield chunk, resp.headers, resp.status
             except Exception as e:

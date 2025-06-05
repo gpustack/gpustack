@@ -32,7 +32,7 @@ def copy_owner_recursively(src, dst):
                 os.chown(os.path.join(dirpath, filename), st.st_uid, st.st_gid)
 
 
-@retry(stop=stop_after_attempt(5), wait=wait_fixed(0.5))
+@retry(stop=stop_after_attempt(10), wait=wait_fixed(1))
 def check_file_with_retries(path: Path):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Log file not found: {path}")
