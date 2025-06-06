@@ -170,6 +170,7 @@ class WorkerBase(SQLModel):
     heartbeat_time: Optional[datetime] = Field(
         sa_column=Column(UTCDateTime), default=None
     )
+    worker_uuid: str
 
     def compute_state(self, worker_offline_timeout=60):
         now = int(datetime.now(timezone.utc).timestamp())
