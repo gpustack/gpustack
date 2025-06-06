@@ -32,6 +32,8 @@ class WorkerStatusCollector:
         self._worker_port = worker_port
         self._clientset = clientset
         self._worker_manager = worker_manager
+        if self._worker_manager:
+            self._worker_uuid = self._worker_manager.get_worker_uuid()
 
         if gpu_devices and system_info:
             self._detector_factory = DetectorFactory(
@@ -98,6 +100,7 @@ class WorkerStatusCollector:
             port=self._worker_port,
             state=state,
             status=status,
+            worker_uuid=self._worker_uuid if self._worker_manager else None,
         )
 
     def _inject_unified_memory(self, status: WorkerStatus):
