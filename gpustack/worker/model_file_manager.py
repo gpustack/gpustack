@@ -1,5 +1,4 @@
 import asyncio
-import os
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import glob
@@ -9,7 +8,7 @@ import time
 from typing import Dict, Tuple
 from multiprocessing import Manager, cpu_count
 
-from huggingface_hub.constants import HF_HOME
+from huggingface_hub.constants import HF_XET_CACHE
 
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
@@ -113,7 +112,7 @@ class ModelFileManager:
                     and self._config.clean_hf_xet
                 ):
                     logger.info("Deleted huggingface xet cache")
-                    delete_path(os.path.join(HF_HOME, "xet"))
+                    delete_path(HF_XET_CACHE)
                 for path in paths:
                     delete_path(path)
 
