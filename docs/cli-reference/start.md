@@ -137,4 +137,5 @@ system_reserved:
   vram: 1
 tools_download_base_url: https://mirror.mycompany.com
 enable_hf_transfer: false
+clean_hf_xet: false
 ```

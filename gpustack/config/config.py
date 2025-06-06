@@ -72,6 +72,7 @@ class Config(BaseSettings):
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
         enable_hf_transfer: Speed up file transfers with the huggingface Hub.
+        clean_hf_xet: Clean ~/.cache/huggingface/xet when delete huggingface source model file
         enable_cors: Enable CORS in server.
         allow_origins: A list of origins that should be permitted to make cross-origin requests.
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.
@@ -132,6 +133,7 @@ class Config(BaseSettings):
     tools_download_base_url: Optional[str] = None
     rpc_server_args: Optional[List[str]] = None
     enable_hf_transfer: bool = False
+    clean_hf_xet: bool = False
 
     def __init__(self, **values):
         super().__init__(**values)

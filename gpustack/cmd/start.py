@@ -480,6 +480,7 @@ def set_worker_options(args, config_data: dict):
         "tools_download_base_url",
         "ray_worker_port_range",
         "enable_hf_transfer",
+        "clean_hf_xet",
     ]
 
     for option in options:
