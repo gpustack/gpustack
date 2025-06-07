@@ -42,7 +42,7 @@ ARG PYTHON_VERSION=3.11
 #   docker build --tag=gpustack/gpustack:npu-base --file=Dockerfile.npu --target base --progress=plain .
 #
 
-FROM ubuntu:20.04 AS base
+FROM ubuntu:22.04 AS base
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 ARG TARGETPLATFORM
@@ -96,34 +96,6 @@ EOF
 ENV LANG='en_US.UTF-8' \
     LANGUAGE='en_US:en' \
     LC_ALL='en_US.UTF-8'
-
-## Install GCC
-
-RUN <<EOF
-    # GCC
-
-    # Install
-    apt-get install -y --no-install-recommends \
-        gcc-11 g++-11 gfortran-11 gfortran
-
-    # Update alternatives
-    if [ -f /etc/alternatives/gcov-dump ]; then update-alternatives --remove-all gcov-dump; fi; update-alternatives --install /usr/bin/gcov-dump gcov-dump /usr/bin/gcov-dump-11 10
-    if [ -f /etc/alternatives/lto-dump ]; then update-alternatives --remove-all lto-dump; fi; update-alternatives --install /usr/bin/lto-dump lto-dump /usr/bin/lto-dump-11 10
-    if [ -f /etc/alternatives/gcov ]; then update-alternatives --remove-all gcov; fi; update-alternatives --install /usr/bin/gcov gcov /usr/bin/gcov-11 10
-    if [ -f /etc/alternatives/gcc ]; then update-alternatives --remove-all gcc; fi; update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 10
-    if [ -f /etc/alternatives/gcc-nm ]; then update-alternatives --remove-all gcc-nm; fi; update-alternatives --install /usr/bin/gcc-nm gcc-nm /usr/bin/gcc-nm-11 10
-    if [ -f /etc/alternatives/cpp ]; then update-alternatives --remove-all cpp; fi; update-alternatives --install /usr/bin/cpp cpp /usr/bin/cpp-11 10
-    if [ -f /etc/alternatives/g++ ]; then update-alternatives --remove-all g++; fi; update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 10
-    if [ -f /etc/alternatives/gcc-ar ]; then update-alternatives --remove-all gcc-ar; fi; update-alternatives --install /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-11 10
-    if [ -f /etc/alternatives/gcov-tool ]; then update-alternatives --remove-all gcov-tool; fi; update-alternatives --install /usr/bin/gcov-tool gcov-tool /usr/bin/gcov-tool-11 10
-    if [ -f /etc/alternatives/gcc-ranlib ]; then update-alternatives --remove-all gcc-ranlib; fi; update-alternatives --install /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-11 10
-    if [ -f /etc/alternatives/gfortran ]; then update-alternatives --remove-all gfortran; fi; update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-11 10
-
-    # Cleanup
-    rm -rf /var/tmp/* \
-        && rm -rf /tmp/* \
-        && rm -rf /var/cache/apt
-EOF
 
 ## Install CMake/Make/SCCache
 
