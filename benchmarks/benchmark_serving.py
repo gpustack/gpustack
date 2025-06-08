@@ -1,24 +1,20 @@
 import asyncio
 import time
-import httpx
+from typing import List, Optional
 import numpy
 import logging
 import argparse
 import json
 import random
 from openai import AsyncOpenAI
+from aiohttp import ClientSession
+from httpx_aiohttp import AiohttpTransport
+from openai import DefaultAsyncHttpxClient
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-
-# Avoid client side connection error: https://github.com/encode/httpx/discussions/3084
-http_client = httpx.AsyncClient(
-    limits=httpx.Limits(
-        max_connections=10000, max_keepalive_connections=10000, keepalive_expiry=30
-    )
-)
 
 SAMPLE_PROMPTS = [
     "Explain how blockchain technology works, and provide a real-world example of its application outside of cryptocurrency.",
@@ -52,7 +48,7 @@ async def process_stream(stream):
     return first_token_time, total_tokens
 
 
-async def make_request(
+async def make_chat_completion_request(
     client: AsyncOpenAI, model, max_completion_tokens, request_timeout
 ):
     start_time = time.time()
@@ -83,6 +79,34 @@ async def make_request(
         return None
 
 
+async def make_embedding_request(client: AsyncOpenAI, model, request_timeout):
+    import time
+    import random
+
+    content = random.choice(SAMPLE_PROMPTS)
+    start_time = time.time()
+
+    try:
+        response = await asyncio.wait_for(
+            client.embeddings.create(model=model, input=content),
+            timeout=request_timeout,
+        )
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        total_tokens = response.usage.total_tokens
+        tokens_per_second = total_tokens / elapsed_time if elapsed_time > 0 else 0
+        ttft = None  # Embeddings do not have a time to first token in the same way as chat completions
+
+        return total_tokens, elapsed_time, tokens_per_second, ttft
+
+    except asyncio.TimeoutError:
+        logging.warning(f"Embedding request timed out after {request_timeout} seconds")
+        return None
+    except Exception as e:
+        logging.error(f"Error during embedding request: {str(e)}")
+        return None
+
+
 async def worker(
     client,
     model,
@@ -91,6 +115,7 @@ async def worker(
     results,
     max_completion_tokens,
     request_timeout,
+    embeddings=False,
 ):
     while True:
         async with semaphore:
@@ -99,9 +124,12 @@ async def worker(
                 queue.task_done()
                 break
             logging.info(f"Starting request {task_id}")
-            result = await make_request(
-                client, model, max_completion_tokens, request_timeout
-            )
+            if embeddings:
+                result = await make_embedding_request(client, model, request_timeout)
+            else:
+                result = await make_chat_completion_request(
+                    client, model, max_completion_tokens, request_timeout
+                )
             if result:
                 results.append(result)
             else:
@@ -118,9 +146,21 @@ def calculate_percentile(values, percentile, reverse=False):
     return numpy.percentile(values, percentile)
 
 
-async def preflight_check(client, model) -> bool:
-    result = await make_request(client, model, 16, 60)
+async def preflight_check(client, model, embeddings=False) -> bool:
+    if embeddings:
+        result = await make_embedding_request(client, model, 16)
+    else:
+        result = await make_chat_completion_request(client, model, 16, 60)
     return result is not None
+
+
+def set_headers(aiohttp_session: ClientSession, headers: Optional[List[str]]):
+    if headers:
+        for header in headers:
+            if ":" not in header:
+                raise ValueError(f"Invalid header format: {header}. Expected Key:Value")
+            key, value = header.split(":", 1)
+            aiohttp_session.headers[key.strip()] = value.strip()
 
 
 async def main(
@@ -131,121 +171,131 @@ async def main(
     max_completion_tokens,
     server_url,
     api_key,
+    headers=None,
+    embeddings=False,
 ):
-    client = AsyncOpenAI(
-        base_url=f"{server_url}/v1",
-        api_key=api_key,
-        http_client=http_client,
-        max_retries=0,
-    )
-
-    if not await preflight_check(client, model):
-        logging.error(
-            "Preflight check failed. Please check configuration and the service status."
+    async with ClientSession() as aiohttp_session:
+        if headers:
+            set_headers(aiohttp_session, headers)
+        transport = AiohttpTransport(client=aiohttp_session)
+        httpx_client = DefaultAsyncHttpxClient(transport=transport)
+        client = AsyncOpenAI(
+            base_url=f"{server_url}/v1",
+            api_key=api_key,
+            http_client=httpx_client,
+            max_retries=0,
         )
-        return
 
-    semaphore = asyncio.Semaphore(concurrency)
-    queue = asyncio.Queue()
-    results = []
-
-    # Add tasks to the queue
-    for i in range(num_requests):
-        await queue.put(i)
-
-    # Add sentinel values to stop workers
-    for _ in range(concurrency):
-        await queue.put(None)
-
-    # Create worker tasks
-    workers = [
-        asyncio.create_task(
-            worker(
-                client,
-                model,
-                semaphore,
-                queue,
-                results,
-                max_completion_tokens,
-                request_timeout,
+        if not await preflight_check(client, model, embeddings=embeddings):
+            logging.error(
+                "Preflight check failed. Please check configuration and the service status."
             )
+            return
+
+        semaphore = asyncio.Semaphore(concurrency)
+        queue = asyncio.Queue()
+        results = []
+
+        # Add tasks to the queue
+        for i in range(num_requests):
+            await queue.put(i)
+
+        # Add sentinel values to stop workers
+        for _ in range(concurrency):
+            await queue.put(None)
+
+        # Create worker tasks
+        workers = [
+            asyncio.create_task(
+                worker(
+                    client,
+                    model,
+                    semaphore,
+                    queue,
+                    results,
+                    max_completion_tokens,
+                    request_timeout,
+                    embeddings=embeddings,
+                )
+            )
+            for _ in range(concurrency)
+        ]
+
+        start_time = time.time()
+
+        # Wait for all tasks to complete
+        await queue.join()
+        await asyncio.gather(*workers)
+
+        end_time = time.time()
+
+        # Calculate metrics
+        total_elapsed_time = end_time - start_time
+        total_tokens = sum(tokens for tokens, _, _, _ in results if tokens is not None)
+        latencies = [
+            elapsed_time
+            for _, elapsed_time, _, _ in results
+            if elapsed_time is not None
+        ]
+        tokens_per_second_list = [tps for _, _, tps, _ in results if tps is not None]
+        ttft_list = [ttft for _, _, _, ttft in results if ttft is not None]
+
+        successful_requests = len(results)
+        success_rate = successful_requests / num_requests if num_requests > 0 else 0
+        requests_per_second = (
+            successful_requests / total_elapsed_time if total_elapsed_time > 0 else 0
         )
-        for _ in range(concurrency)
-    ]
+        avg_latency = sum(latencies) / len(latencies) if latencies else 0
+        avg_tokens_per_second = (
+            sum(tokens_per_second_list) / len(tokens_per_second_list)
+            if tokens_per_second_list
+            else 0
+        )
+        overall_tokens_per_second = (
+            total_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
+        )
+        avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0
 
-    start_time = time.time()
+        # Calculate percentiles
+        percentiles = [50, 95, 99]
+        latency_percentiles = [calculate_percentile(latencies, p) for p in percentiles]
+        tps_percentiles = [
+            calculate_percentile(tokens_per_second_list, p, reverse=True)
+            for p in percentiles
+        ]
+        ttft_percentiles = [calculate_percentile(ttft_list, p) for p in percentiles]
 
-    # Wait for all tasks to complete
-    await queue.join()
-    await asyncio.gather(*workers)
-
-    end_time = time.time()
-
-    # Calculate metrics
-    total_elapsed_time = end_time - start_time
-    total_tokens = sum(tokens for tokens, _, _, _ in results if tokens is not None)
-    latencies = [
-        elapsed_time for _, elapsed_time, _, _ in results if elapsed_time is not None
-    ]
-    tokens_per_second_list = [tps for _, _, tps, _ in results if tps is not None]
-    ttft_list = [ttft for _, _, _, ttft in results if ttft is not None]
-
-    successful_requests = len(results)
-    success_rate = successful_requests / num_requests if num_requests > 0 else 0
-    requests_per_second = (
-        successful_requests / total_elapsed_time if total_elapsed_time > 0 else 0
-    )
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
-    avg_tokens_per_second = (
-        sum(tokens_per_second_list) / len(tokens_per_second_list)
-        if tokens_per_second_list
-        else 0
-    )
-    overall_tokens_per_second = (
-        total_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
-    )
-    avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0
-
-    # Calculate percentiles
-    percentiles = [50, 95, 99]
-    latency_percentiles = [calculate_percentile(latencies, p) for p in percentiles]
-    tps_percentiles = [
-        calculate_percentile(tokens_per_second_list, p, reverse=True)
-        for p in percentiles
-    ]
-    ttft_percentiles = [calculate_percentile(ttft_list, p) for p in percentiles]
-
-    return {
-        "model": model,
-        "total_requests": num_requests,
-        "successful_requests": successful_requests,
-        "success_rate": success_rate,
-        "concurrency": concurrency,
-        "request_timeout": request_timeout,
-        "max_completion_tokens": max_completion_tokens,
-        "total_time": total_elapsed_time,
-        "requests_per_second": requests_per_second,
-        "total_completion_tokens": total_tokens,
-        "latency": {
-            "average": avg_latency,
-            "p50": latency_percentiles[0],
-            "p95": latency_percentiles[1],
-            "p99": latency_percentiles[2],
-        },
-        "tokens_per_second": {
-            "overall": overall_tokens_per_second,
-            "average": avg_tokens_per_second,
-            "p50": tps_percentiles[0],
-            "p95": tps_percentiles[1],
-            "p99": tps_percentiles[2],
-        },
-        "time_to_first_token": {
-            "average": avg_ttft,
-            "p50": ttft_percentiles[0],
-            "p95": ttft_percentiles[1],
-            "p99": ttft_percentiles[2],
-        },
-    }
+        return {
+            "model": model,
+            "total_requests": num_requests,
+            "successful_requests": successful_requests,
+            "success_rate": success_rate,
+            "concurrency": concurrency,
+            "request_timeout": request_timeout,
+            "max_completion_tokens": max_completion_tokens,
+            "total_time": total_elapsed_time,
+            "requests_per_second": requests_per_second,
+            "total_tokens": total_tokens,
+            "latency": {
+                "average": avg_latency,
+                "p50": latency_percentiles[0],
+                "p95": latency_percentiles[1],
+                "p99": latency_percentiles[2],
+            },
+            "tokens_per_second": {
+                "overall": overall_tokens_per_second,
+                "average": avg_tokens_per_second,
+                "p50": tps_percentiles[0],
+                "p95": tps_percentiles[1],
+                "p99": tps_percentiles[2],
+            },
+            "time_to_first_token": {
+                "average": avg_ttft,
+                "p50": ttft_percentiles[0],
+                "p95": ttft_percentiles[1],
+                "p99": ttft_percentiles[2],
+            },
+        }
 
 
 def output_results(results, result_file=None):
@@ -266,17 +316,6 @@ def output_results(results, result_file=None):
         logging.info(f"Results saved to {result_file}")
     else:
         print(json.dumps(formatted_results, indent=2))
-
-
-def set_http_client(args):
-    if args.headers:
-        for header in args.headers:
-            if ":" not in header:
-                parser.error(f"Invalid header format: {header}. Expected Key:Value")
-            key, value = header.split(":", 1)
-            http_client.headers[key.strip()] = value.strip()
-
-    http_client.timeout = args.request_timeout
 
 
 if __name__ == "__main__":
@@ -329,8 +368,12 @@ if __name__ == "__main__":
         dest="headers",
         help="Custom HTTP header in Key:Value format. May be specified multiple times.",
     )
+    parser.add_argument(
+        '--embeddings',
+        action='store_true',
+        help='Run embedding benchmark instead of chat completions',
+    )
     args = parser.parse_args()
-    set_http_client(args)
 
     results = asyncio.run(
         main(
@@ -341,6 +384,8 @@ if __name__ == "__main__":
             args.max_completion_tokens,
             args.server_url,
             args.api_key,
+            args.headers,
+            embeddings=args.embeddings,
         )
     )
     output_results(results, args.result_file)
