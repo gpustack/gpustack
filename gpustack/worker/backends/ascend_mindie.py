@@ -54,7 +54,7 @@ class AscendMindIEParameters:
     override_generation_config_parsed: Optional[any] = None  # store JSON parsed result
 
     def from_args(self, args: List[str]):
-        parser = argparse.ArgumentParser(exit_on_error=False)
+        parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
         #
         # Log config
         #
