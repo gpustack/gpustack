@@ -118,10 +118,12 @@ class Regredit(GPUDetector):
                 continue
             type = platform.device_type_from_vendor(vendor)
 
-            luid = subvalue.get("AdapterLuid", "Unknown")
+            # if AdapterLuid is zero, it means the GPU is not available
+            # or the GPU is not a discrete GPU, so we skip it.
+            luid = subvalue.get("AdapterLuid", 0)
             name = subvalue.get("Description", "Unknown")
             memory_total = subvalue.get("DedicatedVideoMemory", 0)
-            if memory_total == 0:
+            if memory_total == 0 or luid == 0:
                 continue
 
             device_info = GPUDeviceInfo(
