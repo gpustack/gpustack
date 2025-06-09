@@ -1,12 +1,18 @@
 # Packaging logic:
 # 1. base target:
-#   - Install tools, including Python, GCC, CMake, Make, SCCache and dependencies.
-#   - Install specific version Ascend CANN according to the chip, including Toolkit and Kernels.
-# 2. mindie-install target:
-#   - Install specific version Ascend CANN NNAL.
-#   - Copy and intsall the ATB models from a fixed image.
-#   - Install required dependencies.
+#   - Install/Upgrade tools, including Python, GCC[optional], CMake, Make, SCCache and dependencies.
+#   - Install specific version Ascend CANN according to the chip, including Toolkit, Kernels and NNAL.
+# 2.1. mindie-install target:
+#   - Copy ATB models from a fixed image.
+#   - Install dependencies for MindIE into system site packages, including Torch, Torch-NPU and TorchVision,
+#     which is used to support multi-versions of MindIE.
+#   - Create a virtual environment to place MindIE: $(pipx environment --value PIPX_LOCAL_VENVS)/mindie.
 #   - Install specific version MindIE.
+# 2.2. vllm-install target (parallel against mindie-install):
+#   - Create a virtual environment to place vLLM: $(pipx environment --value PIPX_LOCAL_VENVS)/vllm.
+#   - Install specific version Torch, Torch-NPU and TorchVision.
+#   - Install specific version MindIE Turbo.
+#   - Install specific version vLLM and vLLM Ascend.
 # 3. gpustack target (final):
 #   - Install GPUStack, and override the required dependencies after installed.
 #   - Set up the environment for CANN, NNAL and ATB models.
@@ -49,19 +55,19 @@ ARG TARGETPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
 
-## Install tools
+## Install Tools
 
-ARG PYTHON_VERSION
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHON_VERSION=${PYTHON_VERSION}
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN <<EOF
+    # Tools
+
     # Refresh
     apt-get update -y && apt-get install -y --no-install-recommends \
         software-properties-common apt-transport-https \
+        ca-certificates gnupg2 lsb-release gnupg-agent \
+      && apt-get update -y \
       && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
-      && add-apt-repository -y ppa:deadsnakes/ppa \
       && apt-get update -y
 
     # Install
@@ -75,27 +81,50 @@ RUN <<EOF
         procps sysstat htop \
         tini vim jq bc tree
 
-    # Update python
-    PYTHON="python${PYTHON_VERSION}"
-    apt-get install -y --no-install-recommends \
-        ${PYTHON} ${PYTHON}-dev ${PYTHON}-distutils ${PYTHON}-venv ${PYTHON}-lib2to3
-    if [ -f /etc/alternatives/python ]; then update-alternatives --remove-all python; fi; update-alternatives --install /usr/bin/python python /usr/bin/${PYTHON} 10
-    if [ -f /etc/alternatives/python3 ]; then update-alternatives --remove-all python3; fi; update-alternatives --install /usr/bin/python3 python3 /usr/bin/${PYTHON} 10
-    curl -sS https://bootstrap.pypa.io/get-pip.py | ${PYTHON}
-
     # Update locale
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
     # Cleanup
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
-        && rm -rf /var/cache/apt \
-        && pip cache purge
+        && rm -rf /var/cache/apt
 EOF
 
 ENV LANG='en_US.UTF-8' \
     LANGUAGE='en_US:en' \
     LC_ALL='en_US.UTF-8'
+
+## Install GCC
+
+RUN <<EOF
+    # GCC
+
+    # NB(thxCode): Upgrade GCC if the Ubuntu version is lower than 21.04.
+    source /etc/os-release
+    if (( $(echo "${VERSION_ID} < 21.04" | bc -l) )); then
+        # Install
+        apt-get install -y --no-install-recommends \
+            gcc-11 g++-11 gfortran-11 gfortran
+
+        # Update alternatives
+        if [ -f /etc/alternatives/gcov-dump ]; then update-alternatives --remove-all gcov-dump; fi; update-alternatives --install /usr/bin/gcov-dump gcov-dump /usr/bin/gcov-dump-11 10
+        if [ -f /etc/alternatives/lto-dump ]; then update-alternatives --remove-all lto-dump; fi; update-alternatives --install /usr/bin/lto-dump lto-dump /usr/bin/lto-dump-11 10
+        if [ -f /etc/alternatives/gcov ]; then update-alternatives --remove-all gcov; fi; update-alternatives --install /usr/bin/gcov gcov /usr/bin/gcov-11 10
+        if [ -f /etc/alternatives/gcc ]; then update-alternatives --remove-all gcc; fi; update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 10
+        if [ -f /etc/alternatives/gcc-nm ]; then update-alternatives --remove-all gcc-nm; fi; update-alternatives --install /usr/bin/gcc-nm gcc-nm /usr/bin/gcc-nm-11 10
+        if [ -f /etc/alternatives/cpp ]; then update-alternatives --remove-all cpp; fi; update-alternatives --install /usr/bin/cpp cpp /usr/bin/cpp-11 10
+        if [ -f /etc/alternatives/g++ ]; then update-alternatives --remove-all g++; fi; update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 10
+        if [ -f /etc/alternatives/gcc-ar ]; then update-alternatives --remove-all gcc-ar; fi; update-alternatives --install /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-11 10
+        if [ -f /etc/alternatives/gcov-tool ]; then update-alternatives --remove-all gcov-tool; fi; update-alternatives --install /usr/bin/gcov-tool gcov-tool /usr/bin/gcov-tool-11 10
+        if [ -f /etc/alternatives/gcc-ranlib ]; then update-alternatives --remove-all gcc-ranlib; fi; update-alternatives --install /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-11 10
+        if [ -f /etc/alternatives/gfortran ]; then update-alternatives --remove-all gfortran; fi; update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-11 10
+
+        # Cleanup
+        rm -rf /var/tmp/* \
+            && rm -rf /tmp/* \
+            && rm -rf /var/cache/apt
+    fi
+EOF
 
 ## Install CMake/Make/SCCache
 
@@ -105,8 +134,8 @@ RUN <<EOF
     # Install
     apt-get install -y --no-install-recommends \
         pkg-config make
-    curl -sL "https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-linux-$(uname -m).tar.gz" | tar -zx -C /usr --strip-components 1
-    curl -sL "https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-$(uname -m)-unknown-linux-musl.tar.gz" | tar -zx -C /usr/bin --strip-components 1
+    curl --retry 3 --retry-connrefused -fL "https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-linux-$(uname -m).tar.gz" | tar -zx -C /usr --strip-components 1
+    curl --retry 3 --retry-connrefused -fL "https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-$(uname -m)-unknown-linux-musl.tar.gz" | tar -zx -C /usr/bin --strip-components 1
 
     # Cleanup
     rm -rf /var/tmp/* \
@@ -114,22 +143,82 @@ RUN <<EOF
         && rm -rf /var/cache/apt
 EOF
 
-## Install Dependencies
+## Install Compile Dependencies
 
 RUN <<EOF
     # Dependencies
 
     # Install
     apt-get install -y --no-install-recommends \
-        zlib1g zlib1g-dev libbz2-dev liblzma-dev libffi-dev openssl libssl-dev libsqlite3-dev \
-        libblas-dev liblapack-dev libopenblas-dev libblas3 liblapack3 gfortran libhdf5-dev \
-        libxml2 libxslt1-dev libgl1-mesa-glx libgmpxx4ldbl
+        zlib1g zlib1g-dev libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev \
+        openssl libssl-dev libsqlite3-dev lcov libomp-dev \
+        libblas-dev liblapack-dev libopenblas-dev libblas3 liblapack3 libhdf5-dev \
+        libxml2 libxslt1-dev libgl1-mesa-glx libgmpxx4ldbl \
+        libncurses5-dev libreadline6-dev libsqlite3-dev libssl-dev \
+        liblzma-dev lzma lzma-dev tk-dev uuid-dev libmpdec-dev \
+        libnuma-dev
 
     # Cleanup
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
         && rm -rf /var/cache/apt
 EOF
+
+## Install Python
+
+ARG PYTHON_VERSION
+
+ENV PYTHON_VERSION=${PYTHON_VERSION}
+
+RUN <<EOF
+    # Python
+
+    # Download
+    PYTHON_INSTALL_DIR="/tmp/Python-${PYTHON_VERSION}"
+    mkdir -p ${PYTHON_INSTALL_DIR}
+    PYTHON_LATEST_VERSION=$(curl -s https://repo.huaweicloud.com/python/ | grep -oE "${PYTHON_VERSION}\.[0-9]+" | sort -V | tail -n 1)
+    curl -H 'Referer: https://repo.huaweicloud.com/' --retry 3 --retry-connrefused -fL "https://repo.huaweicloud.com/python/${PYTHON_LATEST_VERSION}/Python-${PYTHON_LATEST_VERSION}.tgz" | tar -zx -C ${PYTHON_INSTALL_DIR} --strip-components 1
+
+    # Build
+    pushd ${PYTHON_INSTALL_DIR}
+    ./configure \
+        --prefix=/usr \
+        --enable-optimizations \
+        --enable-shared \
+        --enable-ipv6 \
+        --enable-loadable-sqlite-extensions \
+        --with-lto=full \
+        --with-ensurepip=install \
+        --with-computed-gotos
+    make -j$(nproc) && make altinstall
+    popd
+
+    # Link
+    ln -vsf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3
+    ln -vsf /usr/bin/python${PYTHON_VERSION} /usr/bin/python
+    ln -vsf /usr/bin/pip${PYTHON_VERSION} /usr/bin/pip3
+    ln -vsf /usr/bin/pip${PYTHON_VERSION} /usr/bin/pip
+    ln -vsf /usr/bin/2to3-${PYTHON_VERSION} /usr/bin/2to3
+    ln -vsf /usr/bin/pydoc${PYTHON_VERSION} /usr/bin/pydoc3
+    ln -vsf /usr/bin/idle${PYTHON_VERSION} /usr/bin/idle3
+
+    # Install packages
+    cat <<EOT >/tmp/requirements.txt
+setuptools==80.7.1
+pipx==1.7.1
+EOT
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
+        && pip cache purge
+EOF
+
+## Preset this to simplify configuration,
+## it is the output of $(pipx environment --value PIPX_LOCAL_VENVS).
+ENV PIPX_LOCAL_VENVS=/root/.local/share/pipx/venvs
 
 ARG CANN_VERSION
 ARG CANN_CHIP
@@ -150,9 +239,21 @@ RUN <<EOF
     URL_SUFFIX="response-content-type=application/octet-stream"
 
     # Install dependencies
-    python3 -m pip install --no-cache-dir --root-user-action ignore --upgrade pip
-    pip install --no-cache-dir --root-user-action ignore \
-      attrs cython numpy==1.26.4 decorator sympy cffi pyyaml pathlib2 psutil protobuf scipy requests absl-py
+    cat <<EOT >/tmp/requirements.txt
+attrs==24.3.0
+numpy==1.26.4
+decorator==5.2.1
+sympy==1.14.0
+cffi==1.17.1
+PyYAML==6.0.2
+pathlib2==2.3.7.post1
+psutil==7.0.0
+protobuf==6.31.0
+scipy==1.15.3
+requests==2.32.3
+absl-py==2.2.2
+EOT
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
 
     # Install toolkit
     TOOLKIT_FILE="Ascend-cann-toolkit_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
@@ -163,7 +264,9 @@ RUN <<EOF
     printf "Y\n" | "${TOOLKIT_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
 
     # Cleanup
-    rm -f "${TOOLKIT_PATH}" \
+   rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
         && rm -rf /var/log/ascend \
         && rm -rf /var/log/ascend_seclog \
         && pip cache purge
@@ -196,20 +299,13 @@ RUN <<EOF
     printf "Y\n" |"${KERNELS_PATH}" --install --install-for-all --install-path="${CANN_HOME}"
 
     # Cleanup
-    rm -f "${KERNELS_PATH}" \
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
         && rm -rf /var/log/ascend \
         && rm -rf /var/log/ascend_seclog \
         && pip cache purge
 EOF
-
-#
-# Stage MindIE Install
-#
-# Example build command:
-#   docker build --tag=gpustack/gpustack:npu-mindie-install --file=Dockerfile.npu --target mindie-install --progress=plain .
-#
-
-FROM base AS mindie-install
 
 ## Install NNAL
 
@@ -234,25 +330,22 @@ RUN <<EOF
     printf "Y\n" | "${NNAL_PATH}" --install --install-path="${CANN_HOME}"
 
     # Cleanup
-    rm -f "${NNAL_PATH}" \
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
         && rm -rf /var/log/ascend_seclog \
         && rm -rf /var/log/cann_atb_log \
         && pip cache purge
 EOF
 
-COPY --from=thxcode/mindie:2.0.T17-800I-A2-py311-openeuler24.03-lts --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
-RUN <<EOF
-    # ATB Models
+#
+# Stage MindIE Install
+#
+# Example build command:
+#   docker build --tag=gpustack/gpustack:npu-mindie-install --file=Dockerfile.npu --target mindie-install --progress=plain .
+#
 
-    # Install
-    pip install --no-cache-dir --root-user-action ignore ${CANN_HOME}/atb-models/*.whl
-
-    # Cleanup
-    rm -f "${NNAL_PATH}" \
-        && rm -rf /var/log/ascend_seclog \
-        && rm -rf /var/log/cann_atb_log \
-        && pip cache purge
-EOF
+FROM base AS mindie-install
 
 ## Install MindIE
 
@@ -260,6 +353,7 @@ ARG MINDIE_VERSION
 
 ENV MINDIE_VERSION=${MINDIE_VERSION}
 
+COPY --from=thxcode/mindie:2.0.T17-800I-A2-py311-openeuler24.03-lts --chown=root:root ${CANN_HOME}/atb-models ${CANN_HOME}/atb-models
 RUN <<EOF
     # MindIE
 
@@ -269,19 +363,17 @@ RUN <<EOF
     URL_PREFIX="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%20${DOWNLOAD_VERSION}"
     URL_SUFFIX="response-content-type=application/octet-stream"
 
-    # Prepare environment
-    source ${CANN_HOME}/ascend-toolkit/set_env.sh
-    source ${CANN_HOME}/nnal/atb/set_env.sh
-
-    # Install dependencies,
+    # Install Torch, Torch-npu, TorchVision,
     # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
-    # please check https://www.hiascend.com/document/detail/zh/Pytorch/700/configandinstg/instg/insg_0004.html for details.
+    # please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
     if [ ${ARCH} == "x86_64" ]; then
-        pip install --no-cache-dir --root-user-action ignore torch==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
     else
-        pip install --no-cache-dir --root-user-action ignore torch==2.1.0
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.1.0
     fi
-    pip install --no-cache-dir --root-user-action ignore torch-npu==2.1.0.post12 torchvision==0.16.0
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.1.0.post12 torchvision==0.16.0
+
+    # Install dependencies.
     cat <<EOT >/tmp/requirements.txt
 av==14.3.0
 absl-py==2.2.2
@@ -328,7 +420,18 @@ urllib3==2.4.0
 zope.event==5.0
 zope.interface==7.0.3
 EOT
-    pip install --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
+
+    # Install MindIE ATB models
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore ${CANN_HOME}/atb-models/*.whl
+
+    # Pre process
+    # - Create virtual environment to place MindIE
+    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/mindie
+    # - Prepare environment
+    source ${CANN_HOME}/ascend-toolkit/set_env.sh
+    source ${CANN_HOME}/nnal/atb/set_env.sh
+    source ${PIPX_LOCAL_VENVS}/mindie/bin/activate
 
     # Install MindIE
     MINDIE_FILE="Ascend-mindie_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
@@ -339,85 +442,122 @@ EOT
     printf "Y\n" | "${MINDIE_PATH}" --install --install-path="${CANN_HOME}"
 
     # Post process
+    # - Make MindIE service configuration writable
     chmod +w "${CANN_HOME}/mindie/latest/mindie-service/conf"
+    # - Tell GPUStack how to launch MindIE
+    cat <<EOT >>"${CANN_HOME}/mindie/${DOWNLOAD_VERSION}/mindie-service/set_env.sh"
+
+# NB(thxCode): This is a workaround for GPUStack to activate MindIE.
+source ${PIPX_LOCAL_VENVS}/mindie/bin/activate || true
+EOT
+    deactivate
 
     # Review
-    pip freeze \
-        && python -m site
+    pipx runpip mindie freeze
 
     # Cleanup
-    rm -f "${MINDIE_PATH}" \
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
+        && rm -rf /var/log/ascend_seclog \
+        && rm -rf /var/log/cann_atb_log \
         && rm -rf /var/log/mindie_log \
         && rm -rf ~/log \
-        && rm -rf /tmp/* \
         && pip cache purge
 EOF
 
 #
-# Stage vLLM Ascend Install
+# Stage vLLM Install
 #
 # Example build command:
-#   docker build --tag=gpustack/gpustack:npu-vllm-ascend-install --file=Dockerfile.npu --target vllm-ascend-install --progress=plain .
+#   docker build --tag=gpustack/gpustack:npu-vllm-install --file=Dockerfile.npu --target vllm-install --progress=plain .
 #
 
-FROM mindie-install AS vllm-ascend-install
-
-## Install Dependencies
-
-RUN <<EOF
-    # Dependencies
-
-    # Install
-    apt-get install -y --no-install-recommends \
-        libnuma-dev
-
-    # Cleanup
-    rm -rf /var/lib/apt/lists/*
-EOF
+FROM base AS vllm-install
 
 ## Install vLLM Ascend
 
 ARG VLLM_VERSION
 ARG VLLM_ASCEND_VERSION
+ARG MINDIE_VERSION
 
-ENV VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION}
+ENV VLLM_VERSION=${VLLM_VERSION} \
+    VLLM_ASCEND_VERSION=${VLLM_ASCEND_VERSION} \
+    MINDIE_VERSION=${MINDIE_VERSION}
 
 RUN <<EOF
-    # Install pipx
-    pip install --no-cache-dir --root-user-action ignore pipx==1.7.1
+    # vLLM
 
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH="$(uname -m)"
-    VENV_PATH="$(pipx environment --value PIPX_LOCAL_VENVS)"
-    URL_PREFIX="https://repo.oepkgs.net/ascend/pytorch/vllm/torch"
+    DOWNLOAD_VERSION="$(echo ${MINDIE_VERSION%\.beta1} | tr '[:lower:]' '[:upper:]')"
+    URL_PREFIX="https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%20${DOWNLOAD_VERSION}"
+    URL_SUFFIX="response-content-type=application/octet-stream"
 
-    if [[ "$ARCH" == "aarch64" && "$CANN_CHIP" == "910b" ]]; then
-        wget https://gpustack-1303613262.cos.ap-guangzhou.myqcloud.com/gpustack/ascend/python-3.11.12-bisheng.tar.gz
-        tar -zxvf python-3.11.12-bisheng.tar.gz -C ${VENV_PATH}
-        mv ${VENV_PATH}/python-3.11.12-bisheng ${VENV_PATH}/vllm-ascend
-        sed -i "1c#\!${VENV_PATH}/vllm-ascend/bin/python3.11" ${VENV_PATH}/vllm-ascend/bin/pip3
-        sed -i "1c#\!${VENV_PATH}/vllm-ascend/bin/python3.11" ${VENV_PATH}/vllm-ascend/bin/pip3.11
-        ln -sf ${VENV_PATH}/vllm-ascend/bin/python3.11 ${VENV_PATH}/vllm-ascend/bin/python
-        ln -sf ${VENV_PATH}/vllm-ascend/bin/pip3.11 ${VENV_PATH}/vllm-ascend/bin/pip
-        rm -f python-3.11.12-bisheng.tar.gz
+    # Pre process
+    # - Create virtual environment to place vLLM
+    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/vllm
+    # - Prepare environment
+    source ${CANN_HOME}/ascend-toolkit/set_env.sh
+    source ${CANN_HOME}/nnal/atb/set_env.sh
+    source ${PIPX_LOCAL_VENVS}/vllm/bin/activate
 
-        wget -P $(pipx environment --value PIPX_LOCAL_VENVS)/vllm-ascend/lib/python3.11/site-packages/torch/lib https://repo.oepkgs.net/ascend/pytorch/vllm/lib/libomp.so
+    # Install Torch, Torch-npu, TorchVision,
+    # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
+    # please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
+    if [ ${ARCH} == "x86_64" ]; then
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+    else
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.5.1
+    fi
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.5.1 torchvision==0.20.1
 
-        pipx runpip vllm-ascend install vllm==${VLLM_VERSION}
-        pipx runpip vllm-ascend install vllm-ascend==${VLLM_ASCEND_VERSION}
-        pipx runpip vllm-ascend install mindie_turbo==2.0rc1
-        pipx runpip vllm-ascend install ${URL_PREFIX}/torch-2.5.1-cp311-cp311-linux_aarch64.whl --force-reinstall --no-deps
-        pipx runpip vllm-ascend install ${URL_PREFIX}/torch_npu-2.5.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl --force-reinstall --no-deps
+    # Install dependencies.
+    cat <<EOT >/tmp/requirements.txt
+ml-dtypes==0.5.0
+tornado==6.4.2
+gevent==24.2.1
+geventhttpclient==2.3.1
+sacrebleu==2.4.3
+pandas==2.2.3
+rouge_score==0.1.2
+pybind11==2.13.6
+pytest==8.4.0
+cloudpickle==3.0.0
+ray[client]==2.43.0
+EOT
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
 
-        ln -sf ${VENV_PATH}/vllm-ascend/bin/vllm /usr/local/bin/vllm
-
-        # Install Ray
-        rm -f /usr/local/bin/ray 
-        pipx runpip vllm-ascend install ray[client]==2.43.0
-        ln -sf ${VENV_PATH}/vllm-ascend/bin/ray /usr/local/bin/ray
+    # Install vLLM & vLLM-Ascend
+    cat <<EOT >/tmp/requirements.txt
+vllm==${VLLM_VERSION}
+vllm-ascend==${VLLM_ASCEND_VERSION}
+EOT
+    if [ ${ARCH} == "x86_64" ]; then
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    else
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
     fi
 
+    # Install MindIE Turbo
+    MINDIE_TURBO_FILE="Ascend-mindie-turbo_${DOWNLOAD_VERSION}_py${PYTHON_VERSION//./}_${OS}_${ARCH}.tar.gz"
+    MINDIE_TURBO_URL="${URL_PREFIX}/${MINDIE_TURBO_FILE}?${URL_SUFFIX}"
+    curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL "${MINDIE_TURBO_URL}" | tar -zx -C /tmp --strip-components 1
+    WHEEL_PACKAGE="$(ls /tmp/Ascend-mindie-turbo_${DOWNLOAD_VERSION}_py${PYTHON_VERSION//./}_${OS}_${ARCH}/*.whl)"
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore ${WHEEL_PACKAGE}
+
+    # Post process
+    deactivate
+
+    # Review
+    pipx runpip vllm freeze
+
     # Cleanup
-    pip cache purge
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
+        && rm -rf ~/log \
+        && pip cache purge
 EOF
 
 #
@@ -427,34 +567,61 @@ EOF
 #   docker build --tag=gpustack/gpustack:npu --file=Dockerfile.npu --progress=plain .
 #
 
-FROM vllm-ascend-install AS gpustack
+FROM mindie-install AS gpustack
+
+## Copy vLLM from vllm-install stage
+
+COPY --from=vllm-install ${PIPX_LOCAL_VENVS}/vllm ${PIPX_LOCAL_VENVS}/vllm
 
 ## Install GPUStack
 
 RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
-    # Build
+    # GPUStack
+
+    # Build GPUStack
     cd /workspace/gpustack \
         && make build
 
-    # Install,
+    # Pre process
+    # - Create virtual environment to place gpustack
+    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/gpustack
+    # - Prepare environment
+    source ${PIPX_LOCAL_VENVS}/gpustack/bin/activate
+
+    # Install GPUStack,
     # vox-box relies on PyTorch 2.7, which is not compatible with MindIE.
     WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)"
-    pip install --no-cache-dir --root-user-action ignore $WHEEL_PACKAGE
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore ${WHEEL_PACKAGE} \
+        && ln -vsf ${PIPX_LOCAL_VENVS}/gpustack/bin/gpustack /usr/local/bin/gpustack
 
     # Download tools
     gpustack download-tools --device npu
+
+    # Active MindIE
+    # MindIE is combined with a lot of components, and it is conflict with vLLM,
+    # so we need to active MindIE manually at GPUStack.
+
+    # Active vLLM
+    ln -vsf ${PIPX_LOCAL_VENVS}/vllm/bin/vllm ${PIPX_LOCAL_VENVS}/gpustack/bin/vllm
+    # - Redirect RAY.
+    rm -rf ${PIPX_LOCAL_VENVS}/gpustack/bin/ray \
+        && ln -vsf ${PIPX_LOCAL_VENVS}/vllm/bin/ray ${PIPX_LOCAL_VENVS}/gpustack/bin/ray
 
     # Set up environment
     mkdir -p /var/lib/gpustack \
         && chmod -R 0755 /var/lib/gpustack
 
+    # Post process
+    deactivate
+
     # Review
-    pip freeze \
-        && python -m site
+    pipx runpip gpustack freeze
 
     # Cleanup
-    rm -rf /workspace/gpustack/dist \
+    rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
+        && rm -rf /workspace/gpustack/dist \
         && pip cache purge
 EOF
 
@@ -481,27 +648,15 @@ RUN <<EOF
     echo "${SOURCE_ATB_MODEL_ENV}" >> /etc/profile
     echo "${SOURCE_ATB_MODEL_ENV}" >> ~/.bashrc
 
-    # Export Driver Tools
+    # Export Driver tools
     EXPORT_DRIVER_TOOLS="export PATH=${CANN_HOME}/driver/tools:\${PATH}"
     echo "${EXPORT_DRIVER_TOOLS}" >> /etc/profile
     echo "${EXPORT_DRIVER_TOOLS}" >> ~/.bashrc
 
-    # vLLM Ascend lib
-    ARCH="$(uname -m)"
-    if [[ "$ARCH" == "aarch64" && "$CANN_CHIP" == "910b" ]]; then
-        EXPORT_PYTHON_LIB="export LD_LIBRARY_PATH=$(pipx environment --value PIPX_LOCAL_VENVS)/vllm-ascend/lib/python3.11/site-packages/torch/lib:\${LD_LIBRARY_PATH}"
-        echo "${EXPORT_PYTHON_LIB}" >> /etc/profile
-        echo "${EXPORT_PYTHON_LIB}" >> ~/.bashrc
-
-        # vLLM Ascend Tuning
-        echo 'export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"' >> /etc/profile
-        echo 'export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"' >> ~/.bashrc
-        echo 'export TASK_QUEUE_ENABLE=2' >> /etc/profile
-        echo 'export TASK_QUEUE_ENABLE=2' >> ~/.bashrc
-    fi
-
     # NB(thxCode): For specific MindIE version supporting,
     # we need to process environment setting up during GPUStack deployment.
+
+    # NB(thxCode): Any tuning environment variables should NOT be set here.
 EOF
 
 ENTRYPOINT [ "tini", "--", "/usr/bin/bash", "-c", "source /etc/profile && exec gpustack start \"$@\"", "--" ]
