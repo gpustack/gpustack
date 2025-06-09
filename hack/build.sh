@@ -12,7 +12,7 @@ function build() {
 }
 
 function prepare_dependencies() {
-  bash "${ROOT_DIR}/hack/install.sh"
+  POETRY_ONLY=true bash "${ROOT_DIR}/hack/install.sh"
 }
 
 function set_version() {  
