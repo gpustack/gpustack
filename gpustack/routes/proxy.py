@@ -1,7 +1,7 @@
 import os
 from urllib.parse import urlparse
+import aiohttp
 from fastapi.responses import JSONResponse
-import httpx
 import logging
 
 from fastapi import APIRouter, Request, Response
@@ -40,7 +40,11 @@ HEADER_SKIPPED = [
 ]
 HF_ENDPOINT = os.getenv("HF_ENDPOINT")
 
-timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
+timeout = aiohttp.ClientTimeout(
+    connect=15.0,
+    sock_read=60.0,
+    sock_connect=10.0,
+)
 
 
 @router.api_route("", methods=["GET", "POST", "PUT", "DELETE"])
@@ -53,29 +57,34 @@ async def proxy(request: Request, url: str):
 
     forwarded_headers = process_headers(request.headers, url)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            data = (
-                await request.body()
-                if request.method in ["POST", "PUT", "DELETE"]
-                else None
-            )
-            response = await client.request(
-                request.method, url, headers=forwarded_headers, data=data
-            )
+    try:
+        data = (
+            await request.body()
+            if request.method in ["POST", "PUT", "DELETE"]
+            else None
+        )
 
-            return Response(
-                status_code=response.status_code,
-                content=response.content,
-                headers=response.headers,
-                media_type=response.headers.get("Content-Type"),
-            )
-        except Exception as e:
-            return JSONResponse(
-                status_code=500,
-                content={"detail": str(e)},
-                media_type="application/json",
-            )
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.request(
+                method=request.method,
+                url=url,
+                headers=forwarded_headers,
+                data=data,
+            ) as resp:
+                content = await resp.read()
+                headers = dict(resp.headers)
+                return Response(
+                    status_code=resp.status,
+                    content=content,
+                    headers=headers,
+                    media_type=headers.get("Content-Type"),
+                )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)},
+            media_type="application/json",
+        )
 
 
 def validate_http_method(method: str):

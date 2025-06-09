@@ -30,7 +30,7 @@ python-multipart = "^0.0.17"
 dataclasses-json = "^0.6.7"
 apscheduler = "^3.10.4"
 asyncpg = "^0.29.0"
-httpx = {extras = ["socks"], version = "^0.27.0"}
+httpx = {extras = ["socks"], version = ">=0.27.0"}
 alembic = "^1.13.2"
 importlib-resources = "^6.4.0"
 pytest-asyncio = "^0.23.7"
@@ -48,7 +48,7 @@ wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
 pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
 packaging = "^24.1"
 psycopg2-binary = "^2.9.10"
-vox-box = {version = "0.0.16", optional = true}
+vox-box = {version = "0.0.17", optional = true}
 
 tenacity = "^9.0.0"
 aiocache = "^0.12.3"
@@ -72,7 +72,8 @@ flake8 = "^7.0.0"
 flake8-bugbear = "^24.4.26"
 black = "^24.4.2"
 pytest = "^8.2.0"
-openapi-python-client = "^0.20.0"
+openapi-python-client = ">=0.20.0"
+httpx-aiohttp = "^0.1.4"
 
 deptry = "^0.16.1"
 pre-commit = "^3.7.1"

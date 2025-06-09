@@ -1,6 +1,7 @@
+import asyncio
 import os
 from typing import List, Optional
-import httpx
+import aiohttp
 import logging
 
 from fastapi import APIRouter, Query, Request, Response, status
@@ -196,7 +197,7 @@ async def proxy_request_by_model(request: Request, endpoint: str):
             return await handle_standard_request(
                 request, url, body_json, form_data, form_files, extra_headers
             )
-    except httpx.TimeoutException as e:
+    except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
         if str(e):
             error_message += f": {e}"
@@ -287,7 +288,7 @@ async def handle_streaming_request(
     form_files: Optional[list],
     extra_headers: Optional[dict] = None,
 ):
-    timeout = 300
+    timeout = aiohttp.ClientTimeout(total=300)
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
@@ -299,27 +300,28 @@ async def handle_streaming_request(
 
     async def stream_generator():
         try:
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    method=request.method,
-                    url=url,
-                    headers=headers,
-                    json=body_json if body_json else None,
-                    data=form_data if form_data else None,
-                    files=form_files if form_files else None,
-                    timeout=timeout,
-                ) as resp:
-                    if resp.status_code >= 400:
-                        yield await resp.aread(), resp.headers, resp.status_code
+            http_client: aiohttp.ClientSession = request.app.state.http_client
+            async with http_client.request(
+                method=request.method,
+                url=url,
+                headers=headers,
+                json=body_json if body_json else None,
+                data=form_data if form_data else None,
+                timeout=timeout,
+            ) as resp:
+                if resp.status >= 400:
+                    yield await resp.read(), resp.headers, resp.status
+                    return
 
-                    chunk = ""
-                    async for line in resp.aiter_lines():
-                        if line != "":
-                            chunk = line + "\n"
-                        else:
-                            chunk += "\n"
-                            yield chunk, resp.headers, resp.status_code
-        except httpx.ConnectError as e:
+                chunk = ""
+                async for line in resp.content:
+                    line = line.decode("utf-8").strip()
+                    if line != "":
+                        chunk = line + "\n"
+                    else:
+                        chunk += "\n"
+                        yield chunk, resp.headers, resp.status
+        except aiohttp.ClientError as e:
             error_response = OpenAIAPIErrorResponse(
                 error=OpenAIAPIError(
                     message=f"Service unavailable. Please retry your requests after a brief wait. Original error: {e}",
@@ -354,21 +356,30 @@ async def handle_standard_request(
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
+    data = None
+    if form_data or form_files:
+        form = aiohttp.FormData()
+        for key, value in (form_data or {}).items():
+            form.add_field(key, value)
+        for key, (filename, content, content_type) in form_files or []:
+            form.add_field(key, content, filename=filename, content_type=content_type)
+        data = form
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            method=request.method,
-            url=url,
-            headers=headers,
-            json=body_json if body_json else None,
-            data=form_data if form_data else None,
-            files=form_files if form_files else None,
-            timeout=PROXY_TIMEOUT,
-        )
+    http_client: aiohttp.ClientSession = request.app.state.http_client
+    timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+    async with http_client.request(
+        method=request.method,
+        url=url,
+        headers=headers,
+        json=body_json if body_json else None,
+        data=data if data else None,
+        timeout=timeout,
+    ) as response:
+        content = await response.read()
         return Response(
-            status_code=resp.status_code,
-            headers=dict(resp.headers),
-            content=resp.content,
+            status_code=response.status,
+            headers=dict(response.headers),
+            content=content,
         )
 
 

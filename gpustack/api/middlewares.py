@@ -199,7 +199,7 @@ async def handle_streaming_response(
                 logger.error(f"Error processing streaming response: {e}")
                 yield chunk
 
-    return StreamingResponse(streaming_generator(), headers=dict(response.headers))
+    return StreamingResponse(streaming_generator(), headers=response.headers)
 
 
 async def process_chunk(
