@@ -410,7 +410,7 @@ python-rapidjson==1.20
 requests==2.32.3
 sacrebleu==2.4.3
 tornado==6.4.2
-transformers==4.46.3
+transformers==4.52.3
 tiktoken==0.7.0
 typing_extensions==4.13.2
 tzdata==2024.2
@@ -443,13 +443,14 @@ EOT
 
     # Post process
     # - Make MindIE service configuration writable
-    chmod +w "${CANN_HOME}/mindie/latest/mindie-service/conf"
+    chmod +w "${CANN_HOME}/mindie/${DOWNLOAD_VERSION}/mindie-service/conf"
     # - Tell GPUStack how to launch MindIE
     cat <<EOT >>"${CANN_HOME}/mindie/${DOWNLOAD_VERSION}/mindie-service/set_env.sh"
 
 # NB(thxCode): This is a workaround for GPUStack to activate MindIE.
 source ${PIPX_LOCAL_VENVS}/mindie/bin/activate || true
 EOT
+    chmod -w "${CANN_HOME}/mindie/${DOWNLOAD_VERSION}/mindie-service/set_env.sh"
     deactivate
 
     # Review
@@ -579,7 +580,9 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # GPUStack
 
     # Build GPUStack
+    export PATH="${HOME}/.local/bin:${PATH}"
     cd /workspace/gpustack \
+        && git config --global --add safe.directory /workspace/gpustack \
         && make build
 
     # Pre process

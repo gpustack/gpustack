@@ -12,9 +12,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function download_deps() {
-  pip install poetry==1.8.3 pre-commit==3.7.1
+  pip install poetry==1.8.3
   poetry install
-  pre-commit install
+  if [[ "${POETRY_ONLY:-false}" == "false" ]]; then
+    pip install pre-commit==3.7.1
+    pre-commit install
+  fi
 }
 
 function download_ui() {
