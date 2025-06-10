@@ -6,9 +6,9 @@
 
 ## Supported Platforms
 
-| OS    | Arch  | Supported methods                                                                                        |
-| ----- | ----- | -------------------------------------------------------------------------------------------------------- |
-| Linux | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script) |
+| OS    | Arch  | Supported methods                           |
+| ----- | ----- | ------------------------------------------- |
+| Linux | AMD64 | [Docker Installation](#docker-installation) |
 
 ## Supported backends
 
