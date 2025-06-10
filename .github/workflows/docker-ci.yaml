@@ -159,6 +159,20 @@ jobs:
             echo "$arg" >> $GITHUB_OUTPUT
           done
           echo "EOF" >> $GITHUB_OUTPUT
+      - name: Get cache tag suffix
+        id: cache-tag-suffix
+        run: |
+          # Use different cache tag suffixes for different branches.
+          # Examples:
+          # - pr/push to main -> "-cpu-main"
+          # - vx.y.z -> "-cpu"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "CACHE_TAG_SUFFIX=${{ matrix.tag_suffix }}-${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+            echo "CACHE_TAG_SUFFIX=${{ matrix.tag_suffix }}-${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+          else
+            echo "CACHE_TAG_SUFFIX=${{ matrix.tag_suffix }}" >> $GITHUB_ENV
+          fi
       - name: Package
         uses: docker/build-push-action@v6
         id: package
@@ -174,6 +188,6 @@ jobs:
           build-args: |
             ${{ steps.build-args.outputs.BUILD_ARGS }}
           cache-from: |
-            type=registry,ref=gpustack/build-cache:gpustack${{ matrix.tag_suffix }}
+            type=registry,ref=gpustack/build-cache:gpustack${{ env.CACHE_TAG_SUFFIX }}
           cache-to: |
-            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref=gpustack/build-cache:gpustack{0},ignore-error=true', matrix.tag_suffix) || '' }}
+            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref=gpustack/build-cache:gpustack{0},ignore-error=true', env.CACHE_TAG_SUFFIX) || '' }}
