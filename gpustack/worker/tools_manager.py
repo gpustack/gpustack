@@ -749,7 +749,7 @@ class ToolsManager:
         except Exception as e:
             raise Exception(f"error extracting {file_path}: {e}")
 
-    def _install_ascend_mindie_run_pkg(
+    def _install_ascend_mindie_run_pkg(  # noqa: C901
         self,
         run_package_path: str,
         target_dir: Path,
@@ -774,6 +774,8 @@ class ToolsManager:
                 "Failed to determine pipx local venvs. Ensure pipx is correctly installed."
             )
 
+        # New installation will overwrite the original Python packages,
+        # so we need to create a new virtual environment for the new installation.
         # Create a virtual environment to collect the new Python packages.
         venv_dir = Path(pipx_local_venvs).joinpath(f"mindie_{version}")
         try:
@@ -788,6 +790,22 @@ class ToolsManager:
         logger.info(
             f"Created virtual environment for Ascend MindIE installation: {venv_dir}"
         )
+
+        # New installation will overwrite the original latest directory symlink,
+        # so we need to recover the symlink if it exists after installation.
+        # Check if the latest symlink exists and save the original latest version.
+        original_latest = None
+        latest_dir = target_dir.joinpath("mindie", "latest")
+        if latest_dir.is_dir() and latest_dir.is_symlink():
+            try:
+                original_latest = latest_dir.readlink()
+                logger.info(
+                    f"Recorded latest symlink for original Ascend MindIE: {original_latest}"
+                )
+            except OSError as e:
+                logger.warning(
+                    f"Failed to read symlink for latest MindIE directory: {e}."
+                )
 
         # Install
         command = (
@@ -818,25 +836,40 @@ class ToolsManager:
             )
             logger.info(f"Installed Ascend MindIE '{version}' to {target_dir}")
 
-            # Post process, inject the virtual environment activation script into set_env.sh.
+            # Post process
+            # - inject the virtual environment activation script into set_env.sh.
             logger.info(
                 "Injecting virtual environment activation into Ascend MindIE launch"
             )
             set_env_script = target_dir.joinpath(
                 "mindie", version, "mindie-service", "set_env.sh"
             )
-            # - Enable set_env.sh writable permission
+            # -- Enable set_env.sh writable permission
             st = os.stat(set_env_script)
             old_mode = st.st_mode
             new_mode = old_mode | stat.S_IWUSR
             os.chmod(set_env_script, new_mode)
             with open(set_env_script, 'a', encoding='utf-8') as f:
                 f.write(f"\nsource {venv_path} || true\n")
-            # - Disable set_env.sh writable permission
+            # -- Disable set_env.sh writable permission
             os.chmod(set_env_script, old_mode)
             logger.info(
                 f"Injected virtual environment activation into Ascend MindIE launch: {set_env_script}"
             )
+            # - recover the latest symlink if it exists.
+            if original_latest:
+                mindie_dir_fd = os.open(target_dir.joinpath("mindie"), os.O_RDONLY)
+                os.remove("latest", dir_fd=mindie_dir_fd)
+                os.symlink(
+                    original_latest,
+                    "latest",
+                    dir_fd=mindie_dir_fd,
+                    target_is_directory=True,
+                )
+                logger.info(
+                    f"Recovered latest symlink to '{original_latest}' for Ascend MindIE"
+                )
+
         except subprocess.CalledProcessError as e:
             raise Exception(f"Failed to install Ascend MindIE {command}: {e}")
 
