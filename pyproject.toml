@@ -62,7 +62,6 @@ pymysql = "^1.1.1"
 
 pyarrow = "*"
 pandas = "*"
-hf-xet = "*"
 blobfile = "^3.0.0"
 timm = {version = "^1.0.15", optional = true}
 aiolimiter = "^1.2.1"
