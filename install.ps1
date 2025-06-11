@@ -444,12 +444,6 @@ function Install-GPUStack {
             throw "failed to install $INSTALL_PACKAGE_SPEC."
         }
 
-        # Workaround for issue #581
-        pipx inject gpustack pydantic==2.9.2 --force
-        if ($LASTEXITCODE -ne 0) {
-            throw "failed to run pipx inject."
-        }
-
         pipx ensurepath
         if ($LASTEXITCODE -ne 0) {
             throw "failed to run pipx ensurepath."

@@ -731,8 +731,6 @@ install_gpustack() {
 
   # shellcheck disable=SC2090,SC2086
   pipx install --force --verbose $install_args --python "$(which python3)" "$INSTALL_PACKAGE_SPEC"
-  # Workaround for issue #581
-  pipx inject gpustack pydantic==2.9.2 --force > /dev/null 2>&1
 
   # audio dependencies for macOS
   if [ "$INSTALL_SKIP_BUILD_DEPENDENCIES" != "1" ] && [ "$OS" = "macos" ]; then
