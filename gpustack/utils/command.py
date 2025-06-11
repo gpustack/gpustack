@@ -1,3 +1,6 @@
+import sys
+import sysconfig
+from os.path import dirname, abspath, join
 import shutil
 from typing import List, Optional
 
@@ -55,3 +58,15 @@ def get_versioned_command(command_name: str, version: str) -> str:
         return f"{command_name[:-4]}_{version}.exe"
 
     return f"{command_name}_{version}"
+
+
+def get_command_path(command_name: str) -> str:
+    """
+    Return the full path of sepcified command. Supports both frozen and python base environments.
+    """
+    base_path = (
+        dirname(sys.executable)
+        if getattr(sys, 'frozen', False)
+        else sysconfig.get_path("scripts")
+    )
+    return abspath(join(base_path, command_name))
