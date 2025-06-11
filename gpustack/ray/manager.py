@@ -2,10 +2,10 @@ import asyncio
 import logging
 import os
 import subprocess
-import sysconfig
 from urllib.parse import urlsplit
 from gpustack.config import Config
 from gpustack.utils.network import parse_port_range
+from gpustack.utils.command import get_command_path
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class RayManager:
     async def _start_ray(self):
         logger.info(f"Starting Ray {self._role}.")
 
-        command_path = os.path.join(sysconfig.get_path("scripts"), "ray")
+        command_path = get_command_path('ray')
         arguments = [
             "start",
             "--block",

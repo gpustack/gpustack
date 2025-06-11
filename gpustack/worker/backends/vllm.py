@@ -3,10 +3,13 @@ import logging
 import os
 import subprocess
 import sys
-import sysconfig
 from typing import Dict, List, Optional
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
-from gpustack.utils.command import find_parameter, get_versioned_command
+from gpustack.utils.command import (
+    find_parameter,
+    get_versioned_command,
+    get_command_path,
+)
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -20,7 +23,7 @@ logger = logging.getLogger(__name__)
 class VLLMServer(InferenceServer):
     def start(self):
         try:
-            command_path = os.path.join(sysconfig.get_path("scripts"), "vllm")
+            command_path = get_command_path("vllm")
             if self._model.backend_version:
                 command_path = os.path.join(
                     self._config.bin_dir,
