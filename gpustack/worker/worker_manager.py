@@ -46,11 +46,13 @@ class WorkerManager:
         self._system_reserved = system_reserved
         self._rpc_servers: Dict[int, RPCServerProcessInfo] = {}
         self._rpc_server_log_dir = f"{cfg.log_dir}/rpc_server"
+        self._rpc_server_cache_dir = f"{cfg.cache_dir}/rpc_server/"
         self._rpc_server_args = cfg.rpc_server_args
         self._gpu_devices = cfg.get_gpu_devices()
         self._system_info = cfg.get_system_info()
 
         os.makedirs(self._rpc_server_log_dir, exist_ok=True)
+        os.makedirs(self._rpc_server_cache_dir, exist_ok=True)
 
     def sync_worker_status(self):
         """
@@ -201,6 +203,7 @@ class WorkerManager:
                     gpu_device.index,
                     gpu_device.vendor,
                     log_file_path,
+                    self._rpc_server_cache_dir,
                     self._rpc_server_args,
                 ),
             )
