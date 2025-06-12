@@ -253,8 +253,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The selected GPUs provide {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
             ]
         elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization > 0:
+            effective_vram = (
+                byte_to_gib(self._largest_multi_gpu_vram)
+                * self._gpu_memory_utilization
+                * self._largest_multi_gpu_utilization_satisfied_count
+                / self._largest_multi_gpu_total
+            )
             messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
+                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB. The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, resulting in {effective_vram} GiB effective VRAM."
             ]
         elif self._largest_single_gpu_vram > 0 and self._gpu_memory_utilization > 0:
             messages = [
@@ -416,7 +422,11 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     continue
 
                 overcommit = False
-                exceeds_vram = self._vram_claim > allocatable_vram
+                exceeds_vram = (
+                    self._vram_claim > gpu.memory.total * self._gpu_memory_utilization
+                    if self._gpu_memory_utilization > 0  # LLMs
+                    else self._vram_claim > allocatable_vram  # non LLMs
+                )
                 exceeds_memory_utilization = (
                     self._gpu_memory_utilization > 0
                     and allocatable_gpu_memory_utilization
