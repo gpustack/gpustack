@@ -179,12 +179,12 @@ class ToolsManager:
             and self._current_tools_version.get(file_name) == version
         ):
             logger.debug(f"{file_name} already exists, skipping download")
-            return
+        else:
+            self._download_llama_box(version, target_dir, file_name)
+            # Update versions.json
+            self._update_versions_file(file_name, version)
 
-        self._download_llama_box(version, target_dir, file_name)
-
-        # Update versions.json
-        self._update_versions_file(file_name, version)
+        self._link_llama_box_rpc_server(target_dir, file_name)
 
     def install_versioned_ascend_mindie(self, version: str):
         if self._os != "linux":
@@ -460,8 +460,6 @@ class ToolsManager:
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
 
-        self._link_llama_box_rpc_server(target_dir, target_file_name)
-
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
 
@@ -477,7 +475,16 @@ class ToolsManager:
         src_file = target_dir / src_file_name
         dst_file = target_dir / dst_file_name
 
-        if os.path.lexists(dst_file):
+        if os.path.islink(dst_file):
+            current_target = os.readlink(dst_file)
+            if current_target == src_file_name:
+                logger.debug(
+                    f"{dst_file_name} already linked to {src_file_name} in {target_dir}, skipping"
+                )
+                return
+            else:
+                os.remove(dst_file)
+        elif os.path.lexists(dst_file):
             os.remove(dst_file)
 
         if self._os == "windows":
