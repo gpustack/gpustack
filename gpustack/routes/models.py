@@ -188,6 +188,11 @@ async def validate_model_in(
                     message="Cannot set --gpu-layers to 0 and manually select GPUs at the same time. Setting --gpu-layers to 0 means running on CPU only."
                 )
 
+        param_port = find_parameter(model_in.backend_parameters, ["p", "port"])
+
+        if param_port:
+            raise BadRequestException(message="--port is not supported")
+
 
 async def validate_gpu_ids(  # noqa: C901
     session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
