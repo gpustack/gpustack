@@ -42,7 +42,7 @@ class AscendMindIEParameters:
     #
     # Model config
     #
-    cpu_mem_size: int = 5
+    cpu_mem_size: int = 0
     npu_memory_fraction: float = 0.9
     trust_remote_code: bool = False
     #
@@ -81,7 +81,7 @@ class AscendMindIEParameters:
     lookahead_window: int = 5
     lookahead_guess_set_size: int = 5
     enable_prefix_caching: bool = False
-    world_size: int = 1  # store validation input
+    world_size: int = -1  # store validation input
     tensor_parallel_size: int = -1
     data_parallel_size: int = -1
     enable_expert_parallel: bool = False
@@ -154,7 +154,7 @@ class AscendMindIEParameters:
             type=int,
             default=self.cpu_mem_size,
             help="CPU swap space size (GiB). "
-            f"If unspecified, will use the default value of {self.cpu_mem_size}.",
+            "Works when specified `--max-preempt-count`.",
         )
         parser.add_argument(
             "--npu-memory-fraction",
@@ -442,6 +442,9 @@ class AscendMindIEParameters:
         # Model deploy config
         if self.max_input_token_len <= 0:
             self.max_input_token_len = self.max_seq_len
+        # Schedule config
+        if self.max_preempt_count == 0:
+            self.cpu_mem_size = 0
         # Extends or Features
         # -- Data parallelism
         if self.tensor_parallel_size <= 0:
@@ -471,10 +474,16 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--max-input-token-len must be in the range (0, --max-seq-len]"
             )
+        # Model config
+        if self.cpu_mem_size < 0:
+            raise argparse.ArgumentTypeError(
+                "--cpu-mem-size must be greater than or equal to 0"
+            )
         if not (0 < self.npu_memory_fraction < 1):
             raise argparse.ArgumentTypeError(
                 "--npu-memory-fraction must be in the range (0, 1]"
             )
+        # Schedule config
         if self.cache_block_size & (self.cache_block_size - 1) != 0:
             raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
         if not (1 <= self.max_prefill_batch_size <= self.max_batch_size):
@@ -530,7 +539,7 @@ class AscendMindIEParameters:
                     "--split-start-batch-size must be in the range [0, --max-batch-size]"
                 )
         # -- Data parallelism
-        if self.tensor_parallel_size > self.world_size:
+        if 0 < self.world_size < self.tensor_parallel_size:
             raise argparse.ArgumentTypeError(
                 f"--tensor-parallel-size must be less or equal to world size: {self.world_size}"
             )
@@ -539,7 +548,7 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     "--tensor-parallel-size must be the power of 2"
                 )
-        if self.data_parallel_size > self.world_size:
+        if 0 < self.world_size < self.data_parallel_size:
             raise argparse.ArgumentTypeError(
                 f"--data-parallel-size must be less or equal to world size: {self.world_size}"
             )
@@ -548,7 +557,11 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     "--data-parallel-size must be the power of 2"
                 )
-            elif self.data_parallel_size * self.tensor_parallel_size != self.world_size:
+            elif (
+                0
+                < self.world_size
+                != self.data_parallel_size * self.tensor_parallel_size
+            ):
                 raise argparse.ArgumentTypeError(
                     "--data-parallel-size and --tensor-parallel-size must be "
                     f"multiples of world size: {self.world_size}"
@@ -715,7 +728,6 @@ class AscendMindIEServer(InferenceServer):
         # -- Pin installation path, which helps to locate other resources.
         env["MIES_INSTALL_PATH"] = str(install_path)
         # -- Enable high performance swapper.
-        # env["MIES_USE_MB_SWAPPER"] = "1"  # Atlas 300I Duo needs to unset this.
         env["MIES_RECOMPUTE_THRESHOLD"] = "0.5"
         # env["MINDIE_LLM_USE_MB_SWAPPER"] = "1"  # Atlas 300I Duo needs to unset this.
         env["MINDIE_LLM_RECOMPUTE_THRESHOLD"] = "0.5"
@@ -850,6 +862,7 @@ class AscendMindIEServer(InferenceServer):
             model_deploy_config["truncation"] = params.truncation
             # -- Model config
             model_config["cpuMemSize"] = params.cpu_mem_size
+            env["MIES_USE_MB_SWAPPER"] = "1" if params.cpu_mem_size > 0 else "0"
             env["NPU_MEMORY_FRACTION"] = str(params.npu_memory_fraction)
             model_config["trustRemoteCode"] = params.trust_remote_code
             # -- Schedule config
@@ -988,10 +1001,10 @@ class AscendMindIEServer(InferenceServer):
                 model_config["dp"] = dp
             if tp > 0:
                 model_config["tp"] = tp
-                model_config["moe_tp"] = tp if dp <= 0 else dp * tp
+                model_config["moe_tp"] = tp if dp <= 0 else world_size
                 if params.enable_expert_parallel:
-                    model_config["moe_ep"] = model_config["moe_tp"]
-                    model_config["moe_tp"] = 1
+                    model_config["moe_ep"] = dp
+                    model_config["moe_tp"] = tp
             # --- Buffer response
             if params.enable_buffer_response:
                 schedule_config["bufferResponseEnabled"] = True
