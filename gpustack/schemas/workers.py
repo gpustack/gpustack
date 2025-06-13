@@ -81,6 +81,7 @@ class VendorEnum(str, Enum):
     AMD = "AMD"
     Hygon = "Hygon"
     Iluvatar = "Iluvatar"
+    Cambricon = "Cambricon"
 
 
 class MountPoint(BaseModel):
