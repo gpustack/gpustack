@@ -11,6 +11,7 @@ from gpustack.detectors.npu_smi.npu_smi import NPUSMI
 from gpustack.detectors.rocm_smi.rocm_smi import RocmSMI
 from gpustack.detectors.regredit.regredit import Regredit
 from gpustack.detectors.ixsmi.ixsmi import IXSMI
+from gpustack.detectors.cnmon.cnmon import Cnmon
 from gpustack.utils import platform
 
 
@@ -42,6 +43,7 @@ class DetectorFactory:
             platform.DeviceTypeEnum.ROCM.value: [RocmSMI(), Regredit()],
             platform.DeviceTypeEnum.DCU.value: [RocmSMI()],
             platform.DeviceTypeEnum.COREX.value: [IXSMI()],
+            platform.DeviceTypeEnum.MLU.value: [Cnmon()],
         }
 
     def _validate_detectors(self):

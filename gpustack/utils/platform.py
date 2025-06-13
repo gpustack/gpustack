@@ -86,6 +86,7 @@ class DeviceTypeEnum(str, Enum):
     MUSA = "musa"
     DCU = "dcu"
     COREX = "corex"
+    MLU = "mlu"
 
 
 def device() -> str:
@@ -98,6 +99,7 @@ def device() -> str:
     - rocm
     - dcu
     - iluvatar
+    - mlu
     - etc.
     """
     if (
@@ -131,6 +133,9 @@ def device() -> str:
     if is_command_available("ixsmi"):
         return "corex"
 
+    if is_command_available("cnmon"):
+        return DeviceTypeEnum.MLU.value
+
     return ""
 
 
@@ -143,6 +148,7 @@ def device_type_from_vendor(vendor: VendorEnum) -> str:
         VendorEnum.Hygon.value: DeviceTypeEnum.DCU.value,
         VendorEnum.MTHREADS.value: DeviceTypeEnum.MUSA.value,
         VendorEnum.Iluvatar.value: DeviceTypeEnum.COREX.value,
+        VendorEnum.Cambricon.value: DeviceTypeEnum.MLU.value,
     }
 
     return mapping.get(vendor, "")
