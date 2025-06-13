@@ -329,6 +329,7 @@ class Scheduler:
                 model_instance.distributed_servers = DistributedServers(
                     rpc_servers=candidate.rpc_servers,
                     ray_actors=candidate.ray_actors,
+                    subordinate_workers=candidate.subordinate_workers,
                 )
 
                 await ModelInstanceService(session).update(model_instance)

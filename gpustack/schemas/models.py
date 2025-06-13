@@ -275,6 +275,19 @@ class ComputedResourceClaim(BaseModel):
     tensor_split: Optional[List[int]] = Field(default=None)
 
 
+class ModelInstanceSubordinateWorker(BaseModel):
+    worker_id: Optional[int] = None
+    worker_ip: Optional[str] = None
+    total_gpus: Optional[int] = None
+    gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
+    gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
+    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
+        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
+    )
+    download_progress: Optional[float] = None
+
+
+# FIXME: Migrate to ModelInstanceSubordinateWorker.
 class ModelInstanceRPCServer(RPCServer):
     worker_id: Optional[int] = None
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
@@ -282,6 +295,7 @@ class ModelInstanceRPCServer(RPCServer):
     )
 
 
+# FIXME: Migrate to ModelInstanceSubordinateWorker.
 class RayActor(BaseModel):
     worker_id: Optional[int] = None
     worker_ip: Optional[str] = None
@@ -294,10 +308,14 @@ class RayActor(BaseModel):
 
 
 class DistributedServers(BaseModel):
+    subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = Field(
+        sa_column=Column(JSON), default=[]
+    )
+    # FIXME: Replace by subordinate_workers.
     rpc_servers: Optional[List[ModelInstanceRPCServer]] = Field(
         sa_column=Column(JSON), default=[]
     )
-
+    # FIXME: Replace by subordinate_workers.
     ray_actors: Optional[List[RayActor]] = Field(sa_column=Column(JSON), default=[])
 
     model_config = ConfigDict(from_attributes=True)

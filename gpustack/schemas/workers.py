@@ -207,6 +207,14 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
     __tablename__ = 'workers'
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    def __hash__(self):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        if super().__eq__(other) and isinstance(other, Worker):
+            return self.id == other.id
+        return False
+
 
 class WorkerCreate(WorkerBase):
     pass
