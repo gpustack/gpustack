@@ -9,7 +9,6 @@ import psutil
 
 from gpustack.schemas.workers import Worker
 from gpustack.utils import platform
-from gpustack.utils.platform import get_executable_suffix as exe
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
@@ -17,7 +16,7 @@ from gpustack.schemas.models import (
     is_image_model,
     is_renaker_model,
 )
-from gpustack.utils.command import find_parameter, get_versioned_command
+from gpustack.utils.command import find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.worker.backends.base import InferenceServer
 from gpustack.worker.tools_manager import get_llama_box_command
@@ -28,14 +27,15 @@ logger = logging.getLogger(__name__)
 class LlamaBoxServer(InferenceServer):
     def start(self):  # noqa: C901
         base_path = pkg_resources.files("gpustack.third_party.bin").joinpath(
-            'llama-box'
+            'llama-box/llama-box-default'
         )
         command_path = get_llama_box_command(str(base_path))
         if self._model.backend_version:
             command_path = os.path.join(
                 self._config.bin_dir,
-                get_versioned_command(f'llama-box{exe()}', self._model.backend_version),
+                f'llama-box/llama-box-{self._model.backend_version}',
             )
+            command_path = get_llama_box_command(str(base_path))
 
         layers = -1
         claim = self._model_instance.computed_resource_claim
@@ -143,11 +143,20 @@ class LlamaBoxServer(InferenceServer):
                 )
 
             env = self.get_inference_running_env()
+            command_dir = str(command_path.parent)
+            if platform.system() == "linux":
+                ld_library_path = env.get("LD_LIBRARY_PATH", "")
+                env["LD_LIBRARY_PATH"] = (
+                    ":".join([command_dir, ld_library_path])
+                    if ld_library_path
+                    else command_dir
+                )
             proc = subprocess.Popen(
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
+                cwd=command_path.cwd(),
             )
 
             set_priority(proc.pid)

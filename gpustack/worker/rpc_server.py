@@ -55,7 +55,7 @@ class RPCServer:
         args: Optional[List[str]] = None,
     ):
         command_path = pkg_resources.files(
-            "gpustack.third_party.bin.llama-box"
+            "gpustack.third_party.bin.llama-box.llama-box-default"
         ).joinpath(RPCServer.get_llama_box_rpc_server_command())
 
         arguments = [
@@ -98,6 +98,7 @@ class RPCServer:
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
+                cwd=command_path.cwd(),
             )
         except Exception as e:
             error_message = f"Failed to run the llama-box rpc server: {e}"

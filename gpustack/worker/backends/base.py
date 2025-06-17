@@ -94,7 +94,7 @@ class InferenceServer(ABC):
         if event.data["state"] == ModelInstanceStateEnum.ERROR:
             raise ModelInstanceStateError()
         elif event.data["state"] == ModelInstanceStateEnum.STARTING:
-            self._model_path = event.data["resolved_path"]
+            self._model_path = str(Path(event.data["resolved_path"]).absolute())
             return True
 
         return False
