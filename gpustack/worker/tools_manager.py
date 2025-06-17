@@ -22,7 +22,7 @@ from gpustack.utils.platform import get_executable_suffix as exe
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.155"
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.157"
 BUILTIN_GGUF_PARSER_VERSION = "v0.19.0"
 BUILTIN_RAY_VERSION = "2.43.0"
 
@@ -152,7 +152,10 @@ class ToolsManager:
         shutil.unpack_archive(archive_path, self.third_party_bin_path)
 
         # Ensure the rpc server is linked correctly
-        self._link_llama_box_rpc_server()
+        target_dir = self.third_party_bin_path / "llama-box" / "llama-box-default"
+        target_file = get_llama_box_command(target_dir)
+        file_name = os.path.basename(target_file)
+        self._link_llama_box_rpc_server(target_dir, file_name)
 
     def prepare_versioned_backend(self, backend: str, version: str):
         if backend == BackendEnum.LLAMA_BOX:
@@ -170,8 +173,12 @@ class ToolsManager:
 
     def download_llama_box(self):
         version = BUILTIN_LLAMA_BOX_VERSION
-        target_dir = self.third_party_bin_path / "llama-box"
-        target_file = Path(get_llama_box_command(target_dir))
+        target_dir = (
+            self.third_party_bin_path
+            / "llama-box"
+            / get_llama_box_version_dir_name(version)
+        )
+        target_file = get_llama_box_command(target_dir)
         file_name = os.path.basename(target_file)
 
         if (
@@ -185,6 +192,7 @@ class ToolsManager:
             self._update_versions_file(file_name, version)
 
         self._link_llama_box_rpc_server(target_dir, file_name)
+        self._link_llama_box_default_dir(version)
 
     def install_versioned_ascend_mindie(self, version: str):
         if self._os != "linux":
@@ -232,12 +240,10 @@ class ToolsManager:
         self._download_acsend_mindie(version, target_dir)
 
     def install_versioned_llama_box(self, version: str):
-        target_dir = Path(self._bin_dir)
-        file_name = get_versioned_command(
-            "llama-box.exe" if self._os == "windows" else "llama-box", version
-        )
+        target_dir = Path(self._bin_dir) / "llama-box" / f"llama-box-{version}"
+        target_file = get_llama_box_command(target_dir)
+        file_name = os.path.basename(target_file)
 
-        target_file = target_dir / file_name
         if target_file.is_file():
             logger.debug(f"{file_name} already exists, skipping download")
             return
@@ -443,18 +449,26 @@ class ToolsManager:
             shutil.rmtree(llama_box_tmp_dir)
         os.makedirs(llama_box_tmp_dir, exist_ok=True)
 
-        platform_name = self._get_llama_box_platform_name(version)
+        # Since v0.0.157: Use dynamic libraries instead of static linking
+        platform_name = self._get_llama_box_platform_name(
+            version, version >= "v0.0.157"
+        )
         tmp_file = llama_box_tmp_dir / f"llama-box-{version}-{platform_name}.zip"
-        url_path = f"gpustack/llama-box/releases/download/{version}/llama-box-{platform_name}.zip"
-
-        logger.info(f"Downloading llama-box-{platform_name} '{version}'")
+        url_path = f"gpustack/llama-box/releases/download/{version}/{platform_name}.zip"
+        logger.info(f"Downloading {platform_name} '{version}'")
         self._download_file(url_path, tmp_file)
         self._extract_file(tmp_file, llama_box_tmp_dir)
 
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / target_file_name
-        shutil.copy(llama_box_tmp_dir / file_name, target_file)
 
+        def ignore_zip_files(_, names):
+            return [name for name in names if name.endswith('.zip')]
+
+        shutil.copytree(
+            llama_box_tmp_dir, target_dir, dirs_exist_ok=True, ignore=ignore_zip_files
+        )
+        shutil.copy(llama_box_tmp_dir / file_name, target_file)
         # Make the file executable (non-Windows only)
         if self._os != "windows":
             st = os.stat(target_file)
@@ -495,7 +509,44 @@ class ToolsManager:
 
         logger.debug(f"Linked llama-box-rpc-server to {dst_file}")
 
-    def _get_llama_box_platform_name(self, version: str) -> str:  # noqa C901
+    def _link_llama_box_default_dir(self, version: str):
+        """
+        Create a directory relative symlink 'llama-box-default' in bin directory.
+        This enables seamless version switching between multiple llama-box installations.
+        """
+        base_dir = self.third_party_bin_path / "llama-box"
+        src_fold_name = get_llama_box_version_dir_name(version)
+        dst_fold_name = "llama-box-default"
+        src_dir = base_dir / src_fold_name
+        dst_dir = base_dir / dst_fold_name
+
+        if os.path.islink(dst_dir):
+            current_target = os.readlink(dst_dir)
+            if current_target == src_fold_name:
+                logger.debug(
+                    f"{dst_fold_name} already linked to {src_fold_name} in {base_dir}, skipping"
+                )
+                return
+            else:
+                os.remove(dst_dir)
+
+        if self._os == "windows":
+            if os.path.exists(dst_dir):
+                shutil.rmtree(dst_dir)
+            os.makedirs(dst_dir, exist_ok=True)
+            for _, _, files in os.walk(src_dir):
+                for file in files:
+                    src_file = src_dir / file
+                    dst_file = dst_dir / file
+                    os.link(src_file, dst_file)
+        else:
+            target_dir_fd = os.open(base_dir, os.O_RDONLY)
+            os.symlink(src_fold_name, dst_fold_name, dir_fd=target_dir_fd)
+        logger.debug(f"Linked from {src_dir} to {dst_dir}")
+
+    def _get_llama_box_platform_name(  # noqa C901
+        self, version: str, enable_dynmaic_link: bool
+    ) -> str:
         """
         Get the platform name for llama-box based on the OS, architecture, and device type.
         """
@@ -512,9 +563,9 @@ class ToolsManager:
         if self._device in device_toolkit_mapper:
             toolkit = device_toolkit_mapper[self._device]
         elif self._arch == "amd64":
-            toolkit = "avx2"
+            toolkit = "cpu" if enable_dynmaic_link else "avx2"
         elif self._arch == "arm64":
-            toolkit = "neon"
+            toolkit = "cpu" if enable_dynmaic_link else "neon"
         else:
             raise Exception(
                 f"unsupported platform, os: {self._os}, arch: {self._arch}, device: {self._device}"
@@ -578,7 +629,12 @@ class ToolsManager:
         ]
         if toolkit_version:
             segments.append(toolkit_version)
-        return "-".join(segments)
+
+        return (
+            f"dl-llama-box-{'-'.join(segments)}"
+            if enable_dynmaic_link
+            else f"llama-box-{'-'.join(segments)}"
+        )
 
     def download_gguf_parser(self):
         version = BUILTIN_GGUF_PARSER_VERSION
@@ -890,14 +946,27 @@ def get_llama_box_command(
         str,
         Path,
     ],
-) -> str:
+) -> Path:
     system = platform.system()
     arch = platform.arch()
     device = platform.device()
-    device = f'-{device}' if device != '' else ''
+    device = f'-{device}' if device else ''
     full_path = os.path.join(base_path, f"llama-box-{system}-{arch}{device}{exe()}")
     default_path = os.path.join(base_path, f"llama-box{exe()}")
     # If both full_path and default_path do not exist, return full_path.
     if not os.path.exists(full_path) and not os.path.exists(default_path):
-        return full_path
-    return full_path if os.path.exists(full_path) else default_path
+        command_path = full_path
+    else:
+        command_path = full_path if os.path.exists(full_path) else default_path
+    return Path(command_path)
+
+
+def get_llama_box_version_dir_name(
+    version: str,
+) -> str:
+    system = platform.system()
+    arch = platform.arch()
+    device = platform.device()
+    device = f'-{device}' if device else ''
+    dir_name = os.path.join(f"llama-box-{version}-{system}-{arch}{device}")
+    return dir_name

@@ -529,7 +529,6 @@ def set_ulimit(target_soft_limit=65535):
     if sys.platform.startswith('win'):
         logger.info("Windows detected, skipping ulimit adjustment.")
         return
-
     import resource
 
     resource_type = resource.RLIMIT_NOFILE
