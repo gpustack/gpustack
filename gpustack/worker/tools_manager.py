@@ -22,7 +22,7 @@ from gpustack.utils.platform import get_executable_suffix as exe
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.154"
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.155"
 BUILTIN_GGUF_PARSER_VERSION = "v0.19.0"
 BUILTIN_RAY_VERSION = "2.43.0"
 
@@ -564,6 +564,10 @@ class ToolsManager:
                 toolkit_version = "rc4.0"
         elif toolkit == "dtk":
             toolkit_version = "24.04"
+            # Since v0.0.155, llama-box supports DTK 25.04,
+            # and no longer supports DTK 24.04.
+            if version > "v0.0.154":
+                toolkit_version = "25.04"
 
         # The name conversation of llama-box is `${os}-${arch}-${toolkit}[-${toolkit_version}]`,
         # for example: linux-amd64-cuda-12.4, linux-arm64-cann-8.0.rc2-310p.
