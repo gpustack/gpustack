@@ -36,6 +36,7 @@ class RPCServer:
         gpu_index: int,
         vendor: str,
         log_file_path: str,
+        cache_dir: str,
         args: Optional[List[str]] = None,
     ):
         setproctitle.setproctitle(f"gpustack_rpc_server_process: gpu_{gpu_index}")
@@ -43,10 +44,14 @@ class RPCServer:
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                RPCServer._start(port, gpu_index, vendor, args)
+                RPCServer._start(port, gpu_index, vendor, cache_dir, args)
 
     def _start(
-        port: int, gpu_index: int, vendor: str, args: Optional[List[str]] = None
+        port: int,
+        gpu_index: int,
+        vendor: str,
+        cache_dir: str,
+        args: Optional[List[str]] = None,
     ):
         command_path = pkg_resources.files(
             "gpustack.third_party.bin.llama-box"
@@ -63,6 +68,9 @@ class RPCServer:
             # We use origin-rpc-server-main-gpu to specify the GPU that the RPC server is actually running on.
             "--origin-rpc-server-main-gpu",
             str(gpu_index),
+            "--rpc-server-cache",
+            "--rpc-server-cache-dir",
+            cache_dir,
         ]
 
         if args:

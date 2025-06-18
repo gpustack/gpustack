@@ -280,6 +280,13 @@ class Scheduler:
             if model is None:
                 state_message = "Model not found"
 
+            model_instance = await ModelInstance.one_by_id(session, instance.id)
+            if model_instance is None:
+                logger.debug(
+                    f"Model instance(ID: {instance.id}) was deleted before scheduling due"
+                )
+                return
+
             candidate = None
             messages = []
             if workers and model:
@@ -290,7 +297,6 @@ class Scheduler:
                 except Exception as e:
                     state_message = f"Failed to find candidate: {e}"
 
-            model_instance = await ModelInstance.one_by_id(session, instance.id)
             if candidate is None:
                 # update model instance.
                 if model_instance.state in (

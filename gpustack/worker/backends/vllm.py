@@ -3,10 +3,13 @@ import logging
 import os
 import subprocess
 import sys
-import sysconfig
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
-from gpustack.utils.command import find_parameter, get_versioned_command
+from gpustack.utils.command import (
+    find_parameter,
+    get_versioned_command,
+    get_command_path,
+)
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -20,7 +23,7 @@ logger = logging.getLogger(__name__)
 class VLLMServer(InferenceServer):
     def start(self):
         try:
-            command_path = os.path.join(sysconfig.get_path("scripts"), "vllm")
+            command_path = get_command_path("vllm")
             if self._model.backend_version:
                 command_path = os.path.join(
                     self._config.bin_dir,
@@ -96,14 +99,6 @@ class VLLMServer(InferenceServer):
             return
 
         device_str = "GPU"
-        if not TYPE_CHECKING:
-            from vllm.platforms import current_platform
-
-            device_str = current_platform.ray_device_key
-            if not device_str:
-                raise RuntimeError(
-                    f"current platform {current_platform.device_name} does not support ray."
-                )
 
         ray_placement_group_bundles: List[Dict[str, float]] = []
         bundle_indexes = []

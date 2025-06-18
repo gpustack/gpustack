@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.8.5/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.9.1/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 vllm_supported_embedding_architectures = [
     "BertModel",
@@ -145,6 +145,7 @@ vllm_supported_llm_architectures = [
     "Qwen2_5OmniForConditionalGeneration",
     "UltravoxModel",
     "Phi4MMForCausalLM",
+    "TarsierForConditionalGeneration",
     "Florence2ForConditionalGeneration",
     "MllamaForConditionalGeneration",
     "Llama4ForConditionalGeneration",

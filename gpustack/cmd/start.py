@@ -308,6 +308,11 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=os.getenv("HF_HUB_ENABLE_HF_TRANSFER"),
     )
     group.add_argument(
+        "--enable-hf-xet",
+        action=OptionalBoolAction,
+        help="Enable using Hugging Face Xet to download model files.",
+    )
+    group.add_argument(
         "--enable-cors",
         action=OptionalBoolAction,
         help="Enable Cross-Origin Resource Sharing (CORS) on the server.",
@@ -483,6 +488,7 @@ def set_worker_options(args, config_data: dict):
         "tools_download_base_url",
         "ray_worker_port_range",
         "enable_hf_transfer",
+        "enable_hf_xet",
     ]
 
     for option in options:
@@ -513,6 +519,10 @@ def set_third_party_env(cfg: Config):
         # https://huggingface.co/docs/huggingface_hub/guides/download#faster-downloads
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
         logger.debug("set env HF_HUB_ENABLE_HF_TRANSFER=1")
+        
+    if not cfg.enable_hf_xet:
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        logger.debug("set env HF_HUB_DISABLE_XET=1")
 
 
 # Adapted from: https://github.com/vllm-project/vllm/blob/main/vllm/utils.py#L2438
@@ -536,3 +546,4 @@ def set_ulimit(target_soft_limit=65535):
                 f"Current soft limit: {current_soft}. "
                 "Consider increasing with `ulimit -n`."
             )
+

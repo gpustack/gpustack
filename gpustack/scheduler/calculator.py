@@ -170,7 +170,7 @@ class GGUFParserCommandMutableParameters:
     skip_tls_verify: Optional[bool] = None
 
     def from_args(self, args: List[str]):
-        parser = argparse.ArgumentParser(exit_on_error=False)
+        parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
 
         # Estimate
         parser.add_argument(

@@ -90,7 +90,7 @@ class AscendMindIEParameters:
     decode_expected_time_ms: Optional[int] = None
 
     def from_args(self, args: List[str]):
-        parser = argparse.ArgumentParser(exit_on_error=False)
+        parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
         #
         # Log config
         #

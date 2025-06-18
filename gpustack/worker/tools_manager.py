@@ -18,7 +18,6 @@ from gpustack.utils.command import get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform, envs
 from gpustack.utils.platform import get_executable_suffix as exe
-from gpustack.config.config import get_global_config
 
 logger = logging.getLogger(__name__)
 
@@ -180,12 +179,12 @@ class ToolsManager:
             and self._current_tools_version.get(file_name) == version
         ):
             logger.debug(f"{file_name} already exists, skipping download")
-            return
+        else:
+            self._download_llama_box(version, target_dir, file_name)
+            # Update versions.json
+            self._update_versions_file(file_name, version)
 
-        self._download_llama_box(version, target_dir, file_name)
-
-        # Update versions.json
-        self._update_versions_file(file_name, version)
+        self._link_llama_box_rpc_server(target_dir, file_name)
 
     def install_versioned_ascend_mindie(self, version: str):
         if self._os != "linux":
@@ -372,6 +371,25 @@ class ToolsManager:
                 f"Failed to execute 'pipx environment --value PIPX_BIN_DIR': {e}"
             )
 
+    def _get_pipx_local_venvs(self, pipx_path: str) -> Path:
+        """
+        Use `pipx environment --value PIPX_LOCAL_VENVS` to get the directory where pipx installs local virtual environments.
+        """
+        try:
+            result = subprocess.run(
+                [pipx_path, "environment", "--value", "PIPX_LOCAL_VENVS"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            pipx_local_venv_dir = result.stdout.strip()
+            if pipx_local_venv_dir:
+                return Path(pipx_local_venv_dir)
+        except subprocess.CalledProcessError as e:
+            raise Exception(
+                f"Failed to execute 'pipx environment --value PIPX_LOCAL_VENVS': {e}"
+            )
+
     def _download_acsend_mindie(self, version: str, target_dir: Path):
         # Check if the system is supported
         if self._os != "linux" or self._arch not in ["amd64", "arm64"]:
@@ -442,32 +460,40 @@ class ToolsManager:
             st = os.stat(target_file)
             os.chmod(target_file, st.st_mode | stat.S_IEXEC)
 
-        self._link_llama_box_rpc_server(target_file)
-
         # Clean up temporary directory
         shutil.rmtree(llama_box_tmp_dir)
 
-    def _link_llama_box_rpc_server(self, llama_box_file: Path):
+    def _link_llama_box_rpc_server(self, target_dir: Path, src_file_name: str):
         """
-        Create a symlink for llama-box-rpc-server in the bin directory.
+        Create a directory relative symlink for llama-box-rpc-server in the bin directory.
         This is used to help differentiate between the llama-box and llama-box-rpc-server processes.
         """
-        target_dir = self.third_party_bin_path / "llama-box"
+        dst_file_name = "llama-box-rpc-server"
+        if self._os == "windows":
+            dst_file_name += ".exe"
+
+        src_file = target_dir / src_file_name
+        dst_file = target_dir / dst_file_name
+
+        if os.path.islink(dst_file):
+            current_target = os.readlink(dst_file)
+            if current_target == src_file_name:
+                logger.debug(
+                    f"{dst_file_name} already linked to {src_file_name} in {target_dir}, skipping"
+                )
+                return
+            else:
+                os.remove(dst_file)
+        elif os.path.lexists(dst_file):
+            os.remove(dst_file)
 
         if self._os == "windows":
-            target_rpc_server_file = target_dir / "llama-box-rpc-server.exe"
+            os.link(src_file, dst_file)
         else:
-            target_rpc_server_file = target_dir / "llama-box-rpc-server"
+            target_dir_fd = os.open(target_dir, os.O_RDONLY)
+            os.symlink(src_file_name, dst_file_name, dir_fd=target_dir_fd)
 
-        if os.path.lexists(target_rpc_server_file):
-            os.remove(target_rpc_server_file)
-
-        if self._os == "windows":
-            os.link(llama_box_file, target_rpc_server_file)
-        else:
-            os.symlink(llama_box_file, target_rpc_server_file)
-
-        logger.debug(f"Linked llama-box-rpc-server to {target_rpc_server_file}")
+        logger.debug(f"Linked llama-box-rpc-server to {dst_file}")
 
     def _get_llama_box_platform_name(self, version: str) -> str:  # noqa C901
         """
@@ -730,7 +756,7 @@ class ToolsManager:
         except Exception as e:
             raise Exception(f"error extracting {file_path}: {e}")
 
-    def _install_ascend_mindie_run_pkg(
+    def _install_ascend_mindie_run_pkg(  # noqa: C901
         self,
         run_package_path: str,
         target_dir: Path,
@@ -738,24 +764,55 @@ class ToolsManager:
     ):
         """Install Ascend MindIE run package to the target directory."""
 
+        pipx_path = shutil.which("pipx")
+        if self._pipx_path:
+            pipx_path = self._pipx_path
+
+        if not pipx_path:
+            raise Exception(
+                "pipx is required to install versioned Ascend MindIE but not found in system PATH. "
+                "Please install pipx first or provide the path to pipx using the server option `--pipx-path`. "
+                "Alternatively, you can install Ascend MindIE manually."
+            )
+
+        pipx_local_venvs = self._get_pipx_local_venvs(pipx_path)
+        if not pipx_local_venvs:
+            raise Exception(
+                "Failed to determine pipx local venvs. Ensure pipx is correctly installed."
+            )
+
+        # New installation will overwrite the original Python packages,
+        # so we need to create a new virtual environment for the new installation.
         # Create a virtual environment to collect the new Python packages.
-        cfg = get_global_config()
-        venv_parent_dir = Path(cfg.data_dir).joinpath("venvs", "mindie")
-        venv_parent_dir.mkdir(parents=True, exist_ok=True)
+        venv_dir = Path(pipx_local_venvs).joinpath(f"mindie_{version}")
         try:
             subprocess.check_call(
-                [sys.executable, "-m", "venv", "--system-site-packages", version],
-                cwd=venv_parent_dir,
+                [sys.executable, "-m", "venv", "--system-site-packages", venv_dir],
             )
         except subprocess.CalledProcessError as e:
             raise Exception(
                 f"Failed to create a virtual environment for Ascend MindIE installation: {e}"
             )
-        venv_dir = venv_parent_dir.joinpath(version)
         venv_path = venv_dir.joinpath("bin", "activate")
         logger.info(
             f"Created virtual environment for Ascend MindIE installation: {venv_dir}"
         )
+
+        # New installation will overwrite the original latest directory symlink,
+        # so we need to recover the symlink if it exists after installation.
+        # Check if the latest symlink exists and save the original latest version.
+        original_latest = None
+        latest_dir = target_dir.joinpath("mindie", "latest")
+        if latest_dir.is_dir() and latest_dir.is_symlink():
+            try:
+                original_latest = latest_dir.readlink()
+                logger.info(
+                    f"Recorded latest symlink for original Ascend MindIE: {original_latest}"
+                )
+            except OSError as e:
+                logger.warning(
+                    f"Failed to read symlink for latest MindIE directory: {e}."
+                )
 
         # Install
         command = (
@@ -784,6 +841,42 @@ class ToolsManager:
                 env=env,
                 cwd=target_dir,
             )
+            logger.info(f"Installed Ascend MindIE '{version}' to {target_dir}")
+
+            # Post process
+            # - inject the virtual environment activation script into set_env.sh.
+            logger.info(
+                "Injecting virtual environment activation into Ascend MindIE launch"
+            )
+            set_env_script = target_dir.joinpath(
+                "mindie", version, "mindie-service", "set_env.sh"
+            )
+            # -- Enable set_env.sh writable permission
+            st = os.stat(set_env_script)
+            old_mode = st.st_mode
+            new_mode = old_mode | stat.S_IWUSR
+            os.chmod(set_env_script, new_mode)
+            with open(set_env_script, 'a', encoding='utf-8') as f:
+                f.write(f"\nsource {venv_path} || true\n")
+            # -- Disable set_env.sh writable permission
+            os.chmod(set_env_script, old_mode)
+            logger.info(
+                f"Injected virtual environment activation into Ascend MindIE launch: {set_env_script}"
+            )
+            # - recover the latest symlink if it exists.
+            if original_latest:
+                mindie_dir_fd = os.open(target_dir.joinpath("mindie"), os.O_RDONLY)
+                os.remove("latest", dir_fd=mindie_dir_fd)
+                os.symlink(
+                    original_latest,
+                    "latest",
+                    dir_fd=mindie_dir_fd,
+                    target_is_directory=True,
+                )
+                logger.info(
+                    f"Recovered latest symlink to '{original_latest}' for Ascend MindIE"
+                )
+
         except subprocess.CalledProcessError as e:
             raise Exception(f"Failed to install Ascend MindIE {command}: {e}")
 
