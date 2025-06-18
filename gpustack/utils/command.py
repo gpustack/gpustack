@@ -50,6 +50,53 @@ def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
     return False
 
 
+def normalize_parameters(
+    args: List[str], removes: Optional[List[str]] = None, sep: str = '='
+):
+    """
+    Split parameter strings and filter removes parameters.
+
+    Processes command line arguments by:
+    1. Splitting key=value parameters into separate elements
+    2. Removing specified parameters and their values
+
+    Args:
+        args: List of input parameters
+        removes: List of parameter names to remove
+        sep: Delimiter used for key-value pairs (default: '=')
+
+    Returns:
+        List of processed parameters with removes items removed
+    """
+    parameters = []
+    for param in args:
+        if '=' in param:
+            key, value = param.split(sep, 1)
+            parameters.append(key)
+            parameters.append(value)
+        else:
+            parameters.append(param)
+    normalize_args = []
+
+    i = 0
+    while i < len(parameters):
+        param = parameters[i]
+        if '=' in param:
+            key, _ = param.split('=', 1)
+            key = key.lstrip('-')
+            if removes and key in removes:
+                i += 1
+                continue
+        else:
+            key = param.lstrip('-')
+            if removes and key in removes:
+                i += 2 if i + 1 < len(parameters) else 1
+                continue
+        normalize_args.append(param)
+        i += 1
+    return normalize_args
+
+
 def get_versioned_command(command_name: str, version: str) -> str:
     """
     Get the versioned command name.
