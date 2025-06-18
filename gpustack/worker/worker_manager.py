@@ -55,7 +55,6 @@ class WorkerManager:
         self._worker_name_from_config = cfg.worker_name is not None
 
         os.makedirs(self._rpc_server_log_dir, exist_ok=True)
-        os.makedirs(self._rpc_server_cache_dir, exist_ok=True)
 
     def sync_worker_status(self):
         """
