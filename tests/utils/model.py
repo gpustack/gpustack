@@ -35,6 +35,7 @@ def new_model(
     replicas=1,
     ollama_library_model_name=None,
     huggingface_repo_id=None,
+    model_scope_model_id=None,
     placement_strategy=PlacementStrategyEnum.BINPACK,
     distributable=True,
     **kargs,
@@ -53,6 +54,8 @@ def new_model(
     if huggingface_repo_id is not None:
         source = SourceEnum.HUGGING_FACE
         huggingface_filename = kargs.get("huggingface_filename")
+    if model_scope_model_id is not None:
+        source = SourceEnum.MODEL_SCOPE
 
     return Model(
         id=id,
@@ -63,6 +66,7 @@ def new_model(
         ollama_library_model_name=ollama_library_model_name,
         huggingface_repo_id=huggingface_repo_id,
         huggingface_filename=huggingface_filename,
+        model_scope_model_id=model_scope_model_id,
         distributable=distributable,
         placement_strategy=placement_strategy,
         worker_selector=worker_selector,

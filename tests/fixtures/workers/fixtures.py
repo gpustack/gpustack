@@ -17,6 +17,18 @@ def macos_metal_2_m2_24g(reserved=True):
     return load_from_file("macos_metal_2_m2_24g.json", reserved=reserved)
 
 
+def linux_huawei_1_910b_64gx8(reserved=False):
+    return load_from_file("linux_huawei_1_910b_64gx8.json", reserved=reserved)
+
+
+def linux_huawei_2_910b_64gx8(reserved=False):
+    return load_from_file("linux_huawei_2_910b_64gx8.json", reserved=reserved)
+
+
+def linux_huawei_3_910b_64gx8(reserved=False):
+    return load_from_file("linux_huawei_3_910b_64gx8.json", reserved=reserved)
+
+
 def linux_nvidia_1_4090_24gx1(reserved=False):
     return load_from_file("linux_nvidia_1_4090_24gx1.json", reserved=reserved)
 
