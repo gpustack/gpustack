@@ -9,9 +9,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from gpustack.policies.candidate_selectors.vox_box_resource_fit_selector import (
-    VoxBoxResourceFitSelector,
-)
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.config.config import Config
 from gpustack.policies.base import (
@@ -19,14 +16,13 @@ from gpustack.policies.base import (
     ScheduleCandidatesSelector,
     WorkerFilterChain,
 )
-from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
+from gpustack.policies.candidate_selectors import (
     GGUFResourceFitSelector,
+    VLLMResourceFitSelector,
+    VoxBoxResourceFitSelector,
 )
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
-from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
-    VLLMResourceFitSelector,
-)
 from gpustack.scheduler.model_registry import (
     vllm_supported_embedding_architectures,
     vllm_supported_llm_architectures,

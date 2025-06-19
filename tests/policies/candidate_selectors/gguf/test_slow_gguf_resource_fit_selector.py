@@ -10,9 +10,7 @@ import pytest
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
-from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
-    GGUFResourceFitSelector,
-)
+from gpustack.policies.candidate_selectors import GGUFResourceFitSelector
 
 from gpustack.scheduler.calculator import GPUOffloadEnum, _gguf_parser_command
 from gpustack.schemas.models import (

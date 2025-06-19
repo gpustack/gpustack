@@ -3,9 +3,7 @@ import shutil
 import pytest
 from gpustack.config.config import Config
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
-from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
-    GGUFResourceFitSelector,
-)
+from gpustack.policies.candidate_selectors import GGUFResourceFitSelector
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
