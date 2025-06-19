@@ -59,7 +59,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
     def _set_messages(self):
         self._messages = ["No workers meet the resource requirements."]
 
-    def get_messages(self) -> str:
+    def get_messages(self) -> List[str]:
         return self._messages
 
     async def select_candidates(

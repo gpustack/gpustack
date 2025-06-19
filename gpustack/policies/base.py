@@ -145,6 +145,14 @@ class WorkerFilterChain:
 
 class ScheduleCandidatesSelector(ABC):
     @abstractmethod
+    def get_messages(self) -> List[str]:
+        """
+        Get diagnostic messages from the selector.
+        :return: A list of diagnostic messages.
+        """
+        pass
+
+    @abstractmethod
     async def select_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
