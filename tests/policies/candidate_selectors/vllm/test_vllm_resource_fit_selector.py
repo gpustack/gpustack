@@ -4,9 +4,7 @@ import pytest
 from unittest.mock import patch, AsyncMock
 from tests.utils.model import new_model
 from gpustack.config.config import Config, set_global_config
-from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
-    VLLMResourceFitSelector,
-)
+from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (

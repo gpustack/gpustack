@@ -1,8 +1,6 @@
 from typing import Dict, Tuple
 import pytest
-from gpustack.policies.candidate_selectors.gguf_resource_fit_selector import (
-    GGUFResourceFitSelector,
-)
+from gpustack.policies.candidate_selectors import GGUFResourceFitSelector
 
 from gpustack.schemas.models import (
     GPUSelector,
