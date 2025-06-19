@@ -83,7 +83,7 @@ jobs:
           #
           - device: musa
             dockerfile: "Dockerfile.musa"
-            platforms: "linux/amd64,linux/arm64"
+            platforms: "linux/amd64"
             tag_suffix: "-musa"
             build_args: []
           #
