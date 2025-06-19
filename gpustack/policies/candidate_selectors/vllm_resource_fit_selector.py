@@ -296,7 +296,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     def _add_message(self, message: str):
         self._messages.append(message)
 
-    def get_messages(self) -> str:
+    def get_messages(self) -> List[str]:
         return self._messages
 
     async def _get_worker_allocatable_resource(self, worker: Worker):
