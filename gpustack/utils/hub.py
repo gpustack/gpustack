@@ -30,6 +30,59 @@ def get_model_lock(model_id: str) -> Lock:
     return Lock()
 
 
+class FileEntry:
+    def __init__(self, rfilename: str, size: Optional[int] = None):
+        self.rfilename = rfilename
+        self.size = size
+
+
+def calculate_file_size(
+    files: List[FileEntry],
+    filename: Optional[str] = None,
+    extra_filename: Optional[str] = None,
+) -> int:
+    """
+    Calculate the total size of files that match the given filename and extra_filename patterns.
+    """
+
+    main_extra_file = ["", ""]  # [main_file, best_extra_file]
+    selected_files = []
+    extra_files = []
+
+    for sibling in files:
+        if sibling.size is None:
+            continue
+
+        rfilename = sibling.rfilename
+
+        if filename and not main_extra_file[0] and fnmatch.fnmatch(rfilename, filename):
+            main_extra_file[0] = rfilename
+            selected_files.append(sibling)
+        elif extra_filename and fnmatch.fnmatch(rfilename, extra_filename):
+            extra_files.append(rfilename)
+            selected_files.append(sibling)
+
+    main_extra_file[1] = select_most_suitable_extra_file(extra_files)
+
+    return sum(
+        f.size
+        for f in selected_files
+        if getattr(f, 'rfilename', '') in main_extra_file
+        and getattr(f, 'size', None) is not None
+    )
+
+
+def select_most_suitable_extra_file(file_list: List[str]) -> str:
+    """
+    Select the most suitable extra file from the list of files.
+    For example, when matches f16 and f32 mmproj files, prefer f32 over f16
+    """
+    if not file_list or len(file_list) == 0:
+        return ""
+    _file_list = sorted(file_list, reverse=True)
+    return _file_list[0]
+
+
 def match_hugging_face_files(
     repo_id: str,
     filename: str,
@@ -59,11 +112,9 @@ def match_hugging_face_files(
     extra_matching_files = [
         file for file in file_list if fnmatch.fnmatch(file, extra_filename)
     ]
-    extra_matching_files = sorted(extra_matching_files, reverse=True)
-    if extra_matching_files:
-        # Add the first element of the extra matching files to the matching files
-        # For example, when matches f16 and f32 mmproj files, prefer f32 over f16
-        matching_files.append(extra_matching_files[0])
+    extra_file = select_most_suitable_extra_file(extra_matching_files)
+    if extra_file:
+        matching_files.append(extra_file)
 
     return matching_files
 
