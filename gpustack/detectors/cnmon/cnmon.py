@@ -34,35 +34,6 @@ class Cnmon(GPUDetector):
         return self.decode_mlu_devices(results)
 
     def decode_mlu_devices(self, result) -> GPUDevicesInfo:
-        """
-        MLU result example:
-        $cnmon info -e -m -u -j
-        {
-            "card0": {
-                "Device Name": "Navi 32 [Radeon RX 7700 XT / 7800 XT]",
-                "Device ID": "0x747e",
-                "Device Rev": "0xc8",
-                "Subsystem ID": "0x7801",
-                "GUID": "18190",
-                "Unique ID": "0x5c88007d760374f3",
-                "Temperature (Sensor edge) (C)": "45.0",
-                "Temperature (Sensor junction) (C)": "51.0",
-                "Temperature (Sensor memory) (C)": "54.0",
-                "Average Graphics Package Power (W)": "53.0",
-                "GPU use (%)": "100",
-                "Serial Number": "N/A",
-                "VRAM Total Memory (B)": "17163091968",
-                "VRAM Total Used Memory (B)": "11615703040",
-                "Card Series": "Navi 32 [Radeon RX 7700 XT / 7800 XT]",
-                "Card Model": "0x747e",
-                "Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
-                "Card SKU": "EXT94393",
-                "Node ID": "1",
-                "GFX Version": "gfx11001"
-            }
-        }
-
-        """
         devices = []
         parsed_json = json.loads(result)
 
@@ -104,7 +75,7 @@ class Cnmon(GPUDetector):
                 ),
                 core=GPUCoreInfo(
                     utilization_rate=utilization_gpu,
-                    total=0,  # Total cores information is not provided by
+                    total=0,
                 ),
                 temperature=temperature_gpu,
                 type=device_type,
