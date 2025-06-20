@@ -4,6 +4,8 @@ import json
 import logging
 import multiprocessing
 import os
+import resource
+import sys
 from typing import Any, Dict, Optional
 
 import yaml
@@ -306,6 +308,11 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=os.getenv("HF_HUB_ENABLE_HF_TRANSFER"),
     )
     group.add_argument(
+        "--enable-hf-xet",
+        action=OptionalBoolAction,
+        help="Enable using Hugging Face Xet to download model files.",
+    )
+    group.add_argument(
         "--enable-cors",
         action=OptionalBoolAction,
         help="Enable Cross-Origin Resource Sharing (CORS) on the server.",
@@ -342,6 +349,7 @@ def run(args: argparse.Namespace):
         setup_logging(cfg.debug)
         debug_env_info()
         set_third_party_env(cfg=cfg)
+        set_ulimit()
         multiprocessing.set_start_method('spawn')
 
         logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
@@ -480,6 +488,7 @@ def set_worker_options(args, config_data: dict):
         "tools_download_base_url",
         "ray_worker_port_range",
         "enable_hf_transfer",
+        "enable_hf_xet",
     ]
 
     for option in options:
@@ -510,3 +519,30 @@ def set_third_party_env(cfg: Config):
         # https://huggingface.co/docs/huggingface_hub/guides/download#faster-downloads
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
         logger.debug("set env HF_HUB_ENABLE_HF_TRANSFER=1")
+
+    if not cfg.enable_hf_xet:
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        logger.debug("set env HF_HUB_DISABLE_XET=1")
+
+
+# Adapted from: https://github.com/vllm-project/vllm/blob/main/vllm/utils.py#L2438
+def set_ulimit(target_soft_limit=65535):
+    if sys.platform.startswith('win'):
+        logger.info("Windows detected, skipping ulimit adjustment.")
+        return
+
+    resource_type = resource.RLIMIT_NOFILE
+    current_soft, current_hard = resource.getrlimit(resource_type)
+
+    if current_soft < target_soft_limit:
+        try:
+            resource.setrlimit(resource_type, (target_soft_limit, current_hard))
+            logger.info(
+                f"Increase the ulimit from {current_soft} to {target_soft_limit}."
+            )
+        except ValueError as e:
+            logger.warning(
+                f"Failed to set ulimit (nofile): {e}. "
+                f"Current soft limit: {current_soft}. "
+                "Consider increasing with `ulimit -n`."
+            )
