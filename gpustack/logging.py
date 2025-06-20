@@ -50,6 +50,7 @@ def setup_logging(debug: bool = False):
         "python_multipart.multipart",
         "filelock",
         "fastapi-cdn-host",
+        "huggingface_hub.file_download",
     ]
 
     for logger_name in disable_logger_names:
