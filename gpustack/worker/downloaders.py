@@ -1,4 +1,3 @@
-import fnmatch
 import platform
 import time
 import logging
@@ -27,7 +26,12 @@ from cryptography.hazmat.backends import default_backend
 
 from gpustack.schemas.models import Model, ModelSource, SourceEnum, get_mmproj_filename
 from gpustack.utils import file
-from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
+from gpustack.utils.hub import (
+    match_hugging_face_files,
+    match_model_scope_file_paths,
+    FileEntry,
+    calculate_file_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,21 +119,8 @@ class HfDownloader:
     ) -> int:
         api = HfApi(token=token)
         repo_info = api.repo_info(repo_id, files_metadata=True)
-        total_size = sum(
-            sibling.size
-            for sibling in repo_info.siblings
-            if (
-                not filename
-                or fnmatch.fnmatch(sibling.rfilename, filename)
-                or (
-                    extra_filename
-                    and fnmatch.fnmatch(sibling.rfilename, extra_filename)
-                )
-            )
-            and sibling.size is not None
-        )
-
-        return total_size
+        file_list = [FileEntry(f.rfilename, f.size) for f in repo_info.siblings]
+        return calculate_file_size(file_list, filename, extra_filename)
 
     @classmethod
     def get_model_file_size(cls, model: Model, token: Optional[str]) -> int:
@@ -576,21 +567,8 @@ class ModelScopeDownloader:
     ) -> int:
         api = HubApi()
         repo_files = api.get_model_files(model_id, recursive=True)
-        total_size = sum(
-            sibling.get("Size")
-            for sibling in repo_files
-            if (
-                not file_path
-                or fnmatch.fnmatch(sibling.get("Path", ""), file_path)
-                or (
-                    extra_file_path
-                    and fnmatch.fnmatch(sibling.get("Path", ""), extra_file_path)
-                )
-            )
-            and "Size" in sibling
-        )
-
-        return total_size
+        file_list = [FileEntry(f.get("Path"), f.get("Size")) for f in repo_files]
+        return calculate_file_size(file_list, file_path, extra_file_path)
 
     @classmethod
     def get_model_file_size(cls, model: Model) -> int:
