@@ -18,7 +18,6 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceCreate,
     ModelInstanceStateEnum,
-    RayActor,
     SourceEnum,
     get_backend,
 )
@@ -30,7 +29,6 @@ from gpustack.server.services import (
     ModelInstanceService,
     ModelService,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -268,51 +266,51 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
 async def get_or_create_model_files_for_instance(
     session: AsyncSession, instance: ModelInstance
 ) -> List[ModelFile]:
+    """
+    Get or create model files for the given model instance.
+    """
+
     model_files = await get_model_files_for_instance(session, instance)
+    worker_ids = _get_worker_ids_of_model_instance(instance)
 
-    worker_ids = [instance.worker_id]
-    if instance.distributed_servers and instance.distributed_servers.ray_actors:
-        worker_ids += [
-            ray_actor.worker_id for ray_actor in instance.distributed_servers.ray_actors
-        ]
-
+    # Return early if all model files are already created for the workers
     if len(model_files) == len(worker_ids):
         return model_files
 
-    existing_worker_ids = []
-    for model_file in model_files:
-        existing_worker_ids = [model_file.worker_id for model_file in model_files or []]
+    # Get the worker IDs that are missing model files.
+    missing_worker_ids = set(worker_ids) - {
+        model_file.worker_id for model_file in model_files
+    }
+    if not missing_worker_ids:
+        return model_files
 
-    for worker_id in worker_ids:
-        if worker_id not in existing_worker_ids:
-            model_file = ModelFile(
-                source=instance.source,
-                huggingface_repo_id=instance.huggingface_repo_id,
-                huggingface_filename=instance.huggingface_filename,
-                ollama_library_model_name=instance.ollama_library_model_name,
-                model_scope_model_id=instance.model_scope_model_id,
-                model_scope_file_path=instance.model_scope_file_path,
-                local_path=instance.local_path,
-                state=ModelFileStateEnum.DOWNLOADING,
-                worker_id=worker_id,
-                source_index=instance.model_source_index,
-            )
-            model_file = await ModelFile.create(session, model_file)
-            logger.info(
-                f"Created model file for model instance {instance.name} and worker {worker_id}"
-            )
+    # Create model files for the missing worker IDs.
+    for worker_id in missing_worker_ids:
+        model_file = ModelFile(
+            source=instance.source,
+            huggingface_repo_id=instance.huggingface_repo_id,
+            huggingface_filename=instance.huggingface_filename,
+            ollama_library_model_name=instance.ollama_library_model_name,
+            model_scope_model_id=instance.model_scope_model_id,
+            model_scope_file_path=instance.model_scope_file_path,
+            local_path=instance.local_path,
+            state=ModelFileStateEnum.DOWNLOADING,
+            worker_id=worker_id,
+            source_index=instance.model_source_index,
+        )
+        await ModelFile.create(session, model_file)
+        logger.info(
+            f"Created model file for model instance {instance.name} and worker {worker_id}"
+        )
 
+    # After creating the model files, fetch them again to return the complete list.
     return await get_model_files_for_instance(session, instance)
 
 
 async def get_model_files_for_instance(
     session: AsyncSession, instance: ModelInstance
 ) -> List[ModelFile]:
-    worker_ids = [instance.worker_id]
-    if instance.distributed_servers and instance.distributed_servers.ray_actors:
-        worker_ids += [
-            ray_actor.worker_id for ray_actor in instance.distributed_servers.ray_actors
-        ]
+    worker_ids = _get_worker_ids_of_model_instance(instance)
 
     model_files = await ModelFileService(session).get_by_source_index(
         instance.model_source_index
@@ -601,7 +599,7 @@ async def sync_main_model_file_state(
         await ModelInstanceService(session).update(instance)
 
 
-async def sync_distributed_model_file_state(
+async def sync_distributed_model_file_state(  # noqa: C901
     session: AsyncSession, file: ModelFile, instance: ModelInstance
 ):
     """
@@ -611,27 +609,25 @@ async def sync_distributed_model_file_state(
     if instance.state == ModelInstanceStateEnum.ERROR:
         return
 
-    ray_actors: List[RayActor] = []
-
     logger.trace(
         f"Syncing distributed model file {file.id} with model instance {instance.name}, file state: {file.state}, "
         f"progress: {file.download_progress}, message: {file.state_message}, instance state: {instance.state}"
     )
 
     need_update = False
-    for ray_actor in instance.distributed_servers.ray_actors:
-        if ray_actor.worker_id == file.worker_id:
+
+    for item in instance.distributed_servers.subordinate_workers or []:
+        if item.worker_id == file.worker_id:
             if (
                 file.state == ModelFileStateEnum.DOWNLOADING
-                and file.download_progress != ray_actor.download_progress
+                and file.download_progress != item.download_progress
             ):
-                ray_actor.download_progress = file.download_progress
+                item.download_progress = file.download_progress
                 need_update = True
             elif (
-                file.state == ModelFileStateEnum.READY
-                and ray_actor.download_progress != 100
+                file.state == ModelFileStateEnum.READY and item.download_progress != 100
             ):
-                ray_actor.download_progress = 100
+                item.download_progress = 100
                 if model_instance_download_completed(instance):
                     # All files are downloaded
                     instance.state = ModelInstanceStateEnum.STARTING
@@ -640,10 +636,30 @@ async def sync_distributed_model_file_state(
                 instance.state = ModelInstanceStateEnum.ERROR
                 instance.state_message = file.state_message
                 need_update = True
-        ray_actors.append(ray_actor)
+
+    # FIXME: Replace by subordinate_workers.
+    for item in instance.distributed_servers.ray_actors or []:
+        if item.worker_id == file.worker_id:
+            if (
+                file.state == ModelFileStateEnum.DOWNLOADING
+                and file.download_progress != item.download_progress
+            ):
+                item.download_progress = file.download_progress
+                need_update = True
+            elif (
+                file.state == ModelFileStateEnum.READY and item.download_progress != 100
+            ):
+                item.download_progress = 100
+                if model_instance_download_completed(instance):
+                    # All files are downloaded
+                    instance.state = ModelInstanceStateEnum.STARTING
+                need_update = True
+            elif file.state == ModelFileStateEnum.ERROR:
+                instance.state = ModelInstanceStateEnum.ERROR
+                instance.state_message = file.state_message
+                need_update = True
 
     if need_update:
-        instance.distributed_servers.ray_actors = ray_actors
         flag_modified(instance, "distributed_servers")
         await ModelInstanceService(session).update(instance)
 
@@ -652,14 +668,39 @@ def model_instance_download_completed(instance: ModelInstance):
     if instance.download_progress != 100:
         return False
 
-    if (
-        instance.distributed_servers is None
-        or not instance.distributed_servers.ray_actors
-    ):
-        return True
-
-    for ray_actor in instance.distributed_servers.ray_actors:
-        if ray_actor.download_progress != 100:
-            return False
+    if instance.distributed_servers:
+        for subworker in instance.distributed_servers.subordinate_workers or []:
+            if subworker.download_progress != 100:
+                return False
+        # FIXME: Replace by subordinate_workers.
+        for ray_actor in instance.distributed_servers.ray_actors or []:
+            if ray_actor.download_progress != 100:
+                return False
 
     return True
+
+
+def _get_worker_ids_of_model_instance(
+    instance: ModelInstance,
+) -> List[str]:
+    """
+    Get the all worker IDs of the model instance,
+    including the main worker and distributed workers.
+    """
+
+    worker_ids = [instance.worker_id] if instance.worker_id else []
+
+    if instance.distributed_servers:
+        worker_ids += [
+            item.worker_id
+            for item in instance.distributed_servers.subordinate_workers or []
+            if item.worker_id
+        ]
+        # FIXME: Replace by subordinate_workers.
+        worker_ids += [
+            item.worker_id
+            for item in instance.distributed_servers.ray_actors or []
+            if item.worker_id
+        ]
+
+    return worker_ids
