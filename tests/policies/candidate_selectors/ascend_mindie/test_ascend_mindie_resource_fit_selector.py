@@ -14,9 +14,16 @@ from gpustack.schemas.models import (
     GPUSelector,
 )
 from tests.fixtures.workers.fixtures import (
+    linux_huawei_1_910b_64gx1,
+    linux_huawei_2_910b_64gx1,
+    linux_huawei_3_910b_64gx1,
+    linux_huawei_1_910b_64gx2,
+    linux_huawei_2_910b_64gx2,
+    linux_huawei_3_910b_64gx2,
     linux_huawei_1_910b_64gx8,
     linux_huawei_2_910b_64gx8,
     linux_huawei_3_910b_64gx8,
+    linux_huawei_4_910b_64gx0,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -36,6 +43,311 @@ def config(temp_dir):
     )
     set_global_config(cfg)
     return cfg
+
+
+@pytest.mark.parametrize(
+    "m, expected",
+    [
+        # Manual single worker selection.
+        # Check point:
+        # - Unavailable workers.
+        (
+            new_model(
+                id=1,
+                name="manual_single_worker_selection",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_2:npu:0",
+                        "ascend_4:npu:0",  # Unavailable worker.
+                    ],
+                ),
+                backend_parameters=[
+                    "--trust-remote-code",
+                ],
+            ),
+            [],
+        ),
+        # Manual single worker selection 2.
+        # Check point:
+        # - Unavailable devices.
+        (
+            new_model(
+                id=1,
+                name="manual_single_worker_selection_2",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_2:npu:0",
+                        "ascend_3:npu:0",  # Unavailable device.
+                    ],
+                ),
+                backend_parameters=[
+                    "--trust-remote-code",
+                ],
+            ),
+            [],
+        ),
+        # Automatic single worker selection.
+        # Check point:
+        # - All devices of 2nd worker have allocated 40%,
+        #   it should not be selected.
+        # - There are two candidates be selected.
+        (
+            new_model(
+                id=1,
+                name="automatic_single_worker_selection",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                {
+                    "worker_id": 1,
+                    "worker_name": "ascend_0",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 61847529062},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
+                    "ram": 536870912,
+                    "vram": {0: 61847529062},
+                },
+            ],
+        ),
+        # Semi-automatic single worker selection.
+        # Check point:
+        # - All devices of 2nd worker have allocated 40%,
+        #   it should not be selected.
+        # - Specify tensor parallel size to enforce the selection of multi-devices.
+        # - There are two candidates be selected.
+        (
+            new_model(
+                id=1,
+                name="semi_automatic_single_worker_selection",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--tensor-parallel-size=2",
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                {
+                    "worker_id": 1,
+                    "worker_name": "ascend_0",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 61847529062},
+                    "subordinate_workers": [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=3,
+                            worker_ip="192.168.50.5",
+                            total_gpus=1,
+                            gpu_indexes=[0],
+                            gpu_addresses=["29.17.48.41"],
+                            computed_resource_claim=ComputedResourceClaim(
+                                ram=536870912,
+                                vram={0: 61847529062},
+                            ),
+                        )
+                    ],
+                }
+            ],
+        ),
+        # Semi-automatic single worker selection 2.
+        # Check point:
+        # - All devices of 2nd worker have allocated 40%,
+        #   it should not be selected.
+        # - Specify tensor parallel size to exceeds all available devices count.
+        # - There are no candidates be selected.
+        (
+            new_model(
+                id=1,
+                name="semi_automatic_single_worker_selection_2",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--tensor-parallel-size=4",
+                    "--trust-remote-code",
+                ],
+            ),
+            [],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates_3x_64gx1(config, m, expected):
+    workers = [
+        linux_huawei_1_910b_64gx1(),
+        linux_huawei_2_910b_64gx1(),
+        linux_huawei_3_910b_64gx1(),
+        linux_huawei_4_910b_64gx0(),  # No devices.
+    ]
+    model_instances = [
+        ModelInstance(
+            id=worker.id * 10 + gpu.index,
+            worker_id=worker.id,
+            gpu_indexes=[gpu.index],
+            computed_resource_claim=ComputedResourceClaim(
+                vram={gpu.index: gpu.memory.allocated}
+            ),
+        )
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+        if gpu.memory.allocated
+    ]
+
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+
+    with (
+        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+    ):
+        actual = await resource_fit_selector.select_candidates(workers)
+        compare_candidates(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "m, expected",
+    [
+        # Automatic single worker selection.
+        # Check point:
+        # - All devices of 2nd worker have allocated 40%,
+        #   it should not be selected.
+        # - There are two candidates be selected.
+        (
+            new_model(
+                id=1,
+                name="automatic_single_worker_selection",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                {
+                    "worker_id": 1,
+                    "worker_name": "ascend_0",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 61847529062},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
+                    "ram": 536870912,
+                    "vram": {0: 61847529062},
+                },
+            ],
+        ),
+        # Semi-automatic single worker selection.
+        # Check point:
+        # - All devices of 2nd worker have allocated 40%,
+        #   it should not be selected.
+        # - Specify tensor parallel size to enforce the selection of multi-devices.
+        # - There are two candidates be selected.
+        (
+            new_model(
+                id=1,
+                name="semi_automatic_single_worker_selection",
+                replicas=1,
+                model_scope_model_id="Qwen/Qwen3-4B",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--tensor-parallel-size=4",
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                {
+                    "worker_id": 1,
+                    "worker_name": "ascend_0",
+                    "gpu_indexes": [0, 1],
+                    "gpu_addresses": ["29.17.48.39", "29.17.57.31"],
+                    "ram": 536870912,
+                    "vram": {0: 61847529062, 1: 61847529062},
+                    "subordinate_workers": [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=3,
+                            worker_ip="192.168.50.5",
+                            total_gpus=2,
+                            gpu_indexes=[0, 1],
+                            gpu_addresses=["29.17.48.41", "29.17.57.32"],
+                            computed_resource_claim=ComputedResourceClaim(
+                                ram=536870912,
+                                vram={0: 61847529062, 1: 61847529062},
+                            ),
+                        )
+                    ],
+                }
+            ],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates_3x_64gx2(config, m, expected):
+    workers = [
+        linux_huawei_1_910b_64gx2(),
+        linux_huawei_2_910b_64gx2(),
+        linux_huawei_3_910b_64gx2(),
+    ]
+    model_instances = [
+        ModelInstance(
+            id=worker.id * 10 + gpu.index,
+            worker_id=worker.id,
+            gpu_indexes=[gpu.index],
+            computed_resource_claim=ComputedResourceClaim(
+                vram={gpu.index: gpu.memory.allocated}
+            ),
+        )
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+        if gpu.memory.allocated
+    ]
+
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+
+    with (
+        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+    ):
+        actual = await resource_fit_selector.select_candidates(workers)
+        compare_candidates(actual, expected)
 
 
 @pytest.mark.parametrize(
@@ -491,7 +803,7 @@ def config(temp_dir):
     ],
 )
 @pytest.mark.asyncio
-async def test_select_candidates(config, m, expected):
+async def test_select_candidates_3x_64gx8(config, m, expected):
     workers = [
         linux_huawei_1_910b_64gx8(),
         linux_huawei_2_910b_64gx8(),

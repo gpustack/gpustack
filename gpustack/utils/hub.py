@@ -175,8 +175,7 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
         return total_size
     elif model.source == SourceEnum.MODEL_SCOPE:
         api = HubApi()
-        files = api.get_model_files(model.model_scope_model_id, recursive=True)
-
+        files = api.get_model_files(model.model_scope_model_id, recursive="True")
         return sum(
             file["Size"]
             for file in files

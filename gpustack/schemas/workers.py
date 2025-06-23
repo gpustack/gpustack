@@ -32,7 +32,7 @@ class GPUCoreInfo(UtilizationInfo):
 
 
 class GPUNetworkInfo(BaseModel):
-    status: str = Field(default="up")  # Network status (up/down)
+    status: str = Field(default="down")  # Network status (up/down)
     inet: str = Field(default="")  # IPv4 address
     netmask: str = Field(default="")  # Subnet mask
     mac: str = Field(default="")  # MAC address
