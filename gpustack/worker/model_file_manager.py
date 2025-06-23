@@ -181,7 +181,7 @@ class ModelFileManager:
                     model_file.model_scope_model_id,
                 )
                 if model_file.model_scope_file_path:
-                    path = os.path.join(path, model_file.model_scope_model_id)
+                    path = os.path.join(path, model_file.model_scope_file_path)
                 else:
                     paths_to_delete.add(path)
                     return paths_to_delete
