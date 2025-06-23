@@ -680,6 +680,19 @@ class AscendMindIEServer(InferenceServer):
             # When error happens, specify a version to avoid this.
             version = "latest"
 
+        minstance = self._model_instance
+        dservers = minstance.distributed_servers
+        subworkers = (
+            dservers.subordinate_workers
+            if dservers and dservers.subordinate_workers
+            else []
+        )
+        subworker_pos = None
+        for i, sw in enumerate(subworkers):
+            if sw.worker_id == self._worker.id:
+                subworker_pos = i
+                break
+
         # Select root path
         root_path = next(
             (
@@ -737,21 +750,31 @@ class AscendMindIEServer(InferenceServer):
         env["MINDIE_CHECK_INPUTFILES_PERMISSION"] = "0"
         # -- Enforce using ATB as backend
         env["MINDIE_LLM_FRAMEWORK_BACKEND"] = "ATB"
-        # -- Asynchronous ATB execution
+        # -- Improve ATB execution
         env["ATB_OPERATION_EXECUTE_ASYNC"] = "1"
-        # -- Asynchronous operators emitting
         env["TASK_QUEUE_ENABLE"] = "1"
+        env["ATB_LAYER_INTERNAL_TENSOR_REUSE"] = env.pop(
+            "ATB_LAYER_INTERNAL_TENSOR_REUSE", "1"
+        )
+        env["INF_NAN_MODE_ENABLE"] = env.pop("INF_NAN_MODE_ENABLE", "0")
+        env["ATB_LLM_ENABLE_AUTO_TRANSPOSE"] = env.pop(
+            "ATB_LLM_ENABLE_AUTO_TRANSPOSE", "0"
+        )
+        env["ATB_CONVERT_NCHW_TO_ND"] = env.pop("ATB_CONVERT_NCHW_TO_ND", "1")
         # -- Enforce using 90% of GPU memory
         env["NPU_MEMORY_FRACTION"] = "0.9"
         # -- Pop conflict configuration items.
-        env.pop("RANKTABLEFILE", "")  # TODO need for host-across deployment.
-        env.pop("RANK_TABLE_FILE", "")  # TODO need for host-across deployment.
         env.pop("NPU_VISIBLE_DEVICES", "")
         env.pop("NPU-VISIBLE-DEVICES", "")
         env.pop("NPU_DEVICE_IDS", "")
         env.pop("ASCEND_RT_VISIBLE_DEVICES", "")
-        env.pop("MIES_CONTAINER_IP", "")
         env.pop("MIES_CONTAINER_MANAGEMENT_IP", "")
+        env.pop("WORLD_SIZE", "")
+        env.pop("RANKTABLEFILE", "")
+        env.pop("RANK_TABLE_FILE", "")
+        if not subworkers:
+            env.pop("MIES_CONTAINER_IP", "")
+            env.pop("HOST_IP", "")
 
         # - Logging config
         # -- Ascend MindIE
@@ -759,62 +782,81 @@ class AscendMindIEServer(InferenceServer):
         env["MINDIE_LOG_TO_STDOUT"] = "1"
         env["MINDIE_LOG_TO_FILE"] = "0"
         # -- Ascend MindIE Service
-        env["MIES_CERTS_LOG_LEVEL"] = "INFO"
+        env["MIES_CERTS_LOG_LEVEL"] = env.pop("MIES_CERTS_LOG_LEVEL", "INFO")
         env["MIES_CERTS_LOG_TO_STDOUT"] = "1"
         env["MIES_CERTS_LOG_TO_FILE"] = "0"
         # -- Ascend MindIE LLM
-        env["MINDIE_LLM_LOG_LEVEL"] = "WARN"
+        env["MINDIE_LLM_LOG_LEVEL"] = env.pop("MINDIE_LLM_LOG_LEVEL", "WARN")
         env["MINDIE_LLM_LOG_TO_STDOUT"] = "1"
         env["MINDIE_LLM_LOG_TO_FILE"] = "0"
-        env["MINDIE_LLM_PYTHON_LOG_LEVEL"] = "WARN"
+        env["MINDIE_LLM_PYTHON_LOG_LEVEL"] = env.pop(
+            "MINDIE_LLM_PYTHON_LOG_LEVEL", "WARN"
+        )
         env["MINDIE_LLM_PYTHON_LOG_TO_STDOUT"] = "1"
         env["MINDIE_LLM_PYTHON_LOG_TO_FILE"] = "0"
         # -- Ascend MindIE Runtime
-        env["ASCEND_GLOBAL_LOG_LEVEL"] = "3"  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
-        env["ASCEND_SLOG_LEVEL"] = "WARN"
+        env["ASCEND_GLOBAL_LOG_LEVEL"] = env.pop(
+            "ASCEND_GLOBAL_LOG_LEVEL", "3"
+        )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
+        env["ASCEND_SLOG_LEVEL"] = env.pop("ASCEND_SLOG_LEVEL", "WARN")
         env["ASCEND_SLOG_PRINT_TO_STDOUT"] = "1"
         env["ASCEND_SLOG_PRINT_TO_FILE"] = "0"
-        env["MINDIE_RT_LOG_LEVEL"] = "3"  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
+        env["MINDIE_RT_LOG_LEVEL"] = env.pop(
+            "MINDIE_RT_LOG_LEVEL", "3"
+        )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
         env["MINDIE_RT_LOG_PRINT_TO_STDOUT"] = "1"
         env["MINDIE_RT_LOG_PRINT_TO_FILE"] = "0"
         # -- Ascend MindIE ATB
-        env["ATB_LOG_LEVEL"] = "ERROR"
+        env["ATB_LOG_LEVEL"] = env.pop("ATB_LOG_LEVEL", "ERROR")
         env["ATB_LOG_TO_STDOUT"] = "1"
         env["ATB_LOG_TO_FILE"] = "0"
-        env["LOG_LEVEL"] = "ERROR"
+        env["ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE"] = env.pop(
+            "ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE", "0"
+        )
+        env["LOG_LEVEL"] = env.pop("LOG_LEVEL", "ERROR")
         env["LOG_TO_STDOUT"] = "1"
         env["LOG_TO_FILE"] = "0"
         # -- Ascend MindIE Model
-        env["ASDOPS_LOG_LEVEL"] = "ERROR"
+        env["ASDOPS_LOG_LEVEL"] = env.pop("ASDOPS_LOG_LEVEL", "ERROR")
         env["ASDOPS_LOG_TO_STDOUT"] = "1"
         env["ASDOPS_LOG_TO_FILE"] = "0"
-        env["ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE"] = "0"
         # -- Ascend MindIE OCK
-        env["OCK_LOG_LEVEL"] = "ERROR"
+        env["OCK_LOG_LEVEL"] = env.pop("OCK_LOG_LEVEL", "ERROR")
         env["OCK_LOG_TO_STDOUT"] = "1"
         env["OCK_LOG_TO_FILE"] = "0"
         # -- Ascend MindIE Torch
-        env["TORCH_AIE_LOG_LEVEL"] = "3"  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
+        env["TORCH_AIE_LOG_LEVEL"] = env.pop(
+            "TORCH_AIE_LOG_LEVEL", "3"
+        )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
         env["TORCH_AIE_PRINT_TO_STDOUT"] = "1"
         env["TORCH_AIE_PRINT_TO_FILE"] = "0"
+        # -- Disable OpenMP parallelism, speed up model loading.
+        env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
 
         # - Listening config
+        serving_port = minstance.ports[0] if minstance.ports else minstance.port
         server_config["ipAddress"] = "0.0.0.0"
         server_config.pop("managementIpAddress", None)
         server_config["allowAllZeroIpListening"] = True
         server_config["maxLinkNum"] = 1000
-        server_config["port"] = self._model_instance.port
-        server_config["managementPort"] = self._model_instance.port
-        server_config["metricsPort"] = self._model_instance.port
+        server_config["port"] = serving_port
+        server_config["managementPort"] = serving_port
+        server_config["metricsPort"] = serving_port
         server_config["httpsEnabled"] = False
         server_config["interCommTLSEnabled"] = False
 
         # - Device config
-        world_size = len(self._model_instance.gpu_indexes)
-        backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
-        backend_config["multiNodesInferEnabled"] = False
         backend_config["interNodeTLSEnabled"] = False
-        model_config["worldSize"] = world_size
+        backend_config["npuDeviceIds"] = [minstance.gpu_indexes]
+        model_config["worldSize"] = len(minstance.gpu_indexes)
+        backend_config["multiNodesInferEnabled"] = False
+        if subworkers:
+            connecting_port = minstance.ports[1] if len(minstance.ports) > 1 else None
+            backend_config["multiNodesInferEnabled"] = True
+            backend_config["multiNodesInferPort"] = connecting_port
+        if minstance.worker_id != self._worker.id:
+            backend_config["npuDeviceIds"] = [subworkers[subworker_pos].gpu_indexes]
+            model_config["worldSize"] = len(subworkers[subworker_pos].gpu_indexes)
 
         # - Model config
         derived_max_seq_len = self._get_model_max_seq_len()
@@ -843,6 +885,9 @@ class AscendMindIEServer(InferenceServer):
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
+            world_size = len(minstance.gpu_indexes)
+            if subworkers:
+                world_size += world_size * len(subworkers)
             params = AscendMindIEParameters(
                 world_size=world_size,
                 max_seq_len=max_seq_len,
@@ -884,6 +929,7 @@ class AscendMindIEServer(InferenceServer):
                 env["MIES_SERVICE_MONITOR_MODE"] = "1"
             # --- Emitting operators in synchronous way.
             env["TASK_QUEUE_ENABLE"] = "0" if params.enforce_eager else "1"
+            env["ATB_OPERATION_EXECUTE_ASYNC"] = "0" if params.enforce_eager else "1"
             # --- Mutating model config.
             model_config_path = self._model_path_mapped.joinpath("config.json")
             with open(
@@ -999,22 +1045,90 @@ class AscendMindIEServer(InferenceServer):
             tp = params.tensor_parallel_size
             if dp > 0:
                 model_config["dp"] = dp
-            if tp > 0:
                 model_config["tp"] = tp
-                model_config["moe_tp"] = tp if dp <= 0 else world_size
-                if params.enable_expert_parallel:
-                    model_config["moe_ep"] = dp
-                    model_config["moe_tp"] = tp
+                model_config["moe_tp"] = world_size
+            if params.enable_expert_parallel:
+                model_config["moe_tp"] = 1
+                model_config["moe_ep"] = world_size
             # --- Buffer response
             if params.enable_buffer_response:
                 schedule_config["bufferResponseEnabled"] = True
                 schedule_config["prefillExpectedTime"] = params.prefill_expected_time_ms
                 schedule_config["decodeExpectedTime"] = params.decode_expected_time_ms
 
-        # Generate JSON configuration file by model instance id
-        config_path = install_path.joinpath(
-            "conf", f"config-{self._model_instance.id}.json"
-        )
+        # Generate rank table file if needed,
+        # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html,
+        #     https://www.hiascend.com/forum/thread-0237183374051498211-1-1.html
+        rank_table_str = None
+        if subworkers:
+            server_count = f"{len(subworkers) + 1}"
+            server_list = [
+                {
+                    "server_id": minstance.worker_ip,
+                    "container_ip": minstance.worker_ip,
+                    "device": [
+                        {
+                            "device_id": str(minstance.gpu_indexes[i]),
+                            "device_ip": minstance.gpu_addresses[i],
+                            "rank_id": str(i),
+                        }
+                        for i in range(len(minstance.gpu_indexes))
+                    ],
+                },
+            ]
+            for i, sw in enumerate(subworkers):
+                server_list.append(
+                    {
+                        "server_id": sw.worker_ip,
+                        "container_ip": sw.worker_ip,
+                        "device": [
+                            {
+                                "device_id": str(sw.gpu_indexes[j]),
+                                "device_ip": sw.gpu_addresses[j],
+                                "rank_id": str(j + len(sw.gpu_indexes) * (i + 1)),
+                            }
+                            for j in range(len(sw.gpu_indexes))
+                        ],
+                    }
+                )
+            # Save rank table to a JSON file.
+            rank_table = {
+                "version": "1.0",
+                "server_count": server_count,
+                "server_list": server_list,
+                "status": "completed",
+            }
+            rank_table_path = self._model_path_mapped.joinpath("ranktable.json")
+            rank_table_str = json.dumps(rank_table, indent=4, ensure_ascii=False)
+            with open(
+                rank_table_path,
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(rank_table_str)
+            # - Change mode to 640.
+            rank_table_path.chmod(0o640)
+            # - Set environment variables.
+            env["WORLD_SIZE"] = str(len(minstance.gpu_indexes) * (len(subworkers) + 1))
+            env["RANKTABLEFILE"] = str(rank_table_path)
+            env["RANK_TABLE_FILE"] = str(rank_table_path)
+            env["MIES_CONTAINER_IP"] = env.pop("MIES_CONTAINER_IP", self._worker.ip)
+            env["HOST_IP"] = env.pop("HOST_IP", self._worker.ip)
+            env["ATB_LLM_HCCL_ENABLE"] = env.pop("ATB_LLM_HCCL_ENABLE", "1")
+            env["ATB_LLM_COMM_BACKEND"] = env.pop("ATB_LLM_COMM_BACKEND", "hccl")
+            env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
+            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
+            # NB(thxCode): For deterministic calculation, needs the following environment variables.
+            # LCCL_DETERMINISTIC=1
+            # ATB_WORKSPACE_MEM_ALLOC_GLOBAL=1
+            # HCCL_DETERMINISTIC=true
+            # ATB_MATMUL_SHUFFLE_K_ENABLE=0
+            # ATB_LLM_LCOC_ENABLE=0
+            # HCCL_OP_EXPANSION_MODE=""
+            logger.info(f"Saved Ascend MindIE rank table config to {rank_table_path}")
+
+        # Generate JSON configuration file by model instance id.
+        config_path = install_path.joinpath("conf", f"config-{minstance.id}.json")
         config_str = json.dumps(config, indent=4, ensure_ascii=False)
         with open(
             config_path,
@@ -1022,6 +1136,8 @@ class AscendMindIEServer(InferenceServer):
             encoding="utf-8",
         ) as f:
             f.write(config_str)
+        # - Change mode to 640.
+        config_path.chmod(0o640)
         logger.info(f"Saved Ascend MindIE config to {config_path}")
 
         # Start, configure environment variable to indicate the JSON configuration file.
@@ -1043,11 +1159,16 @@ class AscendMindIEServer(InferenceServer):
                     env_view[k] = env.get(k, v)
             if env_view:
                 logger.info(
-                    f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
+                    f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
+                    f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
                 )
             logger.info(
                 f"With JSON configuration(inconsistent input items mean unchangeable):{os.linesep}{config_str}"
             )
+            if rank_table_str:
+                logger.info(
+                    f"With rank table JSON configuration:{os.linesep}{rank_table_str}"
+                )
 
             # Fork, inject environment variables and set working directory.
             proc = subprocess.Popen(
@@ -1118,6 +1239,8 @@ class AscendMindIEServer(InferenceServer):
             with open(src, "rb") as src_file:
                 with open(dst, "wb") as dst_file:
                     dst_file.write(src_file.read())
+            # Change the file mode to 750
+            dst.chmod(0o750)
 
         logger.info(f"Mapped original model path {self._model_path} to {mapped}")
         return mapped
@@ -1127,7 +1250,7 @@ class AscendMindIEServer(InferenceServer):
         Report error message to the model instance.
         """
         error_message = f"Failed to run Ascend MindIE: {ex}"
-        logger.error(error_message)
+        logger.error(error_message, exc_info=True)
         try:
             patch_dict = {
                 "state_message": error_message,
