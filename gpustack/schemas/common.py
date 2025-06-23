@@ -24,8 +24,11 @@ class ListParams(BaseModel):
     watch: bool = Query(default=False)
 
 
-class PaginatedList(BaseModel, Generic[T]):
+class ItemList(BaseModel, Generic[T]):
     items: list[T]
+
+
+class PaginatedList(ItemList[T]):
     pagination: Pagination
 
 

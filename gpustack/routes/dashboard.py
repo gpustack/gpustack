@@ -1,14 +1,16 @@
 from datetime import date, datetime, timedelta, timezone
-from typing import List
-from fastapi import APIRouter
+from typing import List, Optional
+from fastapi import APIRouter, Query
 from sqlalchemy import JSON, BigInteger, case, cast, text
-from sqlmodel import distinct, select, func
+from sqlmodel import distinct, select, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.schemas.common import ItemList
 from gpustack.schemas.dashboard import (
     CurrentSystemLoad,
     HistorySystemLoad,
     ModelSummary,
+    ModelUsageStats,
     ModelUsageSummary,
     ModelUsageUserSummary,
     ResourceClaim,
@@ -35,7 +37,7 @@ async def dashboard(
 ):
     resoruce_counts = await get_resource_counts(session)
     system_load = await get_system_load(session)
-    model_usage = await get_model_usage(session)
+    model_usage = await get_model_usage_summary(session)
     active_models = await get_active_models(session)
     summary = SystemSummary(
         resource_counts=resoruce_counts,
@@ -121,9 +123,16 @@ async def get_system_load(session: AsyncSession) -> SystemLoadSummary:
     )
 
 
-async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
-    today = date.today()
-    one_month_ago = today - timedelta(days=31)
+async def get_model_usage_stats(
+    session: AsyncSession,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    model_ids: Optional[List[int]] = None,
+    user_ids: Optional[List[int]] = None,
+) -> ModelUsageStats:
+    if start_date is None or end_date is None:
+        end_date = date.today()
+        start_date = end_date - timedelta(days=31)
 
     statement = (
         select(
@@ -134,10 +143,18 @@ async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
             ),
             func.sum(ModelUsage.request_count).label('total_requests'),
         )
-        .where(ModelUsage.date >= one_month_ago)
+        .where(ModelUsage.date >= start_date)
+        .where(ModelUsage.date <= end_date)
         .group_by(ModelUsage.date)
         .order_by(ModelUsage.date)
     )
+
+    if model_ids is not None:
+        statement = statement.where(col(ModelUsage.model_id).in_(model_ids))
+
+    if user_ids is not None:
+        statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
+
     results = (await session.exec(statement)).all()
 
     prompt_token_history = []
@@ -168,7 +185,20 @@ async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
                 value=result.total_requests,
             )
         )
+
+    return ModelUsageStats(
+        api_request_history=api_request_history,
+        prompt_token_history=prompt_token_history,
+        completion_token_history=completion_token_history,
+    )
+
+
+async def get_model_usage_summary(session: AsyncSession) -> ModelUsageSummary:
+    model_usage_stats = await get_model_usage_stats(session)
     # get top users
+    today = date.today()
+    one_month_ago = today - timedelta(days=31)
+
     statement = (
         select(
             ModelUsage.user_id,
@@ -202,9 +232,9 @@ async def get_model_usage(session: AsyncSession) -> ModelUsageSummary:
         )
 
     return ModelUsageSummary(
-        api_request_history=api_request_history,
-        prompt_token_history=prompt_token_history,
-        completion_token_history=completion_token_history,
+        api_request_history=model_usage_stats.api_request_history,
+        prompt_token_history=model_usage_stats.prompt_token_history,
+        completion_token_history=model_usage_stats.completion_token_history,
         top_users=top_users,
     )
 
@@ -346,3 +376,93 @@ def active_model_statement() -> select:
     )
 
     return statement
+
+
+async def get_model_usages(
+    session: AsyncSession,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    model_ids: Optional[List[int]] = None,
+    user_ids: Optional[List[int]] = None,
+) -> List[ModelUsage]:
+    if start_date is None or end_date is None:
+        end_date = date.today()
+        start_date = end_date - timedelta(days=31)
+
+    statement = (
+        select(ModelUsage)
+        .where(ModelUsage.date >= start_date)
+        .where(ModelUsage.date <= end_date)
+    )
+
+    if model_ids is not None:
+        statement = statement.where(col(ModelUsage.model_id).in_(model_ids))
+
+    if user_ids is not None:
+        statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
+
+    return (await session.exec(statement)).all()
+
+
+@router.get("/usage")
+async def usage(
+    session: SessionDep,
+    start_date: Optional[date] = Query(
+        None,
+        description="Start date for the usage data (YYYY-MM-DD). Defaults to 31 days ago.",
+    ),
+    end_date: Optional[date] = Query(
+        None, description="End date for the usage data (YYYY-MM-DD). Defaults to today."
+    ),
+    model_ids: Optional[List[int]] = Query(
+        None,
+        description="Filter by model IDs. Defaults to all models.",
+    ),
+    user_ids: Optional[List[int]] = Query(
+        None, description="Filter by user IDs. Defaults to all users."
+    ),
+):
+    """
+    Get model usage records.
+    This endpoint returns detailed model usage records within a specified date range.
+    """
+    items = await get_model_usages(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        model_ids=model_ids,
+        user_ids=user_ids,
+    )
+    return ItemList[ModelUsage](items=items)
+
+
+@router.get("/usage/stats")
+async def usage_stats(
+    session: SessionDep,
+    start_date: Optional[date] = Query(
+        None,
+        description="Start date for the usage data (YYYY-MM-DD). Defaults to 31 days ago.",
+    ),
+    end_date: Optional[date] = Query(
+        None, description="End date for the usage data (YYYY-MM-DD). Defaults to today."
+    ),
+    model_ids: Optional[List[int]] = Query(
+        None,
+        description="Filter by model IDs. Defaults to all models.",
+    ),
+    user_ids: Optional[List[int]] = Query(
+        None, description="Filter by user IDs. Defaults to all users."
+    ),
+):
+    """
+    Get model usage statistics.
+    This endpoint returns aggregated statistics for model usage, including token counts and request counts.
+    It can filter by date range, model IDs, and user IDs.
+    """
+    return await get_model_usage_stats(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        model_ids=model_ids,
+        user_ids=user_ids,
+    )

@@ -33,11 +33,14 @@ class ModelUsageUserSummary(BaseModel):
     completion_token_count: int
 
 
-class ModelUsageSummary(BaseModel):
+class ModelUsageStats(BaseModel):
     api_request_history: List[TimeSeriesData]
     completion_token_history: List[TimeSeriesData]
     prompt_token_history: List[TimeSeriesData]
-    top_users: List[ModelUsageUserSummary]
+
+
+class ModelUsageSummary(ModelUsageStats):
+    top_users: Optional[List[ModelUsageUserSummary]] = None
 
 
 class ResourceClaim(BaseModel):
