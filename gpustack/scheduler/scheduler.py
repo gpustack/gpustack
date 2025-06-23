@@ -42,6 +42,7 @@ from gpustack.schemas.models import (
     get_backend,
     is_gguf_model,
     is_audio_model,
+    DistributedServerCoordinateModeEnum,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import get_engine
@@ -257,7 +258,7 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"Failed to get item from schedule queue: {e}")
 
-    async def _schedule_one(self, instance: ModelInstance):
+    async def _schedule_one(self, instance: ModelInstance):  # noqa: C901
         """
         Schedule a model instance by picking one candidate.
         Args:
@@ -322,11 +323,16 @@ class Scheduler:
                     candidate.computed_resource_claim
                 )
                 model_instance.gpu_indexes = candidate.gpu_indexes
+                model_instance.gpu_addresses = candidate.gpu_addresses
                 model_instance.distributed_servers = DistributedServers(
-                    rpc_servers=candidate.rpc_servers,
-                    ray_actors=candidate.ray_actors,
                     subordinate_workers=candidate.subordinate_workers,
+                    rpc_servers=candidate.rpc_servers,  # FIXME: Replace by subordinate_workers
+                    ray_actors=candidate.ray_actors,  # FIXME: Replace by subordinate_workers
                 )
+                if get_backend(model) == BackendEnum.ASCEND_MINDIE:
+                    model_instance.distributed_servers.mode = (
+                        DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                    )
 
                 await ModelInstanceService(session).update(model_instance)
 

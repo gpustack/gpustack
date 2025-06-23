@@ -5,9 +5,8 @@ import psutil
 import requests
 import setproctitle
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 import logging
-
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
@@ -15,6 +14,7 @@ from gpustack.logging import (
     RedirectStdoutStderr,
 )
 from gpustack.utils import network, platform
+from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
@@ -28,9 +28,10 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
     get_backend,
+    DistributedServerCoordinateModeEnum,
+    ModelInstanceSubordinateWorker,
 )
 from gpustack.server.bus import Event, EventType
-
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class ServeManager:
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[int, multiprocessing.Process] = {}
-        self._serving_model_instance_ports: Dict[int, int] = {}
+        self._serving_model_instance_ports: Set[int] = set()
         self._starting_model_instances: Dict[int, ModelInstance] = {}
         self._error_model_instances: Dict[int, ModelInstance] = {}
         self._model_cache_by_instance: Dict[int, Model] = {}
@@ -83,16 +84,78 @@ class ServeManager:
                 logger.error(f"Error while monitoring instances: {e}")
                 await asyncio.sleep(5)
 
-    def _handle_model_instance_event(self, event: Event):
+    def _handle_model_instance_event(self, event: Event):  # noqa: C901
         mi = ModelInstance.model_validate(event.data)
-
-        if mi.worker_id != self._worker_id:
-            # Ignore model instances that are not assigned to this worker node.
-            return
 
         logger.trace(
             f"Received model instance event: {event.type} {mi.name} {mi.state}"
         )
+
+        is_main_worker = mi.worker_id == self._worker_id
+
+        if is_main_worker:
+            # Return if all subordinate workers aren't running.
+            if (
+                mi.distributed_servers
+                and mi.distributed_servers.mode
+                == DistributedServerCoordinateModeEnum.RUN_FIRST
+                and mi.distributed_servers.subordinate_workers
+            ):
+                ready = all(
+                    sw.state == ModelInstanceStateEnum.RUNNING
+                    for sw in mi.distributed_servers.subordinate_workers
+                )
+                if not ready:
+                    logger.info(
+                        f"Model instance {mi.name} waits for all subordinate workers to be ready."
+                    )
+                    return
+        else:
+            # Return if it isn't a distribution serving.
+            if not mi.distributed_servers:
+                return
+            # Return if it's a delegated distribution,
+            # which means the main worker is responsible for serving.
+            if (
+                mi.distributed_servers.mode
+                == DistributedServerCoordinateModeEnum.DELEGATED
+            ):
+                return
+            # Return if it isn't the member of the distribution serving.
+            joined = any(
+                sw.worker_id == self._worker_id
+                for sw in mi.distributed_servers.subordinate_workers or []
+            )
+            if not joined:
+                return
+            # Return if the main worker isn't initialized.
+            if (
+                mi.distributed_servers.mode
+                == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                and mi.state
+                not in [
+                    ModelInstanceStateEnum.STARTING,
+                    ModelInstanceStateEnum.RUNNING,
+                    ModelInstanceStateEnum.ERROR,
+                ]
+            ):
+                logger.info(
+                    f"Model instance {mi.name} waits for main worker {mi.worker_ip} to be initialized."
+                )
+                return
+            # FIXME: This is a temporary solution to prevent the main worker from being unable to start due to phantom reads.
+            #        We confirm whether the operation should be performed by checking the state of the earlier subordinate worker.
+            for sw in mi.distributed_servers.subordinate_workers:
+                if sw.worker_id == self._worker_id:
+                    break
+                if sw.state not in [
+                    ModelInstanceStateEnum.RUNNING,
+                    ModelInstanceStateEnum.ERROR,
+                ]:
+                    logger.info(
+                        f"Model instance {mi.name} waits for previous subordinate worker {sw.worker_ip} to be ready."
+                    )
+                    return
 
         if mi.state == ModelInstanceStateEnum.ERROR and event.type == EventType.DELETED:
             self._error_model_instances.pop(mi.id, None)
@@ -102,7 +165,6 @@ class ServeManager:
             if m.restart_on_error:
                 self._error_model_instances[mi.id] = mi
             return
-
         elif mi.id in self._serving_model_instances and event.type == EventType.DELETED:
             self._stop_model_instance(mi)
         elif (
@@ -117,24 +179,56 @@ class ServeManager:
         ) and not self._serving_model_instances.get(mi.id):
             self._start_serve_process(mi)
 
-    def _start_serve_process(self, mi: ModelInstance):
+    def _start_serve_process(self, mi: ModelInstance):  # noqa: C901
+        is_main_worker = mi.worker_id == self._worker_id
+
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
         if os.path.exists(log_file_path) and platform.system() != "windows":
             # TODO Windows does not support os.remove() on open files.
             # Investigate file occupation issue.
             os.remove(log_file_path)
 
+        sw_pos: Optional[int] = None
+        sw: Optional[ModelInstanceSubordinateWorker] = None
+        if not is_main_worker:
+            sw_pos = next(
+                (
+                    i
+                    for i, sw in enumerate(mi.distributed_servers.subordinate_workers)
+                    if sw.worker_id == self._worker_id
+                ),
+            )
+            sw = mi.distributed_servers.subordinate_workers[sw_pos]
+
         try:
-            if mi.port is None:
-                mi.port = network.get_free_port(
-                    port_range=self._config.service_port_range,
-                    unavailable_ports=set(self._serving_model_instance_ports.values()),
-                )
-
-            logger.info(f"Start serving model instance {mi.name} on port {mi.port}")
-
             model = self._get_model_with_cache(mi)
             backend = get_backend(model)
+
+            # Assign port.
+            if not mi.port:
+                unavailable_ports = self._serving_model_instance_ports.copy()
+                mi.port = network.get_free_port(
+                    port_range=self._config.service_port_range,
+                    unavailable_ports=unavailable_ports,
+                )
+                mi.ports = [mi.port]
+                if (
+                    mi.distributed_servers
+                    and mi.distributed_servers.subordinate_workers
+                ):
+                    if backend == BackendEnum.ASCEND_MINDIE:
+                        # Get port for subordinate worker watching.
+                        unavailable_ports.add(mi.port)
+                        connecting_port = network.get_free_port(
+                            port_range=self._config.service_port_range,
+                            unavailable_ports=unavailable_ports,
+                        )
+                        mi.ports.append(connecting_port)
+
+            logger.info(
+                f"Starting model instance {mi.name}"
+                f"{'' if not is_main_worker else f'on port {mi.ports if mi.ports else [mi.port]}'}"
+            )
 
             process = multiprocessing.Process(
                 target=ServeManager.serve_model_instance,
@@ -144,32 +238,59 @@ class ServeManager:
                     self._clientset.headers,
                     log_file_path,
                     self._config,
+                    self._worker_id,
                 ),
             )
             process.daemon = False
             process.start()
             self._serving_model_instances[mi.id] = process
-            self._serving_model_instance_ports[mi.id] = mi.port
+            for port in mi.ports:
+                self._serving_model_instance_ports.add(port)
             self._starting_model_instances[mi.id] = mi
 
-            patch_dict = {
-                "state": ModelInstanceStateEnum.INITIALIZING,
-                "port": mi.port,
-                "pid": process.pid,
-            }
-            self._update_model_instance(mi.id, **patch_dict)
+            # Get patch dict for main worker.
+            if is_main_worker:
+                patch_dict = {
+                    "state": ModelInstanceStateEnum.INITIALIZING,
+                    "port": mi.port,
+                    "ports": mi.ports,
+                    "pid": process.pid,
+                }
+            # Get patch dict for subordinate worker.
+            else:
+                sw.state = ModelInstanceStateEnum.INITIALIZING
+                # For Ascend MindIE, the state is set to RUNNING directly,
+                if backend == BackendEnum.ASCEND_MINDIE:
+                    sw.state = ModelInstanceStateEnum.RUNNING
+                sw.pid = process.pid
+                patch_dict = {
+                    f"distributed_servers.subordinate_workers.{sw_pos}": sw,
+                }
 
-            logger.debug(
-                f"Started serving model instance {mi.name} on port {mi.port}, pid {process.pid}"
+            self._update_model_instance(mi.id, **patch_dict)
+            logger.info(
+                f"Started model instance {mi.name} "
+                f"{'' if not is_main_worker else f'on port {mi.ports if mi.ports else [mi.port]}'}, "
+                f"pid {process.pid}"
             )
 
         except Exception as e:
-            patch_dict = {
-                "state": ModelInstanceStateEnum.ERROR,
-                "state_message": f"{e}",
-            }
+            # Get patch dict for main worker.
+            if is_main_worker:
+                patch_dict = {
+                    "state": ModelInstanceStateEnum.ERROR,
+                    "state_message": f"Failed to start model instance: {e}",
+                }
+            # Get patch dict for subordinate worker.
+            else:
+                sw.state = ModelInstanceStateEnum.ERROR
+                sw.state_message = f"Failed to start model instance: {e}"
+                patch_dict = {
+                    f"distributed_servers.subordinate_workers.{sw_pos}": sw,
+                }
+
             self._update_model_instance(mi.id, **patch_dict)
-            logger.error(f"Failed to serve model instance: {e}")
+            logger.error(f"Failed to start model instance {mi.name}: {e}")
 
     def _restart_serve_process(self, mi: ModelInstance):
         logger.debug(f"Restart serving model instance {mi.name}")
@@ -183,6 +304,7 @@ class ServeManager:
         client_headers: dict,
         log_file_path: str,
         cfg: Config,
+        worker_id: int,
     ):
 
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
@@ -192,19 +314,17 @@ class ServeManager:
             base_url=cfg.server_url,
             headers=client_headers,
         )
-        model = clientset.models.get(mi.model_id)
-        backend = get_backend(model)
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with RedirectStdoutStderr(log_file):
                 if backend == BackendEnum.LLAMA_BOX:
-                    LlamaBoxServer(clientset, mi, cfg).start()
+                    LlamaBoxServer(clientset, mi, cfg, worker_id).start()
                 elif backend == BackendEnum.VLLM:
-                    VLLMServer(clientset, mi, cfg).start()
+                    VLLMServer(clientset, mi, cfg, worker_id).start()
                 elif backend == BackendEnum.VOX_BOX:
-                    VoxBoxServer(clientset, mi, cfg).start()
+                    VoxBoxServer(clientset, mi, cfg, worker_id).start()
                 elif backend == BackendEnum.ASCEND_MINDIE:
-                    AscendMindIEServer(clientset, mi, cfg).start()
+                    AscendMindIEServer(clientset, mi, cfg, worker_id).start()
                 else:
                     raise ValueError(f"Unsupported backend {backend}")
 
@@ -213,7 +333,7 @@ class ServeManager:
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())
         for key, value in kwargs.items():
-            setattr(mi, key, value)
+            set_attr(mi, key, value)
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
@@ -227,20 +347,23 @@ class ServeManager:
         return model
 
     def _stop_model_instance(self, mi: ModelInstance):
-        id = mi.id
-        if id not in self._serving_model_instances:
+        if mi.id not in self._serving_model_instances:
             logger.warning(f"Model instance {mi.name} is not running. Skipping.")
             return
         else:
-            pid = self._serving_model_instances[id].pid
+            pid = self._serving_model_instances[mi.id].pid
             try:
                 terminate_process_tree(pid)
+                logger.info(f"Stopped model instance {mi.name} with pid {pid}.")
             except psutil.NoSuchProcess:
+                logger.warning(
+                    f"Model instance {mi.name} with pid {pid} is already stopped."
+                )
                 pass
             except Exception as e:
-                logger.error(f"Failed to terminate process {pid}: {e}")
+                logger.error(f"Failed to stop model instance: {pid}: {e}")
 
-            self._post_stop_model_instance(id)
+            self._post_stop_model_instance(mi)
 
     def _restart_error_instance(self, mi: ModelInstance):
         """Attempts to restart a model instance that is in error state with exponential backoff."""
@@ -279,51 +402,145 @@ class ServeManager:
 
         self._error_model_instances.pop(mi.id, None)
 
-    def health_check_serving_instances(self):
+    def health_check_serving_instances(self):  # noqa: C901
         for id, process in list(self._serving_model_instances.items()):
+            # Skip if the process is alive and not in starting instances.
+            if process.is_alive() and id not in self._starting_model_instances:
+                continue
+
+            mi = self._clientset.model_instances.get(id=id)
+
+            is_main_worker = mi.worker_id == self._worker_id
+
+            # Monitor inference server process exit
             if not process.is_alive():
-                # monitor inference server process exit
-                exitcode = process.exitcode
                 try:
-                    mi = self._clientset.model_instances.get(id=id)
                     if mi.state != ModelInstanceStateEnum.ERROR:
-                        self._update_model_instance(
-                            id,
-                            state=ModelInstanceStateEnum.ERROR,
-                            state_message=f"Inference server exited with code {exitcode}.",
-                        )
+                        # Get patch dict for main worker.
+                        if is_main_worker:
+                            patch_dict = {
+                                "state": ModelInstanceStateEnum.ERROR,
+                                "state_message": f"Inference server exited with code {process.exitcode}.",
+                            }
+                        # Get patch dict for subordinate worker.
+                        else:
+                            sw_pos = next(
+                                (
+                                    i
+                                    for i, sw in enumerate(
+                                        mi.distributed_servers.subordinate_workers
+                                    )
+                                    if sw.worker_id == self._worker_id
+                                ),
+                            )
+                            sw = mi.distributed_servers.subordinate_workers[sw_pos]
+                            sw.state = ModelInstanceStateEnum.ERROR
+                            sw.state_message = (
+                                f"Inference server exited with code {process.exitcode}."
+                            )
+                            patch_dict = {
+                                f"distributed_servers.subordinate_workers.{sw_pos}": sw,
+                            }
+                        # Update model instance.
+                        self._update_model_instance(mi.id, **patch_dict)
                 except NotFoundException:
                     pass
-                except Exception:
-                    logger.error(f"Failed to update model instance {id} state.")
-                self._post_stop_model_instance(id)
-            elif id in self._starting_model_instances:
-                # health check for starting model instances
-                mi = self._starting_model_instances[id]
-                model = self._get_model_with_cache(mi)
-                if is_running(mi, model.backend):
-                    mi = self._clientset.model_instances.get(id=id)
-                    if mi.state != ModelInstanceStateEnum.ERROR:
-                        self._update_model_instance(
-                            id, state=ModelInstanceStateEnum.RUNNING
-                        )
-                    self._starting_model_instances.pop(id, None)
+                # Post process stop model instance.
+                self._post_stop_model_instance(mi)
+                return
 
-    def _post_stop_model_instance(self, id: str):
-        self._serving_model_instances.pop(id, None)
-        self._serving_model_instance_ports.pop(id, None)
-        self._starting_model_instances.pop(id, None)
-        self._model_cache_by_instance.pop(id, None)
+            # Otherwise, check if the process is ready to serve.
+            model = self._get_model_with_cache(mi)
+            backend = get_backend(model)
+            try:
+                # Get patch dict for main worker.
+                if is_main_worker:
+                    sw_error_msg = None
+                    if (
+                        mi.distributed_servers
+                        and mi.distributed_servers.subordinate_workers
+                    ):
+                        for sw in mi.distributed_servers.subordinate_workers:
+                            if sw.state == ModelInstanceStateEnum.ERROR:
+                                sw_error_msg = f"Distributed serving error in subordinate worker {sw.worker_ip}: {sw.state_message}."
+                                break
+                    # If there is no error message from subordinate workers,
+                    # check the main worker's health.
+                    if not sw_error_msg:
+                        if not is_ready(backend, mi):
+                            continue
+                        if mi.state == ModelInstanceStateEnum.RUNNING:
+                            continue
+                        patch_dict = {
+                            "state": ModelInstanceStateEnum.RUNNING,
+                            "state_message": "",
+                        }
+                    # Otherwise, update the main worker state to ERROR.
+                    else:
+                        patch_dict = {
+                            "state": ModelInstanceStateEnum.ERROR,
+                            "state_message": sw_error_msg,
+                        }
+                # Get patch dict for subordinate worker.
+                else:
+                    # Skip health check for Ascend MindIE subordinate workers
+                    if backend == BackendEnum.ASCEND_MINDIE:
+                        # Remove from starting instances directly.
+                        self._starting_model_instances.pop(mi.id, None)
+                        continue
+                    # Otherwise, update subordinate worker state to RUNNING.
+                    sw_pos = next(
+                        (
+                            i
+                            for i, sw in enumerate(
+                                mi.distributed_servers.subordinate_workers
+                            )
+                            if sw.worker_id == self._worker_id
+                        ),
+                    )
+                    sw = mi.distributed_servers.subordinate_workers[sw_pos]
+                    if sw.state == ModelInstanceStateEnum.RUNNING:
+                        continue
+                    sw.state = ModelInstanceStateEnum.RUNNING
+                    sw.state_message = ""
+                    patch_dict = {
+                        f"distributed_servers.subordinate_workers.{sw_pos}": sw,
+                    }
+                # Update model instance.
+                self._update_model_instance(mi.id, **patch_dict)
+                # Remove from starting instances if it was started.
+                self._starting_model_instances.pop(mi.id, None)
+            except NotFoundException:
+                pass
+
+    def _post_stop_model_instance(self, mi: ModelInstance):
+        """
+        Post process after stopping a model instance.
+          - Remove from serving model instances.
+          - Remove ports from serving model instance ports.
+          - Remove from starting model instances.
+          - Remove from model cache by instance.
+        """
+
+        self._serving_model_instances.pop(mi.id, None)
+        for port in mi.ports:
+            self._serving_model_instance_ports.remove(port)
+        self._starting_model_instances.pop(mi.id, None)
+        self._model_cache_by_instance.pop(mi.id, None)
 
 
-def is_running(mi: ModelInstance, backend: Optional[str]) -> bool:
+def is_ready(backend: str, mi: ModelInstance) -> bool:
+    """
+    Access the health endpoint of the given model instance to check if it is servable.
+    """
+
     try:
         # Check /v1/models by default if dedicated health check endpoint is not available.
         # This is served by all backends (llama-box, vox-box, vllm)
-        health_check_url = f"http://127.0.0.1:{mi.port}/v1/models"
-        if backend in [BackendEnum.LLAMA_BOX]:
+        health_check_url = f"http://{mi.worker_ip}:{mi.port}/v1/models"
+        if backend == BackendEnum.LLAMA_BOX:
             # For llama-box, use /health to avoid printing error logs.
-            health_check_url = f"http://127.0.0.1:{mi.port}/health"
+            health_check_url = f"http://{mi.worker_ip}:{mi.port}/health"
 
         response = requests.get(health_check_url, timeout=1)
         if response.status_code == 200:
