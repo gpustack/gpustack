@@ -50,7 +50,7 @@ async def _gather_gpu_info() -> GPUDevicesInfo:
         # Get the NPU chip info for this Chip ID: {<key> -> <value>}.
         npu_chip_info = npu_chips_info.get(chip_id, {})
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
+            logger.trace(
                 f"Gathered NPU chip {chip_logic_id} ({npu_id}, {chip_id}) info: {npu_chip_info}"
             )
 
