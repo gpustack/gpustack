@@ -456,10 +456,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         selected_devices_cnt_remain = self._serving_params.world_size
 
         for worker in workers:
-            # Skip if the worker does not have devices.
-            if not worker.status.gpu_devices:
-                continue
-
             # Choice devices of the worker based on the selected worker names and devices.
             if self._selected_worker_name_devices_idx:
                 # Break if selected devices are enough,
@@ -481,17 +477,25 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     in self._selected_worker_name_devices_idx[worker.name]
                 }
 
-                # Skip if the worker does not have enough devices.
+                # Return if the selected devices aren't matched with the worker's available devices.
                 if len(selected_devices_idx) < len(
                     self._selected_worker_name_devices_idx[worker.name]
                 ):
-                    continue
+                    self._diagnostic_messages.append(
+                        f"Worker {worker.name} does not have enough devices to satisfy the selected devices: "
+                        f"{self._selected_worker_name_devices_idx[worker.name]}."
+                    )
+                    return candidates
 
                 # Stats
                 selected_devices_cnt_remain -= len(selected_devices_idx)
 
             # Otherwise, use all devices of the worker.
             else:
+                # Skip if the worker does not have devices.
+                if not worker.status.gpu_devices:
+                    continue
+
                 worker_alloc = await self.__get_worker_alloc(worker)
 
                 # Skip if the worker does not have enough RAM.
@@ -521,6 +525,24 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if not available_worker_devices_idx:
             self._diagnostic_messages.append("No available workers found.")
             return candidates
+
+        # Return if the selected workers aren't matched with the available workers.
+        if self._selected_worker_name_devices_idx:
+            if len(self._selected_worker_name_devices_idx) > len(
+                available_worker_devices_idx
+            ):
+                unavailable_workers = set(
+                    self._selected_worker_name_devices_idx.keys()
+                ) - set(worker.name for worker in available_worker_devices_idx.keys())
+                if len(unavailable_workers) > 1:
+                    self._diagnostic_messages.append(
+                        f"Selected workers {', '.join(unavailable_workers)} are not available."
+                    )
+                else:
+                    self._diagnostic_messages.append(
+                        f"Selected worker {unavailable_workers.pop()} is not available."
+                    )
+                return candidates
 
         # Sort available worker devices by allocatable resources,
         # make sure the worker with the largest VRAM is first.
@@ -597,16 +619,26 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     # Increase main worker's devices.
                     if subworker_index < 0:
                         candidate.gpu_indexes.append(device.index)
-                        if device.network and device.network.inet:
-                            candidate.gpu_addresses.append(device.network.inet)
+                        candidate.gpu_addresses.append(
+                            device.network.inet
+                            if device.network
+                            and device.network.status == 'up'
+                            and device.network.inet
+                            else "-.-.-.-"
+                        )
                         candidate.computed_resource_claim.vram[device.index] = (
                             device_vram_request
                         )
                     # Increase subordinate worker's devices.
                     else:
                         subworker.gpu_indexes.append(device.index)
-                        if device.network and device.network.inet:
-                            subworker.gpu_addresses.append(device.network.inet)
+                        subworker.gpu_addresses.append(
+                            device.network.inet
+                            if device.network
+                            and device.network.status == 'up'
+                            and device.network.inet
+                            else "-.-.-.-"
+                        )
                         subworker.computed_resource_claim.vram[device.index] = (
                             device_vram_request
                         )
@@ -658,6 +690,10 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Iterate over the workers.
         for worker, devices in available_worker_devices_idx.items():
+            # Skip if the worker does not have enough devices.
+            if 0 < self._serving_params.world_size > len(devices):
+                continue
+
             worker_alloc = await self.__get_worker_alloc(worker)
 
             # Construct candidate by the worker.
@@ -713,8 +749,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                 # Append the device to the candidate.
                 candidate.gpu_indexes.append(device.index)
-                if device.network and device.network.inet:
-                    candidate.gpu_addresses.append(device.network.inet)
+                candidate.gpu_addresses.append(
+                    device.network.inet
+                    if device.network
+                    and device.network.status == 'up'
+                    and device.network.inet
+                    else "-.-.-.-"
+                )
                 candidate.computed_resource_claim.vram[device.index] = (
                     device_vram_request
                 )
@@ -738,6 +779,10 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 and self._model_params.num_attention_heads % selected_worker_devices_cnt
                 != 0
             ):
+                continue
+
+            # Skip if the total devices count is not the same as the requested world size.
+            if 0 < self._serving_params.world_size != selected_worker_devices_cnt:
                 continue
 
             # Append the candidate if satisfied the requested resources.
@@ -776,7 +821,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if worker_group_size < 2:
                 continue
             # Skip if the worker group does not have enough devices.
-            if 0 < self._serving_params.world_size < device_count * worker_group_size:
+            if 0 < self._serving_params.world_size > device_count * worker_group_size:
                 continue
 
             candidate: Optional[ModelInstanceScheduleCandidate] = None
@@ -871,19 +916,25 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     if device_vram_request > device_vram_allocate:
                         continue
 
+                    # Skip if the device doesn't have network address.
+                    if (
+                        not device.network
+                        or device.network.status != 'up'
+                        or not device.network.inet
+                    ):
+                        continue
+
                     # Increase main worker's devices.
                     if subworker_index < 0:
                         candidate.gpu_indexes.append(device.index)
-                        if device.network and device.network.inet:
-                            candidate.gpu_addresses.append(device.network.inet)
+                        candidate.gpu_addresses.append(device.network.inet)
                         candidate.computed_resource_claim.vram[device.index] = (
                             device_vram_request
                         )
                     # Increase subordinate worker's devices.
                     else:
                         subworker.gpu_indexes.append(device.index)
-                        if device.network and device.network.inet:
-                            subworker.gpu_addresses.append(device.network.inet)
+                        subworker.gpu_addresses.append(device.network.inet)
                         subworker.computed_resource_claim.vram[device.index] = (
                             device_vram_request
                         )
@@ -927,17 +978,24 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if worker_group_vram_request_remain > 0:
                 continue
 
+            # Skip if no devices are selected from this worker group.
+            selected_workers_devices_cnt = selected_worker_devices_cnt_previous * (
+                subworker_index + 1
+            )
+            if selected_workers_devices_cnt == 0:
+                continue
+
             # Skip if attention heads cannot be divided by the selected devices count.
             if (
-                candidate
+                self._model_params.num_attention_heads
                 and self._model_params.num_attention_heads
-                and self._model_params.num_attention_heads
-                % (
-                    selected_worker_devices_cnt_previous
-                    * (len(candidate.subordinate_workers) + 1)
-                )
+                % selected_workers_devices_cnt
                 != 0
             ):
+                continue
+
+            # Skip if the total devices count is not the same as the requested world size.
+            if 0 < self._serving_params.world_size != selected_workers_devices_cnt:
                 continue
 
             # Append the candidate if satisfied the requested resources.
