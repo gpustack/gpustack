@@ -52,7 +52,7 @@ class AscendMindIEParameters:
     max_prefill_batch_size: int = 50
     prefill_time_ms_per_req: int = 150
     prefill_policy_type: int = 0
-    max_batch_size: int = 200  # FIXME: Calculate this
+    max_batch_size: int = 200
     decode_time_ms_per_req: int = 50
     decode_policy_type: int = 0
     max_preempt_count: int = 0
@@ -645,14 +645,14 @@ class AscendMindIEParameters:
 
 
 class AscendMindIEServer(InferenceServer):
-    model_path_mapped: Optional[Path] = None
+    _model_path_mapped: Optional[Path] = None
 
     def __del__(self):
         self.cleanup()
 
     def start(self):
         # Prepare
-        self.model_path_mapped = self._map_model_path()
+        self._model_path_mapped = self._map_model_path()
         # Start
         try:
             self._start()
@@ -664,9 +664,9 @@ class AscendMindIEServer(InferenceServer):
 
     def cleanup(self):
         # Clean up
-        if self.model_path_mapped:
-            shutil.rmtree(self.model_path_mapped)
-        self.model_path_mapped = None
+        if self._model_path_mapped:
+            shutil.rmtree(self._model_path_mapped)
+        self._model_path_mapped = None
 
     def _start(self):  # noqa: max-complexity=15
         """
@@ -829,7 +829,7 @@ class AscendMindIEServer(InferenceServer):
         schedule_config["maxIterTimes"] = max_seq_len
         schedule_config["maxPrefillTokens"] = max_seq_len
         model_config["modelName"] = self._model.name
-        model_config["modelWeightPath"] = str(self.model_path_mapped)
+        model_config["modelWeightPath"] = str(self._model_path_mapped)
 
         # - Customize config, translate to Ascend MindIE configuration language,
         #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0285.html,
@@ -885,7 +885,7 @@ class AscendMindIEServer(InferenceServer):
             # --- Emitting operators in synchronous way.
             env["TASK_QUEUE_ENABLE"] = "0" if params.enforce_eager else "1"
             # --- Mutating model config.
-            model_config_path = self.model_path_mapped.joinpath("config.json")
+            model_config_path = self._model_path_mapped.joinpath("config.json")
             with open(
                 model_config_path,
                 "r",
@@ -920,7 +920,7 @@ class AscendMindIEServer(InferenceServer):
                 json.dump(model_path_config, f, indent=4, ensure_ascii=False)
             logger.info(f"Saved model config to {model_config_path}")
             # --- Mutating model generation config
-            model_generation_config_path = self.model_path_mapped.joinpath(
+            model_generation_config_path = self._model_path_mapped.joinpath(
                 "generation_config.json"
             )
             if params.override_generation_config_parsed:
