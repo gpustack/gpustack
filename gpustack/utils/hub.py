@@ -49,6 +49,9 @@ def calculate_file_size(
     selected_files = []
     extra_files = []
 
+    if not filename:
+        return sum(f.size for f in files if getattr(f, 'size', None) is not None)
+
     for sibling in files:
         if sibling.size is None:
             continue
