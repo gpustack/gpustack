@@ -1,8 +1,10 @@
 import asyncio
+import math
 from collections import defaultdict
 import logging
 import os
 import re
+from functools import reduce
 from typing import Dict, List, Optional
 from gpustack.policies.base import (
     Allocatable,
@@ -94,11 +96,28 @@ def get_model_num_attention_heads(model: Model) -> Optional[int]:
     num_attention_heads = None
     try:
         config = get_pretrained_config(model, trust_remote_code=True)
-        num_attention_heads = getattr(config, "num_attention_heads", None)
-        if not num_attention_heads:
-            llm_config = getattr(config, "llm_config", None)
-            if llm_config:
-                num_attention_heads = getattr(llm_config, "num_attention_heads", None)
+        num_attention_heads_set = set()
+
+        # Helper to collect num_attention_heads from configs
+        def add_heads_from(cfg, key="num_attention_heads"):
+            value = getattr(cfg, key, None)
+            if isinstance(value, int) and value > 0:
+                num_attention_heads_set.add(value)
+
+        for _config in [
+            config,
+            getattr(config, "llm_config", None),
+            getattr(config, "text_config", None),
+            getattr(config, "vision_config", None),
+        ]:
+            if _config:
+                add_heads_from(_config)
+
+        if not num_attention_heads_set:
+            return None
+
+        num_attention_heads = reduce(math.gcd, num_attention_heads_set)
+
     except Exception as e:
         logger.warning(f"Cannot get num_attention_heads for model {model.name}: {e}")
 
