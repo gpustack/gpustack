@@ -1,6 +1,7 @@
 import asyncio
 import time
 from typing import List, Optional
+import aiohttp
 import numpy
 import logging
 import argparse
@@ -174,7 +175,10 @@ async def main(
     headers=None,
     embeddings=False,
 ):
-    async with ClientSession() as aiohttp_session:
+    connector = aiohttp.TCPConnector(
+        limit=1000,
+    )
+    async with ClientSession(connector=connector) as aiohttp_session:
         if headers:
             set_headers(aiohttp_session, headers)
         transport = AiohttpTransport(client=aiohttp_session)

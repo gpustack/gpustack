@@ -1,10 +1,12 @@
 import asyncio
+from contextlib import asynccontextmanager
 import os
 import logging
 import socket
 import uuid
 from typing import Optional
 
+import aiohttp
 from fastapi import FastAPI
 import setproctitle
 import tenacity
@@ -12,6 +14,7 @@ import uvicorn
 
 from gpustack.api import exceptions
 from gpustack.config import Config
+from gpustack.config.envs import TCP_CONNECTOR_LIMIT
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.schemas.workers import SystemReserved, WorkerUpdate
@@ -29,7 +32,6 @@ from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
-
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +241,20 @@ class Worker:
         Start the worker server to expose APIs.
         """
 
-        app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            connector = aiohttp.TCPConnector(
+                limit=TCP_CONNECTOR_LIMIT,
+            )
+            app.state.http_client = aiohttp.ClientSession(connector=connector)
+            yield
+            await app.state.http_client.close()
+
+        app = FastAPI(
+            title="GPUStack Worker",
+            response_model_exclude_unset=True,
+            lifespan=lifespan,
+        )
         app.state.config = self._config
 
         app.include_router(debug.router, prefix="/debug")

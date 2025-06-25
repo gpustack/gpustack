@@ -1,19 +1,17 @@
+import asyncio
 import logging
-import os
+import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-import httpx
 from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
 from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableException
+from gpustack.config.envs import PROXY_TIMEOUT
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
 logger = logging.getLogger(__name__)
-
-PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
-client = httpx.AsyncClient(timeout=PROXY_TIMEOUT)
 
 
 @router.api_route(
@@ -31,22 +29,28 @@ async def proxy(path: str, request: Request):
         headers = dict(request.headers)
         headers.pop("host", None)
 
-        req_proxy = client.build_request(
-            request.method,
-            httpx.URL(url),
+        async def stream_response(resp):
+            async for chunk in resp.content.iter_chunked(1024):
+                yield chunk
+
+        http_client: aiohttp.ClientSession = request.app.state.http_client
+        timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+        resp = await http_client.request(
+            method=request.method,
+            url=url,
             headers=headers,
-            content=content,
+            data=content,
+            timeout=timeout,
         )
-        resp_proxy = await client.send(req_proxy, stream=True)
 
         return StreamingResponse(
-            resp_proxy.aiter_raw(),
-            status_code=resp_proxy.status_code,
-            headers=resp_proxy.headers,
-            background=BackgroundTask(resp_proxy.aclose),
+            stream_response(resp),
+            status_code=resp.status,
+            headers=dict(resp.headers),
+            background=BackgroundTask(resp.close),
         )
 
-    except httpx.TimeoutException as e:
+    except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
         if str(e):
             error_message += f": {e}"
