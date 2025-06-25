@@ -179,23 +179,18 @@ async def proxy_request_by_model(request: Request, endpoint: str):
                 is_openai_exception=True,
             )
 
-    url = f"http://{instance.worker_ip}:{worker.port}/proxy/v1/{endpoint}"
-    token = request.app.state.server_config.token
-    extra_headers = {
-        "X-Target-Port": str(instance.port),
-        "Authorization": f"Bearer {token}",
-    }
+    url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
 
     logger.debug(f"proxying to {url}, instance port: {instance.port}")
 
     try:
         if stream:
             return await handle_streaming_request(
-                request, url, body_json, form_data, form_files, extra_headers
+                request, url, body_json, form_data, form_files
             )
         else:
             return await handle_standard_request(
-                request, url, body_json, form_data, form_files, extra_headers
+                request, url, body_json, form_data, form_files
             )
     except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
