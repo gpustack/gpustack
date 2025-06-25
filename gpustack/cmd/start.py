@@ -4,7 +4,6 @@ import json
 import logging
 import multiprocessing
 import os
-import resource
 import sys
 from typing import Any, Dict, Optional
 
@@ -530,6 +529,8 @@ def set_ulimit(target_soft_limit=65535):
     if sys.platform.startswith('win'):
         logger.info("Windows detected, skipping ulimit adjustment.")
         return
+
+    import resource
 
     resource_type = resource.RLIMIT_NOFILE
     current_soft, current_hard = resource.getrlimit(resource_type)
