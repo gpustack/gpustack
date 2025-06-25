@@ -1,5 +1,4 @@
 import asyncio
-import os
 from typing import List, Optional
 import aiohttp
 import logging
@@ -21,6 +20,7 @@ from gpustack.api.exceptions import (
     GatewayTimeoutException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
+from gpustack.config.envs import PROXY_TIMEOUT
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.models import build_category_conditions
 from gpustack.schemas.models import (
@@ -38,8 +38,6 @@ load_balancer = LoadBalancer()
 
 
 aliasable_router = APIRouter()
-
-PROXY_TIMEOUT = int(os.getenv("GPUSTACK_PROXY_TIMEOUT_SECONDS", 1800))
 
 
 @aliasable_router.post("/chat/completions")

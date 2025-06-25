@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-import os
 import re
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -9,6 +8,7 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy import DDL, event
 
+from gpustack.config.envs import DB_ECHO, DB_MAX_OVERFLOW, DB_POOL_SIZE, DB_POOL_TIMEOUT
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
@@ -25,11 +25,6 @@ from gpustack.schemas.stmt import (
 )
 
 _engine = None
-
-DB_ECHO = os.getenv("GPUSTACK_DB_ECHO", "false").lower() == "true"
-DB_POOL_SIZE = int(os.getenv("GPUSTACK_DB_POOL_SIZE", 5))
-DB_MAX_OVERFLOW = int(os.getenv("GPUSTACK_DB_MAX_OVERFLOW", 10))
-DB_POOL_TIMEOUT = int(os.getenv("GPUSTACK_DB_POOL_TIMEOUT", 30))
 
 
 def get_engine():
