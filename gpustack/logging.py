@@ -27,9 +27,7 @@ def setup_logging(debug: bool = False):
     logging.Formatter.formatTime = (
         lambda self, record, datefmt=None: datetime.fromtimestamp(
             record.created, timezone.utc
-        )
-        .astimezone()
-        .isoformat(timespec="seconds")
+        ).astimezone()
     )
 
     # Third-party loggers to disable
