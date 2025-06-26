@@ -31,7 +31,7 @@ def event_decoder(obj):
 
 class Subscriber:
     def __init__(self):
-        self.queue = asyncio.Queue()
+        self.queue = asyncio.Queue(maxsize=256)
 
     async def enqueue(self, event: Event):
         await self.queue.put(event)
