@@ -22,6 +22,7 @@ from gpustack.schemas.model_files import ModelFile, ModelFileUpdate, ModelFileSt
 from gpustack.client import ClientSet
 from gpustack.schemas.models import SourceEnum
 from gpustack.server.bus import Event, EventType
+from gpustack.utils import hub
 from gpustack.utils.file import delete_path
 from gpustack.worker import downloaders
 
@@ -282,7 +283,7 @@ class ModelFileDownloadTask:
             password=self._config.token,
         )
 
-        self._ensure_model_file_size()
+        self._ensure_model_file_size_and_paths()
 
         self._last_download_update_time = 0
         self._model_downloaded_size = 0
@@ -385,18 +386,27 @@ class ModelFileDownloadTask:
         tqdm._original_init = _original_init
         tqdm._original_update = _original_update
 
-    def _ensure_model_file_size(self):
+    def _ensure_model_file_size_and_paths(self):
         if self._model_file.size is not None:
             return
 
-        size = downloaders.get_model_file_size(
+        repo_file_list = downloaders.get_model_file_info(
             self._model_file,
             huggingface_token=self._config.huggingface_token,
             cache_dir=self._config.cache_dir,
             ollama_library_base_url=self._config.ollama_library_base_url,
         )
+
+        (size, file_paths) = hub.match_file_and_calculate_size(
+            files=repo_file_list,
+            model=self._model_file,
+            cache_dir=self._config.cache_dir,
+        )
+
         self._model_file.size = size
-        self._update_model_file(self._model_file.id, size=size)
+        self._update_model_file(
+            self._model_file.id, size=size, resolved_paths=file_paths
+        )
 
     def _update_model_file_progress(self, model_file_id: int, progress: float):
         self._update_model_file(model_file_id, download_progress=progress)

@@ -13,7 +13,7 @@ from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
-from gpustack.schemas.models import Model, SourceEnum
+from gpustack.schemas.models import Model, SourceEnum, get_mmproj_filename
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +36,41 @@ class FileEntry:
         self.size = size
 
 
-def calculate_file_size(
+def get_model_path_and_name(model: Model) -> (str, str):
+    if model.source == SourceEnum.HUGGING_FACE:
+        return model.huggingface_repo_id, model.huggingface_filename
+    elif model.source == SourceEnum.MODEL_SCOPE:
+        return model.model_scope_model_id, model.model_scope_file_path
+    elif model.source == SourceEnum.OLLAMA_LIBRARY:
+        return model.ollama_library_model_name, ""
+    elif model.source == SourceEnum.LOCAL_PATH:
+        return model.local_path, ""
+    else:
+        return "", ""
+
+
+def match_file_and_calculate_size(
     files: List[FileEntry],
-    filename: Optional[str] = None,
-    extra_filename: Optional[str] = None,
-) -> int:
+    model: Model,
+    cache_dir: str,
+) -> (int, List[str]):
     """
-    Calculate the total size of files that match the given filename and extra_filename patterns.
+    Match the files and calculate the total size.
+    Also return the selected files.
     """
 
-    main_extra_file = ["", ""]  # [main_file, best_extra_file]
     selected_files = []
+    match_files = []
     extra_files = []
 
-    if not filename:
-        return sum(f.size for f in files if getattr(f, 'size', None) is not None)
+    file_path, filename = get_model_path_and_name(model)
+    extra_filename = get_mmproj_filename(model)
+
+    if file_path and not filename:
+        return (
+            sum(f.size for f in files if getattr(f, 'size', None) is not None),
+            [f"{cache_dir}/{model.source.value}/{file_path}"],
+        )
 
     for sibling in files:
         if sibling.size is None:
@@ -58,21 +78,33 @@ def calculate_file_size(
 
         rfilename = sibling.rfilename
 
-        if filename and not main_extra_file[0] and fnmatch.fnmatch(rfilename, filename):
-            main_extra_file[0] = rfilename
-            selected_files.append(sibling)
+        if filename and fnmatch.fnmatch(rfilename, filename):
+            selected_files.append(rfilename)
+            match_files.append(sibling)
         elif extra_filename and fnmatch.fnmatch(rfilename, extra_filename):
             extra_files.append(rfilename)
-            selected_files.append(sibling)
+            match_files.append(sibling)
 
-    main_extra_file[1] = select_most_suitable_extra_file(extra_files)
+    best_extra = select_most_suitable_extra_file(extra_files)
+    if best_extra:
+        selected_files.append(best_extra)
 
-    return sum(
+    sum_size = sum(
         f.size
-        for f in selected_files
-        if getattr(f, 'rfilename', '') in main_extra_file
+        for f in match_files
+        if getattr(f, 'rfilename', '') in selected_files
         and getattr(f, 'size', None) is not None
     )
+
+    if selected_files and model.source in [
+        SourceEnum.HUGGING_FACE,
+        SourceEnum.MODEL_SCOPE,
+    ]:
+        selected_files = [
+            f"{cache_dir}/{model.source.value}/{file_path}/{f}" for f in selected_files
+        ]
+
+    return sum_size, selected_files
 
 
 def select_most_suitable_extra_file(file_list: List[str]) -> str:
