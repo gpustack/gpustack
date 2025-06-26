@@ -30,7 +30,6 @@ from gpustack.utils.hub import (
     match_hugging_face_files,
     match_model_scope_file_paths,
     FileEntry,
-    calculate_file_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,35 +72,35 @@ def download_model(
         return file.get_sharded_file_paths(model.local_path)
 
 
-def get_model_file_size(
+def get_model_file_info(
     model: Model,
     huggingface_token: Optional[str] = None,
     cache_dir: Optional[str] = None,
     ollama_library_base_url: Optional[str] = None,
-) -> Optional[int]:
+) -> List[FileEntry]:
     if model.source == SourceEnum.HUGGING_FACE:
-        return HfDownloader.get_model_file_size(
+        return HfDownloader.get_model_file_info(
             model=model,
             token=huggingface_token,
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
-        return ModelScopeDownloader.get_model_file_size(
+        return ModelScopeDownloader.get_model_file_info(
             model=model,
         )
     elif model.source == SourceEnum.OLLAMA_LIBRARY:
         ollama_downloader = OllamaLibraryDownloader(
             registry_url=ollama_library_base_url
         )
-        return ollama_downloader.get_model_file_size(
+        return ollama_downloader.get_model_file_info(
             model_name=model.ollama_library_model_name,
             cache_dir=os.path.join(cache_dir, "ollama"),
         )
     elif model.source == SourceEnum.LOCAL_PATH:
         sharded_or_original_file_paths = file.get_sharded_file_paths(model.local_path)
-        total_size = 0
-        for file_path in sharded_or_original_file_paths:
-            total_size += file.getsize(file_path)
-        return total_size
+        file_list = [
+            FileEntry(f, file.getsize(f)) for f in sharded_or_original_file_paths
+        ]
+        return file_list
 
     raise ValueError(f"Unsupported model source: {model.source}")
 
@@ -110,27 +109,12 @@ class HfDownloader:
     _registry_url = "https://huggingface.co"
 
     @classmethod
-    def get_file_size(
-        cls,
-        repo_id: str,
-        filename: str,
-        token: Optional[str],
-        extra_filename: Optional[str] = None,
-    ) -> int:
+    def get_model_file_info(cls, model: Model, token: Optional[str]) -> List[FileEntry]:
+
         api = HfApi(token=token)
-        repo_info = api.repo_info(repo_id, files_metadata=True)
+        repo_info = api.repo_info(model.huggingface_repo_id, files_metadata=True)
         file_list = [FileEntry(f.rfilename, f.size) for f in repo_info.siblings]
-        return calculate_file_size(file_list, filename, extra_filename)
-
-    @classmethod
-    def get_model_file_size(cls, model: Model, token: Optional[str]) -> int:
-
-        return HfDownloader.get_file_size(
-            repo_id=model.huggingface_repo_id,
-            filename=model.huggingface_filename,
-            extra_filename=get_mmproj_filename(model),
-            token=token,
-        )
+        return file_list
 
     @classmethod
     def download(
@@ -362,9 +346,9 @@ class OllamaLibraryDownloader:
             logger.info(f"Downloaded model {model_name}")
             return [model_path]
 
-    def get_model_file_size(
+    def get_model_file_info(
         self, model_name: str, cache_dir: Optional[str] = None
-    ) -> int:
+    ) -> List[FileEntry]:
 
         if cache_dir is None:
             cache_dir = self._default_cache_dir
@@ -377,9 +361,9 @@ class OllamaLibraryDownloader:
                 blob_url, headers={_header_authorization: registry_token}
             )
             if response.status_code == 200:
-                return int(response.headers.get("content-length", 0))
+                return [FileEntry(model_name, int(response.headers["content-length"]))]
 
-        return 0
+        return []
 
     def model_url(self, model_name: str, cache_dir: Optional[str] = None) -> str:
         repo, tag = self.parse_model_name(model_name)
@@ -559,24 +543,11 @@ class OllamaLibraryDownloader:
 class ModelScopeDownloader:
 
     @classmethod
-    def get_file_size(
-        cls,
-        model_id: str,
-        file_path: Optional[str],
-        extra_file_path: Optional[str] = None,
-    ) -> int:
+    def get_model_file_info(cls, model: Model) -> List[FileEntry]:
         api = HubApi()
-        repo_files = api.get_model_files(model_id, recursive=True)
+        repo_files = api.get_model_files(model.model_scope_model_id, recursive=True)
         file_list = [FileEntry(f.get("Path"), f.get("Size")) for f in repo_files]
-        return calculate_file_size(file_list, file_path, extra_file_path)
-
-    @classmethod
-    def get_model_file_size(cls, model: Model) -> int:
-        return ModelScopeDownloader.get_file_size(
-            model_id=model.model_scope_model_id,
-            file_path=model.model_scope_file_path,
-            extra_file_path=get_mmproj_filename(model),
-        )
+        return file_list
 
     @classmethod
     def download(
