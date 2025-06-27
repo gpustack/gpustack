@@ -19,7 +19,10 @@ from gpustack.schemas.models import (
 from gpustack.utils.command import find_parameter
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.worker.backends.base import InferenceServer
-from gpustack.worker.tools_manager import get_llama_box_command
+from gpustack.worker.tools_manager import (
+    get_llama_box_command,
+    is_disabled_dynamic_link,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +39,13 @@ class LlamaBoxServer(InferenceServer):
             else (
                 os.path.join(
                     self._config.bin_dir,
-                    f'llama-box/llama-box-{self._model.backend_version}',
+                    'llama-box',
+                    f'{"static" if is_disabled_dynamic_link(self._model.backend_version, platform.device()) else ""}',
+                    f'llama-box-{self._model.backend_version}',
                 )
             )
         )
-        command_path = get_llama_box_command(base_path)
+        command_path = get_llama_box_command(base_path).absolute()
 
         layers = -1
         claim = self._model_instance.computed_resource_claim
