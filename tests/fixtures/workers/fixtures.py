@@ -21,40 +21,52 @@ def linux_huawei_1_910b_64gx1(reserved=False):
     return load_from_file("linux_huawei_1_910b_64gx1.json", reserved=reserved)
 
 
-def linux_huawei_2_910b_64gx1(reserved=False):
-    return load_from_file("linux_huawei_2_910b_64gx1.json", reserved=reserved)
-
-
-def linux_huawei_3_910b_64gx1(reserved=False):
-    return load_from_file("linux_huawei_3_910b_64gx1.json", reserved=reserved)
-
-
-def linux_huawei_4_910b_64gx0(reserved=False):
-    return load_from_file("linux_huawei_4_910b_64gx0.json", reserved=reserved)
-
-
 def linux_huawei_1_910b_64gx2(reserved=False):
     return load_from_file("linux_huawei_1_910b_64gx2.json", reserved=reserved)
 
 
-def linux_huawei_2_910b_64gx2(reserved=False):
-    return load_from_file("linux_huawei_2_910b_64gx2.json", reserved=reserved)
-
-
-def linux_huawei_3_910b_64gx2(reserved=False):
-    return load_from_file("linux_huawei_3_910b_64gx2.json", reserved=reserved)
+def linux_huawei_1_910b_64gx4(reserved=False):
+    return load_from_file("linux_huawei_1_910b_64gx4.json", reserved=reserved)
 
 
 def linux_huawei_1_910b_64gx8(reserved=False):
     return load_from_file("linux_huawei_1_910b_64gx8.json", reserved=reserved)
 
 
+def linux_huawei_2_910b_64gx1(reserved=False):
+    return load_from_file("linux_huawei_2_910b_64gx1.json", reserved=reserved)
+
+
+def linux_huawei_2_910b_64gx2(reserved=False):
+    return load_from_file("linux_huawei_2_910b_64gx2.json", reserved=reserved)
+
+
+def linux_huawei_2_910b_64gx4(reserved=False):
+    return load_from_file("linux_huawei_2_910b_64gx4.json", reserved=reserved)
+
+
 def linux_huawei_2_910b_64gx8(reserved=False):
     return load_from_file("linux_huawei_2_910b_64gx8.json", reserved=reserved)
 
 
+def linux_huawei_3_910b_64gx1(reserved=False):
+    return load_from_file("linux_huawei_3_910b_64gx1.json", reserved=reserved)
+
+
+def linux_huawei_3_910b_64gx2(reserved=False):
+    return load_from_file("linux_huawei_3_910b_64gx2.json", reserved=reserved)
+
+
 def linux_huawei_3_910b_64gx8(reserved=False):
     return load_from_file("linux_huawei_3_910b_64gx8.json", reserved=reserved)
+
+
+def linux_huawei_4_910b_64gx0(reserved=False):
+    return load_from_file("linux_huawei_4_910b_64gx0.json", reserved=reserved)
+
+
+def linux_huawei_4_910b_64gx2(reserved=False):
+    return load_from_file("linux_huawei_4_910b_64gx2.json", reserved=reserved)
 
 
 def linux_nvidia_1_4090_24gx1(reserved=False):
