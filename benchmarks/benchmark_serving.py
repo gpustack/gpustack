@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import asdict, dataclass, is_dataclass
 import time
 from typing import List, Optional
 import aiohttp
@@ -7,13 +8,17 @@ import logging
 import argparse
 import json
 import random
-from openai import AsyncOpenAI
+from openai import APIConnectionError, AsyncOpenAI
 from aiohttp import ClientSession
 from httpx_aiohttp import AiohttpTransport
 from openai import DefaultAsyncHttpxClient
+from openai.types.chat import (
+    ChatCompletionStreamOptionsParam,
+)
+from tqdm import tqdm
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
@@ -36,57 +41,100 @@ SAMPLE_PROMPTS = [
 ]
 
 
+@dataclass
+class PercentileResults:
+    average: float
+    p50: float
+    p95: float
+    p99: float
+
+
+@dataclass
+class BenchmarkResults:
+    model: str
+    total_requests: int
+    successful_requests: int
+    success_rate: float
+    concurrency: int
+    request_timeout: int
+    max_completion_tokens: int
+    total_time: float
+    requests_per_second: float
+    total_tokens: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    total_tokens_per_second: float
+    total_prompt_tokens_per_second: float
+    total_completion_tokens_per_second: float
+    latency: PercentileResults
+    completion_tokens_per_second: PercentileResults
+    time_to_first_token: PercentileResults
+
+
 async def process_stream(stream):
     first_token_time = None
-    total_tokens = 0
     async for chunk in stream:
         if first_token_time is None:
             first_token_time = time.time()
-        if chunk.choices[0].delta.content:
-            total_tokens += 1
-        if chunk.choices[0].finish_reason is not None:
-            break
-    return first_token_time, total_tokens
+        if chunk.usage:
+            return first_token_time, chunk.usage
+    return first_token_time, None
+
+
+def get_random_prompt(prompt_multiplier):
+    """
+    Returns a random prompt from the SAMPLE_PROMPTS list, repeated prompt_multiplier times.
+    """
+    # Add a random prefix to avoid prefix cache hits
+    random_prefix = str(random.randint(100000, 999999))
+    return (
+        random_prefix + " " + (random.choice(SAMPLE_PROMPTS) + " ") * prompt_multiplier
+    )
 
 
 async def make_chat_completion_request(
-    client: AsyncOpenAI, model, max_completion_tokens, request_timeout
+    client: AsyncOpenAI,
+    model,
+    max_completion_tokens,
+    ignore_eos,
+    request_timeout,
+    prompt_multiplier,
 ):
     start_time = time.time()
-    content = random.choice(SAMPLE_PROMPTS)
-
+    content = get_random_prompt(prompt_multiplier)
     try:
         stream = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": content}],
             max_completion_tokens=max_completion_tokens,
             stream=True,
+            stream_options=ChatCompletionStreamOptionsParam(include_usage=True),
+            extra_body={"ignore_eos": ignore_eos} if ignore_eos else None,
         )
-        first_token_time, total_tokens = await asyncio.wait_for(
+        first_token_time, usage = await asyncio.wait_for(
             process_stream(stream), timeout=request_timeout
         )
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-        ttft = first_token_time - start_time if first_token_time else None
-        tokens_per_second = total_tokens / elapsed_time if elapsed_time > 0 else 0
-        return total_tokens, elapsed_time, tokens_per_second, ttft
-
+        ttft = (first_token_time - start_time) * 1000 if first_token_time else None
+        return usage, elapsed_time, ttft
     except asyncio.TimeoutError:
         logging.warning(f"Request timed out after {request_timeout} seconds")
+        return None
+    except APIConnectionError as e:
+        logging.error(f"API connection error: {str(e)}")
         return None
     except Exception as e:
         logging.error(f"Error during request: {str(e)}")
         return None
 
 
-async def make_embedding_request(client: AsyncOpenAI, model, request_timeout):
-    import time
-    import random
-
-    content = random.choice(SAMPLE_PROMPTS)
+async def make_embedding_request(
+    client: AsyncOpenAI, model, request_timeout, prompt_multiplier
+):
     start_time = time.time()
-
+    content = get_random_prompt(prompt_multiplier)
     try:
         response = await asyncio.wait_for(
             client.embeddings.create(model=model, input=content),
@@ -94,12 +142,9 @@ async def make_embedding_request(client: AsyncOpenAI, model, request_timeout):
         )
         end_time = time.time()
         elapsed_time = end_time - start_time
-        total_tokens = response.usage.total_tokens
-        tokens_per_second = total_tokens / elapsed_time if elapsed_time > 0 else 0
         ttft = None  # Embeddings do not have a time to first token in the same way as chat completions
 
-        return total_tokens, elapsed_time, tokens_per_second, ttft
-
+        return response.usage, elapsed_time, ttft
     except asyncio.TimeoutError:
         logging.warning(f"Embedding request timed out after {request_timeout} seconds")
         return None
@@ -115,8 +160,11 @@ async def worker(
     queue,
     results,
     max_completion_tokens,
+    ignore_eos,
     request_timeout,
     embeddings=False,
+    prompt_multiplier=1,
+    pbar=None,
 ):
     while True:
         async with semaphore:
@@ -124,19 +172,28 @@ async def worker(
             if task_id is None:
                 queue.task_done()
                 break
-            logging.info(f"Starting request {task_id}")
+            logging.debug(f"Starting request {task_id}")
             if embeddings:
-                result = await make_embedding_request(client, model, request_timeout)
+                result = await make_embedding_request(
+                    client, model, request_timeout, prompt_multiplier
+                )
             else:
                 result = await make_chat_completion_request(
-                    client, model, max_completion_tokens, request_timeout
+                    client,
+                    model,
+                    max_completion_tokens,
+                    ignore_eos,
+                    request_timeout,
+                    prompt_multiplier,
                 )
             if result:
                 results.append(result)
             else:
                 logging.warning(f"Request {task_id} failed")
             queue.task_done()
-            logging.info(f"Finished request {task_id}")
+            if pbar:
+                pbar.update(1)
+            logging.debug(f"Finished request {task_id}")
 
 
 def calculate_percentile(values, percentile, reverse=False):
@@ -151,7 +208,7 @@ async def preflight_check(client, model, embeddings=False) -> bool:
     if embeddings:
         result = await make_embedding_request(client, model, 16)
     else:
-        result = await make_chat_completion_request(client, model, 16, 60)
+        result = await make_chat_completion_request(client, model, 16, False, 60, 1)
     return result is not None
 
 
@@ -170,19 +227,24 @@ async def main(
     concurrency,
     request_timeout,
     max_completion_tokens,
+    ignore_eos,
     server_url,
     api_key,
     headers=None,
     embeddings=False,
-):
+    prompt_multiplier=1,
+) -> Optional[BenchmarkResults]:
     connector = aiohttp.TCPConnector(
-        limit=1000,
+        limit=2000,
+        force_close=True,
     )
     async with ClientSession(connector=connector) as aiohttp_session:
         if headers:
             set_headers(aiohttp_session, headers)
         transport = AiohttpTransport(client=aiohttp_session)
-        httpx_client = DefaultAsyncHttpxClient(transport=transport)
+        httpx_client = DefaultAsyncHttpxClient(
+            transport=transport, timeout=request_timeout
+        )
         client = AsyncOpenAI(
             base_url=f"{server_url}/v1",
             api_key=api_key,
@@ -191,10 +253,9 @@ async def main(
         )
 
         if not await preflight_check(client, model, embeddings=embeddings):
-            logging.error(
+            raise Exception(
                 "Preflight check failed. Please check configuration and the service status."
             )
-            return
 
         semaphore = asyncio.Semaphore(concurrency)
         queue = asyncio.Queue()
@@ -208,6 +269,13 @@ async def main(
         for _ in range(concurrency):
             await queue.put(None)
 
+        pbar = tqdm(
+            total=num_requests,
+            desc="Running Benchmark requests",
+            unit="request",
+            dynamic_ncols=True,
+        )
+
         # Create worker tasks
         workers = [
             asyncio.create_task(
@@ -218,8 +286,11 @@ async def main(
                     queue,
                     results,
                     max_completion_tokens,
+                    ignore_eos,
                     request_timeout,
-                    embeddings=embeddings,
+                    embeddings,
+                    prompt_multiplier,
+                    pbar=pbar,
                 )
             )
             for _ in range(concurrency)
@@ -232,79 +303,235 @@ async def main(
         await asyncio.gather(*workers)
 
         end_time = time.time()
-
-        # Calculate metrics
         total_elapsed_time = end_time - start_time
-        total_tokens = sum(tokens for tokens, _, _, _ in results if tokens is not None)
-        latencies = [
-            elapsed_time
-            for _, elapsed_time, _, _ in results
-            if elapsed_time is not None
-        ]
-        tokens_per_second_list = [tps for _, _, tps, _ in results if tps is not None]
-        ttft_list = [ttft for _, _, _, ttft in results if ttft is not None]
-
-        successful_requests = len(results)
-        success_rate = successful_requests / num_requests if num_requests > 0 else 0
-        requests_per_second = (
-            successful_requests / total_elapsed_time if total_elapsed_time > 0 else 0
+        return calculate_results(
+            model,
+            concurrency,
+            request_timeout,
+            max_completion_tokens,
+            total_elapsed_time,
+            num_requests,
+            results,
         )
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0
-        avg_tokens_per_second = (
-            sum(tokens_per_second_list) / len(tokens_per_second_list)
-            if tokens_per_second_list
-            else 0
+
+
+def calculate_results(
+    model,
+    concurrency,
+    request_timeout,
+    max_completion_tokens,
+    total_elapsed_time,
+    num_requests,
+    results,
+):
+    # Calculate metrics
+    total_tokens = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    tokens_per_second_list = []
+    prompt_tokens_per_second_list = []
+    completion_tokens_per_second_list = []
+    for usage, elapsed_time, _ in results:
+        if usage is not None:
+            total_tokens += usage.total_tokens
+            prompt_tokens += usage.prompt_tokens
+            completion_tokens += usage.completion_tokens
+            prompt_tokens_per_second = (
+                usage.prompt_tokens / elapsed_time if elapsed_time > 0 else 0
+            )
+            completion_tokens_per_second = (
+                usage.completion_tokens / elapsed_time if elapsed_time > 0 else 0
+            )
+            tokens_per_second = (
+                usage.total_tokens / elapsed_time if elapsed_time > 0 else 0
+            )
+            tokens_per_second_list.append(tokens_per_second)
+            prompt_tokens_per_second_list.append(prompt_tokens_per_second)
+            completion_tokens_per_second_list.append(completion_tokens_per_second)
+
+    latencies = [
+        elapsed_time for _, elapsed_time, _ in results if elapsed_time is not None
+    ]
+    ttft_list = [ttft for _, _, ttft in results if ttft is not None]
+
+    successful_requests = len(results)
+    success_rate = successful_requests / num_requests if num_requests > 0 else 0
+    requests_per_second = (
+        successful_requests / total_elapsed_time if total_elapsed_time > 0 else 0
+    )
+    avg_latency = sum(latencies) / len(latencies) if latencies else 0
+    avg_completion_tokens_per_second = (
+        sum(completion_tokens_per_second_list) / len(completion_tokens_per_second_list)
+        if completion_tokens_per_second_list
+        else 0
+    )
+    total_tokens_per_second = (
+        total_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
+    )
+    total_prompt_tokens_per_second = (
+        prompt_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
+    )
+    total_completion_tokens_per_second = (
+        completion_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
+    )
+    avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0
+
+    # Calculate percentiles
+    percentiles = [50, 95, 99]
+    latency_percentiles = [calculate_percentile(latencies, p) for p in percentiles]
+    completion_tps_percentiles = [
+        calculate_percentile(completion_tokens_per_second_list, p, reverse=True)
+        for p in percentiles
+    ]
+    ttft_percentiles = [calculate_percentile(ttft_list, p) for p in percentiles]
+
+    return BenchmarkResults(
+        model=model,
+        total_requests=num_requests,
+        successful_requests=successful_requests,
+        success_rate=success_rate,
+        concurrency=concurrency,
+        request_timeout=request_timeout,
+        max_completion_tokens=max_completion_tokens,
+        total_time=total_elapsed_time,
+        requests_per_second=requests_per_second,
+        total_tokens=total_tokens,
+        total_prompt_tokens=prompt_tokens,
+        total_completion_tokens=completion_tokens,
+        total_tokens_per_second=total_tokens_per_second,
+        total_prompt_tokens_per_second=total_prompt_tokens_per_second,
+        total_completion_tokens_per_second=total_completion_tokens_per_second,
+        latency=PercentileResults(
+            average=avg_latency,
+            p50=latency_percentiles[0],
+            p95=latency_percentiles[1],
+            p99=latency_percentiles[2],
+        ),
+        completion_tokens_per_second=PercentileResults(
+            average=avg_completion_tokens_per_second,
+            p50=completion_tps_percentiles[0],
+            p95=completion_tps_percentiles[1],
+            p99=completion_tps_percentiles[2],
+        ),
+        time_to_first_token=PercentileResults(
+            average=avg_ttft,
+            p50=ttft_percentiles[0],
+            p95=ttft_percentiles[1],
+            p99=ttft_percentiles[2],
+        ),
+    )
+
+
+def fmt_line(label, *values, width=40):
+    label_part = f"{label:<{width}}"
+    value_part = " ".join(str(v) for v in values)
+    return f"{label_part}{value_part}"
+
+
+def fmt_float(v, suffix=""):
+    return f"{v:.2f}{suffix}"
+
+
+def output_benchmark_results_pretty(
+    results: BenchmarkResults, file: str = None, embeddings: bool = False
+):
+
+    lines = []
+    lines.append("============== Serving Benchmark Result ===============")
+    lines.append(fmt_line("Model:", results.model))
+    lines.append(
+        fmt_line(
+            "Total requests:",
+            f"{results.successful_requests}/{results.total_requests}({results.success_rate:.2%})",
         )
-        overall_tokens_per_second = (
-            total_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
+    )
+    lines.append(fmt_line("Concurrency:", results.concurrency))
+    lines.append(fmt_line("Benchmark duration (s):", fmt_float(results.total_time)))
+    lines.append(
+        fmt_line("Request throughput (req/s):", fmt_float(results.requests_per_second))
+    )
+    lines.append(fmt_line("Total input tokens:", results.total_prompt_tokens))
+    if not embeddings:
+        lines.append(fmt_line("Total output tokens:", results.total_completion_tokens))
+
+    output_tok_per_sec = (
+        results.total_completion_tokens / results.total_time
+        if results.total_time > 0
+        else 0
+    )
+    total_tok_per_sec = (
+        results.total_tokens / results.total_time if results.total_time > 0 else 0
+    )
+    if not embeddings:
+        lines.append(
+            fmt_line("Output token throughput (tok/s):", fmt_float(output_tok_per_sec))
         )
-        avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0
+    lines.append(
+        fmt_line("Total token throughput (tok/s):", fmt_float(total_tok_per_sec))
+    )
+    lines.append("------------------- Request Latency -------------------")
+    lines.append(fmt_line("Average latency (s):", fmt_float(results.latency.average)))
+    lines.append(fmt_line("P50 latency (s):", fmt_float(results.latency.p50)))
+    lines.append(fmt_line("P95 latency (s):", fmt_float(results.latency.p95)))
+    lines.append(fmt_line("P99 latency (s):", fmt_float(results.latency.p99)))
+    if not embeddings:
+        lines.append("--------------- Output Token Per Second ---------------")
+        lines.append(
+            fmt_line(
+                "Average TPS (tok/s):",
+                fmt_float(results.completion_tokens_per_second.average),
+            )
+        )
+        lines.append(
+            fmt_line(
+                "P50 TPS (tok/s):", fmt_float(results.completion_tokens_per_second.p50)
+            )
+        )
+        lines.append(
+            fmt_line(
+                "P95 TPS (tok/s):", fmt_float(results.completion_tokens_per_second.p95)
+            )
+        )
+        lines.append(
+            fmt_line(
+                "P99 TPS (tok/s):", fmt_float(results.completion_tokens_per_second.p99)
+            )
+        )
 
-        # Calculate percentiles
-        percentiles = [50, 95, 99]
-        latency_percentiles = [calculate_percentile(latencies, p) for p in percentiles]
-        tps_percentiles = [
-            calculate_percentile(tokens_per_second_list, p, reverse=True)
-            for p in percentiles
-        ]
-        ttft_percentiles = [calculate_percentile(ttft_list, p) for p in percentiles]
+        lines.append("----------------- Time to First Token -----------------")
+        lines.append(
+            fmt_line(
+                "Average TTFT (ms):", fmt_float(results.time_to_first_token.average)
+            )
+        )
+        lines.append(
+            fmt_line("P50 TTFT (ms):", fmt_float(results.time_to_first_token.p50))
+        )
+        lines.append(
+            fmt_line("P95 TTFT (ms):", fmt_float(results.time_to_first_token.p95))
+        )
+        lines.append(
+            fmt_line("P99 TTFT (ms):", fmt_float(results.time_to_first_token.p99))
+        )
+    lines.append("=" * 55)
 
-        return {
-            "model": model,
-            "total_requests": num_requests,
-            "successful_requests": successful_requests,
-            "success_rate": success_rate,
-            "concurrency": concurrency,
-            "request_timeout": request_timeout,
-            "max_completion_tokens": max_completion_tokens,
-            "total_time": total_elapsed_time,
-            "requests_per_second": requests_per_second,
-            "total_tokens": total_tokens,
-            "latency": {
-                "average": avg_latency,
-                "p50": latency_percentiles[0],
-                "p95": latency_percentiles[1],
-                "p99": latency_percentiles[2],
-            },
-            "tokens_per_second": {
-                "overall": overall_tokens_per_second,
-                "average": avg_tokens_per_second,
-                "p50": tps_percentiles[0],
-                "p95": tps_percentiles[1],
-                "p99": tps_percentiles[2],
-            },
-            "time_to_first_token": {
-                "average": avg_ttft,
-                "p50": ttft_percentiles[0],
-                "p95": ttft_percentiles[1],
-                "p99": ttft_percentiles[2],
-            },
-        }
+    output = "\n".join(lines)
+
+    if file:
+        with open(file, "w") as f:
+            f.write(output + "\n")
+        logging.info(f"Pretty benchmark results saved to {file}")
+    else:
+        print(output)
 
 
-def output_results(results, result_file=None):
+def output_benchmark_results_json(
+    results: BenchmarkResults, result_file=None, embeddings: bool = False
+):
     # Round all floats in results to two decimal places for output
     def _round_floats(obj, ndigits=2):
+        if is_dataclass(obj):
+            obj = asdict(obj)
         if isinstance(obj, dict):
             return {k: _round_floats(v, ndigits) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -354,6 +581,17 @@ if __name__ == "__main__":
         help="Maximum number of tokens in the completion (default: 1024)",
     )
     parser.add_argument(
+        "--prompt-multiplier",
+        type=int,
+        default=1,
+        help="Repeat the randomly selected prompt N times to create longer inputs",
+    )
+    parser.add_argument(
+        '--ignore-eos',
+        action='store_true',
+        help='Set ignore_eos flag when sending the benchmark request. This will not stop the stream when the model generates an EOS token.',
+    )
+    parser.add_argument(
         "--server-url",
         type=str,
         default="http://127.0.0.1",
@@ -377,19 +615,37 @@ if __name__ == "__main__":
         action='store_true',
         help='Run embedding benchmark instead of chat completions',
     )
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='Output results in JSON format instead of pretty format',
+    )
     args = parser.parse_args()
 
-    results = asyncio.run(
-        main(
-            args.model,
-            args.num_requests,
-            args.concurrency,
-            args.request_timeout,
-            args.max_completion_tokens,
-            args.server_url,
-            args.api_key,
-            args.headers,
-            embeddings=args.embeddings,
+    try:
+        results = asyncio.run(
+            main(
+                args.model,
+                args.num_requests,
+                args.concurrency,
+                args.request_timeout,
+                args.max_completion_tokens,
+                args.ignore_eos,
+                args.server_url,
+                args.api_key,
+                args.headers,
+                args.embeddings,
+                args.prompt_multiplier,
+            )
         )
-    )
-    output_results(results, args.result_file)
+        if args.json:
+            output_benchmark_results_json(
+                results, args.result_file, embeddings=args.embeddings
+            )
+        else:
+            output_benchmark_results_pretty(
+                results, args.result_file, embeddings=args.embeddings
+            )
+    except Exception as e:
+        logging.error(f"Benchmarking failed: {str(e)}")
+        exit(1)
