@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional, Tuple
 import aiohttp
 import logging
 
@@ -156,9 +156,7 @@ async def proxy_request_by_model(request: Request, endpoint: str):
     request body.
     """
     async with get_session_context() as session:
-        model, stream, body_json, form_data, form_files = await parse_request_body(
-            request, session
-        )
+        model, stream, body_json, form_data = await parse_request_body(request, session)
 
         if not model:
             raise NotFoundException(
@@ -183,13 +181,9 @@ async def proxy_request_by_model(request: Request, endpoint: str):
 
     try:
         if stream:
-            return await handle_streaming_request(
-                request, url, body_json, form_data, form_files
-            )
+            return await handle_streaming_request(request, url, body_json, form_data)
         else:
-            return await handle_standard_request(
-                request, url, body_json, form_data, form_files
-            )
+            return await handle_standard_request(request, url, body_json, form_data)
     except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
         if str(e):
@@ -213,13 +207,12 @@ async def parse_request_body(request: Request, session: SessionDep):
     stream = False
     body_json = None
     form_data = None
-    form_files = None
     content_type = request.headers.get("content-type", "application/json").lower()
 
     if request.method == "GET":
         model_name = request.query_params.get("model")
     elif content_type.startswith("multipart/form-data"):
-        form_data, form_files, model_name = await parse_form_data(request)
+        form_data, model_name, stream = await parse_form_data(request)
     else:
         body_json, model_name, stream = await parse_json_body(request)
 
@@ -229,30 +222,29 @@ async def parse_request_body(request: Request, session: SessionDep):
             is_openai_exception=True,
         )
 
-    if form_data and form_data.get("stream", False):
-        # stream may be set in form data, e.g., image edits.
-        stream = True
-
     model = await ModelService(session).get_by_name(model_name)
-    return model, stream, body_json, form_data, form_files
+    return model, stream, body_json, form_data
 
 
-async def parse_form_data(request: Request):
+async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool]:
     try:
         form = await request.form()
         model_name = form.get("model")
+        stream = form.get("stream", False)
 
-        form_files = []
-        form_data = {}
+        form_data = aiohttp.FormData()
         for key, value in form.items():
             if isinstance(value, UploadFile):
-                form_files.append(
-                    (key, (value.filename, await value.read(), value.content_type))
+                form_data.add_field(
+                    key,
+                    await value.read(),
+                    filename=value.filename,
+                    content_type=value.content_type,
                 )
             else:
-                form_data[key] = value
+                form_data.add_field(key, value)
 
-        return form_data, form_files, model_name
+        return form_data, model_name, stream
     except Exception as e:
         raise BadRequestException(
             message=f"We could not parse the form body of your request: {e}",
@@ -273,12 +265,37 @@ async def parse_json_body(request: Request):
         )
 
 
+async def _stream_response_chunks(
+    resp: aiohttp.ClientResponse,
+) -> AsyncGenerator[str, None]:
+    """Stream the response content in chunks, processing each line."""
+
+    chunk_size = 4096  # 4KB
+    chunk_buffer = b""
+    async for data in resp.content.iter_chunked(chunk_size):
+        lines = (chunk_buffer + data).split(b'\n')
+        # Keep the last line in the buffer if it's incomplete
+        chunk_buffer = lines.pop(-1)
+
+        for line_bytes in lines:
+            if line_bytes:
+                yield _process_line(line_bytes)
+
+    if chunk_buffer:
+        yield _process_line(chunk_buffer)
+
+
+def _process_line(line_bytes: bytes) -> str:
+    """Process a line of bytes to ensure it is properly formatted for streaming."""
+    line = line_bytes.decode("utf-8").strip()
+    return line + "\n\n" if line else ""
+
+
 async def handle_streaming_request(
     request: Request,
     url: str,
     body_json: Optional[dict],
-    form_data: Optional[dict],
-    form_files: Optional[list],
+    form_data: Optional[aiohttp.FormData],
     extra_headers: Optional[dict] = None,
 ):
     timeout = aiohttp.ClientTimeout(total=300)
@@ -299,21 +316,15 @@ async def handle_streaming_request(
                 url=url,
                 headers=headers,
                 json=body_json if body_json else None,
-                data=form_data if form_data else None,
+                data=form_data,
                 timeout=timeout,
             ) as resp:
                 if resp.status >= 400:
                     yield await resp.read(), resp.headers, resp.status
                     return
 
-                chunk = ""
-                async for line in resp.content:
-                    line = line.decode("utf-8").strip()
-                    if line != "":
-                        chunk = line + "\n"
-                    else:
-                        chunk += "\n"
-                        yield chunk, resp.headers, resp.status
+                async for chunk in _stream_response_chunks(resp):
+                    yield chunk, resp.headers, resp.status
         except aiohttp.ClientError as e:
             error_response = OpenAIAPIErrorResponse(
                 error=OpenAIAPIError(
@@ -342,21 +353,12 @@ async def handle_standard_request(
     request: Request,
     url: str,
     body_json: Optional[dict],
-    form_data: Optional[dict],
-    form_files: Optional[list],
+    form_data: Optional[aiohttp.FormData],
     extra_headers: Optional[dict] = None,
 ):
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
-    data = None
-    if form_data or form_files:
-        form = aiohttp.FormData()
-        for key, value in (form_data or {}).items():
-            form.add_field(key, value)
-        for key, (filename, content, content_type) in form_files or []:
-            form.add_field(key, content, filename=filename, content_type=content_type)
-        data = form
 
     http_client: aiohttp.ClientSession = request.app.state.http_client
     timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
@@ -365,7 +367,7 @@ async def handle_standard_request(
         url=url,
         headers=headers,
         json=body_json if body_json else None,
-        data=data if data else None,
+        data=form_data,
         timeout=timeout,
     ) as response:
         content = await response.read()
