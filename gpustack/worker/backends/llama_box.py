@@ -143,20 +143,18 @@ class LlamaBoxServer(InferenceServer):
                 )
 
             env = self.get_inference_running_env()
-            command_dir = str(command_path.parent)
+            cwd = str(command_path.parent)
             if platform.system() == "linux":
                 ld_library_path = env.get("LD_LIBRARY_PATH", "")
                 env["LD_LIBRARY_PATH"] = (
-                    ":".join([command_dir, ld_library_path])
-                    if ld_library_path
-                    else command_dir
+                    ":".join([cwd, ld_library_path]) if ld_library_path else cwd
                 )
             proc = subprocess.Popen(
                 [command_path] + arguments,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
                 env=env,
-                cwd=command_path.cwd(),
+                cwd=cwd,
             )
 
             set_priority(proc.pid)

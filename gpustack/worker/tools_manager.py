@@ -451,7 +451,8 @@ class ToolsManager:
 
         # Since v0.0.157: Use dynamic libraries instead of static linking
         platform_name = self._get_llama_box_platform_name(
-            version, version >= "v0.0.157"
+            version,
+            version >= "v0.0.157" and self._device != platform.DeviceTypeEnum.NPU.value,
         )
         tmp_file = llama_box_tmp_dir / f"llama-box-{version}-{platform_name}.zip"
         url_path = f"gpustack/llama-box/releases/download/{version}/{platform_name}.zip"
