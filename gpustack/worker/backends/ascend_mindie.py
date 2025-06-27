@@ -81,10 +81,14 @@ class AscendMindIEParameters:
     lookahead_window: int = 5
     lookahead_guess_set_size: int = 5
     enable_prefix_caching: bool = False
+    local_world_size: int = -1  # store validation input
     world_size: int = -1  # store validation input
+    pipeline_parallel_size: int = 1
     tensor_parallel_size: int = -1
     data_parallel_size: int = -1
-    enable_expert_parallel: bool = False
+    sequence_parallel_size: int = -1
+    moe_expert_parallel_size: int = -1
+    moe_tensor_parallel_size: int = -1
     enable_buffer_response: bool = False
     prefill_expected_time_ms: Optional[int] = None
     decode_expected_time_ms: Optional[int] = None
@@ -384,6 +388,14 @@ class AscendMindIEParameters:
             "- `float32`: for FP32. ",
         )
         parser.add_argument(
+            "--pipeline-parallel-size",
+            "-pp",
+            type=int,
+            default=self.pipeline_parallel_size,
+            required=False,
+            help="Number of pipeline parallel groups.",
+        )
+        parser.add_argument(
             "--tensor-parallel-size",
             "-tp",
             type=int,
@@ -398,16 +410,35 @@ class AscendMindIEParameters:
             type=int,
             default=self.data_parallel_size,
             required=False,
-            help="Number of data parallel groups. "
-            "`-1` means disabling data parallelism, otherwise, must be a power of 2. "
-            "MoE layers will be sharded according to the product of the tensor parallel size and data parallel size.",
+            help="Number of data parallel groups for Attention Modules. "
+            "`-1` means disabling data parallelism, otherwise, must be a power of 2.",
         )
         parser.add_argument(
-            "--enable-expert-parallel",
-            type=bool,
-            action=argparse.BooleanOptionalAction,
-            help="Use expert parallelism instead of tensor parallelism for MoE layers. "
-            "Use `--no-enable-expert-parallel` to disable explicitly.",
+            "--sequence-parallel-size",
+            "-sp",
+            type=int,
+            default=self.sequence_parallel_size,
+            required=False,
+            help="Number of sequence parallel groups for MLP Modules. "
+            "`-1` means disabling sequence parallelism, otherwise, must be power of 2.",
+        )
+        parser.add_argument(
+            "--moe-expert-parallel-size",
+            "-moe-ep",
+            type=int,
+            default=self.moe_expert_parallel_size,
+            required=False,
+            help="Number of expert parallel groups for Sparse MoE Modules. "
+            "`-1` means disabling MoE expert parallelism, otherwise, must be power of 2.",
+        )
+        parser.add_argument(
+            "--moe-tensor-parallel-size",
+            "-moe-tp",
+            type=int,
+            default=self.moe_tensor_parallel_size,
+            required=False,
+            help="Number of tensor parallel groups for Sparse MoE Modules. "
+            "`-1` and means using world size as MoE tensor parallel size, otherwise, must be power of 2. ",
         )
         parser.add_argument(
             "--rope-scaling",
@@ -438,7 +469,7 @@ class AscendMindIEParameters:
         self._default()
         self._validate()
 
-    def _default(self):
+    def _default(self):  # noqa: C901
         # Model deploy config
         if self.max_input_token_len <= 0:
             self.max_input_token_len = self.max_seq_len
@@ -446,14 +477,42 @@ class AscendMindIEParameters:
         if self.max_preempt_count == 0:
             self.cpu_mem_size = 0
         # Extends or Features
-        # -- Data parallelism
-        if self.tensor_parallel_size <= 0:
-            if self.data_parallel_size > 0:
-                self.tensor_parallel_size = self.world_size // self.data_parallel_size
-            else:
+        # -- Parallelism
+        if self.world_size > 0:
+            if self.tensor_parallel_size < 0:
                 self.tensor_parallel_size = self.world_size
+            if self.moe_tensor_parallel_size < 0:
+                self.moe_tensor_parallel_size = self.world_size
+        else:
+            if self.pipeline_parallel_size > 1:
+                if self.tensor_parallel_size < 0:
+                    self.tensor_parallel_size = 1
+                self.local_world_size = self.tensor_parallel_size
+                self.world_size = (
+                    self.pipeline_parallel_size * self.tensor_parallel_size
+                )
+            else:
+                self.world_size = self.tensor_parallel_size
+                if self.data_parallel_size > 1:
+                    if self.tensor_parallel_size < 0:
+                        self.tensor_parallel_size = 1
+                    self.local_world_size = self.tensor_parallel_size
+                    self.world_size = (
+                        self.data_parallel_size * self.tensor_parallel_size
+                    )
+                if self.moe_expert_parallel_size > 1:
+                    if self.moe_tensor_parallel_size < 0:
+                        self.moe_tensor_parallel_size = 1
+                    if self.tensor_parallel_size < 0:
+                        self.tensor_parallel_size = self.moe_tensor_parallel_size
+                    self.local_world_size = self.moe_tensor_parallel_size
+                    self.world_size = (
+                        self.moe_expert_parallel_size * self.moe_tensor_parallel_size
+                    )
+                elif self.moe_tensor_parallel_size < 0:
+                    self.moe_tensor_parallel_size = self.world_size
 
-    def _validate(self):  # noqa: max-complexity=14
+    def _validate(self):  # noqa: C901
         # Server config
         if not (1 <= self.max_link_num <= 1000):
             raise argparse.ArgumentTypeError(
@@ -538,34 +597,101 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     "--split-start-batch-size must be in the range [0, --max-batch-size]"
                 )
-        # -- Data parallelism
-        if 0 < self.world_size < self.tensor_parallel_size:
+        # -- Parallelism
+        pp, tp, dp, sp, moe_tp, moe_ep, ws, local_ws = (
+            self.pipeline_parallel_size,
+            self.tensor_parallel_size,
+            self.data_parallel_size,
+            self.sequence_parallel_size,
+            self.moe_tensor_parallel_size,
+            self.moe_expert_parallel_size,
+            self.world_size,
+            self.local_world_size,
+        )
+        if pp < 1:
             raise argparse.ArgumentTypeError(
-                f"--tensor-parallel-size must be less or equal to world size: {self.world_size}"
+                "--pipeline-parallel-size must be greater than or equal to 1"
             )
-        elif self.tensor_parallel_size > 0:
-            if self.tensor_parallel_size & (self.tensor_parallel_size - 1) != 0:
-                raise argparse.ArgumentTypeError(
-                    "--tensor-parallel-size must be the power of 2"
-                )
-        if 0 < self.world_size < self.data_parallel_size:
+        if tp > 0 and tp & (tp - 1) != 0:
             raise argparse.ArgumentTypeError(
-                f"--data-parallel-size must be less or equal to world size: {self.world_size}"
+                "--tensor-parallel-size must be the power of 2"
             )
-        elif self.data_parallel_size > 0:
-            if self.data_parallel_size & (self.data_parallel_size - 1) != 0:
+        if dp > 0 and dp & (dp - 1) != 0:
+            raise argparse.ArgumentTypeError(
+                "--data-parallel-size must be the power of 2"
+            )
+        if sp > 0 and sp & (sp - 1) != 0:
+            raise argparse.ArgumentTypeError(
+                "--sequence-parallel-size must be the power of 2"
+            )
+        if moe_tp > 0 and moe_tp & (moe_tp - 1) != 0:
+            raise argparse.ArgumentTypeError(
+                "--moe-tensor-parallel-size must be the power of 2"
+            )
+        if moe_ep > 0 and moe_ep & (moe_ep - 1) != 0:
+            raise argparse.ArgumentTypeError(
+                "--moe-expert-parallel-size must be the power of 2"
+            )
+        if pp != 1 and dp != -1:
+            raise argparse.ArgumentTypeError(
+                f"--pipeline-parallel-size {pp} "
+                f"and --data-parallel-size {dp} "
+                f"cannot be set at the same time, "
+                f"which means enabling both pipeline and data parallelism."
+            )
+        # Check pp * tp == world size if enable pipeline parallelism
+        if pp > 1:
+            if 0 < ws != pp * tp:
                 raise argparse.ArgumentTypeError(
-                    "--data-parallel-size must be the power of 2"
+                    f"--pipeline-parallel-size {pp} "
+                    f"and --tensor-parallel-size {tp} "
+                    f"must be multiples of world size: {ws}"
                 )
-            elif (
-                0
-                < self.world_size
-                != self.data_parallel_size * self.tensor_parallel_size
-            ):
+        else:
+            # Check tp == world size or tp <= local world size
+            if 0 < local_ws < tp and 0 < ws != tp:
                 raise argparse.ArgumentTypeError(
-                    "--data-parallel-size and --tensor-parallel-size must be "
-                    f"multiples of world size: {self.world_size}"
+                    f"--tensor-parallel-size {tp} "
+                    f"must be less or equal to local world size: {local_ws} "
+                    f"or equal to world size: {ws}"
                 )
+            # Check dp * tp == world size if enable data parallelism
+            if dp > 1:
+                if 0 < ws != dp * tp:
+                    raise argparse.ArgumentTypeError(
+                        f"--data-parallel-size {dp} "
+                        f"and --tensor-parallel-size {tp} "
+                        f"must be multiples of world size: {ws}"
+                    )
+            # Check moe_tp * moe_ep == world size if enable expert parallelism
+            if moe_ep > 1:
+                # Check moe_tp == world size or moe_tp <= local world size
+                if 0 < local_ws < moe_tp and 0 < ws != moe_tp:
+                    raise argparse.ArgumentTypeError(
+                        f"--moe-tensor-parallel-size {moe_tp} "
+                        f"must be less or equal to local world size: {local_ws} "
+                        f"or equal to world size: {ws}"
+                    )
+                if 0 < ws != moe_ep * moe_tp:
+                    raise argparse.ArgumentTypeError(
+                        f"--moe-expert-parallel-size {moe_ep}"
+                        f"and --moe-tensor-parallel-size {moe_tp} "
+                        f"must be multiples of world size: {ws}"
+                    )
+            # Otherwise, check moe_tp == world size
+            else:
+                if 0 < ws != moe_tp:
+                    raise argparse.ArgumentTypeError(
+                        f"--moe-tensor-parallel-size {moe_tp} "
+                        f"must be equal to world size: {ws}"
+                    )
+            # Check sp == tp if enable sequence parallelism
+            if sp > 1:
+                if sp != tp:
+                    raise argparse.ArgumentTypeError(
+                        f"--sequence-parallel-size {sp} "
+                        f"must be equal to --tensor-parallel-size {tp}"
+                    )
         # -- Speculative decoding
         if self.enable_memory_decoding:
             if not (1 <= self.memory_decoding_length <= 16):
@@ -761,6 +887,9 @@ class AscendMindIEServer(InferenceServer):
             "ATB_LLM_ENABLE_AUTO_TRANSPOSE", "0"
         )
         env["ATB_CONVERT_NCHW_TO_ND"] = env.pop("ATB_CONVERT_NCHW_TO_ND", "1")
+        env["ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE"] = env.pop(
+            "ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE", "3"
+        )
         # -- Enforce using 90% of GPU memory
         env["NPU_MEMORY_FRACTION"] = "0.9"
         # -- Pop conflict configuration items.
@@ -881,16 +1010,18 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0009.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0300.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
+        local_world_size = len(minstance.gpu_indexes)
+        world_size = local_world_size
+        if subworkers:
+            world_size = local_world_size * (len(subworkers) + 1)
+        params = AscendMindIEParameters(
+            local_world_size=local_world_size,
+            world_size=world_size,
+            max_seq_len=max_seq_len,
+        )
         if self._model.backend_parameters:
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
-            )
-            world_size = len(minstance.gpu_indexes)
-            if subworkers:
-                world_size += world_size * len(subworkers)
-            params = AscendMindIEParameters(
-                world_size=world_size,
-                max_seq_len=max_seq_len,
             )
             params.from_args(self._model.backend_parameters)
 
@@ -1040,16 +1171,21 @@ class AscendMindIEServer(InferenceServer):
                         "plugin_type": "prefix_cache",
                     }
                 )
-            # --- Data Parallelism
-            dp = params.data_parallel_size
-            tp = params.tensor_parallel_size
-            if dp > 0:
-                model_config["dp"] = dp
-                model_config["tp"] = tp
-                model_config["moe_tp"] = world_size
-            if params.enable_expert_parallel:
-                model_config["moe_tp"] = 1
-                model_config["moe_ep"] = world_size
+            # --- Parallelism
+            if params.pipeline_parallel_size > 1:
+                model_config["pp"] = params.pipeline_parallel_size
+                model_config["tp"] = params.tensor_parallel_size
+            else:
+                if params.data_parallel_size > 0:
+                    model_config["dp"] = params.data_parallel_size
+                if params.tensor_parallel_size > 0:
+                    model_config["tp"] = params.tensor_parallel_size
+                    model_config["moe_tp"] = params.moe_tensor_parallel_size
+                if params.moe_expert_parallel_size > 0:
+                    model_config["moe_ep"] = params.moe_expert_parallel_size
+                    model_config["moe_tp"] = params.moe_tensor_parallel_size
+                if params.sequence_parallel_size > 0:
+                    model_config["sp"] = params.sequence_parallel_size
             # --- Buffer response
             if params.enable_buffer_response:
                 schedule_config["bufferResponseEnabled"] = True
