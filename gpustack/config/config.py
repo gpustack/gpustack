@@ -141,15 +141,23 @@ class Config(BaseSettings):
         # common options
         if self.data_dir is None:
             self.data_dir = self.get_data_dir()
+        else:
+            self.data_dir = os.path.abspath(self.data_dir)
 
         if self.cache_dir is None:
             self.cache_dir = os.path.join(self.data_dir, "cache")
+        else:
+            self.cache_dir = os.path.abspath(self.cache_dir)
 
         if self.bin_dir is None:
             self.bin_dir = os.path.join(self.data_dir, "bin")
+        else:
+            self.bin_dir = os.path.abspath(self.bin_dir)
 
         if self.log_dir is None:
             self.log_dir = os.path.join(self.data_dir, "log")
+        else:
+            self.log_dir = os.path.abspath(self.log_dir)
 
         if not self._is_server() and not self.token:
             raise Exception("Token is required when running as a worker")
