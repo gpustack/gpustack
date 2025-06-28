@@ -26,16 +26,21 @@ logger = logging.getLogger(__name__)
 
 class LlamaBoxServer(InferenceServer):
     def start(self):  # noqa: C901
-        base_path = pkg_resources.files("gpustack.third_party.bin").joinpath(
-            'llama-box/llama-box-default'
-        )
-        command_path = get_llama_box_command(str(base_path))
-        if self._model.backend_version:
-            command_path = os.path.join(
-                self._config.bin_dir,
-                f'llama-box/llama-box-{self._model.backend_version}',
+        base_path = (
+            str(
+                pkg_resources.files("gpustack.third_party.bin").joinpath(
+                    'llama-box/llama-box-default'
+                )
             )
-            command_path = get_llama_box_command(str(base_path))
+            if (self._config.bin_dir is None or not self._model.backend_version)
+            else (
+                os.path.join(
+                    self._config.bin_dir,
+                    f'llama-box/llama-box-{self._model.backend_version}',
+                )
+            )
+        )
+        command_path = get_llama_box_command(base_path)
 
         layers = -1
         claim = self._model_instance.computed_resource_claim
