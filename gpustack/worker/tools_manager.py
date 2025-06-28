@@ -17,7 +17,6 @@ from gpustack.schemas.models import BackendEnum
 from gpustack.utils.command import get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform, envs
-from gpustack.utils.platform import get_executable_suffix as exe
 
 logger = logging.getLogger(__name__)
 
@@ -178,18 +177,19 @@ class ToolsManager:
             / "llama-box"
             / get_llama_box_version_dir_name(version)
         )
-        target_file = get_llama_box_command(target_dir)
-        file_name = os.path.basename(target_file)
+        file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
+        target_file = target_dir / file_name
+        version_key = target_file.parent.name
 
         if (
             target_file.is_file()
-            and self._current_tools_version.get(file_name) == version
+            and self._current_tools_version.get(version_key) == version
         ):
             logger.debug(f"{file_name} already exists, skipping download")
         else:
             self._download_llama_box(version, target_dir, file_name)
             # Update versions.json
-            self._update_versions_file(file_name, version)
+            self._update_versions_file(version_key, version)
 
         self._link_llama_box_rpc_server(target_dir, file_name)
         self._link_llama_box_default_dir(version)
@@ -460,7 +460,6 @@ class ToolsManager:
         self._download_file(url_path, tmp_file)
         self._extract_file(tmp_file, llama_box_tmp_dir)
 
-        file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / target_file_name
 
         def ignore_zip_files(_, names):
@@ -469,7 +468,6 @@ class ToolsManager:
         shutil.copytree(
             llama_box_tmp_dir, target_dir, dirs_exist_ok=True, ignore=ignore_zip_files
         )
-        shutil.copy(llama_box_tmp_dir / file_name, target_file)
         # Make the file executable (non-Windows only)
         if self._os != "windows":
             st = os.stat(target_file)
@@ -948,18 +946,12 @@ def get_llama_box_command(
         Path,
     ],
 ) -> Path:
-    system = platform.system()
-    arch = platform.arch()
-    device = platform.device()
-    device = f'-{device}' if device else ''
-    full_path = os.path.join(base_path, f"llama-box-{system}-{arch}{device}{exe()}")
-    default_path = os.path.join(base_path, f"llama-box{exe()}")
-    # If both full_path and default_path do not exist, return full_path.
-    if not os.path.exists(full_path) and not os.path.exists(default_path):
-        command_path = full_path
-    else:
-        command_path = full_path if os.path.exists(full_path) else default_path
-    return Path(command_path)
+    command = "llama-box"
+    if platform.system() == "windows":
+        command += ".exe"
+    if isinstance(base_path, str):
+        base_path = Path(base_path)
+    return base_path.joinpath(command)
 
 
 def get_llama_box_version_dir_name(
