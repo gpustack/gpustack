@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Query
 from sqlalchemy import JSON, BigInteger, case, cast, text
-from sqlmodel import distinct, select, func, col
+from sqlmodel import desc, distinct, select, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.common import ItemList
@@ -400,6 +400,12 @@ async def get_model_usages(
 
     if user_ids is not None:
         statement = statement.where(col(ModelUsage.user_id).in_(user_ids))
+
+    statement = statement.order_by(
+        desc(ModelUsage.date),
+        ModelUsage.user_id,
+        ModelUsage.completion_token_count,
+    )
 
     return (await session.exec(statement)).all()
 
