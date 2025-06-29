@@ -14,19 +14,10 @@ from gpustack.schemas.models import (
     GPUSelector,
 )
 from tests.fixtures.workers.fixtures import (
-    linux_huawei_1_910b_64gx1,
-    linux_huawei_1_910b_64gx2,
-    linux_huawei_1_910b_64gx4,
     linux_huawei_1_910b_64gx8,
-    linux_huawei_2_910b_64gx1,
-    linux_huawei_2_910b_64gx2,
-    linux_huawei_2_910b_64gx4,
     linux_huawei_2_910b_64gx8,
-    linux_huawei_3_910b_64gx1,
-    linux_huawei_3_910b_64gx2,
     linux_huawei_3_910b_64gx8,
-    linux_huawei_4_910b_64gx0,
-    linux_huawei_4_910b_64gx2,
+    linux_huawei_4_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -152,7 +143,7 @@ def config(temp_dir):
                     "subordinate_workers": [
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
-                            worker_ip="192.168.50.5",
+                            worker_ip="192.168.50.4",
                             total_gpus=1,
                             gpu_indexes=[0],
                             gpu_addresses=["29.17.48.41"],
@@ -214,7 +205,7 @@ def config(temp_dir):
                     "subordinate_workers": [
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
-                            worker_ip="192.168.50.5",
+                            worker_ip="192.168.50.4",
                             total_gpus=1,
                             gpu_indexes=[0],
                             gpu_addresses=["29.17.48.41"],
@@ -225,7 +216,7 @@ def config(temp_dir):
                         ),
                         ModelInstanceSubordinateWorker(
                             worker_id=2,
-                            worker_ip="192.168.50.4",
+                            worker_ip="192.168.50.2",
                             total_gpus=1,
                             gpu_indexes=[0],
                             gpu_addresses=["29.17.48.42"],
@@ -242,11 +233,19 @@ def config(temp_dir):
 )
 @pytest.mark.asyncio
 async def test_select_candidates_3x_64gx1_1x_64gx0(config, m, expected):
+    def adjust_memory(worker):
+        # Adjust the memory utilization of the 2nd worker to 40%.
+        if worker.id == 2:
+            for dev in worker.status.gpu_devices:
+                dev.memory.utilization_rate = 40.0
+                dev.memory.used = 24758800785
+                dev.memory.allocated = 21474836480
+
     workers = [
-        linux_huawei_1_910b_64gx1(),
-        linux_huawei_2_910b_64gx1(),
-        linux_huawei_3_910b_64gx1(),
-        linux_huawei_4_910b_64gx0(),  # No devices.
+        linux_huawei_1_910b_64gx8(return_device=1),
+        linux_huawei_2_910b_64gx8(return_device=1, callback=adjust_memory),
+        linux_huawei_3_910b_64gx8(return_device=1),
+        linux_huawei_4_910b_64gx8(return_device=0),  # No devices.
     ]
     model_instances = [
         ModelInstance(
@@ -351,11 +350,28 @@ async def test_select_candidates_3x_64gx1_1x_64gx0(config, m, expected):
 )
 @pytest.mark.asyncio
 async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
+    def adjust_memory(worker):
+        # Adjust the memory utilization of the 1st and 2nd workers.
+        # The 0th and 2nd devices of 1st worker have allocated 60%,
+        # while the 0th and 2nd devices of 2nd worker have allocated 40%.
+        if worker.id == 1:
+            for dev in worker.status.gpu_devices:
+                if dev.index in [0, 2]:
+                    dev.memory.utilization_rate = 60.0
+                    dev.memory.used = 44667659879
+                    dev.memory.allocated = 41231686042
+        elif worker.id == 2:
+            for dev in worker.status.gpu_devices:
+                if dev.index in [0, 2]:
+                    dev.memory.utilization_rate = 40.0
+                    dev.memory.used = 309847529063
+                    dev.memory.allocated = 27487790695
+
     workers = [
-        linux_huawei_1_910b_64gx4(),
-        linux_huawei_2_910b_64gx4(),
-        linux_huawei_3_910b_64gx2(),
-        linux_huawei_4_910b_64gx2(),
+        linux_huawei_1_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_huawei_2_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_huawei_3_910b_64gx8(return_device=2),
+        linux_huawei_4_910b_64gx8(return_device=2),
     ]
     model_instances = [
         ModelInstance(
@@ -447,7 +463,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                     "subordinate_workers": [
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
-                            worker_ip="192.168.50.5",
+                            worker_ip="192.168.50.4",
                             total_gpus=2,
                             gpu_indexes=[0, 1],
                             gpu_addresses=["29.17.48.41", "29.17.57.32"],
@@ -464,10 +480,18 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
 )
 @pytest.mark.asyncio
 async def test_select_candidates_3x_64gx2(config, m, expected):
+    def adjust_memory(worker):
+        # Adjust the memory utilization of the 2nd worker to 40%.
+        if worker.id == 2:
+            for dev in worker.status.gpu_devices:
+                dev.memory.utilization_rate = 40.0
+                dev.memory.used = 24758800785
+                dev.memory.allocated = 21474836480
+
     workers = [
-        linux_huawei_1_910b_64gx2(),
-        linux_huawei_2_910b_64gx2(),
-        linux_huawei_3_910b_64gx2(),
+        linux_huawei_1_910b_64gx8(return_device=2),
+        linux_huawei_2_910b_64gx8(return_device=2, callback=adjust_memory),
+        linux_huawei_3_910b_64gx8(return_device=2),
     ]
     model_instances = [
         ModelInstance(
@@ -696,7 +720,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                             worker_ip="192.168.50.4",
                             total_gpus=8,
                             gpu_indexes=[3, 4],
-                            gpu_addresses=["29.17.48.41", "29.17.45.216"],
+                            gpu_addresses=["29.17.49.41", "29.17.45.216"],
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
                                 vram={3: 61847529062, 4: 61847529062},
@@ -806,7 +830,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                                 "29.17.48.41",
                                 "29.17.57.32",
                                 "29.17.51.78",
-                                "29.17.48.41",
+                                "29.17.49.41",
                                 "29.17.45.216",
                                 "29.17.67.77",
                                 "29.17.114.32",
@@ -905,7 +929,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                                 "29.17.48.41",
                                 "29.17.57.32",
                                 "29.17.51.78",
-                                "29.17.48.41",
+                                "29.17.49.41",
                                 "29.17.45.216",
                                 "29.17.67.77",
                                 "29.17.114.32",
@@ -933,9 +957,23 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
 )
 @pytest.mark.asyncio
 async def test_select_candidates_3x_64gx8(config, m, expected):
+    def adjust_memory(worker):
+        # Adjust the memory utilization of the 1st and 2nd workers.
+        # The 0th device of 1st worker has allocated 15%,
+        # while all devices of 2nd worker have allocated 40%.
+        if worker.id == 1:
+            worker.status.gpu_devices[0].memory.utilization_rate = 15.0
+            worker.status.gpu_devices[0].memory.used = 13743895347
+            worker.status.gpu_devices[0].memory.allocated = 10307921510
+        elif worker.id == 2:
+            for dev in worker.status.gpu_devices:
+                dev.memory.utilization_rate = 40.0
+                dev.memory.used = 24758800785
+                dev.memory.allocated = 21474836480
+
     workers = [
-        linux_huawei_1_910b_64gx8(),
-        linux_huawei_2_910b_64gx8(),
+        linux_huawei_1_910b_64gx8(callback=adjust_memory),
+        linux_huawei_2_910b_64gx8(callback=adjust_memory),
         linux_huawei_3_910b_64gx8(),
     ]
     model_instances = [
