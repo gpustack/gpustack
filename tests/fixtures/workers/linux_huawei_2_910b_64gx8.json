@@ -68,10 +68,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -99,10 +99,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -130,10 +130,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -161,10 +161,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -192,10 +192,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -223,10 +223,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -254,10 +254,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
@@ -285,10 +285,10 @@
                 },
                 "memory": {
                     "total": 68719476736,
-                    "utilization_rate": 40.0,
+                    "utilization_rate": 5.0,
                     "is_unified_memory": false,
-                    "used": 30923764531,
-                    "allocated": 27487790694
+                    "used": 3435973837,
+                    "allocated": 0
                 },
                 "network": {
                     "status": "up",
