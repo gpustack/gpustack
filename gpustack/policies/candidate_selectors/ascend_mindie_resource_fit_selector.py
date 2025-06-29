@@ -166,7 +166,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     if valid:
                         device_index = safe_int(matched.get("gpu_index"))
                         device_indexes.append(device_index)
-                        selected_devices_cnt += 1
                 if selected_worker_devices_cnt == 0:
                     selected_worker_devices_cnt = len(device_indexes)
                 elif selected_worker_devices_cnt != len(device_indexes):
