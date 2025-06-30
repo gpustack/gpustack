@@ -1,6 +1,8 @@
+from typing import List
+
 import pytest
 from unittest.mock import patch, AsyncMock
-from tests.utils.model import new_model
+from tests.utils.model import new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
@@ -9,6 +11,8 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     GPUSelector,
     RayActor,
+    ModelInstanceStateEnum,
+    ModelInstance,
 )
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_1_4090_24gx1,
@@ -21,6 +25,7 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_5_a100_80gx2,
     linux_nvidia_6_a100_80gx2,
     linux_nvidia_7_a100_80gx2,
+    linux_nvidia_2_4080_16gx2,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -474,3 +479,250 @@ async def test_auto_schedule_embedding_models(config):
         assert len(candidates) == 1
         assert candidate == candidates[0]
         compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_auto_schedule_single_work_single_gpu(config):
+    workers = [
+        linux_nvidia_1_4090_24gx1(),
+    ]
+
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-32B",
+        cpu_offloading=False,
+        backend_parameters=[],
+    )
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[
+                new_model_instance(
+                    10,
+                    "test-1",
+                    1,
+                    2,
+                    ModelInstanceStateEnum.RUNNING,
+                    [2],
+                    ComputedResourceClaim(
+                        is_unified_memory=False,
+                        offload_layers=10,
+                        total_layers=10,
+                        ram=0,
+                        vram={2: 500 * 1024 * 1024},
+                    ),
+                ),
+            ],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        print(resource_fit_selector._messages)
+        print(resource_fit_selector._workers_allocatable_resource)
+
+        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- The current available GPU only has 24.23 GiB allocatable VRAM (100.00%)."""
+        assert expect_msg == resource_fit_selector._messages
+
+
+@pytest.mark.asyncio
+async def test_auto_schedule_single_work_multi_gpu(config):
+    workers = [
+        linux_nvidia_4_4080_16gx4(),
+    ]
+
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-32B",
+        cpu_offloading=False,
+        backend_parameters=[],
+    )
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    resource_fit_selector._gpu_memory_utilization = 0.9
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        print(resource_fit_selector._messages)
+        print(resource_fit_selector._workers_allocatable_resource)
+        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
+
+        assert expect_msg == resource_fit_selector._messages
+
+
+@pytest.mark.asyncio
+async def test_auto_schedule_multi_work_multi_gpu(config):
+    workers = [linux_nvidia_1_4090_24gx1(), linux_nvidia_2_4080_16gx2()]
+
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-32B",
+        cpu_offloading=False,
+        backend_parameters=[],
+    )
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        print(resource_fit_selector._messages)
+        print(resource_fit_selector._workers_allocatable_resource)
+
+        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- The largest available worker has 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.78 GiB of allocatable VRAM.
+- Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."""
+
+        assert resource_fit_selector._messages == expect_msg
+
+
+@pytest.mark.asyncio
+async def test_manual_schedule_multi_work_multi_gpu(config):
+    workers = [
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_3_4090_24gx1(),
+    ]
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-32B",
+        cpu_offloading=False,
+        gpu_selector=GPUSelector(
+            gpu_ids=[
+                "host4090:cuda:0",
+                "host-2-4090:cuda:0",
+            ]
+        ),
+        backend_parameters=[],
+    )
+
+    def _get_mis() -> List[ModelInstance]:
+        return [
+            new_model_instance(
+                10,
+                "test-1",
+                1,
+                2,
+                ModelInstanceStateEnum.RUNNING,
+                [0],
+                ComputedResourceClaim(
+                    is_unified_memory=False,
+                    offload_layers=10,
+                    total_layers=10,
+                    ram=0,
+                    vram={0: 0},
+                ),
+            ),
+            new_model_instance(
+                11,
+                "test-2",
+                1,
+                12,
+                ModelInstanceStateEnum.RUNNING,
+                [0],
+                ComputedResourceClaim(
+                    is_unified_memory=False,
+                    offload_layers=10,
+                    total_layers=10,
+                    ram=0,
+                    vram={0: 0},
+                ),
+            ),
+        ]
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', return_value=AsyncMock()),
+        patch(
+            'gpustack.policies.candidate_selectors.VLLMResourceFitSelector._validate_distributed_vllm_limit_per_worker',
+            return_value=True,
+        ),
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=_get_mis(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            side_effect=_get_mis,
+        ),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        print(resource_fit_selector._messages)
+        print(resource_fit_selector._workers_allocatable_resource)
+
+        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- The largest available worker has 47.22 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 42.50 GiB of allocatable VRAM."""
+
+        assert resource_fit_selector._messages == expect_msg

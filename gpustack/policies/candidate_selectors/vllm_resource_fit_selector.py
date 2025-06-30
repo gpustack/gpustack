@@ -14,6 +14,7 @@ from gpustack.policies.base import (
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     get_worker_model_instances,
+    ListMessageBuilder,
 )
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -184,6 +185,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._selected_gpu_workers: List[str] = None
         self._selected_gpu_worker_count = 0
         self._selected_gpu_indexes_by_worker: Dict[str, List[int]] = {}
+        self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
 
         if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
             gpu_ids_by_worker = parse_gpu_ids_by_worker(
@@ -250,52 +252,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 f"({self._gpu_count})."
             )
 
-    def _set_messages(self):
-        if self._messages:
-            return
-
-        messages = [
-            f"The model requires {self._gpu_memory_utilization * 100}%(--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU that satisfies {byte_to_gib(self._vram_claim)} GiB VRAM in total."
-        ]
-        if (
-            self._selected_gpu_workers
-            and self._largest_multi_gpu_vram > 0
-            and self._gpu_memory_utilization > 0
-        ):
-            # Manually selected multiple GPUs
-            messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The selected GPUs provide {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio."
-            ]
-        elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization > 0:
-            effective_vram = (
-                byte_to_gib(self._largest_multi_gpu_vram)
-                * self._gpu_memory_utilization
-                * self._largest_multi_gpu_utilization_satisfied_count
-                / self._largest_multi_gpu_total
-            )
-            messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM for each GPU, with a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB. The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM, and {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, resulting in {effective_vram} GiB effective VRAM."
-            ]
-        elif self._largest_single_gpu_vram > 0 and self._gpu_memory_utilization > 0:
-            messages = [
-                f"The model requires {self._gpu_memory_utilization * 100}% (--{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}) VRAM on a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM and {self._largest_single_gpu_vram_utilization * 100:.2f}% allocatable VRAM ratio."
-            ]
-        elif self._largest_multi_gpu_vram > 0 and self._gpu_memory_utilization == 0:
-            # Non-LLM models
-            messages = [
-                f"The model requires a total VRAM requirement of {byte_to_gib(self._vram_claim)} GiB VRAM. The largest available worker provides {byte_to_gib(self._largest_multi_gpu_vram)} GiB VRAM."
-            ]
-        elif self._largest_single_gpu_vram > 0 and self._gpu_memory_utilization == 0:
-            # Non-LLM models
-            messages = [
-                f"The model requires a GPU with {byte_to_gib(self._vram_claim)} GiB VRAM. The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB VRAM."
-            ]
-        elif self._gpu_memory_utilization == 0:
-            # Non-LLM models
-            messages = [
-                f"The model requires {byte_to_gib(self._vram_claim)} GiB VRAM in total."
-            ]
-
+    def _append_distributed_mode_message(self, messages: ListMessageBuilder):
         if (
             self._cfg.enable_ray
             and self._model.distributed_inference_across_workers
@@ -305,7 +262,90 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 "Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."
             )
 
-        self._messages = messages
+    def _build_non_llm_message(self, messages: ListMessageBuilder):
+        # Non-LLM models
+        messages.append(
+            f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM."
+        )
+        if self._largest_multi_gpu_vram > 0:
+            messages.append(
+                f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB of VRAM."
+            )
+        elif self._largest_single_gpu_vram > 0:
+            messages.append(
+                f"The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB of VRAM."
+            )
+
+    def _cal_effective_vram(self) -> float:
+        if self._largest_multi_gpu_total == 0:
+            return 0.0
+        return (
+            byte_to_gib(self._largest_multi_gpu_vram)
+            * self._gpu_memory_utilization
+            * self._largest_multi_gpu_utilization_satisfied_count
+            / self._largest_multi_gpu_total
+        )
+
+    def _build_gpu_message(self, messages: ListMessageBuilder):
+        messages.extend(
+            [
+                f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM.",
+                f"With --{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}, All GPUs combined need to provide at least {byte_to_gib(int(self._vram_claim / self._gpu_memory_utilization))} GiB of total VRAM.",
+            ]
+        )
+
+        if self._selected_gpu_workers and self._largest_multi_gpu_vram > 0:
+            # Manually selected multiple GPUs
+            log_worker_cnt = 0
+            if (
+                not self._unsatisfied_gpu_messages
+                and self._largest_multi_gpu_vram * self._gpu_memory_utilization
+                < self._vram_claim
+            ):
+                # All selected gpu meet the utilization, but combined VRAM is not enough.
+                messages.append(
+                    f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+                )
+
+            for worker_name, gpu_indexes in self._unsatisfied_gpu_messages.items():
+                # Some seleted gpu is not meet the utilization
+                show_gpu_list = gpu_indexes
+                if len(gpu_indexes) > 3:
+                    show_gpu_list = gpu_indexes[:3] + [
+                        f"...(more {len(gpu_indexes) - 3})"
+                    ]
+                if log_worker_cnt > 2:
+                    messages.append(
+                        f"Other {log_worker_cnt - 2} workers fail to meet, please check."
+                    )
+                    break
+                else:
+                    messages.append(
+                        f"Worker {worker_name} GPU indexes {show_gpu_list} fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
+                    )
+                log_worker_cnt += 1
+
+        elif self._largest_multi_gpu_vram > 0:
+            messages.append(
+                f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+            )
+
+        elif self._largest_single_gpu_vram > 0:
+            messages.append(
+                f"The current available GPU only has {byte_to_gib(self._largest_single_gpu_vram)} GiB allocatable VRAM ({(self._largest_single_gpu_vram_utilization * 100):.2f}%)."
+            )
+
+    def _set_messages(self):
+        if self._messages:
+            return
+
+        messages = ListMessageBuilder([])
+        if self._gpu_memory_utilization == 0:
+            self._build_non_llm_message(messages)
+        else:
+            self._build_gpu_message(messages)
+        self._append_distributed_mode_message(messages)
+        self._messages = str(messages)
 
     def _add_message(self, message: str):
         self._messages.append(message)
@@ -620,6 +660,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 and allocatable_gpu_memory_utilization < self._gpu_memory_utilization
             ):
                 overcommit = True
+                self._unsatisfied_gpu_messages[worker.name].append(gpu.index)
 
             # Record allocation info for scheduling message
             total_allocatable_vram += allocatable_vram
@@ -776,7 +817,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         overcommit = (
             self._largest_multi_gpu_utilization_satisfied_count
             < self._largest_multi_gpu_total
-            or self._largest_multi_gpu_vram < self._vram_claim
+            or self._largest_multi_gpu_vram * self._gpu_memory_utilization
+            < self._vram_claim
         )
 
         return [
@@ -829,6 +871,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._largest_multi_gpu_vram += allocatable_vram
                 if gpu_vram_claim < allocatable_vram:
                     self._largest_multi_gpu_utilization_satisfied_count += 1
+                else:
+                    if worker.name not in self._unsatisfied_gpu_messages:
+                        self._unsatisfied_gpu_messages[worker.name] = []
+                    self._unsatisfied_gpu_messages[worker.name].append(gpu.index)
 
         self._largest_multi_gpu_total += len(gpu_indexes)
 
