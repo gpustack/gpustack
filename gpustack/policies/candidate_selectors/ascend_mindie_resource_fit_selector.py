@@ -250,10 +250,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # A potential workaround if the empirical resource estimation is biased greatly.
         if self._model.env:
-            env = self._model.env
-            reqeust_ram = safe_int(env.get("GPUSTACK_MODEL_RAM_CLAIM", 0))
-            request_vram = safe_int(env.get("GPUSTACK_MODEL_VRAM_CLAIM", 0))
-            if reqeust_ram or request_vram:
+            reqeust_ram = safe_int(self._model.env.get("GPUSTACK_MODEL_RAM_CLAIM", 0))
+            request_vram = safe_int(self._model.env.get("GPUSTACK_MODEL_VRAM_CLAIM", 0))
+            if request_vram > 0:
                 return reqeust_ram, request_vram
 
         """
@@ -272,6 +271,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Hardcode the VRAM footprint for now.
         vram_footprint = 3 * 1024**3
+        if self._model.env:
+            reserved_memory_gb = safe_int(
+                self._model.env.get("RESERVED_MEMORY_GB", "3")
+            )
+            if reserved_memory_gb > 0:
+                vram_footprint = reserved_memory_gb * 1024**3
 
         # Get model weight size.
         vram_weight = 0

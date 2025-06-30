@@ -84,8 +84,8 @@ class AscendMindIEParameters:
     local_world_size: int = -1  # store validation input
     world_size: int = -1  # store validation input
     pipeline_parallel_size: int = 1
-    tensor_parallel_size: int = -1
     data_parallel_size: int = -1
+    tensor_parallel_size: int = -1
     sequence_parallel_size: int = -1
     moe_expert_parallel_size: int = -1
     moe_tensor_parallel_size: int = -1
@@ -396,22 +396,22 @@ class AscendMindIEParameters:
             help="Number of pipeline parallel groups.",
         )
         parser.add_argument(
-            "--tensor-parallel-size",
-            "-tp",
-            type=int,
-            default=self.tensor_parallel_size,
-            required=False,
-            help="Number of tensor parallel groups."
-            "`-1` means using world size as tensor parallel size, otherwise, must be a power of 2.",
-        )
-        parser.add_argument(
             "--data-parallel-size",
             "-dp",
             type=int,
             default=self.data_parallel_size,
             required=False,
-            help="Number of data parallel groups for Attention Modules. "
+            help="Number of data parallel groups for Attention layers. "
             "`-1` means disabling data parallelism, otherwise, must be a power of 2.",
+        )
+        parser.add_argument(
+            "--tensor-parallel-size",
+            "-tp",
+            type=int,
+            default=self.tensor_parallel_size,
+            required=False,
+            help="Number of tensor parallel groups for Attention layers."
+            "`-1` means using world size as tensor parallel size, otherwise, must be a power of 2.",
         )
         parser.add_argument(
             "--sequence-parallel-size",
@@ -419,7 +419,7 @@ class AscendMindIEParameters:
             type=int,
             default=self.sequence_parallel_size,
             required=False,
-            help="Number of sequence parallel groups for MLP Modules. "
+            help="Number of sequence parallel groups for MLP layers. "
             "`-1` means disabling sequence parallelism, otherwise, must be power of 2.",
         )
         parser.add_argument(
@@ -428,7 +428,7 @@ class AscendMindIEParameters:
             type=int,
             default=self.moe_expert_parallel_size,
             required=False,
-            help="Number of expert parallel groups for Sparse MoE Modules. "
+            help="Number of expert parallel groups. "
             "`-1` means disabling MoE expert parallelism, otherwise, must be power of 2.",
         )
         parser.add_argument(
@@ -437,7 +437,7 @@ class AscendMindIEParameters:
             type=int,
             default=self.moe_tensor_parallel_size,
             required=False,
-            help="Number of tensor parallel groups for Sparse MoE Modules. "
+            help="Number of tensor parallel groups for MoE MLP layers. "
             "`-1` and means using world size as MoE tensor parallel size, otherwise, must be power of 2. ",
         )
         parser.add_argument(
@@ -608,9 +608,9 @@ class AscendMindIEParameters:
             self.world_size,
             self.local_world_size,
         )
-        if pp < 1:
+        if pp <= 0:
             raise argparse.ArgumentTypeError(
-                "--pipeline-parallel-size must be greater than or equal to 1"
+                "--pipeline-parallel-size must be greater than 0"
             )
         if tp > 0 and tp & (tp - 1) != 0:
             raise argparse.ArgumentTypeError(
@@ -760,6 +760,10 @@ class AscendMindIEParameters:
                     "--rope-scaling is not supported when --enable-prefix-caching is enabled"
                 )
         if self.data_parallel_size > 1:
+            if self.enable_memory_decoding or self.enable_lookahead:
+                raise argparse.ArgumentTypeError(
+                    "--enable-memory-decoding and --enable-lookahead are not supported when --data-parallel-size > 1"
+                )
             if self.enable_split:
                 raise argparse.ArgumentTypeError(
                     "--enable-split is not supported when --data-parallel-size > 1"
@@ -876,9 +880,14 @@ class AscendMindIEServer(InferenceServer):
         env["MINDIE_CHECK_INPUTFILES_PERMISSION"] = "0"
         # -- Enforce using ATB as backend
         env["MINDIE_LLM_FRAMEWORK_BACKEND"] = "ATB"
-        # -- Improve ATB execution
+        # -- Enforce using 90% of GPU memory
+        env["NPU_MEMORY_FRACTION"] = "0.9"
+        # -- Disable OpenMP parallelism, speed up model loading.
+        env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
+        # -- Improve performance.
+        env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = "1"
+        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "2")
         env["ATB_OPERATION_EXECUTE_ASYNC"] = "1"
-        env["TASK_QUEUE_ENABLE"] = "1"
         env["ATB_LAYER_INTERNAL_TENSOR_REUSE"] = env.pop(
             "ATB_LAYER_INTERNAL_TENSOR_REUSE", "1"
         )
@@ -890,12 +899,17 @@ class AscendMindIEServer(InferenceServer):
         env["ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE"] = env.pop(
             "ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE", "3"
         )
-        # -- Enforce using 90% of GPU memory
-        env["NPU_MEMORY_FRACTION"] = "0.9"
+        env["ATB_WORKSPACE_MEM_ALLOC_GLOBAL"] = env.pop(
+            "ATB_WORKSPACE_MEM_ALLOC_GLOBAL", "1"
+        )
+        env["PYTORCH_NPU_ALLOC_CONF"] = env.pop(
+            "PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"
+        )
         # -- Pop conflict configuration items.
         env.pop("NPU_VISIBLE_DEVICES", "")
         env.pop("NPU-VISIBLE-DEVICES", "")
         env.pop("NPU_DEVICE_IDS", "")
+        env.pop("ASCEND_LAUNCH_BLOCKING", "")
         env.pop("ASCEND_RT_VISIBLE_DEVICES", "")
         env.pop("MIES_CONTAINER_MANAGEMENT_IP", "")
         env.pop("WORLD_SIZE", "")
@@ -959,8 +973,6 @@ class AscendMindIEServer(InferenceServer):
         )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
         env["TORCH_AIE_PRINT_TO_STDOUT"] = "1"
         env["TORCH_AIE_PRINT_TO_FILE"] = "0"
-        # -- Disable OpenMP parallelism, speed up model loading.
-        env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
 
         # - Listening config
         serving_port = minstance.ports[0] if minstance.ports else minstance.port
@@ -1059,8 +1071,11 @@ class AscendMindIEServer(InferenceServer):
             if params.metrics:
                 env["MIES_SERVICE_MONITOR_MODE"] = "1"
             # --- Emitting operators in synchronous way.
-            env["TASK_QUEUE_ENABLE"] = "0" if params.enforce_eager else "1"
-            env["ATB_OPERATION_EXECUTE_ASYNC"] = "0" if params.enforce_eager else "1"
+            if params.enforce_eager:
+                env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = "0"
+                env["TASK_QUEUE_ENABLE"] = "0"
+                env["ATB_OPERATION_EXECUTE_ASYNC"] = "0"
+                env["ASCEND_LAUNCH_BLOCKING"] = "1"
             # --- Mutating model config.
             model_config_path = self._model_path_mapped.joinpath("config.json")
             with open(
@@ -1186,6 +1201,9 @@ class AscendMindIEServer(InferenceServer):
                     model_config["moe_tp"] = params.moe_tensor_parallel_size
                 if params.sequence_parallel_size > 0:
                     model_config["sp"] = params.sequence_parallel_size
+            # --- Asynchronous scheduling
+            if params.max_batch_size <= 50:
+                env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = "0"
             # --- Buffer response
             if params.enable_buffer_response:
                 schedule_config["bufferResponseEnabled"] = True
@@ -1254,6 +1272,11 @@ class AscendMindIEServer(InferenceServer):
             env["ATB_LLM_COMM_BACKEND"] = env.pop("ATB_LLM_COMM_BACKEND", "hccl")
             env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
             env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
+            env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
+                "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
+            )
+            if env.get("CANN_CHIP", "310p") != "310p":
+                env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
             # NB(thxCode): For deterministic calculation, needs the following environment variables.
             # LCCL_DETERMINISTIC=1
             # ATB_WORKSPACE_MEM_ALLOC_GLOBAL=1
