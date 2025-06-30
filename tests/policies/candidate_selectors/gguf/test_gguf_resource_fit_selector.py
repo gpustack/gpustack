@@ -1,7 +1,4 @@
-import tempfile
-import shutil
 import pytest
-from gpustack.config.config import Config
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.policies.candidate_selectors import GGUFResourceFitSelector
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
@@ -77,20 +74,6 @@ from unittest.mock import patch, AsyncMock
 
 from tests.utils.model import new_model, new_model_instance
 from tests.utils.scheduler import compare_candidates
-
-
-@pytest.fixture(scope="module", autouse=True)
-def temp_dir():
-    tmp_dir = tempfile.mkdtemp()
-    print(f"Created temporary directory: {tmp_dir}")
-    yield tmp_dir
-    shutil.rmtree(tmp_dir)
-
-
-@pytest.fixture(scope="module", autouse=True)
-def config(temp_dir):
-    cfg = Config(token="test", jwt_secret_key="test", data_dir=temp_dir)
-    return cfg
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,6 @@ import logging
 import os
 import random
 import subprocess
-import tempfile
-import shutil
 from typing import Dict, List, Optional
 import uuid
 import pytest
@@ -87,31 +85,10 @@ def check_parser(version: Optional[str] = "v0.13.10") -> bool:
     return True
 
 
-@pytest.fixture(scope="module", autouse=True)
-def temp_dir():
-    tmp_dir = tempfile.mkdtemp()
-    print(f"Created temporary directory: {tmp_dir}")
-    yield tmp_dir
-    shutil.rmtree(tmp_dir)
-
-
 @pytest.mark.asyncio
 async def test_schedule_with_deepseek_r1_bf16_end_in_multi_worker_multi_gpu_partial_offload(
-    temp_dir,
+    config,
 ):
-    cache_dir = os.path.join(
-        os.path.dirname(__file__),
-        "../../../fixtures/estimates/unsloth_DeepSeek-R1-GGUF_DeepSeek-R1-BF16",
-    )
-    config = Config(
-        token="test",
-        jwt_secret_key="test",
-        data_dir=temp_dir,
-        cache_dir=cache_dir,
-        huggingface_token="",
-    )
-    set_global_config(config)
-
     if not check_parser():
         pytest.skip("parser path is not available or version mismatch, skipping.")
 
@@ -133,10 +110,9 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_multi_worker_multi_gpu_part
         huggingface_filename="DeepSeek-R1-BF16/DeepSeek-R1.BF16-00001-of-00030.gguf",
         backend_parameters=["--ctx-size=32768"],
     )
-    mi = new_model_instance(1, "test", 1)
 
-    resource_fit_selector = GGUFResourceFitSelector(m, mi, cache_dir)
-    placement_scorer_spread = PlacementScorer(m, mi)
+    resource_fit_selector = GGUFResourceFitSelector(m)
+    placement_scorer_spread = PlacementScorer(m)
 
     with (
         patch(
