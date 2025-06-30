@@ -608,10 +608,10 @@ def simplify_auto_config_value_error(e: ValueError) -> ValueError:
     Simplify the error message for ValueError exceptions.
     """
     message = str(e)
-    if "option `trust_remote_code=True`" in message:
+    if "argument `trust_remote_code=True`" in message:
         return ValueError(
             message.replace(
-                "option `trust_remote_code=True`",
+                "argument `trust_remote_code=True`",
                 "backend parameter `--trust-remote-code`",
             )
         )
