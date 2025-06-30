@@ -512,7 +512,8 @@ class AscendMindIEParameters:
                 if self.data_parallel_size > 1:
                     if self.tensor_parallel_size < 0:
                         self.tensor_parallel_size = 1
-                    self.local_world_size = self.tensor_parallel_size
+                    if self.local_world_size < 0:
+                        self.local_world_size = self.tensor_parallel_size
                     self.world_size = (
                         self.data_parallel_size * self.tensor_parallel_size
                     )
@@ -521,7 +522,8 @@ class AscendMindIEParameters:
                         self.moe_tensor_parallel_size = 1
                     if self.tensor_parallel_size < 0:
                         self.tensor_parallel_size = self.moe_tensor_parallel_size
-                    self.local_world_size = self.moe_tensor_parallel_size
+                    if self.local_world_size < 0:
+                        self.local_world_size = self.tensor_parallel_size
                     self.world_size = (
                         self.moe_expert_parallel_size * self.moe_tensor_parallel_size
                     )
