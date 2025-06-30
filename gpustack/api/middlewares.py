@@ -9,7 +9,6 @@ from jwt import DecodeError, ExpiredSignatureError
 from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types import Completion, CompletionUsage
-from openai.types.images_response import ImagesResponse
 from openai.types.audio.transcription_create_response import (
     Transcription,
 )
@@ -17,7 +16,7 @@ from openai.types.create_embedding_response import (
     Usage as EmbeddingUsage,
 )
 from gpustack.routes.rerank import RerankResponse, RerankUsage
-from gpustack.schemas.images import ImageGenerationChunk
+from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
@@ -63,6 +62,8 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
             elif (
                 path == "/v1-openai/images/generations"
                 or path == "/v1/images/generations"
+                or path == "/v1-openai/images/edits"
+                or path == "/v1/images/edits"
             ):
                 return await process_request(
                     request,

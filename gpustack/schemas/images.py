@@ -1,5 +1,6 @@
 from typing import List, Optional
 from pydantic import BaseModel
+from openai.types.image import Image
 
 
 class ImageData(BaseModel):
@@ -15,4 +16,12 @@ class ImageGenerationChunk(BaseModel):
     object: str
     model: Optional[str] = None
     data: List[ImageData] = []
+    usage: Optional[dict] = None
+
+
+class ImagesResponse(BaseModel):
+    created: int
+
+    data: Optional[List[Image]] = None
+
     usage: Optional[dict] = None
