@@ -80,6 +80,8 @@ class AscendMindIEParameters:
     lookahead_level: int = 4
     lookahead_window: int = 5
     lookahead_guess_set_size: int = 5
+    enable_multi_token_prediction: bool = False
+    multi_token_prediction_tokens: int = 1
     enable_prefix_caching: bool = False
     local_world_size: int = -1  # store validation input
     world_size: int = -1  # store validation input
@@ -356,6 +358,20 @@ class AscendMindIEParameters:
             type=int,
             default=self.split_start_batch_size,
             help="Batch size to start splitting for split fuse.",
+        )
+        parser.add_argument(
+            "--enable-multi-token-prediction",
+            type=bool,
+            action=argparse.BooleanOptionalAction,
+            help="Enable multi-token prediction. "
+            "Use `--no-enable-multi-token-prediction` to disable explicitly.",
+        )
+        parser.add_argument(
+            "--multi-token-prediction-tokens",
+            type=int,
+            default=self.multi_token_prediction_tokens,
+            help="Number of multi-token prediction tokens. "
+            "This is only effective when `--enable-multi-token-prediction` is enabled.",
         )
         parser.add_argument(
             "--enable-prefix-caching",
@@ -711,6 +727,11 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     "--lookahead-guess-set-size must be in the range [1, 16]"
                 )
+        if self.enable_multi_token_prediction:
+            if self.multi_token_prediction_tokens <= 0:
+                raise argparse.ArgumentTypeError(
+                    "--multi-token-prediction-tokens must be greater than 0"
+                )
         # -- Buffer response
         if self.enable_buffer_response:
             if self.prefill_expected_time_ms is None:
@@ -753,6 +774,19 @@ class AscendMindIEParameters:
             if self.rope_scaling:
                 raise argparse.ArgumentTypeError(
                     "--rope-scaling is not supported when --enable-lookahead is enabled"
+                )
+        if self.enable_multi_token_prediction:
+            if self.enable_memory_decoding or self.enable_lookahead:
+                raise argparse.ArgumentTypeError(
+                    "--enable-memory-decoding and --enable-lookahead are not supported when --enable-multi-token-prediction is enabled"
+                )
+            if self.enable_split:
+                raise argparse.ArgumentTypeError(
+                    "--enable-split is not supported when --enable-multi-token-prediction is enabled"
+                )
+            if self.rope_scaling:
+                raise argparse.ArgumentTypeError(
+                    "--rope-scaling is not supported when --enable-multi-token-prediction is enabled"
                 )
         if self.enable_prefix_caching:
             if self.rope_scaling:
@@ -1176,6 +1210,14 @@ class AscendMindIEServer(InferenceServer):
                         "level": params.lookahead_level,
                         "window": params.lookahead_window,
                         "guess_set_size": params.lookahead_guess_set_size,
+                    }
+                )
+            # --- Multi-token prediction
+            if params.enable_multi_token_prediction:
+                model_config["plugin_params"] = json.dumps(
+                    {
+                        "plugin_type": "mtp",
+                        "num_speculative_tokens": params.multi_token_prediction_tokens,
                     }
                 )
             # --- Prefix cache
