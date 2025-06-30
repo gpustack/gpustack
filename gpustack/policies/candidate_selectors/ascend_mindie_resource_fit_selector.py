@@ -64,6 +64,9 @@ class ModelParameters:
     torch_dtype: str = "bfloat16"
     quantize: Optional[str] = None
     quantization_config: Optional[Dict] = None
+    moe_num_experts: Optional[int] = None
+    moe_num_shared_experts: Optional[int] = None
+    moe_intermediate_size: Optional[int] = None
 
     def from_model(self, model: Model):  # noqa: C901
         """
@@ -103,6 +106,23 @@ class ModelParameters:
                 )
         if not self.qk_nope_head_dim and self.hidden_size and self.num_attention_heads:
             self.head_dim = self.hidden_size // self.num_attention_heads
+        if not self.moe_num_experts:
+            for key in [
+                "n_routed_experts",
+                "num_local_experts",
+                "num_experts",
+            ]:
+                if value := getattr(pretrained_config, key, None):
+                    setattr(self, "moe_num_experts", value)
+                    break
+        if self.moe_num_experts and not self.moe_num_shared_experts:
+            for key in [
+                "n_shared_experts",
+                "num_shared_experts",
+            ]:
+                if value := getattr(pretrained_config, key, None):
+                    setattr(self, "moe_num_shared_experts", value)
+                    break
 
     def get_attention_type(self) -> ModelAttentionTypeEnum:
         """
@@ -433,6 +453,30 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                                 f"the --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
                             )
                         return candidates
+                    if self._serving_params.moe_expert_parallel_size > 1:
+                        if moe_num_experts := self._model_params.moe_num_experts:
+                            if (
+                                moe_num_experts
+                                % self._serving_params.moe_expert_parallel_size
+                                != 0
+                            ):
+                                self._diagnostic_messages.append(
+                                    f"Model's MoE experts ({moe_num_experts}) must be divisible by "
+                                    f"the --moe-expert-parallel-size ({self._serving_params.moe_expert_parallel_size})."
+                                )
+                                return candidates
+                    if self._serving_params.moe_tensor_parallel_size > 1:
+                        if moe_inter_size := self._model_params.moe_intermediate_size:
+                            if (
+                                moe_inter_size
+                                % self._serving_params.moe_tensor_parallel_size
+                                != 0
+                            ):
+                                self._diagnostic_messages.append(
+                                    f"Model's MoE intermediate size ({moe_inter_size}) must be divisible by "
+                                    f"the --moe-tensor-parallel-size ({self._serving_params.moe_tensor_parallel_size})."
+                                )
+                                return candidates
 
         """
         Get available workers.
