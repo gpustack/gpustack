@@ -254,16 +254,18 @@ class ToolsManager:
         system = platform.system()
         arch = platform.arch()
         device = platform.device()
+        target_path = Path(self._bin_dir) / get_versioned_command("vllm", version)
 
         if system != "linux" or arch != "amd64":
-            target_path = Path(self._bin_dir) / get_versioned_command("vllm", version)
-            raise Exception(
-                f"Auto-installation for versioned vLLM is only supported on amd64 Linux. Please install vLLM manually and link it to {target_path}."
-            )
+            if not target_path.exists():
+                raise Exception(
+                    f"Auto-installation for versioned vLLM is only supported on amd64 Linux. Please install vLLM manually and link it to {target_path}."
+                )
         elif device != platform.DeviceTypeEnum.CUDA.value:
-            raise Exception(
-                f"Auto-installation for versioned vLLM is only supported on CUDA devices. Please install vLLM manually and link it to {target_path}."
-            )
+            if not target_path.exists():
+                raise Exception(
+                    f"Auto-installation for versioned vLLM is only supported on CUDA devices. Please install vLLM manually and link it to {target_path}."
+                )
 
         self.install_versioned_package_by_pipx(
             "vllm",
