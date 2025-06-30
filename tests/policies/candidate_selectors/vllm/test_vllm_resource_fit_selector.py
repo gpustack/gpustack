@@ -1,9 +1,6 @@
-import shutil
-import tempfile
 import pytest
 from unittest.mock import patch, AsyncMock
 from tests.utils.model import new_model
-from gpustack.config.config import Config, set_global_config
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
@@ -26,23 +23,6 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_7_a100_80gx2,
 )
 from tests.utils.scheduler import compare_candidates
-
-
-@pytest.fixture(scope="module", autouse=True)
-def temp_dir():
-    tmp_dir = tempfile.mkdtemp()
-    print(f"Created temporary directory: {tmp_dir}")
-    yield tmp_dir
-    shutil.rmtree(tmp_dir)
-
-
-@pytest.fixture(scope="module", autouse=True)
-def config(temp_dir):
-    cfg = Config(
-        token="test", jwt_secret_key="test", data_dir=temp_dir, enable_ray=True
-    )
-    set_global_config(cfg)
-    return cfg
 
 
 @pytest.mark.asyncio
