@@ -489,6 +489,56 @@ EOT
         && pip cache purge
 EOF
 
+## Add PanguProMoE model support
+
+RUN <<EOF
+    # PanguProMoE
+
+    # Prepare Python package
+    PYTHON_PACKAGES_PATH=$(pip show atb_llm | grep Location | cut -d' ' -f2)
+    if [ -z "${PY_LOCATION}" ]; then
+        PYTHON_PACKAGES_PATH="/usr/lib/python${PYTHON_VERSION}/site-packages"
+    fi
+    PYTHON_PANGUPROMOE_PATH="${PYTHON_PACKAGES_PATH}/atb_llm/models/pangupromoe"
+    mkdir -p "${PYTHON_PANGUPROMOE_PATH}"
+
+    # Download run files
+    for file in configuration_pangu_moe.py modeling_pangu_moe.py tokenization_pangu_moe.py; do
+        curl -H 'Referer: https://raw.gitcode.com/' --retry 3 --retry-connrefused -fsSL "https://raw.gitcode.com/ascend-tribe/pangu-pro-moe-model/raw/main/${src}" -o "${PYTHON_PANGUPROMOE_PATH}/${file}"
+    done
+
+    # Create router
+    cat <<EOT >"${PYTHON_PANGUPROMOE_PATH}/router_pangupromoe.py"
+# Copyright GPUStack 2025. All rights reserved.
+
+from dataclasses import dataclass
+from ..base.router import BaseRouter
+from .configuration_pangu_moe import PanguProMoEConfig
+from .tokenization_pangu_moe import PanguProMoETokenizer
+
+
+@dataclass
+class PanguProMoERouter(BaseRouter):
+    def get_config(self):
+        return PanguProMoEConfig.from_pretrained(
+            self.model_name_or_path,
+            revision=self.revision,
+            local_files_only=True,
+            trust_remote_code=self.trust_remote_code
+        )
+    def get_tokenizer(self):
+        return PanguProMoETokenizer.from_pretrained(
+            self.model_name_or_path,
+            revision=self.revision,
+            local_files_only=True,
+            trust_remote_code=self.trust_remote_code)
+
+EOT
+
+    # Copy Python package to MindIE
+    cp -rf "${PYTHON_PANGUPROMOE_PATH}" "${CANN_HOME}/atb-models/atb_llm/models/pangupromoe"
+EOF
+
 #
 # Stage vLLM Install
 #
