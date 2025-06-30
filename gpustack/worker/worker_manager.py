@@ -1,6 +1,7 @@
 import asyncio
 import random
 from datetime import datetime, timezone
+from pathlib import Path
 import multiprocessing
 import os
 import logging
@@ -46,7 +47,9 @@ class WorkerManager:
         self._system_reserved = system_reserved
         self._rpc_servers: Dict[int, RPCServerProcessInfo] = {}
         self._rpc_server_log_dir = f"{cfg.log_dir}/rpc_server"
-        self._rpc_server_cache_dir = f"{cfg.cache_dir}/rpc_server/"
+        self._rpc_server_cache_dir = str(
+            Path(f"{cfg.cache_dir}/rpc_server/").absolute()
+        )
         self._rpc_server_args = cfg.rpc_server_args
         self._gpu_devices = cfg.get_gpu_devices()
         self._system_info = cfg.get_system_info()

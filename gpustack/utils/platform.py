@@ -116,14 +116,16 @@ def device() -> str:
     ):
         return DeviceTypeEnum.MUSA.value
 
-    if is_command_available("npu-smi"):
-        return "npu"
+    if is_command_available("npu-smi") or os.path.exists(
+        "/usr/local/Ascend/ascend-toolkit"
+    ):
+        return DeviceTypeEnum.NPU.value
 
     if system() == "darwin" and arch() == "arm64":
         return DeviceTypeEnum.MPS.value
 
-    if is_command_available("hy-smi"):
-        return "dcu"
+    if is_command_available("hy-smi") or os.path.exists("/opt/dtk"):
+        return DeviceTypeEnum.DCU.value
 
     if is_command_available("rocm-smi") or os.path.exists(
         "C:\\Program Files\\AMD\\ROCm"
@@ -131,7 +133,7 @@ def device() -> str:
         return DeviceTypeEnum.ROCM.value
 
     if is_command_available("ixsmi"):
-        return "corex"
+        return DeviceTypeEnum.COREX.value
 
     if is_command_available("cnmon"):
         return DeviceTypeEnum.MLU.value

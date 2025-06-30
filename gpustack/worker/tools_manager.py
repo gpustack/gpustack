@@ -187,7 +187,13 @@ class ToolsManager:
         ):
             logger.debug(f"{file_name} already exists, skipping download")
         else:
-            self._download_llama_box(version, target_dir, file_name)
+            self._download_llama_box(
+                version,
+                target_dir,
+                file_name,
+                version >= "v0.0.157"
+                and self._device != platform.DeviceTypeEnum.NPU.value,
+            )
             # Update versions.json
             self._update_versions_file(version_key, version)
 
@@ -240,7 +246,11 @@ class ToolsManager:
         self._download_acsend_mindie(version, target_dir)
 
     def install_versioned_llama_box(self, version: str):
-        target_dir = Path(self._bin_dir) / "llama-box" / f"llama-box-{version}"
+        enable_dynamic_link = get_enable_dynamic_link(version, self._device)
+        target_dir = Path(self._bin_dir) / "llama-box"
+        if not enable_dynamic_link:
+            target_dir = target_dir / "static"
+        target_dir = target_dir / f"llama-box-{version}"
         target_file = get_llama_box_command(target_dir)
         file_name = os.path.basename(target_file)
 
@@ -248,7 +258,7 @@ class ToolsManager:
             logger.debug(f"{file_name} already exists, skipping download")
             return
 
-        self._download_llama_box(version, target_dir, file_name)
+        self._download_llama_box(version, target_dir, file_name, enable_dynamic_link)
 
     def install_versioned_vllm(self, version: str):
         system = platform.system()
@@ -440,7 +450,11 @@ class ToolsManager:
             shutil.rmtree(tmp_dir)
 
     def _download_llama_box(
-        self, version: str, target_dir: Path, target_file_name: str
+        self,
+        version: str,
+        target_dir: Path,
+        target_file_name: str,
+        enable_dynamic_link: bool,
     ):
         llama_box_tmp_dir = target_dir.joinpath("tmp-llama-box")
 
@@ -449,10 +463,9 @@ class ToolsManager:
             shutil.rmtree(llama_box_tmp_dir)
         os.makedirs(llama_box_tmp_dir, exist_ok=True)
 
-        # Since v0.0.157: Use dynamic libraries instead of static linking
         platform_name = self._get_llama_box_platform_name(
             version,
-            version >= "v0.0.157" and self._device != platform.DeviceTypeEnum.NPU.value,
+            enable_dynamic_link,
         )
         tmp_file = llama_box_tmp_dir / f"llama-box-{version}-{platform_name}.zip"
         url_path = f"gpustack/llama-box/releases/download/{version}/{platform_name}.zip"
@@ -544,7 +557,7 @@ class ToolsManager:
         logger.debug(f"Linked from {src_dir} to {dst_dir}")
 
     def _get_llama_box_platform_name(  # noqa C901
-        self, version: str, enable_dynmaic_link: bool
+        self, version: str, enable_dynamic_link: bool
     ) -> str:
         """
         Get the platform name for llama-box based on the OS, architecture, and device type.
@@ -562,9 +575,9 @@ class ToolsManager:
         if self._device in device_toolkit_mapper:
             toolkit = device_toolkit_mapper[self._device]
         elif self._arch == "amd64":
-            toolkit = "cpu" if enable_dynmaic_link else "avx2"
+            toolkit = "cpu" if enable_dynamic_link else "avx2"
         elif self._arch == "arm64":
-            toolkit = "cpu" if enable_dynmaic_link else "neon"
+            toolkit = "cpu" if enable_dynamic_link else "neon"
         else:
             raise Exception(
                 f"unsupported platform, os: {self._os}, arch: {self._arch}, device: {self._device}"
@@ -631,7 +644,7 @@ class ToolsManager:
 
         return (
             f"dl-llama-box-{'-'.join(segments)}"
-            if enable_dynmaic_link
+            if enable_dynamic_link
             else f"llama-box-{'-'.join(segments)}"
         )
 
@@ -963,3 +976,19 @@ def get_llama_box_version_dir_name(
     device = f'-{device}' if device else ''
     dir_name = os.path.join(f"llama-box-{version}-{system}-{arch}{device}")
     return dir_name
+
+
+def get_enable_dynamic_link(version, device) -> Optional[bool]:
+    if version < "v0.0.157":
+        return False
+
+    default = device != platform.DeviceTypeEnum.NPU.value
+
+    env_name = "GPUSTACK_ENABLE_DYNAMIC_LINK"
+    env_value = os.getenv(env_name)
+    if env_value is not None:
+        if env_value.lower() in ["false", "0"]:
+            return False
+        if env_value.lower() in ["true", "1"]:
+            return True
+    return default
