@@ -411,6 +411,19 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             if candidates is not None and len(candidates) > 0:
                 break
 
+        if not candidates or len(candidates) == 0:
+            msg = f"- The model requires approximately {byte_to_gib(self._non_uma_single_gpu_full_offload_vram)} GiB VRAM and {byte_to_gib(self._non_uma_single_gpu_full_offload_ram)} GiB RAM.\n"
+            if self._selected_gpu_ids:
+                msg += "- Selected GPUs do not meet the requirements to run the model."
+            else:
+                msg += "- Cannot find a suitable worker combination to run the model"
+            self._event_collector.add(
+                EventLevelEnum.ERROR,
+                EVENT_ACTION_PRE_CHECK,
+                msg,
+                reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
+            )
+
         overall_latency = time.time() - overall_start_time
         logger.info(
             f"Finished resource fit selector found {len(candidates)} candidates, model {self._model.name or self._model.readable_source}, "
@@ -1904,7 +1917,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self._event_collector.add(
                 EventLevelEnum.ERROR,
                 EVENT_ACTION_DISTRIBUTED_DEPLOYMENT,
-                f"No suitable GPU found for the main server. Selected GPUs need at least {byte_to_gib(self._non_uma_single_layer_vram)} GiB of VRAM.",
+                f"- Selected GPUs need at least {byte_to_gib(self._non_uma_single_layer_vram)} GiB of VRAM.\n- No suitable GPU found for the main server.",
                 reason=EVENT_REASON_INSUFFICIENT_RESOURCES_GPU_SELECTED,
             )
             return None
@@ -1927,7 +1940,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 self._event_collector.add(
                     EventLevelEnum.ERROR,
                     EVENT_ACTION_DISTRIBUTED_DEPLOYMENT,
-                    f"Selected GPU {key} lacks enough VRAM to serve as an RPC server. At least {byte_to_gib(rpc_at_least_vram)} GiB is required.",
+                    f"- The model in RPC requires approximately {byte_to_gib(rpc_at_least_vram)} GiB VRAM.\n- Selected GPU {key} lacks enough VRAM to serve as an RPC server.",
                     reason=EVENT_REASON_INSUFFICIENT_RESOURCES_GPU_SELECTED,
                 )
                 return None
@@ -1964,7 +1977,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self._event_collector.add(
                 EventLevelEnum.INFO,
                 EVENT_ACTION_DISTRIBUTED_DEPLOYMENT,
-                f"No suitable main server found, current GPUs lack the required {byte_to_gib(self._non_uma_single_layer_vram)} GiB VRAM to offload a single layer.",
+                f"- The model requires approximately {byte_to_gib(self._non_uma_single_layer_vram)} GiB VRAM.\n- No suitable main server found, current GPUs lack enough VRAM to offload a single layer.",
                 reason=EVENT_REASON_INSUFFICIENT_RESOURCES_GPU_SELECTED,
             )
             return None
@@ -1990,7 +2003,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self._event_collector.add(
                 EventLevelEnum.INFO,
                 EVENT_ACTION_DISTRIBUTED_DEPLOYMENT,
-                f"Current GPUs lacks enough VRAM to serve as an RPC server. At least {byte_to_gib(self._rpc_non_uma_single_layer_vram)} GiB is required.",
+                f"- The model requires approximately {byte_to_gib(self._rpc_non_uma_single_layer_vram)} GiB VRAM.\n- Current GPUs lacks enough VRAM to serve as an RPC server.",
                 reason=EVENT_REASON_INSUFFICIENT_RESOURCES_GPU_SELECTED,
             )
             return None
@@ -2000,7 +2013,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self._event_collector.add(
                 EventLevelEnum.WARNING,
                 EVENT_ACTION_DISTRIBUTED_DEPLOYMENT,
-                "Too many candidate RPC servers, skipping distributed deployment. Use manual scheduling to select GPUs if needed.",
+                f"- Too many candidate RPC servers (max {default_max_rpc_combination_generate_gpu_count} supported), skipping distributed deployment. Use manual scheduling to select GPUs if needed.",
                 reason=EVENT_REASON_MAX_RPC_COMBINATION_GENERATE_GPU_COUNT_EXCEED,
             )
             return None
@@ -2230,7 +2243,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._event_collector.add(
             EventLevelEnum.INFO,
             EVENT_ACTION_SINGLE_WORKER_SINGLE_GPU_FULL_OFFLOADING,
-            f"The model requires approximately {byte_to_gib(self._non_uma_single_gpu_full_offload_vram)} GiB VRAM and {byte_to_gib(self._non_uma_single_gpu_full_offload_ram)} GiB RAM. The available GPU has {byte_to_gib(gpu_vram[2])} GiB VRAM and {byte_to_gib(ram)} GiB RAM.",
+            f"- The model requires approximately {byte_to_gib(self._non_uma_single_gpu_full_offload_vram)} GiB VRAM and {byte_to_gib(self._non_uma_single_gpu_full_offload_ram)} GiB RAM.\n- The available GPU has {byte_to_gib(gpu_vram[2])} GiB VRAM and {byte_to_gib(ram)} GiB RAM.",
             reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
         )
 
@@ -2265,14 +2278,14 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self._event_collector.add(
                 EventLevelEnum.INFO,
                 EVENT_ACTION_SINGLE_WORKER_MULTI_GPU_FULL_OFFLOADING,
-                f"The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM. The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM but unable to find a combination of GPUs that satisfies the requirements when splitting by layers.",
+                f"- The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM.\n- The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM.\n- Unable to find a combination of GPUs that satisfies the requirements when splitting by layers.",
                 reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
             )
         else:
             self._event_collector.add(
                 EventLevelEnum.INFO,
                 EVENT_ACTION_SINGLE_WORKER_MULTI_GPU_FULL_OFFLOADING,
-                f"The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM. The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM.",
+                f"- The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM.\n- The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM.",
                 reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
             )
 
@@ -2304,14 +2317,14 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 self._event_collector.add(
                     EventLevelEnum.INFO,
                     EVENT_ACTION_SINGLE_WORKER_PARTIAL_OFFLOADING,
-                    f"The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM to offload {self._param_gpu_layers} layers. The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM but unable to find a combination of GPUs that satisfies the requirements when splitting by layers. Try offloading fewer layers to lower resource required.",
+                    f"- The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM to offload {self._param_gpu_layers} layers.\n- The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM but unable to find a combination of GPUs that satisfies the requirements when splitting by layers. Try offloading fewer layers to lower resource required.",
                     reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
                 )
             else:
                 self._event_collector.add(
                     EventLevelEnum.INFO,
                     EVENT_ACTION_SINGLE_WORKER_PARTIAL_OFFLOADING,
-                    f"The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM to offload {self._param_gpu_layers} layers. The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM. Try offloading fewer layers to lower resource required.",
+                    f"- The model requires approximately {byte_to_gib(sum_gpu_vram_claim)} GiB VRAM and {byte_to_gib(ram_claim)} GiB RAM to offload {self._param_gpu_layers} layers.\n- The largest available worker provides {byte_to_gib(worker_gpus_allocatable_vram)} GiB VRAM and {byte_to_gib(worker_allocatable.ram)} GiB RAM. Try offloading fewer layers to lower resource required.",
                     reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
                 )
 
@@ -2325,7 +2338,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._event_collector.add(
             EventLevelEnum.INFO,
             EVENT_ACTION_CPU_OFFLOADING,
-            f"The model requires approximately {byte_to_gib(self._disable_offload_result_claim.items[0].ram.nonuma)} GiB RAM. The largest available worker provides {byte_to_gib(worker_allocatable.ram)} GiB RAM.",
+            f"- The model requires approximately {byte_to_gib(self._disable_offload_result_claim.items[0].ram.nonuma)} GiB RAM.\n- The largest available worker provides {byte_to_gib(worker_allocatable.ram)} GiB RAM.",
             reason=EVENT_REASON_INSUFFICIENT_RESOURCES,
         )
 
