@@ -107,7 +107,7 @@ class InferenceServer(ABC):
     def get_model(self):
         model = self._clientset.models.get(id=self._model_instance.model_id)
         data_dir = self._config.data_dir
-        for i, param in enumerate(model.backend_parameters):
+        for i, param in enumerate(model.backend_parameters or []):
             model.backend_parameters[i] = param.replace("{data_dir}", data_dir)
 
         self._model = model

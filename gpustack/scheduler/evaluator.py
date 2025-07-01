@@ -360,11 +360,14 @@ def set_default_spec(model: ModelSpec) -> bool:
 
     modified = False
     if model_spec_in_catalog:
-        if model_spec_in_catalog.backend_parameters and not model.backend_parameters:
+        if (
+            model_spec_in_catalog.backend_parameters
+            and model.backend_parameters is None
+        ):
             model.backend_parameters = model_spec_in_catalog.backend_parameters
             modified = True
 
-        if model_spec_in_catalog.env and not model.env:
+        if model_spec_in_catalog.env and model.env is None:
             model.env = model_spec_in_catalog.env
             modified = True
 

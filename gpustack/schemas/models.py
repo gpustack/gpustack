@@ -176,9 +176,11 @@ class ModelSpecBase(SQLModel, ModelSource):
 
     backend: Optional[str] = None
     backend_version: Optional[str] = None
-    backend_parameters: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
+    backend_parameters: Optional[List[str]] = Field(
+        sa_column=Column(JSON), default=None
+    )
 
-    env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
+    env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default=None)
     restart_on_error: Optional[bool] = True
     distributable: Optional[bool] = False
 
