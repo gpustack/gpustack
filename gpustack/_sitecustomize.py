@@ -20,6 +20,11 @@ except ImportError:
 
 _cached_pg = None
 
+pg_bundles_spec = os.environ.get("GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES")
+pg_ready_timeout = float(
+    os.environ.get("GPUSTACK_RAY_PLACEMENT_GROUP_READY_TIMEOUT", 30)
+)
+
 
 def bundles_env_aware_get_current_placement_group():
     if not RAY_AVAILABLE:
@@ -27,10 +32,16 @@ def bundles_env_aware_get_current_placement_group():
 
     global _cached_pg
     RAY_PG_BUNDLES_ENV = "GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES"
-    if os.environ.get(RAY_PG_BUNDLES_ENV):
+    if pg_bundles_spec:
         if _cached_pg is None:
             try:
-                _cached_pg = placement_group(json.loads(os.environ[RAY_PG_BUNDLES_ENV]))
+                _cached_pg = placement_group(json.loads(pg_bundles_spec))
+                ray.get(_cached_pg.ready(), timeout=pg_ready_timeout)
+            except ray.exceptions.GetTimeoutError:
+                raise ValueError(
+                    f"Timeout while waiting for placement group {_cached_pg.id} to be ready. "
+                    f"Run `ray get placement-groups {_cached_pg.id.hex()}` to check the status."
+                )
             except Exception as e:
                 raise ValueError(
                     f"Fail to create placement group from {RAY_PG_BUNDLES_ENV} environment variable: {e}"
