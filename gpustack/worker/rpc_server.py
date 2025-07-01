@@ -2,6 +2,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import logging
 import multiprocessing
 import os
+from pathlib import Path
 import subprocess
 import sys
 from typing import List, Optional
@@ -13,6 +14,10 @@ from gpustack.utils.command import normalize_parameters
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.process import add_signal_handlers
 from gpustack.worker.backends.base import get_env_name_by_vendor
+from gpustack.worker.tools_manager import (
+    is_disabled_dynamic_link,
+    BUILTIN_LLAMA_BOX_VERSION,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +43,7 @@ class RPCServer:
         vendor: str,
         log_file_path: str,
         cache_dir: str,
+        bin_dir: Optional[str] = None,
         args: Optional[List[str]] = None,
     ):
         setproctitle.setproctitle(f"gpustack_rpc_server_process: gpu_{gpu_index}")
@@ -45,18 +51,34 @@ class RPCServer:
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                RPCServer._start(port, gpu_index, vendor, cache_dir, args)
+                RPCServer._start(port, gpu_index, vendor, cache_dir, bin_dir, args)
 
     def _start(
         port: int,
         gpu_index: int,
         vendor: str,
         cache_dir: str,
+        bin_dir: Optional[str] = None,
         args: Optional[List[str]] = None,
     ):
-        command_path = pkg_resources.files(
-            "gpustack.third_party.bin.llama-box.llama-box-default"
-        ).joinpath(RPCServer.get_llama_box_rpc_server_command())
+        base_path = (
+            pkg_resources.files("gpustack.third_party.bin").joinpath(
+                'llama-box/llama-box-default'
+            )
+            if bin_dir is None
+            or not is_disabled_dynamic_link(
+                BUILTIN_LLAMA_BOX_VERSION, platform.device()
+            )
+            else (
+                (
+                    Path(bin_dir)
+                    / 'llama-box'
+                    / 'static'
+                    / f'llama-box-{BUILTIN_LLAMA_BOX_VERSION}'
+                )
+            )
+        )
+        command_path = base_path / RPCServer.get_llama_box_rpc_server_command()
 
         arguments = [
             "--rpc-server-host",

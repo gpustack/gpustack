@@ -22,6 +22,7 @@ from gpustack.worker.backends.base import InferenceServer
 from gpustack.worker.tools_manager import (
     get_llama_box_command,
     is_disabled_dynamic_link,
+    BUILTIN_LLAMA_BOX_VERSION,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,23 +30,29 @@ logger = logging.getLogger(__name__)
 
 class LlamaBoxServer(InferenceServer):
     def start(self):  # noqa: C901
-        base_path = (
-            str(
+        version = (
+            self._model.backend_version
+            if self._model.backend_version
+            else BUILTIN_LLAMA_BOX_VERSION
+        )
+        disabled_dynamic_link = (
+            is_disabled_dynamic_link(version, platform.device())
+            and self._config.bin_dir is not None
+        )
+        if not disabled_dynamic_link and version == BUILTIN_LLAMA_BOX_VERSION:
+            base_path = str(
                 pkg_resources.files("gpustack.third_party.bin").joinpath(
                     'llama-box/llama-box-default'
                 )
             )
-            if (self._config.bin_dir is None or not self._model.backend_version)
-            else (
-                os.path.join(
-                    self._config.bin_dir,
-                    'llama-box',
-                    f'{"static" if is_disabled_dynamic_link(self._model.backend_version, platform.device()) else ""}',
-                    f'llama-box-{self._model.backend_version}',
-                )
+        else:
+            base_path = os.path.join(
+                self._config.bin_dir,
+                'llama-box',
+                f'{"static" if disabled_dynamic_link else ""}',
+                f'llama-box-{version}',
             )
-        )
-        command_path = get_llama_box_command(base_path).absolute()
+        command_path = get_llama_box_command(base_path)
 
         layers = -1
         claim = self._model_instance.computed_resource_claim

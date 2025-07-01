@@ -172,11 +172,21 @@ class ToolsManager:
 
     def download_llama_box(self):
         version = BUILTIN_LLAMA_BOX_VERSION
-        target_dir = (
-            self.third_party_bin_path
-            / "llama-box"
-            / get_llama_box_version_dir_name(version)
+        disabled_dynamic_link = (
+            is_disabled_dynamic_link(version, self._device)
+            and self._bin_dir is not None
         )
+        if disabled_dynamic_link:
+            target_dir = (
+                Path(self._bin_dir) / 'llama-box' / 'static' / f'llama-box-{version}'
+            )
+        else:
+            target_dir = (
+                self.third_party_bin_path
+                / "llama-box"
+                / get_llama_box_version_dir_name(version)
+            )
+
         file_name = "llama-box.exe" if self._os == "windows" else "llama-box"
         target_file = target_dir / file_name
         version_key = target_file.parent.name
@@ -191,14 +201,14 @@ class ToolsManager:
                 version,
                 target_dir,
                 file_name,
-                version < "v0.0.157"
-                or self._device == platform.DeviceTypeEnum.NPU.value,
+                disabled_dynamic_link,
             )
             # Update versions.json
             self._update_versions_file(version_key, version)
 
         self._link_llama_box_rpc_server(target_dir, file_name)
-        self._link_llama_box_default_dir(version)
+        if not disabled_dynamic_link:
+            self._link_llama_box_default_dir(version)
 
     def install_versioned_ascend_mindie(self, version: str):
         if self._os != "linux":
@@ -980,7 +990,10 @@ def get_llama_box_version_dir_name(
     return dir_name
 
 
-def is_disabled_dynamic_link(version, device) -> Optional[bool]:
+def is_disabled_dynamic_link(version: Optional[str], device: str) -> Optional[bool]:
+    if version is None:
+        version = BUILTIN_LLAMA_BOX_VERSION
+
     if version < "v0.0.157" or device == platform.DeviceTypeEnum.NPU.value:
         return True
 
