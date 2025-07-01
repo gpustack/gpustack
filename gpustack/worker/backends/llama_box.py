@@ -193,7 +193,7 @@ class LlamaBoxServer(InferenceServer):
 
         model_dir = Path(self._model_path).parent
         mmproj_param = "--mmproj"
-        for i, param in enumerate(self._model.backend_parameters):
+        for i, param in enumerate(self._model.backend_parameters or []):
             if '=' in param:
                 key, value = param.split('=', 1)
                 if key == mmproj_param and value and not Path(value).is_absolute():
