@@ -532,14 +532,13 @@ async def test_auto_schedule_single_work_single_gpu(config):
     ):
 
         candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
+        _ = await placement_scorer.score(candidates)
 
-        print(resource_fit_selector._messages)
-        print(resource_fit_selector._workers_allocatable_resource)
-
-        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+        expect_msg = [
+            """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
 - The current available GPU only has 24.23 GiB allocatable VRAM (100.00%)."""
+        ]
         assert expect_msg == resource_fit_selector._messages
 
 
@@ -561,8 +560,6 @@ async def test_auto_schedule_single_work_multi_gpu(config):
     resource_fit_selector = VLLMResourceFitSelector(config, m)
     placement_scorer = PlacementScorer(m)
 
-    resource_fit_selector._gpu_memory_utilization = 0.9
-
     with (
         patch(
             'gpustack.policies.utils.get_worker_model_instances',
@@ -580,13 +577,13 @@ async def test_auto_schedule_single_work_multi_gpu(config):
     ):
 
         candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
+        _ = await placement_scorer.score(candidates)
 
-        print(resource_fit_selector._messages)
-        print(resource_fit_selector._workers_allocatable_resource)
-        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+        expect_msg = [
+            """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
+        ]
 
         assert expect_msg == resource_fit_selector._messages
 
@@ -624,15 +621,14 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
     ):
 
         candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
+        _ = await placement_scorer.score(candidates)
 
-        print(resource_fit_selector._messages)
-        print(resource_fit_selector._workers_allocatable_resource)
-
-        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+        expect_msg = [
+            """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
 - The largest available worker has 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.78 GiB of allocatable VRAM.
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."""
+        ]
 
         assert resource_fit_selector._messages == expect_msg
 
@@ -695,6 +691,9 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
     resource_fit_selector = VLLMResourceFitSelector(config, m)
     placement_scorer = PlacementScorer(m)
 
+    resource_fit_selector2 = VLLMResourceFitSelector(config, m)
+    placement_scorer2 = PlacementScorer(m)
+
     with (
         patch('sqlmodel.ext.asyncio.session.AsyncSession', return_value=AsyncMock()),
         patch(
@@ -716,13 +715,29 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
     ):
 
         candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
+        _ = await placement_scorer.score(candidates)
 
-        print(resource_fit_selector._messages)
-        print(resource_fit_selector._workers_allocatable_resource)
-
-        expect_msg = """- The model requires approximately 75.23 GiB of VRAM.
+        expect_msg = [
+            """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
-- The largest available worker has 47.22 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 42.50 GiB of allocatable VRAM."""
+- Selected GPUs have 47.22 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 42.50 GiB of allocatable VRAM."""
+        ]
 
         assert resource_fit_selector._messages == expect_msg
+
+        # case 2
+
+        for worker in workers:
+            worker.system_reserved.vram = 12000000000
+
+        candidates2 = await resource_fit_selector2.select_candidates(workers)
+        _ = await placement_scorer2.score(candidates2)
+
+        expect_msg2 = [
+            """- The model requires approximately 75.23 GiB of VRAM.
+- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- Worker host4090 GPU indexes [0] and other 1 workers fails to meet the 90.00% allocatable VRAM ratio.
+- Selected GPUs have 25.87 GiB allocatable VRAM, 0/2 of GPUs meet the VRAM utilization ratio, providing 0.00 GiB of allocatable VRAM."""
+        ]
+
+        assert resource_fit_selector2._messages == expect_msg2

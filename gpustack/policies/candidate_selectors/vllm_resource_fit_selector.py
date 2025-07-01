@@ -296,17 +296,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         if self._selected_gpu_workers and self._largest_multi_gpu_vram > 0:
             # Manually selected multiple GPUs
-            log_worker_cnt = 0
-            if (
-                not self._unsatisfied_gpu_messages
-                and self._largest_multi_gpu_vram * self._gpu_memory_utilization
-                < self._vram_claim
-            ):
-                # All selected gpu meet the utilization, but combined VRAM is not enough.
-                messages.append(
-                    f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
-                )
-
             for worker_name, gpu_indexes in self._unsatisfied_gpu_messages.items():
                 # Some seleted gpu is not meet the utilization
                 show_gpu_list = gpu_indexes
@@ -314,16 +303,23 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     show_gpu_list = gpu_indexes[:3] + [
                         f"...(more {len(gpu_indexes) - 3})"
                     ]
-                if log_worker_cnt > 2:
-                    messages.append(
-                        f"Other {log_worker_cnt - 2} workers fail to meet, please check."
+                unsatisfied_msg = f"Worker {worker_name} GPU indexes {show_gpu_list}"
+                if len(self._unsatisfied_gpu_messages) > 1:
+                    unsatisfied_msg += (
+                        f" and other {len(self._unsatisfied_gpu_messages) - 1} workers"
                     )
-                    break
-                else:
-                    messages.append(
-                        f"Worker {worker_name} GPU indexes {show_gpu_list} fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
-                    )
-                log_worker_cnt += 1
+                unsatisfied_msg += f" fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
+                messages.append(unsatisfied_msg)
+                break
+
+            if (
+                self._largest_multi_gpu_vram * self._gpu_memory_utilization
+                < self._vram_claim
+            ):
+                # All selected gpus combined VRAM is not enough.
+                messages.append(
+                    f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+                )
 
         elif self._largest_multi_gpu_vram > 0:
             messages.append(
@@ -345,7 +341,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         else:
             self._build_gpu_message(messages)
         self._append_distributed_mode_message(messages)
-        self._messages = str(messages)
+        self._messages.append(str(messages))
 
     def _add_message(self, message: str):
         self._messages.append(message)
