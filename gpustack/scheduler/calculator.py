@@ -144,6 +144,7 @@ class GGUFParserCommandMutableParameters:
     cache_type_k: Optional[str] = None
     cache_type_v: Optional[str] = None
     ctx_size: int = 8192
+    override_tensor: Optional[List[str]] = None
     gpu_layers_draft: Optional[int] = None
     mmap: bool = False
     no_kv_offload: Optional[bool] = None
@@ -223,6 +224,12 @@ class GGUFParserCommandMutableParameters:
             "--ctx-size",
             "-c",
             type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--override-tensor",
+            "-ot",
+            action='append',
             required=False,
         )
         parser.add_argument(
@@ -406,6 +413,9 @@ class GGUFParserCommandMutableParameters:
                     )
                 elif isinstance(attr_value, int):
                     command.append(f"--{attr_name.replace('_', '-')}={str(attr_value)}")
+                elif isinstance(attr_value, list):
+                    for sv in attr_value:
+                        command.append(f"--{attr_name.replace('_', '-')}={str(sv)}")
                 else:
                     command.extend(
                         [f"--{attr_name.replace('_', '-')}", str(attr_value)]
