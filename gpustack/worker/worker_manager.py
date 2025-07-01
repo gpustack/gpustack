@@ -272,6 +272,7 @@ class WorkerManager:
                     gpu_device.vendor,
                     log_file_path,
                     self._rpc_server_cache_dir,
+                    self._cfg.bin_dir,
                     self._rpc_server_args,
                 ),
             )
