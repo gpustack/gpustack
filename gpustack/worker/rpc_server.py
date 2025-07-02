@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import setproctitle
 
@@ -61,24 +61,24 @@ class RPCServer:
         bin_dir: Optional[str] = None,
         args: Optional[List[str]] = None,
     ):
-        base_path = (
-            pkg_resources.files("gpustack.third_party.bin").joinpath(
-                'llama-box/llama-box-default'
-            )
-            if bin_dir is None
-            or not is_disabled_dynamic_link(
-                BUILTIN_LLAMA_BOX_VERSION, platform.device()
-            )
-            else (
-                (
-                    Path(bin_dir)
-                    / 'llama-box'
-                    / 'static'
-                    / f'llama-box-{BUILTIN_LLAMA_BOX_VERSION}'
+        version = BUILTIN_LLAMA_BOX_VERSION
+        disabled_dynamic_link = (
+            is_disabled_dynamic_link(version, platform.device()) and bin_dir is not None
+        )
+        if not disabled_dynamic_link:
+            base_path = str(
+                pkg_resources.files("gpustack.third_party.bin").joinpath(
+                    'llama-box/llama-box-default'
                 )
             )
-        )
-        command_path = base_path / RPCServer.get_llama_box_rpc_server_command()
+        else:
+            base_path = os.path.join(
+                bin_dir,
+                'llama-box',
+                'static',
+                f'llama-box-{version}',
+            )
+        command_path = get_llama_box_command(base_path)
 
         arguments = [
             "--rpc-server-host",
@@ -132,9 +132,16 @@ class RPCServer:
             logger.error(error_message)
             raise Exception(error_message) from e
 
-    @staticmethod
-    def get_llama_box_rpc_server_command() -> str:
-        command = "llama-box-rpc-server"
-        if platform.system() == "windows":
-            command += ".exe"
-        return command
+
+def get_llama_box_command(
+    base_path: Union[
+        str,
+        Path,
+    ],
+) -> Path:
+    command = "llama-box-rpc-server"
+    if platform.system() == "windows":
+        command += ".exe"
+    if isinstance(base_path, str):
+        base_path = Path(base_path)
+    return base_path.joinpath(command)
