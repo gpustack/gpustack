@@ -2,9 +2,7 @@ import re
 
 from typing import Tuple
 
-pattern = (
-    r"^(?P<worker_name>.+):(?P<device>cuda|npu|rocm|musa|mps|dcu):(?P<gpu_index>\d+)$"
-)
+pattern = r"^(?P<worker_name>.+):(?P<device>[^:]+):(?P<gpu_index>\d+)$"
 
 
 def parse_gpu_id(input: str) -> Tuple[bool, dict]:

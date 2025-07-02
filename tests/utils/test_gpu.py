@@ -28,7 +28,6 @@ expected_matched_inputs = {
 }
 
 expected_not_matched_inputs = [
-    "invalid:abc:1",
     "worker1:cuda:not_a_number",
 ]
 
