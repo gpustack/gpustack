@@ -683,7 +683,7 @@ class ToolsManager:
         platform_name = self._get_gguf_parser_platform_name()
         url_path = f"gpustack/gguf-parser-go/releases/download/{version}/gguf-parser-{platform_name}{suffix}"
 
-        logger.info(f"downloading gguf-parser-{platform_name} '{version}'")
+        logger.info(f"Downloading gguf-parser-{platform_name} '{version}'")
         self._download_file(url_path, target_file)
 
         if self._os != "windows":
@@ -728,7 +728,7 @@ class ToolsManager:
             logger.debug(f"{file_name} already exists, skipping download")
             return
 
-        logger.info(f"downloading fastfetch-{platform_name} '{version}'")
+        logger.info(f"Downloading fastfetch-{platform_name} '{version}'")
 
         tmp_file = os.path.join(fastfetch_tmp_dir, f"fastfetch-{platform_name}.zip")
         if os.path.exists(fastfetch_tmp_dir):
