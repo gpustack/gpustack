@@ -279,11 +279,8 @@ def validate_gpu(
             f"Ascend MindIE backend requires Ascend NPUs. Selected {gpu_device.vendor} GPU is not supported."
         )
 
-    if model_backend == BackendEnum.VLLM and gpu_device.vendor not in [
-        VendorEnum.NVIDIA.value,
-        VendorEnum.AMD.value,
-        VendorEnum.Hygon.value,
-        VendorEnum.Huawei.value,
+    if model_backend == BackendEnum.VLLM and gpu_device.vendor in [
+        VendorEnum.Apple.value,
     ]:
         raise BadRequestException(
             f"vLLM backend is not supported on {gpu_device.vendor} GPUs."
