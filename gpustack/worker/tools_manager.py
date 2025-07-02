@@ -173,8 +173,7 @@ class ToolsManager:
     def download_llama_box(self):
         version = BUILTIN_LLAMA_BOX_VERSION
         disabled_dynamic_link = (
-            is_disabled_dynamic_link(version, self._device)
-            and self._bin_dir is not None
+            is_disabled_dynamic_link(version) and self._bin_dir is not None
         )
         if disabled_dynamic_link:
             target_dir = (
@@ -256,7 +255,10 @@ class ToolsManager:
         self._download_acsend_mindie(version, target_dir)
 
     def install_versioned_llama_box(self, version: str):
-        disabled_dynamic_link = is_disabled_dynamic_link(version, self._device)
+        # Install the package to <bin_dir>/llama-box/llama-box-{version},
+        # if allowing dynamic linking binary,
+        # otherwise to <bin_dir>/llama-box/static/llama-box-{version}.
+        disabled_dynamic_link = is_disabled_dynamic_link(version)
         target_dir = Path(self._bin_dir) / "llama-box"
         if disabled_dynamic_link:
             target_dir = target_dir / "static"
@@ -990,11 +992,12 @@ def get_llama_box_version_dir_name(
     return dir_name
 
 
-def is_disabled_dynamic_link(version: Optional[str], device: str) -> Optional[bool]:
+def is_disabled_dynamic_link(version: Optional[str]) -> Optional[bool]:
     if version is None:
         version = BUILTIN_LLAMA_BOX_VERSION
 
-    if version < "v0.0.157" or device == platform.DeviceTypeEnum.NPU.value:
+    # Support dynamic linking for llama-box after v0.0.157.
+    if version < "v0.0.157":
         return True
 
     return envs.get_gpustack_env_bool("DISABLE_DYNAMIC_LINK_LLAMA_BOX")
