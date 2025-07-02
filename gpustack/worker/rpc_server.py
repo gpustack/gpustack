@@ -61,9 +61,13 @@ class RPCServer:
         bin_dir: Optional[str] = None,
         args: Optional[List[str]] = None,
     ):
+        # Launch llama-box from <third_party>/bin/llama-box/llama-box-default,
+        # if allowing dynamic linking binary,
+        # otherwise use the user-provided binary path in the config,
+        # i.e. <bin_dir>/llama-box/llama-box-<builtin version> or <bin_dir>/llama-box/static/llama-box-<builtin version>.
         version = BUILTIN_LLAMA_BOX_VERSION
         disabled_dynamic_link = (
-            is_disabled_dynamic_link(version, platform.device()) and bin_dir is not None
+            is_disabled_dynamic_link(version) and bin_dir is not None
         )
         if not disabled_dynamic_link:
             base_path = str(
