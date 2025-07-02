@@ -13,6 +13,7 @@ from gpustack.schemas.workers import (
 from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
 from gpustack.utils.convert import safe_float, safe_int
+import gpustack.logging as glogging
 
 logger = logging.getLogger(__name__)
 
@@ -516,7 +517,7 @@ async def _async_run_command(command: List[str]) -> str:
             raise Exception(f"Exit {process.returncode}: {stderr}")
         return str(stdout, encoding="utf-8")
     except Exception as e:
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.isEnabledFor(glogging.TRACE_LEVEL):
             error_message = f"Failed to execute {command}: {e}"
             logger.warning(error_message)
 
