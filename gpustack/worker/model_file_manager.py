@@ -1,5 +1,4 @@
 import asyncio
-import os
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import glob
@@ -126,7 +125,9 @@ class ModelFileManager:
         )
         return metadata
 
-    async def _get_incomplete_model_files(self, model_file: ModelFile) -> set:
+    async def _get_incomplete_model_files(  # noqa: C901
+        self, model_file: ModelFile
+    ) -> set:
         """
         Finds cached files of models being downloaded.
         1.For models from Hugging Face, their .incomplete filenames are encoded. The process requires:
@@ -134,67 +135,59 @@ class ModelFileManager:
         2.For models from ModelScope, the incomplete files are stored in a temporary folder.
         we just need to find them by the filename pattern.
         """
-        filename = ""
         paths_to_delete = set()
 
         try:
             if model_file.source == SourceEnum.HUGGING_FACE:
-                path = os.path.join(
-                    self._config.cache_dir,
-                    SourceEnum.HUGGING_FACE,
-                    model_file.huggingface_repo_id,
-                )
-                if model_file.huggingface_filename:
-                    path = os.path.join(path, model_file.huggingface_filename)
-                else:
-                    paths_to_delete.add(path)
+                if not model_file.huggingface_filename:
+                    # The resolved_paths in vLLM model points to entire dir of cache, delete it directly
+                    paths_to_delete.update(model_file.resolved_paths)
                     return paths_to_delete
 
-                path_obj = Path(str(path))
-                filename_pattern = path_obj.name
-                local_dir = path_obj.parent
-                download_paths = get_local_download_paths(local_dir, filename_pattern)
-                cache_dir = download_paths.lock_path.parent
+                for path in model_file.resolved_paths:
+                    path_obj = Path(str(path))
+                    filename_pattern = path_obj.name
+                    local_dir = path_obj.parent
+                    download_paths = get_local_download_paths(
+                        local_dir, filename_pattern
+                    )
+                    cache_dir = download_paths.lock_path.parent
+                    filename = ""
 
-                # Get actual filename by pattern
-                for cache_file in await asyncio.to_thread(
-                    glob.glob, str(cache_dir / filename_pattern) + "*"
-                ):
-                    # cut off the path and useless extension
-                    filename = cache_file.rsplit("/", 1)[-1]
-                    filename = filename.rsplit(".", 1)[0]
-                    break
+                    # Get actual filename by pattern
+                    for cache_file in await asyncio.to_thread(
+                        glob.glob, str(cache_dir / filename_pattern) + "*"
+                    ):
+                        # cut off the path and useless extension
+                        filename = cache_file.rsplit("/", 1)[-1]
+                        filename = filename.rsplit(".", 1)[0]
+                        break
 
-                metadata = await self.get_hf_file_metadata(model_file, filename)
+                    metadata = await self.get_hf_file_metadata(model_file, filename)
 
-                # Collect lock files and incomplete files
-                paths_to_delete.add(str(cache_dir / (filename + ".lock")))
-                paths_to_delete.add(str(cache_dir / (filename + ".metadata")))
-                for item_path_str in await asyncio.to_thread(
-                    glob.glob, str(cache_dir / f"*.{metadata.etag}.incomplete")
-                ):
-                    paths_to_delete.add(item_path_str)
+                    # Collect lock files and incomplete files
+                    paths_to_delete.add(str(cache_dir / (filename + ".lock")))
+                    paths_to_delete.add(str(cache_dir / (filename + ".metadata")))
+                    for item_path_str in await asyncio.to_thread(
+                        glob.glob, str(cache_dir / f"*.{metadata.etag}.incomplete")
+                    ):
+                        paths_to_delete.add(item_path_str)
 
             elif model_file.source == SourceEnum.MODEL_SCOPE:
-                path = os.path.join(
-                    self._config.cache_dir,
-                    SourceEnum.MODEL_SCOPE,
-                    model_file.model_scope_model_id,
-                )
-                if model_file.model_scope_file_path:
-                    path = os.path.join(path, model_file.model_scope_file_path)
-                else:
-                    paths_to_delete.add(path)
+                if not model_file.model_scope_file_path:
+                    # The resolved_paths in vLLM model points to entire dir of cache, delete it directly
+                    paths_to_delete.update(model_file.resolved_paths)
                     return paths_to_delete
 
-                path_obj = Path(str(path))
-                filename_pattern = path_obj.name
-                local_dir = path_obj.parent
-                for delete_file in await asyncio.to_thread(
-                    glob.glob,
-                    str(local_dir / f"{TEMPORARY_FOLDER_NAME}/{filename_pattern}"),
-                ):
-                    paths_to_delete.add(delete_file)
+                for path in model_file.resolved_paths:
+                    path_obj = Path(str(path))
+                    filename_pattern = path_obj.name
+                    local_dir = path_obj.parent
+                    for delete_file in await asyncio.to_thread(
+                        glob.glob,
+                        str(local_dir / f"{TEMPORARY_FOLDER_NAME}/{filename_pattern}"),
+                    ):
+                        paths_to_delete.add(delete_file)
 
         except Exception as e:
             logger.error(
