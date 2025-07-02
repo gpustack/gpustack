@@ -131,7 +131,10 @@ async def make_chat_completion_request(
 
 
 async def make_embedding_request(
-    client: AsyncOpenAI, model, request_timeout, prompt_multiplier
+    client: AsyncOpenAI,
+    model,
+    request_timeout,
+    prompt_multiplier=1,
 ):
     start_time = time.time()
     content = get_random_prompt(prompt_multiplier)
