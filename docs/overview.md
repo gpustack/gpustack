@@ -36,11 +36,7 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 - [x] Hygon DTK
 - [x] Moore Threads MUSA
 - [x] Iluvatar Corex
-
-We plan to support the following accelerators in future releases.
-
-- [ ] Intel oneAPI
-- [ ] Qualcomm AI Engine
+- [x] Cambricon MLU
 
 ## Supported Models
 

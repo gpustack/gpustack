@@ -156,11 +156,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
 - [x] Hygon DTK
 - [x] Moore Threads MUSA
 - [x] Iluvatar Corex
-
-以下のアクセラレータは将来のリリースでサポートする予定です。
-
-- [ ] Intel oneAPI
-- [ ] Qualcomm AI Engine
+- [x] Cambricon MLU
 
 ## サポートされているモデル
 

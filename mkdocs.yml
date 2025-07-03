@@ -92,6 +92,8 @@ nav:
       - Iluvatar Corex:
           - Online Installation: installation/iluvatar-corex/online-installation.md
           - Air-Gapped Installation: installation/iluvatar-corex/air-gapped-installation.md
+      - Cambricon MLU:
+          - Online Installation: installation/cambricon-mlu/online-installation.md
       - CPU:
           - Online Installation: installation/cpu/online-installation.md
           - Air-Gapped Installation: installation/cpu/air-gapped-installation.md
@@ -134,8 +136,8 @@ nav:
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
   - Integrations:
       - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
-      - Integrate with Dify: integrations/interate-with-dify.md
-      - Integrate with RAGFlow: integrations/interate-with-ragflow.md
+      - Integrate with Dify: integrations/integrate-with-dify.md
+      - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md

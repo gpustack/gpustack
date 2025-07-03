@@ -157,11 +157,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
 - [x] 海光 DTK
 - [x] 摩尔线程 MUSA
 - [x] 天数智芯 Corex
-
-我们计划在未来的版本中支持以下加速框架：
-
-- [ ] Intel oneAPI
-- [ ] Qualcomm AI Engine
+- [x] 寒武纪 MLU
 
 ## 模型支持
 

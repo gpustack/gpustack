@@ -102,6 +102,12 @@ To use Iluvatar Corex as an accelerator, ensure the following components are ins
 - [Corex driver](https://support.iluvatar.com/#/ProductLine?id=2)
 - [Corex Toolkits](https://support.iluvatar.com/#/ProductLine?id=2)
 
+### Cambricon MLU
+
+To use Cambricon MLU as an accelerator, ensure the following components are installed:
+
+- Cambricon Driver
+
 ## Networking Requirements
 
 ### Network Architecture
