@@ -19,7 +19,7 @@ GPUStack supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 an
 
 - [x] llama-box
 - [x] vLLM
-- [ ] MindIE
+- [x] MindIE
 
 **Heterogeneous-Node Multi-GPU**
 

@@ -12,7 +12,7 @@
 
 ## Supported backends
 
-- [x] vllm
+- [x] vLLM
 
 ## Prerequisites
 
