@@ -11,6 +11,11 @@ import yaml
 
 from gpustack import __version__, __git_commit__
 from gpustack.config.config import set_global_config
+from gpustack.config.config_mixin import (
+    set_common_options,
+    set_server_options,
+    set_worker_options,
+)
 from gpustack.logging import setup_logging
 from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
 from gpustack.worker.worker import Worker
@@ -416,83 +421,6 @@ def parse_args(args: argparse.Namespace) -> Config:
 
     set_global_config(cfg)
     return cfg
-
-
-def set_config_option(args, config_data: dict, option_name: str):
-    option_value = getattr(args, option_name, None)
-    if option_value is not None:
-        config_data[option_name] = option_value
-
-
-def set_common_options(args, config_data: dict):
-    options = [
-        "debug",
-        "data_dir",
-        "cache_dir",
-        "bin_dir",
-        "pipx_path",
-        "token",
-        "huggingface_token",
-        "enable_ray",
-        "ray_args",
-        "ray_node_manager_port",
-        "ray_object_manager_port",
-    ]
-
-    for option in options:
-        set_config_option(args, config_data, option)
-
-
-def set_server_options(args, config_data: dict):
-    options = [
-        "host",
-        "port",
-        "database_url",
-        "disable_worker",
-        "bootstrap_password",
-        "ssl_keyfile",
-        "ssl_certfile",
-        "force_auth_localhost",
-        "ollama_library_base_url",
-        "disable_update_check",
-        "disable_openapi_docs",
-        "update_check_url",
-        "model_catalog_file",
-        "ray_port",
-        "ray_client_server_port",
-        "enable_cors",
-        "allow_origins",
-        "allow_credentials",
-        "allow_methods",
-        "allow_headers",
-    ]
-
-    for option in options:
-        set_config_option(args, config_data, option)
-
-
-def set_worker_options(args, config_data: dict):
-    options = [
-        "server_url",
-        "worker_ip",
-        "worker_name",
-        "worker_port",
-        "disable_metrics",
-        "disable_rpc_servers",
-        "metrics_port",
-        "service_port_range",
-        "rpc_server_port_range",
-        "log_dir",
-        "rpc_server_args",
-        "system_reserved",
-        "tools_download_base_url",
-        "ray_worker_port_range",
-        "enable_hf_transfer",
-        "enable_hf_xet",
-    ]
-
-    for option in options:
-        set_config_option(args, config_data, option)
 
 
 def debug_env_info():
