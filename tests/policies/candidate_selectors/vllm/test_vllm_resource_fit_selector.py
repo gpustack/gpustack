@@ -10,9 +10,9 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     GPUSelector,
-    RayActor,
     ModelInstanceStateEnum,
     ModelInstance,
+    ModelInstanceSubordinateWorker,
 )
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_1_4090_24gx1,
@@ -88,12 +88,15 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                 "vram": {
                     0: 23413653504,
                 },
-                "ray_actors": [
-                    RayActor(
-                        worker_id=0,
-                        gpu_index=0,
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
+                        worker_id=12,
+                        worker_ip="192.168.50.4",
+                        total_gpus=1,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 23413653504},
+                            is_unified_memory=False,
+                            vram={0: 23181498777},
                         ),
                     )
                 ],
@@ -169,10 +172,12 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                     1: 15454332518,
                     2: 15454332518,
                 },
-                "ray_actors": [
-                    RayActor(
-                        worker_id=0,
-                        gpu_index=0,
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
+                        worker_id=2,
+                        worker_ip="192.168.50.3",
+                        total_gpus=1,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 23413653504},
                         ),
@@ -251,17 +256,21 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                     0: 77309411328,
                     1: 77309411328,
                 },
-                "ray_actors": [
-                    RayActor(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=9,
-                        gpu_index=0,
+                        worker_ip="192.168.50.11",
+                        total_gpus=2,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 77309411328},
                         ),
                     ),
-                    RayActor(
+                    ModelInstanceSubordinateWorker(
                         worker_id=10,
-                        gpu_index=0,
+                        worker_ip="192.168.50.12",
+                        total_gpus=2,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 77309411328},
                         ),
@@ -323,12 +332,14 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
                 "vram": {
                     0: 23413653504,
                 },
-                "ray_actors": [
-                    RayActor(
-                        worker_id=0,
-                        gpu_index=0,
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
+                        worker_id=12,
+                        worker_ip="192.168.50.4",
+                        total_gpus=1,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 23413653504},
+                            vram={0: 23181498777},
                         ),
                     )
                 ],
@@ -399,9 +410,11 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
                     6: 77309411328,
                     7: 77309411328,
                 },
-                "ray_actors": [
-                    RayActor(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=23,
+                        worker_ip="192.168.50.23",
+                        total_gpus=8,
                         gpu_indexes=[0, 1, 2, 3, 4, 5, 6, 7],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={

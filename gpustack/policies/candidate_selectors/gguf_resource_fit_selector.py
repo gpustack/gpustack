@@ -22,7 +22,7 @@ from gpustack.policies.base import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
-    ModelInstanceRPCServer,
+    ModelInstanceSubordinateWorker,
     is_image_model,
 )
 from gpustack.schemas.workers import Worker
@@ -1661,10 +1661,10 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             if not main_worker_satisfied:
                 continue
 
-            rpc_servers = await self._check_combination_rpcs(
+            subordinate_workers = await self._check_combination_rpcs(
                 combination, e, self._total_layers
             )
-            if not rpc_servers:
+            if not subordinate_workers:
                 continue
 
             satisfied_candidate = self._create_candidate(
@@ -1674,7 +1674,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 main_worker_vram_claim,
                 main_worker_gpu_indexes,
                 flag_tensor_spliting,
-                rpc_servers,
+                subordinate_workers,
             )
             break
 
@@ -2079,13 +2079,13 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         combination,
         e: memoryEstimate,
         total_layers: int,
-    ) -> List[ModelInstanceRPCServer]:
+    ) -> List[ModelInstanceSubordinateWorker]:
         """
         Check the rpc servers resource satisfied with combination.
         combination example: ( ($worker_id, $worker_allocatable_vram), ($worker_id, $gpu_index, $gpu_allocatable), ($worker_id, $gpu_index, $gpu_allocatable) )
         """
 
-        rpc_servers: List[ModelInstanceRPCServer] = []
+        subordinate_workers: List[ModelInstanceSubordinateWorker] = []
 
         for i in range(1, len(combination)):
             r_worker_id = combination[i][0]
@@ -2103,10 +2103,10 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             if r_vram_claim > r_allocatable:
                 break
 
-            rpc_servers.append(
-                ModelInstanceRPCServer(
+            subordinate_workers.append(
+                ModelInstanceSubordinateWorker(
                     worker_id=r_worker_id,
-                    gpu_index=r_gpu_index,
+                    gpu_indexes=[r_gpu_index],
                     computed_resource_claim=ComputedResourceClaim(
                         is_unified_memory=r_is_unified_memory,
                         offload_layers=e.vrams[position].handleLayers,
@@ -2117,10 +2117,10 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 )
             )
 
-        if len(rpc_servers) != len(combination) - 1:
+        if len(subordinate_workers) != len(combination) - 1:
             return []
 
-        return rpc_servers
+        return subordinate_workers
 
     def _get_main_for_combination(
         self,
@@ -2238,7 +2238,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         vram_claim: Dict[int, int],
         gpu_indexes: Optional[List[int]] = None,
         tensor_split: Optional[List[int]] = None,
-        rpcs: Optional[List[ModelInstanceRPCServer]] = None,
+        subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = None,
     ) -> ModelInstanceScheduleCandidate:
         """
         Create a ModelInstanceScheduleCandidate object.
@@ -2254,7 +2254,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
                 total_layers=self._total_layers,
                 tensor_split=tensor_split,
             ),
-            rpc_servers=rpcs,
+            subordinate_workers=subordinate_workers,
         )
 
         return candidate
