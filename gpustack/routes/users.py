@@ -46,7 +46,7 @@ async def get_user(session: SessionDep, id: int):
 async def create_user(session: SessionDep, user_in: UserCreate):
     existing = await User.one_by_field(session, "username", user_in.username)
     if existing:
-        raise AlreadyExistsException(message=f"User f{user_in.username} already exists")
+        raise AlreadyExistsException(message=f"User {user_in.username} already exists")
 
     try:
         to_create = User(
