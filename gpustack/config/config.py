@@ -1,6 +1,5 @@
 import os
 import secrets
-from typing import List, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from gpustack.utils import validators
@@ -21,11 +20,21 @@ from gpustack.schemas.workers import (
 )
 from gpustack.utils import platform
 from gpustack.utils.platform import DeviceTypeEnum, device_type_from_vendor
+from gpustack.config.config_mixin import (
+    CommonConfigMixin,
+    ServerConfigMixin,
+    WorkerConfigMixin,
+)
 
 _config = None
 
 
-class Config(BaseSettings):
+class Config(
+    CommonConfigMixin,
+    ServerConfigMixin,
+    WorkerConfigMixin,
+    BaseSettings,
+):
     """A class used to define GPUStack configuration.
 
     Attributes:
@@ -79,61 +88,6 @@ class Config(BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
     """
-
-    # Common options
-    debug: bool = False
-    data_dir: Optional[str] = None
-    cache_dir: Optional[str] = None
-    token: Optional[str] = None
-    huggingface_token: Optional[str] = None
-    enable_ray: bool = False
-    ray_args: Optional[List[str]] = None
-    ray_node_manager_port: int = 40098
-    ray_object_manager_port: int = 40099
-
-    # Server options
-    host: Optional[str] = "0.0.0.0"
-    port: Optional[int] = None
-    database_url: Optional[str] = None
-    disable_worker: bool = False
-    bootstrap_password: Optional[str] = None
-    jwt_secret_key: Optional[str] = None
-    system_reserved: Optional[dict] = None
-    ssl_keyfile: Optional[str] = None
-    ssl_certfile: Optional[str] = None
-    force_auth_localhost: bool = False
-    ollama_library_base_url: Optional[str] = "https://registry.ollama.ai"
-    disable_update_check: bool = False
-    disable_openapi_docs: bool = False
-    update_check_url: Optional[str] = None
-    model_catalog_file: Optional[str] = None
-    ray_port: int = 40096
-    ray_client_server_port: int = 40097
-    enable_cors: bool = False
-    allow_origins: Optional[List[str]] = ['*']
-    allow_credentials: bool = False
-    allow_methods: Optional[List[str]] = ['GET', 'POST']
-    allow_headers: Optional[List[str]] = ['Authorization', 'Content-Type']
-
-    # Worker options
-    server_url: Optional[str] = None
-    worker_ip: Optional[str] = None
-    worker_name: Optional[str] = None
-    disable_metrics: bool = False
-    disable_rpc_servers: bool = False
-    worker_port: int = 10150
-    metrics_port: int = 10151
-    service_port_range: Optional[str] = "40000-40063"
-    rpc_server_port_range: Optional[str] = "40064-40095"
-    ray_worker_port_range: Optional[str] = "40100-40131"
-    log_dir: Optional[str] = None
-    resources: Optional[dict] = None
-    bin_dir: Optional[str] = None
-    pipx_path: Optional[str] = None
-    tools_download_base_url: Optional[str] = None
-    rpc_server_args: Optional[List[str]] = None
-    enable_hf_transfer: bool = False
-    enable_hf_xet: bool = False
 
     def __init__(self, **values):
         super().__init__(**values)
