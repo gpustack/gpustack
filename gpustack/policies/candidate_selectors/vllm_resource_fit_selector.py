@@ -21,7 +21,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     Model,
-    RayActor,
+    ModelInstanceSubordinateWorker,
     SourceEnum,
 )
 from gpustack.schemas.workers import GPUDevicesInfo, Worker
@@ -843,7 +843,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             main_worker, main_gpu_indexes, self._gpu_memory_utilization
         )
 
-        ray_actors: List[RayActor] = []
+        subordinate_workers: List[ModelInstanceSubordinateWorker] = []
         for worker in workers:
             if worker.name not in self._selected_gpu_workers:
                 continue
@@ -859,8 +859,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 worker, gpu_indexes, self._gpu_memory_utilization
             )
 
-            ray_actors.append(
-                RayActor(
+            subordinate_workers.append(
+                ModelInstanceSubordinateWorker(
                     worker_id=worker.id,
                     worker_ip=worker.ip,
                     total_gpus=len(worker.status.gpu_devices),
@@ -916,7 +916,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 computed_resource_claim=ComputedResourceClaim(
                     vram=main_vram_claim,
                 ),
-                ray_actors=ray_actors,
+                subordinate_workers=subordinate_workers,
                 overcommit=overcommit,
             )
         ]
@@ -927,7 +927,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         """
         instances = await get_worker_model_instances(self._engine, worker)
         for instance in instances:
-            if instance.distributed_servers and instance.distributed_servers.ray_actors:
+            if (
+                instance.distributed_servers
+                and instance.distributed_servers.subordinate_workers
+            ):
                 self._messages = [
                     f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
                 ]
@@ -986,8 +989,8 @@ def _create_candidate(
             },
         ),
     )
-    candidate.ray_actors = [
-        RayActor(
+    candidate.subordinate_workers = [
+        ModelInstanceSubordinateWorker(
             worker_id=worker.id,
             worker_ip=worker.ip,
             total_gpus=len(worker.status.gpu_devices),
