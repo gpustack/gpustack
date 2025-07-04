@@ -15,7 +15,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     GPUSelector,
     Model,
-    ModelInstanceRPCServer,
+    ModelInstanceSubordinateWorker,
     PlacementStrategyEnum,
 )
 from gpustack.schemas.workers import (
@@ -176,10 +176,10 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_multi_worker_multi_gpu_part
                     85899345920,
                     85899345920,
                 ],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=17,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=1,
@@ -188,9 +188,9 @@ async def test_schedule_with_deepseek_r1_bf16_end_in_multi_worker_multi_gpu_part
                             vram={0: 28426863616},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=17,
-                        gpu_index=1,
+                        gpu_indexes=[1],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=1,
@@ -786,10 +786,10 @@ async def test_schedule_with_deepseek_r1_q8_0_with_end_with_workerx2x80gx8(temp_
                     85899345920,
                     85899345920,
                 ],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=2,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=6,
@@ -798,9 +798,9 @@ async def test_schedule_with_deepseek_r1_q8_0_with_end_with_workerx2x80gx8(temp_
                             vram={0: 43167431680},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=2,
-                        gpu_index=1,
+                        gpu_indexes=[1],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=6,
@@ -809,9 +809,9 @@ async def test_schedule_with_deepseek_r1_q8_0_with_end_with_workerx2x80gx8(temp_
                             vram={0: 78003226624},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=2,
-                        gpu_index=2,
+                        gpu_indexes=[2],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=5,
@@ -927,10 +927,10 @@ async def test_schedule_with_deepseek_r1_q8_0_with_ngl_with_end_in_multi_worker_
                     85899345920,
                     85899345920,
                 ],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=2,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=6,

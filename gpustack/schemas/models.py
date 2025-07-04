@@ -10,7 +10,6 @@ from sqlmodel import Field, Relationship, SQLModel, Text
 from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.links import ModelInstanceModelFileLink
-from gpustack.schemas.workers import RPCServer
 from gpustack.utils.command import find_parameter
 
 if TYPE_CHECKING:
@@ -294,26 +293,6 @@ class ModelInstanceSubordinateWorker(BaseModel):
     )
 
 
-# FIXME: Migrate to ModelInstanceSubordinateWorker.
-class ModelInstanceRPCServer(RPCServer):
-    worker_id: Optional[int] = None
-    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
-        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
-    )
-
-
-# FIXME: Migrate to ModelInstanceSubordinateWorker.
-class RayActor(BaseModel):
-    worker_id: Optional[int] = None
-    worker_ip: Optional[str] = None
-    total_gpus: Optional[int] = None
-    gpu_indexes: Optional[List[int]] = None
-    computed_resource_claim: Optional[ComputedResourceClaim] = Field(
-        sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
-    )
-    download_progress: Optional[float] = None
-
-
 class DistributedServerCoordinateModeEnum(Enum):
     # DELEGATED means that the subordinate workers' coordinate is by-pass to other framework.
     # For example, vLLM instance passes its distribution deployment to the underlay RAY service.
@@ -340,13 +319,6 @@ class DistributedServers(BaseModel):
     subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = Field(
         sa_column=Column(JSON), default=[]
     )
-    # FIXME: Replace by subordinate_workers.
-    rpc_servers: Optional[List[ModelInstanceRPCServer]] = Field(
-        sa_column=Column(JSON), default=[]
-    )
-    # FIXME: Replace by subordinate_workers.
-    ray_actors: Optional[List[RayActor]] = Field(sa_column=Column(JSON), default=[])
-
     model_config = ConfigDict(from_attributes=True)
 
 

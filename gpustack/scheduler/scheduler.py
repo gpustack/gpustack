@@ -326,8 +326,6 @@ class Scheduler:
                 model_instance.gpu_addresses = candidate.gpu_addresses
                 model_instance.distributed_servers = DistributedServers(
                     subordinate_workers=candidate.subordinate_workers,
-                    rpc_servers=candidate.rpc_servers,  # FIXME: Replace by subordinate_workers
-                    ray_actors=candidate.ray_actors,  # FIXME: Replace by subordinate_workers
                 )
                 if get_backend(model) == BackendEnum.ASCEND_MINDIE:
                     model_instance.distributed_servers.mode = (

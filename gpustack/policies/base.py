@@ -5,8 +5,6 @@ from typing import Dict, List, Optional, Tuple
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     ModelInstance,
-    ModelInstanceRPCServer,
-    RayActor,
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import Worker
@@ -31,10 +29,6 @@ class ModelInstanceScheduleCandidate:
 
     # for multi-worker distributed scheduling
     subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = None
-    # FIXME: Replace by subordinate_workers.
-    rpc_servers: Optional[List[ModelInstanceRPCServer]] = None
-    # FIXME: Replace by subordinate_workers.
-    ray_actors: Optional[List[RayActor]] = None
 
     def to_log_string(self) -> str:
         log_entries = [
@@ -67,31 +61,6 @@ class ModelInstanceScheduleCandidate:
                 ]
             )
             log_entries.append(f"subordinate_workers: [{sw_str}]")
-
-        # FIXME: Remove this after migrated to subordinate_workers.
-        if self.rpc_servers:
-            sw_str = '), ('.join(
-                [
-                    f"worker_id: {sw.worker_id}, "
-                    f"gpu_index: {sw.gpu_index}, "
-                    f"offload_layers: {sw.computed_resource_claim.offload_layers}"
-                    for sw in self.rpc_servers
-                ]
-            )
-            log_entries.append(f"rpc_servers: [{sw_str}]")
-
-        # FIXME: Remove this after migrated to subordinate_workers.
-        if self.ray_actors:
-            sw_str = '), ('.join(
-                [
-                    f"worker_id: {sw.worker_id}, "
-                    f"worker_ip: {sw.worker_ip}, "
-                    f"total_gpus: {sw.total_gpus}, "
-                    f"gpu_indexes: {sw.gpu_indexes}"
-                    for sw in self.ray_actors
-                ]
-            )
-            log_entries.append(f"ray_actors: [{sw_str}]")
 
         return ', '.join(log_entries)
 

@@ -186,22 +186,6 @@ def summarize_candidate_resource_claim(
     """
     computed_resource_claims = [candidate.computed_resource_claim]
 
-    # FIXME: Replace by subordinate_workers.
-    if candidate.rpc_servers:
-        computed_resource_claims.extend(
-            rpc.computed_resource_claim
-            for rpc in candidate.rpc_servers
-            if rpc.computed_resource_claim is not None
-        )
-
-    # FIXME: Replace by subordinate_workers.
-    if candidate.ray_actors:
-        computed_resource_claims.extend(
-            actor.computed_resource_claim
-            for actor in candidate.ray_actors
-            if actor.computed_resource_claim is not None
-        )
-
     if candidate.subordinate_workers:
         computed_resource_claims.extend(
             sw.computed_resource_claim

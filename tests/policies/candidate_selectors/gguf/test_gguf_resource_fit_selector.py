@@ -12,7 +12,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     GPUSelector,
     Model,
-    ModelInstanceRPCServer,
+    ModelInstanceSubordinateWorker,
     ModelInstanceStateEnum,
     PlacementStrategyEnum,
 )
@@ -716,10 +716,10 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
                 },
                 "score": 53.10511012189776,
                 "tensor_split": [26015170560, 17171480576, 17171480576],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=2,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=33,
@@ -803,10 +803,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
                 },
                 "score": 53.10511012189776,
                 "tensor_split": [26015170560, 17171480576, 17171480576],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=2,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=33,
@@ -902,10 +902,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                     85899345920,
                     85899345920,
                 ],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=9,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=11,
@@ -914,9 +914,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                             vram={0: 59939913728},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=9,
-                        gpu_index=1,
+                        gpu_indexes=[1],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=10,
@@ -925,9 +925,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                             vram={1: 69698246656},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=10,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=10,
@@ -936,9 +936,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
                             vram={0: 70670915584},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=10,
-                        gpu_index=1,
+                        gpu_indexes=[1],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=11,
@@ -1023,10 +1023,10 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
                 },
                 "score": 100,
                 "tensor_split": [17163091968, 16106143744, 24683479040],
-                "rpc_servers": [
-                    ModelInstanceRPCServer(
+                "subordinate_workers": [
+                    ModelInstanceSubordinateWorker(
                         worker_id=13,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             offload_layers=12,
@@ -1035,9 +1035,9 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
                             vram={0: 16503328768},
                         ),
                     ),
-                    ModelInstanceRPCServer(
+                    ModelInstanceSubordinateWorker(
                         worker_id=14,
-                        gpu_index=0,
+                        gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=True,
                             offload_layers=11,

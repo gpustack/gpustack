@@ -250,12 +250,12 @@ def get_rpc_servers(
     rpc_tensor_split = []
     if (
         model_instance.distributed_servers
-        and model_instance.distributed_servers.rpc_servers
+        and model_instance.distributed_servers.subordinate_workers
     ):
-        for rpc_server in model_instance.distributed_servers.rpc_servers:
+        for rpc_server in model_instance.distributed_servers.subordinate_workers:
             r_worker = worker_map.get(rpc_server.worker_id)
             r_ip = r_worker.ip
-            r_port = r_worker.status.rpc_servers.get(rpc_server.gpu_index).port
+            r_port = r_worker.status.rpc_servers.get(rpc_server.gpu_indexes[0]).port
             r_ts = list((rpc_server.computed_resource_claim or {}).vram.values())
 
             rpc_tensor_split.extend(r_ts)
