@@ -174,6 +174,8 @@ class WorkerBase(SQLModel):
     worker_uuid: str
 
     def compute_state(self, worker_offline_timeout=60):
+        if self.state == WorkerStateEnum.NOT_READY and self.state_message is not None:
+            return
         now = int(datetime.now(timezone.utc).timestamp())
         heartbeat_timestamp = (
             self.heartbeat_time.timestamp() if self.heartbeat_time else None
@@ -184,7 +186,7 @@ class WorkerBase(SQLModel):
             or now - heartbeat_timestamp > worker_offline_timeout
         ):
             self.state = WorkerStateEnum.NOT_READY
-            self.state_message = "Heartbeat lost"
+            self.state_message = "Heartbeat lost, please <a href='https://docs.gpustack.ai/latest/troubleshooting/#view-gpustack-logs'>check the worker logs</a>. If everything proceeds smoothly, please verify that the clocks on both the worker and the server are properly synchronized."
             return
 
         if self.unreachable:
