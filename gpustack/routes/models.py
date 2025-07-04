@@ -297,7 +297,7 @@ async def validate_distributed_vllm_limit_per_worker(
     for instance in instances:
         if (
             instance.distributed_servers
-            and instance.distributed_servers.ray_actors
+            and instance.distributed_servers.subordinate_workers
             and instance.model_name != model.name
         ):
             raise BadRequestException(

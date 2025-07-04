@@ -637,28 +637,6 @@ async def sync_distributed_model_file_state(  # noqa: C901
                 instance.state_message = file.state_message
                 need_update = True
 
-    # FIXME: Replace by subordinate_workers.
-    for item in instance.distributed_servers.ray_actors or []:
-        if item.worker_id == file.worker_id:
-            if (
-                file.state == ModelFileStateEnum.DOWNLOADING
-                and file.download_progress != item.download_progress
-            ):
-                item.download_progress = file.download_progress
-                need_update = True
-            elif (
-                file.state == ModelFileStateEnum.READY and item.download_progress != 100
-            ):
-                item.download_progress = 100
-                if model_instance_download_completed(instance):
-                    # All files are downloaded
-                    instance.state = ModelInstanceStateEnum.STARTING
-                need_update = True
-            elif file.state == ModelFileStateEnum.ERROR:
-                instance.state = ModelInstanceStateEnum.ERROR
-                instance.state_message = file.state_message
-                need_update = True
-
     if need_update:
         flag_modified(instance, "distributed_servers")
         await ModelInstanceService(session).update(instance)
@@ -671,10 +649,6 @@ def model_instance_download_completed(instance: ModelInstance):
     if instance.distributed_servers:
         for subworker in instance.distributed_servers.subordinate_workers or []:
             if subworker.download_progress != 100:
-                return False
-        # FIXME: Replace by subordinate_workers.
-        for ray_actor in instance.distributed_servers.ray_actors or []:
-            if ray_actor.download_progress != 100:
                 return False
 
     return True
@@ -694,12 +668,6 @@ def _get_worker_ids_of_model_instance(
         worker_ids += [
             item.worker_id
             for item in instance.distributed_servers.subordinate_workers or []
-            if item.worker_id
-        ]
-        # FIXME: Replace by subordinate_workers.
-        worker_ids += [
-            item.worker_id
-            for item in instance.distributed_servers.ray_actors or []
             if item.worker_id
         ]
 

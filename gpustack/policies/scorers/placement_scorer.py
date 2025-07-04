@@ -18,7 +18,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
     ModelInstance,
-    ModelInstanceRPCServer,
+    ModelInstanceSubordinateWorker,
     PlacementStrategyEnum,
 )
 from gpustack.schemas.workers import Worker
@@ -131,19 +131,19 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             )
             final_score = score
 
-            if candidate.rpc_servers:
-                rpc_server_score = await self._score_binpack_rpc_servers(
-                    candidate.rpc_servers, self._scale_type
+            if candidate.subordinate_workers:
+                rpc_server_score = await self._score_binpack_subordinate_workers(
+                    candidate.subordinate_workers, self._scale_type
                 )
                 final_score = (
                     score * self._inference_server_type_weight.server
                     + rpc_server_score
-                    * len(candidate.rpc_servers)
+                    * len(candidate.subordinate_workers)
                     * self._inference_server_type_weight.rpc_server
                 ) / (
                     self._inference_server_type_weight.server
                     + self._inference_server_type_weight.rpc_server
-                    * len(candidate.rpc_servers)
+                    * len(candidate.subordinate_workers)
                 )
 
             candidate.score = final_score
@@ -180,20 +180,23 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
 
             if (
                 instance.distributed_servers
-                and instance.distributed_servers.rpc_servers
+                and instance.distributed_servers.subordinate_workers
             ):
-                rpc_servers = instance.distributed_servers.rpc_servers
-                rpc_server_score = await self._score_binpack_rpc_servers(
-                    rpc_servers, self._scale_type
+                subordinate_workers = instance.distributed_servers.subordinate_workers
+                subordinate_worker_score = (
+                    await self._score_binpack_subordinate_workers(
+                        subordinate_workers, self._scale_type
+                    )
                 )
                 final_score = (
                     score * self._inference_server_type_weight.server
-                    + rpc_server_score
-                    * len(rpc_servers)
+                    + subordinate_worker_score
+                    * len(subordinate_workers)
                     * self._inference_server_type_weight.rpc_server
                 ) / (
                     self._inference_server_type_weight.server
-                    + self._inference_server_type_weight.rpc_server * len(rpc_servers)
+                    + self._inference_server_type_weight.rpc_server
+                    * len(subordinate_workers)
                 )
 
             scored_instances.append(
@@ -453,10 +456,10 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
 
         return score
 
-    async def _score_binpack_rpc_servers(
-        self, rpc_servers: List[ModelInstanceRPCServer], scale_type: str
+    async def _score_binpack_subordinate_workers(
+        self, subordinate_workers: List[ModelInstanceSubordinateWorker], scale_type: str
     ) -> int:
-        if rpc_servers is None:
+        if subordinate_workers is None:
             return 0
 
         async with AsyncSession(self._engine) as session:
@@ -464,15 +467,15 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             worker_map = {worker.id: worker for worker in workers}
 
             score = 0
-            for rpc_server in rpc_servers:
+            for subordinate_worker in subordinate_workers:
                 allocatable = await get_worker_allocatable_resource(
                     self._engine,
-                    worker_map.get(rpc_server.worker_id),
+                    worker_map.get(subordinate_worker.worker_id),
                 )
 
                 score += await self._score_binpack_item(
-                    [rpc_server.gpu_index],
-                    rpc_server.computed_resource_claim,
+                    subordinate_worker.gpu_indexes,
+                    subordinate_worker.computed_resource_claim,
                     allocatable,
                     scale_type,
                 )
@@ -517,14 +520,6 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             }
         )
 
-        def update_count(worker_id, gpu_index, is_current_model):
-            if gpu_index is not None:
-                key = "current" if is_current_model else "others"
-                worker_model_instances_count_map[worker_id]["gpu"][gpu_index][key] += 1
-
-            key = "current" if is_current_model else "others"
-            worker_model_instances_count_map[worker_id]["total"][key] += 1
-
         for model_instance in model_instances:
             if model_instance.worker_id is None:
                 continue
@@ -532,20 +527,47 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             is_current_model = model_instance.model_id == model_id
             if model_instance.gpu_indexes:
                 for gpu_index in model_instance.gpu_indexes:
-                    update_count(model_instance.worker_id, gpu_index, is_current_model)
+                    update_count(
+                        worker_model_instances_count_map,
+                        model_instance.worker_id,
+                        gpu_index,
+                        is_current_model,
+                    )
             else:
-                update_count(model_instance.worker_id, None, is_current_model)
+                update_count(
+                    worker_model_instances_count_map,
+                    model_instance.worker_id,
+                    None,
+                    is_current_model,
+                )
 
             if (
                 model_instance.distributed_servers
-                and model_instance.distributed_servers.rpc_servers
+                and model_instance.distributed_servers.subordinate_workers
             ):
-                for rpc_server in model_instance.distributed_servers.rpc_servers:
-                    update_count(
-                        rpc_server.worker_id, rpc_server.gpu_index, is_current_model
-                    )
+                for (
+                    subordinate_worker
+                ) in model_instance.distributed_servers.subordinate_workers:
+                    for subordinate_gpu_index in subordinate_worker.gpu_indexes:
+                        update_count(
+                            worker_model_instances_count_map,
+                            subordinate_worker.worker_id,
+                            subordinate_gpu_index,
+                            is_current_model,
+                        )
 
         return worker_model_instances_count_map
+
+
+def update_count(
+    worker_model_instances_count_map, worker_id, gpu_index, is_current_model
+):
+    if gpu_index is not None:
+        key = "current" if is_current_model else "others"
+        worker_model_instances_count_map[worker_id]["gpu"][gpu_index][key] += 1
+
+    key = "current" if is_current_model else "others"
+    worker_model_instances_count_map[worker_id]["total"][key] += 1
 
 
 async def get_model_instances(engine: AsyncEngine) -> List[ModelInstance]:

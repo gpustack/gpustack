@@ -94,8 +94,8 @@ class VLLMServer(InferenceServer):
     def set_vllm_distributed_env(self, env: Dict[str, str]):
         model_instance = self._model_instance
         worker = self._worker
-        ray_actors = model_instance.distributed_servers.ray_actors
-        if not ray_actors:
+        subordinate_workers = model_instance.distributed_servers.subordinate_workers
+        if not subordinate_workers:
             return
 
         device_str = "GPU"
@@ -114,16 +114,16 @@ class VLLMServer(InferenceServer):
             bundle_indexes.append(gpu_index)
         bundle_index_offset += len(worker.status.gpu_devices)
 
-        for ray_actor in ray_actors:
-            for i in range(ray_actor.total_gpus):
+        for subordinate_worker in subordinate_workers:
+            for i in range(subordinate_worker.total_gpus):
                 bundle = {
                     device_str: 1,
-                    f"node:{ray_actor.worker_ip}": 0.001,
+                    f"node:{subordinate_worker.worker_ip}": 0.001,
                 }
                 ray_placement_group_bundles.append(bundle)
-            for gpu_index in ray_actor.gpu_indexes:
+            for gpu_index in subordinate_worker.gpu_indexes:
                 bundle_indexes.append(bundle_index_offset + gpu_index)
-            bundle_index_offset += ray_actor.total_gpus
+            bundle_index_offset += subordinate_worker.total_gpus
 
         # encoded to json and set in GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES env
         env["GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES"] = json.dumps(
@@ -165,12 +165,14 @@ def get_auto_parallelism_arguments(
 
     if is_distributed_vllm(model_instance):
         # distributed across multiple workers
-        pp = len(model_instance.distributed_servers.ray_actors) + 1
+        pp = len(model_instance.distributed_servers.subordinate_workers) + 1
         tp = len(model_instance.gpu_indexes) if model_instance.gpu_indexes else 1
         uneven_pp = tp
         uneven = False
-        for ray_actor in model_instance.distributed_servers.ray_actors:
-            num_gpus = len(ray_actor.gpu_indexes)
+        for (
+            subordinate_worker
+        ) in model_instance.distributed_servers.subordinate_workers:
+            num_gpus = len(subordinate_worker.gpu_indexes)
             uneven_pp += num_gpus
             if num_gpus != tp:
                 uneven = True
@@ -201,5 +203,5 @@ def get_auto_parallelism_arguments(
 def is_distributed_vllm(model_instance: ModelInstance) -> bool:
     return (
         model_instance.distributed_servers
-        and model_instance.distributed_servers.ray_actors
+        and model_instance.distributed_servers.subordinate_workers
     )

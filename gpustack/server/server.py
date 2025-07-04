@@ -133,7 +133,10 @@ class Server:
             db_url = re.sub(r'^mysql://', 'mysql+pymysql://', db_url)
 
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
-        command.upgrade(alembic_cfg, "head")
+        try:
+            command.upgrade(alembic_cfg, "head")
+        except Exception as e:
+            raise RuntimeError(f"Database migration failed: {e}") from e
         logger.info("Database migration completed.")
 
     async def _prepare_data(self):
