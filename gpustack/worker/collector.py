@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 from gpustack.client.generated_clientset import ClientSet
+from gpustack.detectors.base import GPUDetectExepction
 from gpustack.detectors.custom.custom import Custom
 from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.policies.base import Allocated
@@ -60,7 +61,7 @@ class WorkerStatusCollector:
     def collect(self, initial: bool = False) -> Worker:  # noqa: C901
         """Collect worker status information."""
         status = WorkerStatus()
-
+        state_message = None
         try:
             system_info = self._detector_factory.detect_system_info()
             status.cpu = system_info.cpu
@@ -77,9 +78,10 @@ class WorkerStatusCollector:
             try:
                 gpu_devices = self._detector_factory.detect_gpus()
                 status.gpu_devices = gpu_devices
+            except GPUDetectExepction as e:
+                state_message = str(e)
             except Exception as e:
                 logger.error(f"Failed to detect GPU devices: {e}")
-
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
         self._inject_allocated_resource(status)
@@ -93,7 +95,11 @@ class WorkerStatusCollector:
                 )
             status.rpc_servers = rps_server
 
-        state = WorkerStateEnum.NOT_READY if initial else WorkerStateEnum.READY
+        state = (
+            WorkerStateEnum.NOT_READY
+            if initial or state_message
+            else WorkerStateEnum.READY
+        )
 
         return Worker(
             name=self._worker_name,
@@ -102,6 +108,7 @@ class WorkerStatusCollector:
             port=self._worker_port,
             state=state,
             status=status,
+            state_message=state_message,
             worker_uuid=self._worker_uuid if self._worker_manager else None,
         )
 

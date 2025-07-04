@@ -1,6 +1,6 @@
 import csv
 import subprocess
-from gpustack.detectors.base import GPUDetector
+from gpustack.detectors.base import GPUDetectExepction, GPUDetector
 from gpustack.schemas.workers import (
     GPUCoreInfo,
     GPUDeviceInfo,
@@ -11,6 +11,7 @@ from gpustack.schemas.workers import (
 from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
 from gpustack.utils.convert import safe_float, safe_int
+from gpustack.utils.envs import is_docker_env
 
 
 class NvidiaSMI(GPUDetector):
@@ -91,6 +92,12 @@ class NvidiaSMI(GPUDetector):
             if "no devices" in output.lower():
                 return None
 
+            if "Failed to initialize NVML: Unknown Error" in output and is_docker_env():
+                raise GPUDetectExepction(
+                    f"Error: {output}"
+                    "Please ensure nvidia-smi is working properly. It may be caused by a known issue with the NVIDIA Container Toolkit, which can be mitigated by disabling systemd cgroup management in Docker. More info: <a href=\"https://github.com/NVIDIA/nvidia-container-toolkit/issues/48\">https://github.com/NVIDIA/nvidia-container-toolkit/issues/48</a>"
+                )
+
             if result.returncode != 0:
                 raise Exception(f"Unexpected return code: {result.returncode}")
 
@@ -98,6 +105,8 @@ class NvidiaSMI(GPUDetector):
                 raise Exception(f"Output is empty, return code: {result.returncode}")
 
             return output
+        except GPUDetectExepction as e:
+            raise e
         except Exception as e:
             error_message = f"Failed to execute {command}: {e}"
             if result:

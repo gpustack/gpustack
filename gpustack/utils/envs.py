@@ -135,3 +135,7 @@ def get_gpustack_env_bool(env_var: str) -> Optional[bool]:
     if env_value is not None:
         return env_value.lower() in ["true", "1"]
     return None
+
+
+def is_docker_env() -> bool:
+    return os.path.exists("/.dockerenv")
