@@ -427,6 +427,11 @@ async def evaluate_gguf_model(
         cache_dir=config.cache_dir,
         ollama_library_base_url=config.ollama_library_base_url,
     )
+    if (
+        task_output.resource_architecture
+        and not task_output.resource_architecture.is_deployable()
+    ):
+        raise ValueError("Not a supported model.")
 
     should_update = False
     if task_output.resource_claim_estimate.reranking and not model.categories:
