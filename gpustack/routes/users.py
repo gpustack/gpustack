@@ -113,7 +113,7 @@ async def update_user_me(
             hashed_password = get_secret_hash(update_data["password"])
             update_data["hashed_password"] = hashed_password
             del update_data["password"]
-        await user.update(session, update_data)
+        await UserService(session).update(user, update_data)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
 
