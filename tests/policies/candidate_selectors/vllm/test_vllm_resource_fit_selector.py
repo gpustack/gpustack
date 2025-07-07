@@ -539,7 +539,7 @@ async def test_auto_schedule_single_work_single_gpu(config):
 - With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
 - The current available GPU only has 24.23 GiB allocatable VRAM (100.00%)."""
         ]
-        assert expect_msg == resource_fit_selector._messages
+        assert resource_fit_selector._messages == expect_msg
 
 
 @pytest.mark.asyncio
@@ -590,8 +590,9 @@ async def test_auto_schedule_single_work_multi_gpu(config):
 
 @pytest.mark.asyncio
 async def test_auto_schedule_multi_work_multi_gpu(config):
-    workers = [linux_nvidia_1_4090_24gx1(), linux_nvidia_2_4080_16gx2()]
-
+    workers = [linux_nvidia_2_4080_16gx2(), linux_nvidia_2_4080_16gx2()]
+    workers[1].id += 1
+    workers[1].name += "-1"
     m = new_model(
         1,
         "test_name",
@@ -626,7 +627,7 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
-- The largest available worker has 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.78 GiB of allocatable VRAM.
+- The optimal combination ['host4080', 'host4080-1'] provides 57.57 GiB of allocatable VRAM.
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."""
         ]
 

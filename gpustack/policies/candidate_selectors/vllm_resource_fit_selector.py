@@ -11,6 +11,7 @@ from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
     ScheduleCandidatesSelector,
 )
+from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     get_worker_model_instances,
@@ -33,6 +34,14 @@ from gpustack.utils.hub import get_model_weight_size, get_pretrained_config
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
+
+EVENT_ACTION_DEFAULT = "default_scheduling_msg"
+EVENT_ACTION_MANUAL_MULTI = "manual_multi_gpu_scheduling_msg"
+EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU = "auto_multi_worker_multi_gpu_scheduling_msg"
+EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
+    "auto_single_worker_multi_gpu_scheduling_msg"
+)
+EVENT_ACTION_AUTO_SINGLE_GPU = "auto_single_gpu_scheduling_msg"
 
 
 async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
@@ -177,9 +186,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._largest_multi_gpu_total = 0
         self._largest_multi_gpu_utilization_satisfied_count = 0
 
-        self._tried_distributed_scheduling = False
         self._num_attention_heads = None
         self._messages = []
+        self._event_collector = EventCollector(self._model, logger)
         self._workers_allocatable_resource: Dict[int, Allocatable] = {}
 
         self._selected_gpu_workers: List[str] = None
@@ -252,30 +261,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 f"({self._gpu_count})."
             )
 
-    def _append_distributed_mode_message(self, messages: ListMessageBuilder):
-        if (
-            self._cfg.enable_ray
-            and self._model.distributed_inference_across_workers
-            and self._tried_distributed_scheduling
-        ):
-            messages.append(
-                "Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."
-            )
-
-    def _build_non_llm_message(self, messages: ListMessageBuilder):
-        # Non-LLM models
-        messages.append(
-            f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM."
-        )
-        if self._largest_multi_gpu_vram > 0:
-            messages.append(
-                f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB of VRAM."
-            )
-        elif self._largest_single_gpu_vram > 0:
-            messages.append(
-                f"The available GPU has {byte_to_gib(self._largest_single_gpu_vram)} GiB of VRAM."
-            )
-
     def _cal_effective_vram(self) -> float:
         if self._largest_multi_gpu_total == 0:
             return 0.0
@@ -286,62 +271,33 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             / self._largest_multi_gpu_total
         )
 
-    def _build_gpu_message(self, messages: ListMessageBuilder):
-        messages.extend(
-            [
-                f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM.",
-                f"With --{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}, All GPUs combined need to provide at least {byte_to_gib(int(self._vram_claim / self._gpu_memory_utilization))} GiB of total VRAM.",
-            ]
-        )
-
-        if self._selected_gpu_workers and self._largest_multi_gpu_vram > 0:
-            # Manually selected multiple GPUs
-            for worker_name, gpu_indexes in self._unsatisfied_gpu_messages.items():
-                # Some seleted gpu is not meet the utilization
-                show_gpu_list = gpu_indexes
-                if len(gpu_indexes) > 3:
-                    show_gpu_list = gpu_indexes[:3] + [
-                        f"...(more {len(gpu_indexes) - 3})"
-                    ]
-                unsatisfied_msg = f"Worker {worker_name} GPU indexes {show_gpu_list}"
-                if len(self._unsatisfied_gpu_messages) > 1:
-                    unsatisfied_msg += (
-                        f" and other {len(self._unsatisfied_gpu_messages) - 1} workers"
-                    )
-                unsatisfied_msg += f" fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
-                messages.append(unsatisfied_msg)
-                break
-
-            if (
-                self._largest_multi_gpu_vram * self._gpu_memory_utilization
-                < self._vram_claim
-            ):
-                # All selected gpus combined VRAM is not enough.
-                messages.append(
-                    f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
-                )
-
-        elif self._largest_multi_gpu_vram > 0:
-            messages.append(
-                f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
-            )
-
-        elif self._largest_single_gpu_vram > 0:
-            messages.append(
-                f"The current available GPU only has {byte_to_gib(self._largest_single_gpu_vram)} GiB allocatable VRAM ({(self._largest_single_gpu_vram_utilization * 100):.2f}%)."
-            )
-
     def _set_messages(self):
         if self._messages:
             return
 
-        messages = ListMessageBuilder([])
-        if self._gpu_memory_utilization == 0:
-            self._build_non_llm_message(messages)
-        else:
-            self._build_gpu_message(messages)
-        self._append_distributed_mode_message(messages)
-        self._messages.append(str(messages))
+        event_messages = {
+            EVENT_ACTION_DEFAULT: "",
+            EVENT_ACTION_MANUAL_MULTI: "",
+            EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU: "",
+            EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU: "",
+            EVENT_ACTION_AUTO_SINGLE_GPU: "",
+        }
+
+        for event in self._event_collector.events:
+            event_messages[event.action] = event.message
+
+        messages = event_messages[EVENT_ACTION_DEFAULT] + "\n"
+        for action in [
+            EVENT_ACTION_MANUAL_MULTI,
+            EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+            EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
+            EVENT_ACTION_AUTO_SINGLE_GPU,
+        ]:
+            if event_messages[action]:
+                messages += event_messages[action]
+                break
+
+        self._messages.append(messages)
 
     def _add_message(self, message: str):
         self._messages.append(message)
@@ -370,6 +326,20 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         logger.info(
             f"Calculated resource claim for model {self._model.readable_source}, "
             f"claim: {self._vram_claim}"
+        )
+
+        default_msg_list = ListMessageBuilder(
+            f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM."
+        )
+        if self._gpu_memory_utilization != 0:
+            default_msg_list.append(
+                f"With --{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}, "
+                f"All GPUs combined need to provide at least {byte_to_gib(int(self._vram_claim / self._gpu_memory_utilization))} GiB of total VRAM."
+            )
+        self._event_collector.add(
+            EventLevelEnum.INFO,
+            EVENT_ACTION_DEFAULT,
+            str(default_msg_list),
         )
 
         candidate_functions = [
@@ -452,60 +422,74 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
-        if worker.status.gpu_devices:
-            for _, gpu in enumerate(worker.status.gpu_devices):
+        if not worker.status.gpu_devices:
+            return []
 
-                if selected_gpu_index is not None and gpu.index != selected_gpu_index:
+        for _, gpu in enumerate(worker.status.gpu_devices):
+
+            if selected_gpu_index is not None and gpu.index != selected_gpu_index:
+                continue
+
+            gpu_index = gpu.index
+            allocatable_vram = allocatable.vram.get(gpu_index, 0)
+            allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
+
+            if allocatable_vram > self._largest_single_gpu_vram:
+                self._largest_single_gpu_vram = allocatable_vram
+                self._largest_single_gpu_vram_utilization = (
+                    allocatable_gpu_memory_utilization
+                )
+
+            if gpu.memory is None or gpu.memory.total == 0:
+                continue
+
+            overcommit = False
+            exceeds_vram = (
+                self._vram_claim > gpu.memory.total * self._gpu_memory_utilization
+                if self._gpu_memory_utilization > 0  # LLMs
+                else self._vram_claim > allocatable_vram  # non LLMs
+            )
+            exceeds_memory_utilization = (
+                self._gpu_memory_utilization > 0
+                and allocatable_gpu_memory_utilization < self._gpu_memory_utilization
+            )
+            if exceeds_vram or exceeds_memory_utilization:
+                if selected_gpu_index is not None:
+                    overcommit = True
+                else:
                     continue
 
-                gpu_index = gpu.index
-                allocatable_vram = allocatable.vram.get(gpu_index, 0)
-                allocatable_gpu_memory_utilization = allocatable_vram / gpu.memory.total
+            vram_claim = (
+                int(gpu.memory.total * self._gpu_memory_utilization)
+                if self._gpu_memory_utilization > 0  # LLMs
+                else int(self._vram_claim)  # non LLMs
+            )
 
-                if allocatable_vram > self._largest_single_gpu_vram:
-                    self._largest_single_gpu_vram = allocatable_vram
-                    self._largest_single_gpu_vram_utilization = (
-                        allocatable_gpu_memory_utilization
-                    )
-
-                if gpu.memory is None or gpu.memory.total == 0:
-                    continue
-
-                overcommit = False
-                exceeds_vram = (
-                    self._vram_claim > gpu.memory.total * self._gpu_memory_utilization
-                    if self._gpu_memory_utilization > 0  # LLMs
-                    else self._vram_claim > allocatable_vram  # non LLMs
+            candidates.append(
+                ModelInstanceScheduleCandidate(
+                    worker=worker,
+                    gpu_indexes=[gpu_index],
+                    computed_resource_claim=ComputedResourceClaim(
+                        vram={
+                            gpu_index: vram_claim,
+                        },
+                    ),
+                    overcommit=overcommit,
                 )
-                exceeds_memory_utilization = (
-                    self._gpu_memory_utilization > 0
-                    and allocatable_gpu_memory_utilization
-                    < self._gpu_memory_utilization
-                )
-                if exceeds_vram or exceeds_memory_utilization:
-                    if selected_gpu_index is not None:
-                        overcommit = True
-                    else:
-                        continue
+            )
 
-                vram_claim = (
-                    int(gpu.memory.total * self._gpu_memory_utilization)
-                    if self._gpu_memory_utilization > 0  # LLMs
-                    else int(self._vram_claim)  # non LLMs
+        if not candidates or (len(candidates) == 1 and candidates[0].overcommit):
+            event_msg = f"The current available GPU only has {byte_to_gib(self._largest_single_gpu_vram)} GiB allocatable VRAM."
+            if self._gpu_memory_utilization != 0:
+                event_msg = (
+                    event_msg.rstrip(".")
+                    + f" ({(self._largest_single_gpu_vram_utilization * 100):.2f}%)."
                 )
-
-                candidates.append(
-                    ModelInstanceScheduleCandidate(
-                        worker=worker,
-                        gpu_indexes=[gpu_index],
-                        computed_resource_claim=ComputedResourceClaim(
-                            vram={
-                                gpu_index: vram_claim,
-                            },
-                        ),
-                        overcommit=overcommit,
-                    )
-                )
+            self._event_collector.add(
+                EventLevelEnum.INFO,
+                EVENT_ACTION_AUTO_SINGLE_GPU,
+                str(ListMessageBuilder(event_msg)),
+            )
 
         return candidates
 
@@ -551,7 +535,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if total_gpu < 2:
             return None
 
-        if self._selected_gpu_workers and len(self._selected_gpu_workers) == 1:
+        if self._selected_gpu_workers:
             return await self.manually_select_single_worker_multi_gpu_candidates(worker)
 
         allocatable = await self._get_worker_allocatable_resource(worker)
@@ -620,11 +604,27 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 )
             ]
 
+        event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM."
+        if self._gpu_memory_utilization != 0:
+            event_msg = (
+                event_msg.rstrip(".")
+                + f", {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+            )
+
+        self._event_collector.add(
+            EventLevelEnum.INFO,
+            EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
+            str(ListMessageBuilder(event_msg)),
+        )
+
         return []
 
-    async def manually_select_single_worker_multi_gpu_candidates(
+    async def manually_select_single_worker_multi_gpu_candidates(  # noqa: C901
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
+        if len(self._selected_gpu_workers) != 1:
+            return []
+
         allocatable = await self._get_worker_allocatable_resource(worker)
 
         selected_gpu_worker = self._selected_gpu_workers[0]
@@ -669,6 +669,30 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         if sum(vram_claims.values()) < self._vram_claim:
             overcommit = True
+            # Construct event collector.
+            scheduling_msg = ListMessageBuilder([])
+            if self._gpu_memory_utilization != 0:
+                scheduling_msg.append(
+                    f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB of VRAM."
+                )
+            else:
+                unsatisfied_devices_msg = str(
+                    self._unsatisfied_gpu_messages[worker.name]
+                )
+                if len(self._unsatisfied_gpu_messages[worker.name]) > 3:
+                    unsatisfied_devices_msg = (
+                        str(self._unsatisfied_gpu_messages[worker.name][:3])
+                        + f"...(more {len(self._unsatisfied_gpu_messages[worker.name]) - 3})"
+                    )
+                scheduling_msg.extend(
+                    [
+                        f"Worker {worker.name} GPU indexes {unsatisfied_devices_msg} fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio.",
+                        f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM.",
+                    ]
+                )
+            self._event_collector.add(
+                EventLevelEnum.INFO, EVENT_ACTION_MANUAL_MULTI, str(scheduling_msg)
+            )
 
         return [
             ModelInstanceScheduleCandidate(
@@ -695,7 +719,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
-    async def auto_select_multi_worker_multi_gpu_candidates(
+    async def auto_select_multi_worker_multi_gpu_candidates(  # noqa: C901
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -710,8 +734,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if not workers or len(workers) < 2:
             return []
 
-        self._tried_distributed_scheduling = True
-
         sort_workers_by_gpu_count(workers)
 
         workers_by_gpu_count_dict = defaultdict(list)
@@ -720,6 +742,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             workers_by_gpu_count_dict[len(worker.status.gpu_devices)].append(worker)
+
+        # Store the optimal combination info to show
+        workers_combination: List[Worker] = []
+        largest_vram = 0
+        worker_count = 0
+        device_count_per_worker = 0
 
         # Loop through worker groups with the same number of GPUs.
         for gpu_count, worker_group in workers_by_gpu_count_dict.items():
@@ -745,7 +773,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 selected_workers.append(worker)
                 gpu_sum += gpu_count
                 vram_sum += sum(
-                    int(gpu.memory.total * self._gpu_memory_utilization)
+                    int(gpu.memory.total * (self._gpu_memory_utilization or 1))
                     for gpu in worker.status.gpu_devices
                 )
 
@@ -758,10 +786,43 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                             selected_workers, self._gpu_memory_utilization
                         )
                     ]
+            if vram_sum > largest_vram:
+                workers_combination = selected_workers
+                largest_vram = vram_sum
+                worker_count = len(worker_group)
+                device_count_per_worker = gpu_count
+
+        # Nothing can be return, construct scheduling message
+        event_message = ListMessageBuilder([])
+        if self._gpu_memory_utilization == 0:
+            event_message.append(
+                f"The largest available worker has {byte_to_gib(largest_vram)} GiB of VRAM."
+            )
+        elif workers_combination:
+            worker_names = [worker.name for worker in workers_combination]
+            worker_names_msg = (
+                str(worker_names[:3]) + f"...more {len(worker_names) - 3}"
+                if len(worker_names) > 3
+                else str(worker_names)
+            )
+            message = f"The optimal combination {worker_names_msg} provides {byte_to_gib(largest_vram)} GiB of allocatable VRAM."
+            if worker_count - len(workers_combination) > 0:
+                message += f" There are {worker_count - len(workers_combination)} {'workers' if worker_count - len(workers_combination) > 1 else 'worker'} that can provide {device_count_per_worker} {'GPUs' if device_count_per_worker > 1 else 'GPU'}, as the workers in the combination, but some GPUs among them fail to meet requirements."
+            event_message.append(message)
+
+        event_message.append(
+            "Cannot find a suitable worker combination to run the model in distributed mode. "
+            "If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."
+        )
+        self._event_collector.add(
+            EventLevelEnum.INFO,
+            EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+            str(event_message),
+        )
 
         return []
 
-    async def manual_select_multi_worker_multi_gpu_candidates(
+    async def manual_select_multi_worker_multi_gpu_candidates(  # noqa: C901
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -816,6 +877,37 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             or self._largest_multi_gpu_vram * self._gpu_memory_utilization
             < self._vram_claim
         )
+
+        if overcommit:
+            scheduling_msg = ListMessageBuilder([])
+            if self._gpu_memory_utilization == 0:
+                scheduling_msg.append(
+                    f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB of VRAM."
+                )
+            else:
+                for worker_name, gpu_indexes in self._unsatisfied_gpu_messages.items():
+                    # Some seleted gpu is not meet the utilization
+                    devices_msg = (
+                        str(gpu_indexes[:3]) + f"...(more {len(gpu_indexes) - 3})"
+                        if len(gpu_indexes) > 3
+                        else str(gpu_indexes)
+                    )
+                    unsatisfied_msg = f"Worker {worker_name} GPU indexes {devices_msg}"
+                    if len(self._unsatisfied_gpu_messages) > 1:
+                        unsatisfied_msg += f" and other {len(self._unsatisfied_gpu_messages) - 1} workers"
+                    unsatisfied_msg += f" fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
+                    scheduling_msg.append(unsatisfied_msg)
+                    break
+
+                # All selected gpus combined VRAM is not enough.
+                scheduling_msg.append(
+                    f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, "
+                    f"{self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
+                )
+
+            self._event_collector.add(
+                EventLevelEnum.INFO, EVENT_ACTION_MANUAL_MULTI, str(scheduling_msg)
+            )
 
         return [
             ModelInstanceScheduleCandidate(
