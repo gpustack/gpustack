@@ -7,9 +7,8 @@ import os
 import subprocess
 from dataclasses import dataclass
 import time
-from typing import List, Optional
+from typing import List, Optional, Dict
 from dataclasses_json import dataclass_json
-
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import (
@@ -76,14 +75,71 @@ class estimate:
 
 @dataclass_json
 @dataclass
+class architecture:
+    # Describe the model architecture,
+    # value from "model", "projector", "adapter" and so on.
+    type: Optional[str] = "model"
+    # Describe the model architecture name.
+    architecture: Optional[str] = None
+    # Describe the clip's projector type,
+    # only used when type is "projector".
+    clipProjectorType: Optional[str] = None
+    # Describe the adapter type,
+    # only used when type is "adapter".
+    adapterType: Optional[str] = None
+    # Describe the diffusion model architecture,
+    # only used when type is "diffusion".
+    diffusionArchitecture: Optional[str] = None
+    # Describe the conditioners of the diffusion model,
+    # only used when type is "diffusion".
+    diffusionConditioners: Optional[List[Dict]] = None
+    # Describe the autoencoder of the diffusion model,
+    # only used when type is "diffusion".
+    diffusionAutoencoder: Optional[Dict] = None
+
+    def is_deployable(self) -> bool:
+        """
+        Check if the model is deployable.
+        Returns:
+            bool: True if the model is deployable, False otherwise.
+        """
+
+        if self.type in ["projector", "adapter"] and not self.architecture:
+            return False
+
+        if self.architecture == "diffusion":
+            return bool(self.diffusionConditioners and self.diffusionAutoencoder)
+
+        return True
+
+    def __str__(self) -> str:
+        """
+        Get a string representation of the architecture.
+        """
+
+        if self.type == "projector":
+            return f"projector({self.clipProjectorType})"
+        elif self.type == "adapter":
+            return f"adapter({self.adapterType})"
+        else:
+            if self.architecture == "diffusion":
+                return f"diffusion model({self.diffusionArchitecture})"
+            else:
+                return f"model({self.architecture})"
+
+
+@dataclass_json
+@dataclass
 class ggufParserOutput:
     estimate: estimate
+    architecture: Optional[architecture] = None
 
 
 @dataclass
 class ModelResourceClaim:
     model: Model
     resource_claim_estimate: estimate
+    resource_architecture: Optional[architecture] = None
 
     # overwrite the hash to use in uniquequeue
     def __hash__(self):
@@ -97,7 +153,7 @@ class ModelResourceClaim:
         return False
 
 
-def _get_empty_estimate(n_gpu: int = 1) -> estimate:
+def _get_empty_estimate(n_gpu: int = 1) -> (estimate, architecture):
     empty_layer_memory_estimate = layerMemoryEstimate(
         uma=0, nonuma=0, handleLayers=None
     )
@@ -107,7 +163,7 @@ def _get_empty_estimate(n_gpu: int = 1) -> estimate:
         ram=empty_layer_memory_estimate,
         vrams=[empty_layer_memory_estimate for _ in range(n_gpu)],
     )
-    return estimate(
+    e = estimate(
         items=[memory_estimate],
         contextSize=0,
         architecture="",
@@ -116,6 +172,8 @@ def _get_empty_estimate(n_gpu: int = 1) -> estimate:
         distributable=False,
         reranking=False,
     )
+    a = architecture()
+    return e, a
 
 
 def _gguf_parser_env(model: Model) -> dict:
@@ -442,7 +500,6 @@ async def _gguf_parser_command(  # noqa: C901
     command = [
         bin_path,
         "--skip-tokenizer",
-        "--skip-architecture",
         "--skip-metadata",
         "--json",
     ]
@@ -503,11 +560,15 @@ async def calculate_model_resource_claim(
     if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(model.local_path):
         # Skip the calculation if the model is not available, policies like spread strategy still apply.
         # TODO Support user provided resource claim for better scheduling.
-        estimate = _get_empty_estimate()
+        e, a = _get_empty_estimate()
         tensor_split = kwargs.get("tensor_split")
         if tensor_split:
-            estimate = _get_empty_estimate(n_gpu=len(tensor_split))
-        return ModelResourceClaim(model, estimate)
+            e, a = _get_empty_estimate(n_gpu=len(tensor_split))
+        return ModelResourceClaim(
+            model=model,
+            resource_claim_estimate=e,
+            resource_architecture=a,
+        )
 
     command = await _gguf_parser_command(model, offload, **kwargs)
     env = _gguf_parser_env(model)
@@ -552,7 +613,11 @@ async def calculate_model_resource_claim(
             )
             clear_vram_claim(claim)
 
-        return ModelResourceClaim(model, claim.estimate)
+        return ModelResourceClaim(
+            model=model,
+            resource_claim_estimate=claim.estimate,
+            resource_architecture=claim.architecture,
+        )
 
     except subprocess.CalledProcessError as e:
         raise Exception(
