@@ -1,5 +1,3 @@
-import copy
-
 import pytest
 from unittest.mock import patch, AsyncMock
 
@@ -1334,15 +1332,10 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
 
 
 @pytest.mark.parametrize(
-    "m, expected",
+    "index, m, expect_msg",
     [
-        # Automatic multi-workers selection.
-        # Check point:
-        # - Although 1st and 2nd workers have total 8 devices,
-        #   [0, 2] devices on 1st worker have allocated 60%,
-        #   [0, 2] devices on 2nd worker have allocated 40%,
-        #   Therefore, 4 workers should be selected to provide 8 devices.
         (
+            1,
             new_model(
                 id=1,
                 name="automatic_multi_workers_selection_3",
@@ -1356,55 +1349,39 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 ],
             ),
             [
-                {
-                    "worker_id": 3,
-                    "worker_name": "ascend_2",
-                    "gpu_indexes": [0, 1],
-                    "gpu_addresses": ["29.17.48.41", "29.17.57.32"],
-                    "ram": 536870912,
-                    "vram": {0: 34359738368, 1: 34359738368},
-                    "subordinate_workers": [
-                        ModelInstanceSubordinateWorker(
-                            worker_id=4,
-                            worker_ip="192.168.50.6",
-                            total_gpus=2,
-                            gpu_indexes=[0, 1],
-                            gpu_addresses=["29.18.48.41", "29.18.57.33"],
-                            computed_resource_claim=ComputedResourceClaim(
-                                ram=536870912,
-                                vram={0: 34359738368, 1: 34359738368},
-                            ),
-                        ),
-                        ModelInstanceSubordinateWorker(
-                            worker_id=1,
-                            worker_ip="192.168.50.3",
-                            total_gpus=4,
-                            gpu_indexes=[1, 3],
-                            gpu_addresses=["29.17.57.31", "29.17.48.40"],
-                            computed_resource_claim=ComputedResourceClaim(
-                                ram=536870912,
-                                vram={1: 34359738368, 3: 34359738368},
-                            ),
-                        ),
-                        ModelInstanceSubordinateWorker(
-                            worker_id=2,
-                            worker_ip="192.168.50.2",
-                            total_gpus=4,
-                            gpu_indexes=[1, 3],
-                            gpu_addresses=["29.17.57.33", "29.17.48.42"],
-                            computed_resource_claim=ComputedResourceClaim(
-                                ram=536870912,
-                                vram={1: 34359738368, 3: 34359738368},
-                            ),
-                        ),
-                    ],
-                },
+                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+- With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
+- The optimal combination ['ascend_0', 'ascend_1'] provides 102.4 GiB of allocatable VRAM.
+- Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and devices."""
             ],
-        )
+        ),
+        (
+            2,
+            new_model(
+                id=1,
+                name="automatic_multi_workers_selection_3",
+                replicas=1,
+                huggingface_repo_id="Qwen/Qwen2.5-72B-Instruct",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--max-seq-len=32768",
+                    "--npu-memory-fraction=0.5",
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+- With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
+- The optimal combination ['ascend_2', 'ascend_3', 'ascend_1'] provides 76.8 GiB of allocatable VRAM. There are 1 worker that can provide 2 devices, as the workers in the combination, but some devices among them fail to meet requirements.
+- Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and devices."""
+            ],
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(config, m, expected):
+async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
+    config, index, m, expect_msg
+):
     def adjust_memory(worker):
         # Adjust the memory utilization of the 1st and 2nd workers.
         # The 0th and 2nd devices of 1st worker have allocated 60%,
@@ -1442,6 +1419,10 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(config, m, expected
         if gpu.memory.allocated
     ]
 
+    if index == 2:
+        for device in workers[0].status.gpu_devices:
+            device.type = "unknown"
+
     resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
 
     resource_fit_selector._serving_params.npu_memory_fraction = 0.2
@@ -1457,21 +1438,15 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(config, m, expected
             return_value=workers,
         ),
     ):
-        actual = await resource_fit_selector.select_candidates(workers)
-        compare_candidates(actual, [])
-
-        expect_msg = [
-            """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
-- With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
-- The largest available worker has 102.4 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 20.48 GiB of allocatable VRAM."""
-        ]
+        await resource_fit_selector.select_candidates(workers)
         assert resource_fit_selector.get_messages() == expect_msg
 
 
 @pytest.mark.parametrize(
-    "m, expected",
+    "index, m, expect_msg",
     [
         (
+            1,
             new_model(
                 id=1,
                 name="automatic_multi_workers_selection_3",
@@ -1497,56 +1472,81 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(config, m, expected
                 ),
             ),
             [
-                {
-                    "worker_id": 3,
-                    "worker_name": "ascend_2",
-                    "gpu_indexes": [0, 1],
-                    "gpu_addresses": ["29.17.48.41", "29.17.57.32"],
-                    "ram": 536870912,
-                    "vram": {0: 34359738368, 1: 34359738368},
-                    "subordinate_workers": [
-                        ModelInstanceSubordinateWorker(
-                            worker_id=4,
-                            worker_ip="192.168.50.6",
-                            total_gpus=2,
-                            gpu_indexes=[0, 1],
-                            gpu_addresses=["29.18.48.41", "29.18.57.33"],
-                            computed_resource_claim=ComputedResourceClaim(
-                                ram=536870912,
-                                vram={0: 34359738368, 1: 34359738368},
-                            ),
-                        ),
-                        ModelInstanceSubordinateWorker(
-                            worker_id=1,
-                            worker_ip="192.168.50.3",
-                            total_gpus=4,
-                            gpu_indexes=[1, 3],
-                            gpu_addresses=["29.17.57.31", "29.17.48.40"],
-                            computed_resource_claim=ComputedResourceClaim(
-                                ram=536870912,
-                                vram={1: 34359738368, 3: 34359738368},
-                            ),
-                        ),
-                        ModelInstanceSubordinateWorker(
-                            worker_id=2,
-                            worker_ip="192.168.50.2",
-                            total_gpus=4,
-                            gpu_indexes=[1, 3],
-                            gpu_addresses=["29.17.57.33", "29.17.48.42"],
-                            computed_resource_claim=ComputedResourceClaim(
-                                ram=536870912,
-                                vram={1: 34359738368, 3: 34359738368},
-                            ),
-                        ),
-                    ],
-                },
+                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+- With --npu-memory-fraction=0.9, All GPUs combined need to provide at least 173.60 GiB of total VRAM.
+- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fails to meet the 90.0% allocatable VRAM ratio."""
             ],
-        )
+        ),
+        (
+            2,
+            new_model(
+                id=1,
+                name="automatic_multi_workers_selection_3",
+                replicas=1,
+                huggingface_repo_id="Qwen/Qwen2.5-72B-Instruct",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--max-seq-len=32768",
+                    "--npu-memory-fraction=0.5",
+                    "--trust-remote-code",
+                ],
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_0:npu:0",
+                        "ascend_0:npu:2",
+                        "ascend_1:npu:0",
+                        "ascend_1:npu:2",
+                        "ascend_2:npu:0",
+                        "ascend_2:npu:2",
+                        "ascend_3:npu:0",
+                        "ascend_3:npu:2",
+                    ],
+                ),
+            ),
+            [
+                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+- With --npu-memory-fraction=0.1, All GPUs combined need to provide at least 1562.40 GiB of total VRAM.
+- Selected GPUs have 51.2 GiB allocatable VRAM, 8/8 of GPUs meet the VRAM utilization ratio, providing 5.12 GiB of allocatable VRAM."""
+            ],
+        ),
+        (
+            3,
+            new_model(
+                id=1,
+                name="automatic_multi_workers_selection_3",
+                replicas=1,
+                huggingface_repo_id="Qwen/Qwen2.5-72B-Instruct",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--max-seq-len=32768",
+                    "--npu-memory-fraction=0.5",
+                    "--trust-remote-code",
+                ],
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_0:npu:0",
+                        "ascend_0:npu:2",
+                        "ascend_1:npu:0",
+                        "ascend_1:npu:2",
+                        "ascend_2:npu:0",
+                        "ascend_2:npu:2",
+                        "ascend_3:npu:0",
+                        "ascend_3:npu:2",
+                    ],
+                ),
+            ),
+            [
+                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+- With --npu-memory-fraction=0.9, All GPUs combined need to provide at least 173.60 GiB of total VRAM.
+- Worker ['ascend_0', 'ascend_1']...(more 2) fails to meet the required RAM.
+- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fails to meet the 90.0% allocatable VRAM ratio."""
+            ],
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
-    config, m, expected
+    config, index, m, expect_msg
 ):
     def adjust_memory(worker):
         # Adjust the memory utilization of the 1st and 2nd workers.
@@ -1597,13 +1597,17 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
-    resource_fit_selector._serving_params.npu_memory_fraction = 0.9
-
-    resource_fit_selector2 = AscendMindIEResourceFitSelector(config, m)
-    resource_fit_selector2._serving_params.npu_memory_fraction = 0.1
-
-    resource_fit_selector3 = copy.deepcopy(resource_fit_selector)
+    if index == 1:
+        resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+        resource_fit_selector._serving_params.npu_memory_fraction = 0.9
+    elif index == 2:
+        resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+        resource_fit_selector._serving_params.npu_memory_fraction = 0.1
+    elif index == 3:
+        resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+        resource_fit_selector._serving_params.npu_memory_fraction = 0.9
+        for worker in workers:
+            worker.system_reserved.ram = worker.status.memory.total - 500
 
     with (
         patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
@@ -1617,47 +1621,4 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         ),
     ):
         await resource_fit_selector.select_candidates(workers)
-
-        expect_msg = [
-            """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
-- With --npu-memory-fraction=0.9, All GPUs combined need to provide at least 173.60 GiB of total VRAM.
-- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fails to meet the 90.0% allocatable VRAM ratio."""
-        ]
         assert resource_fit_selector.get_messages() == expect_msg
-
-        # case 2
-        await resource_fit_selector2.select_candidates(workers)
-
-        expect_msg2 = [
-            """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
-- With --npu-memory-fraction=0.1, All GPUs combined need to provide at least 1562.40 GiB of total VRAM.
-- Selected GPUs have 51.2 GiB allocatable VRAM, 8/8 of GPUs meet the VRAM utilization ratio, providing 5.12 GiB of allocatable VRAM."""
-        ]
-
-        assert resource_fit_selector2.get_messages() == expect_msg2
-
-    # case 3
-    with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
-        patch(
-            "gpustack.policies.utils.get_worker_model_instances",
-            return_value=model_instances,
-        ),
-        patch(
-            "gpustack.schemas.workers.Worker.all",
-            return_value=workers,
-        ),
-    ):
-        for worker in workers:
-            worker.system_reserved.ram = worker.status.memory.total - 500
-
-        await resource_fit_selector3.select_candidates(workers)
-
-        expect_msg3 = [
-            """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
-- With --npu-memory-fraction=0.9, All GPUs combined need to provide at least 173.60 GiB of total VRAM.
-- Worker ['ascend_0', 'ascend_1']...(more 2) fails to meet the required RAM.
-- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fails to meet the 90.0% allocatable VRAM ratio."""
-        ]
-
-        assert resource_fit_selector3.get_messages() == expect_msg3

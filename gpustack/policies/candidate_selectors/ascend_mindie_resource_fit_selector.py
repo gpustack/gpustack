@@ -3,7 +3,7 @@ import dataclasses
 import enum
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -145,6 +145,12 @@ class ModelParameters:
         return ModelAttentionTypeEnum.UNK
 
 
+@dataclasses.dataclass
+class RequestEstimateUsage:
+    ram: int
+    vram: int
+
+
 class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
     """
     Ascend MindIE Resource Fit Selector,
@@ -257,7 +263,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def _estimate_usage(self) -> Optional[Tuple[int, int]]:  # noqa: C901
+    async def _estimate_usage(self) -> RequestEstimateUsage:  # noqa: C901
         """
         Estimate the resource usage of the model instance.
 
@@ -394,7 +400,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             f"VRAM: footprint = {byte_to_gib(vram_footprint)} GiB, kv_cache = {byte_to_gib(vram_kv_cache)} GiB, weight = {byte_to_gib(vram_weight)} GiB, computation = {byte_to_gib(vram_computation)} GiB, total = {byte_to_gib(vram)} GiB"
         )
 
-        return ram, vram
+        return RequestEstimateUsage(ram, vram)
 
     async def _validate_parallelized(self) -> bool:  # noqa: C901
         # Validate whether model can be parallelized.
@@ -495,6 +501,19 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     in self._selected_worker_name_devices_idx[worker.name]
                 }
 
+                for device in self.__worker_sorted_devices_idx[worker.id]:
+                    if (
+                        device.index
+                        in self._selected_worker_name_devices_idx[worker.name]
+                    ):
+                        if device.type != "npu":
+                            self._diagnostic_messages.append(
+                                f"The selected worker {worker.name} contain non-NPU devices."
+                            )
+                            return {}
+
+                        selected_devices_idx[device.index] = device
+
                 # Return if the selected devices aren't matched with the worker's available devices.
                 if len(selected_devices_idx) < len(
                     self._selected_worker_name_devices_idx[worker.name]
@@ -556,6 +575,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 selected_devices_idx: Dict[int, GPUDeviceInfo] = {
                     device.index: device
                     for device in self.__worker_sorted_devices_idx[worker.id]
+                    if device.type == "npu"
                 }
 
                 # Index the worker and its devices.
@@ -584,8 +604,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
     async def _manual_select_candidates(  # noqa: C901
         self,
         available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceInfo]],
-        ram_request: int,
-        vram_request: int,
+        request_usage: RequestEstimateUsage,
     ):
         candidates: List[ModelInstanceScheduleCandidate] = []
         if not self._selected_worker_name_devices_idx:
@@ -597,11 +616,11 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Record the remaining VRAM request in the worker group level,
         # which is used to determine if enough devices are selected.
-        workers_vram_request_remain = vram_request
+        workers_vram_request_remain = request_usage.vram
 
-        # Store the overcommit device index for later scheduling message construction
+        # Store the overcommit worker for later scheduling message construction
         unsatisfied_devices_idx: Dict[str, List[int]] = {}
-        unsatisfied_ram_workers = []
+        unsatisfied_workers = []
 
         for worker, devices in available_worker_devices_idx.items():
             # Construct candidate by the main worker.
@@ -611,7 +630,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=[],
                     gpu_addresses=[],
                     computed_resource_claim=ComputedResourceClaim(
-                        ram=ram_request,
+                        ram=request_usage.ram,
                         vram={},
                     ),
                     subordinate_workers=[],
@@ -625,7 +644,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=[],
                     gpu_addresses=[],
                     computed_resource_claim=ComputedResourceClaim(
-                        ram=ram_request,
+                        ram=request_usage.ram,
                         vram={},
                     ),
                 )
@@ -688,9 +707,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
             # Validate
             ram_allocate = worker_alloc.ram
-            if ram_request > ram_allocate:
+            if request_usage.ram > ram_allocate:
                 candidate.overcommit = True
-                unsatisfied_ram_workers.append(worker.name)
+                unsatisfied_workers.append(worker.name)
 
             # Append the subordinate worker to the candidate.
             if subworker_index >= 0:
@@ -700,52 +719,51 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             subworker_index += 1
             workers_vram_request_remain = worker_vram_request_remain
 
-        sum_vram = vram_request - workers_vram_request_remain
-        gpu_count = sum(len(gpus) for gpus in available_worker_devices_idx.values())
-        satisfied_count = gpu_count - sum(
-            len(gpus) for gpus in unsatisfied_devices_idx.values()
-        )
-
         # Validate and construct scheduling messages.
-        if unsatisfied_ram_workers:
-            unsatisfied_ram_msg = (
-                f"{unsatisfied_ram_workers[:2]}...(more {len(unsatisfied_ram_workers) - 2})"
-                if len(unsatisfied_ram_workers) > 2
-                else str(unsatisfied_ram_workers)
+        if unsatisfied_workers:
+            msg = (
+                f"{unsatisfied_workers[:2]}...(more {len(unsatisfied_workers) - 2})"
+                if len(unsatisfied_workers) > 2
+                else str(unsatisfied_workers)
             )
             self._scheduling_messages.append(
-                f"Worker {unsatisfied_ram_msg} fails to meet the required RAM."
+                f"Worker {msg} fails to meet the required RAM."
             )
 
         for worker_name, devices in unsatisfied_devices_idx.items():
-            show_gpu_list = (
+            unsatisfied_devices = (
                 f"{devices[:3]}...(more {len(devices) - 3})"
                 if len(devices) > 3
                 else str(devices)
             )
-            unsatisfied_vram_msg = f"Worker {worker_name} GPU indexes {show_gpu_list}"
+            msg = f"Worker {worker_name} GPU indexes {unsatisfied_devices}"
             if len(unsatisfied_devices_idx) > 1:
-                unsatisfied_vram_msg += (
-                    f" and other {len(unsatisfied_devices_idx) - 1} workers"
-                )
-            unsatisfied_vram_msg += f" fails to meet the {self._serving_params.npu_memory_fraction * 100}% allocatable VRAM ratio."
-            self._scheduling_messages.append(unsatisfied_vram_msg)
+                msg += f" and other {len(unsatisfied_devices_idx) - 1} workers"
+            msg += f" fails to meet the {self._serving_params.npu_memory_fraction * 100}% allocatable VRAM ratio."
+            self._scheduling_messages.append(msg)
             break
 
         if workers_vram_request_remain > 0:
             candidate.overcommit = True
+            devices_count = sum(
+                len(gpus) for gpus in available_worker_devices_idx.values()
+            )
+            satisfied_devices_count = devices_count - sum(
+                len(gpus) for gpus in unsatisfied_devices_idx.values()
+            )
             effective_vram = (
                 (
-                    byte_to_gib(sum_vram)
+                    byte_to_gib(request_usage.vram - workers_vram_request_remain)
                     * self._serving_params.npu_memory_fraction
-                    * satisfied_count
-                    / gpu_count
+                    * satisfied_devices_count
+                    / devices_count
                 )
-                if gpu_count
+                if devices_count
                 else 0.0
             )
             self._scheduling_messages.append(
-                f"Selected GPUs have {byte_to_gib(vram_request - workers_vram_request_remain)} GiB allocatable VRAM, {satisfied_count}/{gpu_count} of GPUs meet the VRAM utilization ratio, providing {effective_vram:.2f} GiB of allocatable VRAM."
+                f"Selected GPUs have {byte_to_gib(request_usage.vram - workers_vram_request_remain)} GiB allocatable VRAM, "
+                f"{satisfied_devices_count}/{devices_count} of GPUs meet the VRAM utilization ratio, providing {effective_vram:.2f} GiB of allocatable VRAM."
             )
 
         # Return one candidate for selected workers.
@@ -754,7 +772,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         return candidates
 
     async def _select_single_worker(  # noqa: C901
-        self, available_worker_devices_idx, ram_request, vram_request, quick_fit
+        self, available_worker_devices_idx, request_usage, quick_fit
     ):
         candidates: List[ModelInstanceScheduleCandidate] = []
         # Iterate over the workers.
@@ -767,13 +785,16 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if 0 < self._serving_params.world_size > len(devices):
                 continue
 
+            if len(devices) == 0:
+                continue
+
             # Construct candidate by the worker.
             candidate = ModelInstanceScheduleCandidate(
                 worker=worker,
                 gpu_indexes=[],
                 gpu_addresses=[],
                 computed_resource_claim=ComputedResourceClaim(
-                    ram=ram_request,
+                    ram=request_usage.ram,
                     vram={},
                 ),
             )
@@ -782,7 +803,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             worker_alloc = await self.__get_worker_alloc(worker)
             # Record the remaining VRAM request in the worker level,
             # which is used to determine if enough devices are selected.
-            worker_vram_request_remain = vram_request
+            worker_vram_request_remain = request_usage.vram
             # Record the remaining count needed to be selected,
             # which is used to determine if enough devices are selected.
             world_size_remain = self._serving_params.world_size
@@ -859,13 +880,14 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         return candidates
 
     async def _select_multi_workers(  # noqa: C901
-        self, available_worker_devices_idx, ram_request, vram_request, quick_fit
+        self, available_worker_devices_idx, request_usage, quick_fit
     ):
         candidates: List[ModelInstanceScheduleCandidate] = []
-        largest_ram = 0
+        # Store the optimal combination info to show
         largest_vram = 0
-        largest_satisfied_count = 0
-        largest_total_count = 0
+        workers_combination: List[Worker] = []
+        worker_count = 0
+        device_count_per_worker = 0
         # Group workers by device count: {Devices Count: [Worker, ...]}.
         device_count_worker_group_idx: Dict[int, List[Worker]] = {}
         for worker in available_worker_devices_idx.keys():
@@ -965,10 +987,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                 # Record the remaining VRAM request in the worker group level,
                 # which is used to determine if enough devices are selected.
-                worker_group_vram_request_remain = vram_request
+                worker_group_vram_request_remain = request_usage.vram
                 # Record the remaining count needed to be selected,
                 # which is used to determine if enough devices are selected.
                 world_size_remain = self._serving_params.world_size
+
+                selected_workers: List[Worker] = []
 
                 for worker in worker_group:
                     # Break if selected devices are satisfied in semi-automatic mode.
@@ -982,7 +1006,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                             gpu_indexes=[],
                             gpu_addresses=[],
                             computed_resource_claim=ComputedResourceClaim(
-                                ram=ram_request,
+                                ram=request_usage.ram,
                                 vram={},
                             ),
                             subordinate_workers=[],
@@ -996,7 +1020,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                             gpu_indexes=[],
                             gpu_addresses=[],
                             computed_resource_claim=ComputedResourceClaim(
-                                ram=ram_request,
+                                ram=request_usage.ram,
                                 vram={},
                             ),
                         )
@@ -1015,6 +1039,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                         # Break if selected devices are satisfied in semi-automatic mode.
                         if local_world_size_remain == 0:
                             break
+
+                        if device.type != "npu":
+                            continue
 
                         # Calculate device VRAM request.
                         device_vram_request = int(
@@ -1055,16 +1082,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                         worker_vram_request_remain -= device_vram_request
                         local_world_size_remain -= 1
 
-                    largest_ram = max(worker_alloc.ram, largest_ram)
-                    if vram_request - worker_vram_request_remain > largest_vram:
-                        largest_vram = vram_request - worker_vram_request_remain
-                        largest_satisfied_count = (
-                            local_world_size - local_world_size_remain
-                        )
-                        largest_total_count = len(
-                            self.__worker_sorted_devices_idx[worker.id]
-                        )
-
                     # Skip if selected devices are not satisfied in semi-automatic mode.
                     if local_world_size_remain > 0:
                         continue
@@ -1077,6 +1094,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     subworker_index += 1
                     worker_group_vram_request_remain = worker_vram_request_remain
                     world_size_remain -= local_world_size
+                    selected_workers.append(worker)
+
+                if request_usage.vram - worker_group_vram_request_remain > largest_vram:
+                    largest_vram = request_usage.vram - worker_group_vram_request_remain
+                    workers_combination = selected_workers
+                    worker_count = len(worker_group)
+                    device_count_per_worker = device_count
 
                 # Skip if selected devices are not satisfied in semi-automatic mode.
                 if world_size_remain > 0:
@@ -1107,25 +1131,27 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 )
 
         if len(candidates) == 0:
-            effective_vram = (
-                (
-                    byte_to_gib(largest_vram)
-                    * self._serving_params.npu_memory_fraction
-                    * largest_satisfied_count
-                    / largest_total_count
-                )
-                if largest_total_count
-                else 0.0
+            # Nothing can be return, construct scheduling message
+            worker_names = [worker.name for worker in workers_combination]
+            worker_names_msg = (
+                str(worker_names[:3]) + f"...more {len(worker_names) - 3}"
+                if len(worker_names) > 3
+                else str(worker_names)
             )
+            message = f"The optimal combination {worker_names_msg} provides {byte_to_gib(largest_vram)} GiB of allocatable VRAM."
+            if worker_count - len(workers_combination) > 0:
+                message += f" There are {worker_count - len(workers_combination)} {'workers' if worker_count - len(workers_combination) > 1 else 'worker'} that can provide {device_count_per_worker} {'devices' if device_count_per_worker > 1 else 'device'}, as the workers in the combination, but some devices among them fail to meet requirements."
+            self._scheduling_messages.append(message)
             self._scheduling_messages.append(
-                f"The largest available worker has {byte_to_gib(largest_vram)} GiB allocatable VRAM, {largest_satisfied_count}/{largest_total_count} of GPUs meet the VRAM utilization ratio, providing {effective_vram:.2f} GiB of allocatable VRAM."
+                "Cannot find a suitable worker combination to run the model in distributed mode. "
+                "If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and devices."
             )
 
         return candidates
 
     async def _construct_candidates(  # noqa: C901
         self,
-        estimated_usage: Tuple[int, int],
+        request_usage: RequestEstimateUsage,
         workers: List[Worker],
         quick_fit: bool = True,
     ) -> List[ModelInstanceScheduleCandidate]:
@@ -1137,21 +1163,20 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if not await self._validate_parallelized():
             return []
 
-        ram_request, vram_request = estimated_usage[0], estimated_usage[1]
-
         # Set default scheduling message
         self._scheduling_messages.append(
-            f"The model requires approximately {byte_to_gib(ram_request)} GiB RAM and {byte_to_gib(vram_request)} GiB VRAM."
+            f"The model requires approximately {byte_to_gib(request_usage.ram)} GiB RAM and {byte_to_gib(request_usage.vram)} GiB VRAM."
         )
         if self._serving_params.npu_memory_fraction:
             self._scheduling_messages.append(
-                f"With --npu-memory-fraction={self._serving_params.npu_memory_fraction}, All GPUs combined need to provide at least {(byte_to_gib(vram_request) / self._serving_params.npu_memory_fraction):.2f} GiB of total VRAM."
+                f"With --npu-memory-fraction={self._serving_params.npu_memory_fraction}, "
+                f"All GPUs combined need to provide at least {(byte_to_gib(request_usage.vram) / self._serving_params.npu_memory_fraction):.2f} GiB of total VRAM."
             )
 
         # Available worker devices: {Worker: {Device Index: Device}},
         # all devices are in sorted.
         available_worker_devices_idx = await self._get_available_worker_devices_idx(
-            workers, ram_request
+            workers, request_usage.vram
         )
         if not available_worker_devices_idx:
             return candidates
@@ -1159,12 +1184,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Statisfy the selected devices count, if specified.
         if self._selected_worker_name_devices_idx:
             return await self._manual_select_candidates(
-                available_worker_devices_idx, ram_request, vram_request
+                available_worker_devices_idx, request_usage
             )
 
         # Try to find a single worker that can satisfy the requested resources.
         single_worker_candidates = await self._select_single_worker(
-            available_worker_devices_idx, ram_request, vram_request, quick_fit
+            available_worker_devices_idx, request_usage, quick_fit
         )
 
         # Return if enabled quick fit and found candidates.
@@ -1175,7 +1200,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Try to find multiple workers that can satisfy the requested resources.
         multi_workers_candidates = await self._select_multi_workers(
-            available_worker_devices_idx, ram_request, vram_request, quick_fit
+            available_worker_devices_idx, request_usage, quick_fit
         )
         if multi_workers_candidates:
             candidates.extend(multi_workers_candidates)
