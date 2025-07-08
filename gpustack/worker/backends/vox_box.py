@@ -36,15 +36,16 @@ class VoxBoxServer(InferenceServer):
             if self._model.backend_parameters:
                 arguments.extend(self._model.backend_parameters)
 
-            if self._model_instance.gpu_indexes is not None:
-                arguments.extend(
-                    [
-                        "--device",
-                        f"cuda:{self._model_instance.gpu_indexes[0]}",
-                    ]
-                )
-
             arguments.extend(built_in_arguments)
+
+            env = os.environ.copy()
+            env.update(self._model.env or {})
+
+            if self._model_instance.gpu_indexes is not None:
+                env["CUDA_VISIBLE_DEVICES"] = str(self._model_instance.gpu_indexes[0])
+                logger.info(
+                    f"Set CUDA_VISIBLE_DEVICES = {self._model_instance.gpu_indexes[0]}"
+                )
 
             logger.info("Starting vox-box server")
             logger.debug(f"Run vox-box with arguments: {' '.join(arguments)}")
@@ -52,9 +53,6 @@ class VoxBoxServer(InferenceServer):
                 logger.debug(
                     f"Model environment variables: {', '.join(f'{key}={value}' for key, value in self._model.env.items())}"
                 )
-
-            env = os.environ.copy()
-            env.update(self._model.env or {})
 
             result = subprocess.run(
                 [command_path] + arguments,
