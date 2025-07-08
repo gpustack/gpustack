@@ -10,9 +10,9 @@ from gpustack.policies.utils import get_worker_allocatable_resource, ListMessage
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     ModelResourceClaim,
+    Estimate,
+    MemoryEstimate,
     calculate_model_resource_claim,
-    estimate,
-    memoryEstimate,
 )
 from gpustack.policies.base import (
     Allocatable,
@@ -189,7 +189,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self,
         layers: int,
         is_uma: bool = False,
-        claim_items: List[memoryEstimate] = None,
+        claim_items: List[MemoryEstimate] = None,
     ) -> Tuple[List[int], int]:
         vram_claims = []
         ram_claim = 0
@@ -1604,7 +1604,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         flag_tensor_spliting.extend([value[1] for value in main_worker_gpus])
 
         cache_key = self._cache_key_for_main_with_rpcs_combination(combination)
-        estimate_result: estimate = await self._get_or_calculate_model_resource_claim(  # type: ignore
+        estimate_result: Estimate = await self._get_or_calculate_model_resource_claim(  # type: ignore
             self._multi_workers_multi_gpus_partial_offload_resource_claim_cache,
             cache_key,
             flag_tensor_spliting,
@@ -1612,7 +1612,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         )
 
         satisfied_candidate = None
-        estimate_items: List[memoryEstimate] = sorted(
+        estimate_items: List[MemoryEstimate] = sorted(
             estimate_result.items,
             key=lambda x: x.offloadLayers,
             reverse=True,
@@ -2077,7 +2077,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     async def _check_combination_rpcs(
         self,
         combination,
-        e: memoryEstimate,
+        e: MemoryEstimate,
         total_layers: int,
     ) -> List[ModelInstanceSubordinateWorker]:
         """
@@ -2216,7 +2216,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
     async def _get_or_calculate_model_resource_claim(
         self, cache, cache_key, tensor_split=None, rpc=None
-    ) -> estimate:
+    ) -> Estimate:
         """
         Get the resource claim estimate from cache or calculate it if not present in cache.
         """

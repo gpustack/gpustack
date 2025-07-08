@@ -7,7 +7,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 import time
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from dataclasses_json import dataclass_json
 
 from gpustack.config.config import get_global_config
@@ -32,7 +32,7 @@ class GPUOffloadEnum(str, Enum):
 
 @dataclass_json
 @dataclass
-class layerMemoryEstimate:
+class LayerMemoryEstimate:
     uma: int
     nonuma: int
     handleLayers: Optional[int] = None
@@ -40,10 +40,10 @@ class layerMemoryEstimate:
 
 @dataclass_json
 @dataclass
-class memoryEstimate:
+class MemoryEstimate:
     fullOffloaded: bool
-    ram: layerMemoryEstimate
-    vrams: List[layerMemoryEstimate]
+    ram: LayerMemoryEstimate
+    vrams: List[LayerMemoryEstimate]
     offloadLayers: Optional[int] = None  # Not available for diffusion models
 
     def to_log_string(self) -> str:
@@ -63,8 +63,8 @@ class memoryEstimate:
 
 @dataclass_json
 @dataclass
-class estimate:
-    items: List[memoryEstimate]
+class Estimate:
+    items: List[MemoryEstimate]
     architecture: str
     embeddingOnly: bool = False
     imageOnly: bool = False
@@ -75,7 +75,7 @@ class estimate:
 
 @dataclass_json
 @dataclass
-class architecture:
+class Architecture:
     # Describe the model architecture,
     # value from "model", "projector", "adapter" and so on.
     type: Optional[str] = "model"
@@ -130,16 +130,16 @@ class architecture:
 
 @dataclass_json
 @dataclass
-class ggufParserOutput:
-    estimate: estimate
-    architecture: Optional[architecture] = None
+class GGUFParserOutput:
+    estimate: Estimate
+    architecture: Optional[Architecture] = None
 
 
 @dataclass
 class ModelResourceClaim:
     model: Model
-    resource_claim_estimate: estimate
-    resource_architecture: Optional[architecture] = None
+    resource_claim_estimate: Estimate
+    resource_architecture: Optional[Architecture] = None
 
     # overwrite the hash to use in uniquequeue
     def __hash__(self):
@@ -153,17 +153,17 @@ class ModelResourceClaim:
         return False
 
 
-def _get_empty_estimate(n_gpu: int = 1) -> (estimate, architecture):
-    empty_layer_memory_estimate = layerMemoryEstimate(
+def _get_empty_estimate(n_gpu: int = 1) -> Tuple[Estimate, Architecture]:
+    empty_layer_memory_estimate = LayerMemoryEstimate(
         uma=0, nonuma=0, handleLayers=None
     )
-    memory_estimate = memoryEstimate(
+    memory_estimate = MemoryEstimate(
         offloadLayers=999,
         fullOffloaded=True,
         ram=empty_layer_memory_estimate,
         vrams=[empty_layer_memory_estimate for _ in range(n_gpu)],
     )
-    e = estimate(
+    e = Estimate(
         items=[memory_estimate],
         contextSize=0,
         architecture="",
@@ -172,7 +172,7 @@ def _get_empty_estimate(n_gpu: int = 1) -> (estimate, architecture):
         distributable=False,
         reranking=False,
     )
-    a = architecture()
+    a = Architecture()
     return e, a
 
 
@@ -593,7 +593,7 @@ async def calculate_model_resource_claim(
             )
 
         cmd_output = stdout.decode()
-        claim: ggufParserOutput = ggufParserOutput.from_json(cmd_output)
+        claim: GGUFParserOutput = GGUFParserOutput.from_json(cmd_output)
         latency = time.time() - start_time
 
         if offload == GPUOffloadEnum.Full:
@@ -631,12 +631,12 @@ async def calculate_model_resource_claim(
         )
 
 
-def clear_vram_claim(claim: ggufParserOutput):
+def clear_vram_claim(claim: GGUFParserOutput):
     for item in claim.estimate.items:
         # gguf-parser provides vram claim when offloadLayers is 0 due to current llama.cpp behavior, but llama-box won't allocate such vram.
         if item.offloadLayers == 0:
             item.vrams = [
-                layerMemoryEstimate(uma=0, nonuma=0, handleLayers=0) for _ in item.vrams
+                LayerMemoryEstimate(uma=0, nonuma=0, handleLayers=0) for _ in item.vrams
             ]
 
 
