@@ -775,6 +775,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         self, available_worker_devices_idx, request_usage, quick_fit
     ):
         candidates: List[ModelInstanceScheduleCandidate] = []
+        largest_vram = 0
+        total_devices_count = 0
+        satisfied_devices_count = 0
         # Iterate over the workers.
         for worker, devices in available_worker_devices_idx.items():
             # Break if enabled quick fit and found candidates.
@@ -855,6 +858,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 worker_vram_request_remain -= device_vram_request
                 world_size_remain -= 1
 
+            if request_usage.vram - worker_vram_request_remain > largest_vram:
+                largest_vram = request_usage.vram - worker_vram_request_remain
+                satisfied_devices_count = (
+                    self._serving_params.world_size - world_size_remain
+                )
+                total_devices_count = len(self.__worker_sorted_devices_idx[worker.id])
+
             # Skip if selected devices are not satisfied in semi-automatic mode.
             if world_size_remain > 0:
                 continue
@@ -877,11 +887,31 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             candidates.append(candidate)
             logger.debug(f"Found intermediate candidate: {candidate.to_log_string()}")
 
+        if (
+            len(candidates) == 0
+            and not self._model.distributed_inference_across_workers
+        ):
+            effective_vram = (
+                byte_to_gib(largest_vram)
+                * self._serving_params.npu_memory_fraction
+                * satisfied_devices_count
+                / total_devices_count
+                if total_devices_count
+                else 0.0
+            )
+            event_msg = (
+                f"The largest available worker has {byte_to_gib(largest_vram)} GiB allocatable VRAM, "
+                f"{satisfied_devices_count}/{total_devices_count} of GPUs meet the VRAM utilization ratio, providing {effective_vram:.2f} GiB of allocatable VRAM."
+            )
+            self._scheduling_messages.append(event_msg)
+
         return candidates
 
     async def _select_multi_workers(  # noqa: C901
         self, available_worker_devices_idx, request_usage, quick_fit
     ):
+        if not self._model.distributed_inference_across_workers:
+            return []
         candidates: List[ModelInstanceScheduleCandidate] = []
         # Store the optimal combination info to show
         largest_vram = 0
