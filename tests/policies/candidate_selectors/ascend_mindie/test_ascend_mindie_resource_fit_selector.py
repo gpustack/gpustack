@@ -1376,6 +1376,27 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and devices."""
             ],
         ),
+        (
+            3,
+            new_model(
+                id=1,
+                name="automatic_multi_workers_selection_3",
+                replicas=1,
+                huggingface_repo_id="Qwen/Qwen2.5-72B-Instruct",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--max-seq-len=32768",
+                    "--npu-memory-fraction=0.5",
+                    "--trust-remote-code",
+                ],
+                distributed_inference_across_workers=False,
+            ),
+            [
+                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+- With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
+- The largest available worker has 51.2 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 10.24 GiB of allocatable VRAM."""
+            ],
+        ),
     ],
 )
 @pytest.mark.asyncio
