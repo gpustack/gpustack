@@ -1,8 +1,10 @@
 import logging
+from typing import Optional
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.detectors.custom.custom import Custom
 from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.policies.base import Allocated
+from gpustack.schemas.models import ComputedResourceClaim
 from gpustack.schemas.workers import (
     RPCServer,
     MountPoint,
@@ -146,21 +148,26 @@ class WorkerStatusCollector:
         try:
             model_instances = self._clientset.model_instances.list()
             for model_instance in model_instances.items:
+                if (
+                    model_instance.distributed_servers
+                    and model_instance.distributed_servers.subordinate_workers
+                ):
+                    for (
+                        subworker
+                    ) in model_instance.distributed_servers.subordinate_workers:
+                        if subworker.worker_name != self._worker_name:
+                            continue
+
+                        aggregate_computed_resource_claim_allocated(
+                            allocated, subworker.computed_resource_claim
+                        )
+
                 if model_instance.worker_name != self._worker_name:
                     continue
 
-                if model_instance.computed_resource_claim is None:
-                    continue
-
-                ram = model_instance.computed_resource_claim.ram or 0
-                vram = model_instance.computed_resource_claim.vram or {}
-
-                allocated.ram += ram
-                if model_instance.gpu_indexes is not None:
-                    for gpu_index in model_instance.gpu_indexes:
-                        allocated.vram[gpu_index] = (
-                            allocated.vram.get(gpu_index) or 0
-                        ) + (vram.get(gpu_index) or 0)
+                aggregate_computed_resource_claim_allocated(
+                    allocated, model_instance.computed_resource_claim
+                )
 
             # inject allocated resources
             if status.memory is not None:
@@ -175,3 +182,17 @@ class WorkerStatusCollector:
                         status.gpu_devices[i].memory.allocated = 0
         except Exception as e:
             logger.error(f"Failed to inject allocated resources: {e}")
+
+
+def aggregate_computed_resource_claim_allocated(
+    allocated: Allocated, computed_resource_claim: Optional[ComputedResourceClaim]
+):
+    """Aggregate allocated resources from a ComputedResourceClaim into Allocated."""
+    if computed_resource_claim is None:
+        return
+
+    if computed_resource_claim.ram:
+        allocated.ram += computed_resource_claim.ram
+
+    for gpu_index, vram in (computed_resource_claim.vram or {}).items():
+        allocated.vram[gpu_index] = (allocated.vram.get(gpu_index) or 0) + vram
