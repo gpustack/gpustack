@@ -711,6 +711,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if not self._cfg.enable_ray:
             return []
 
+        if self._model.backend_version:
+            # Using custom backend version to run vLLM across multiple workers is not supported.
+            return []
+
         if self._selected_gpu_workers:
             return await self.manual_select_multi_worker_multi_gpu_candidates(workers)
 
