@@ -38,7 +38,7 @@ truststore = "^0.9.1"
 cryptography = "^43.0.0"
 tzdata = "^2024.1"
 modelscope = ">=1.22.3,<1.23"
-ray = {version = "2.43.0", extras = ["default"]} # Align with BUILTIN_RAY_VERSION in tools_manager.py
+ray = {version = "2.43.0", extras = ["default"]}
 vllm = {version = "0.9.2", optional = true}
 mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
 uvicorn = "^0.32.0"

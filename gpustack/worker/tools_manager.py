@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_LLAMA_BOX_VERSION = "v0.0.162"
 BUILTIN_GGUF_PARSER_VERSION = "v0.20.4"
-BUILTIN_RAY_VERSION = "2.43.0"
 
 
 class ToolsManager:
@@ -292,10 +291,6 @@ class ToolsManager:
         self.install_versioned_package_by_pipx(
             "vllm",
             version,
-            extra_packages=[
-                "gpustack",  # To apply Ray patch for dist vLLM
-                f"ray=={BUILTIN_RAY_VERSION}",  # To avoid version conflict with Ray cluster
-            ],
         )
 
     def install_versioned_package_by_pipx(

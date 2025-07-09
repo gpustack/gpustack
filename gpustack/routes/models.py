@@ -254,6 +254,10 @@ async def validate_gpu_ids(  # noqa: C901
                 "Please enable Ray to make vLLM work across multiple workers. "
                 "For more information, please refer to the <a href='https://docs.gpustack.ai/latest/user-guide/inference-backends/#distributed-inference-across-workers-experimental'>documentation</a>."
             )
+        if len(worker_name_set) > 1 and model_in.backend_version:
+            raise BadRequestException(
+                message="Using custom backend version to run vLLM across multiple workers is not supported."
+            )
 
     if model_backend == BackendEnum.LLAMA_BOX:
         ts = find_parameter(model_in.backend_parameters, ["ts", "tensor-split"])
