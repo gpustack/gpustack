@@ -274,6 +274,7 @@ class ComputedResourceClaim(BaseModel):
 
 class ModelInstanceSubordinateWorker(BaseModel):
     worker_id: Optional[int] = None
+    worker_name: Optional[str] = None
     worker_ip: Optional[str] = None
     total_gpus: Optional[int] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])

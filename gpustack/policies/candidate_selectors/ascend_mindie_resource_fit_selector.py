@@ -639,6 +639,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             else:
                 subworker = ModelInstanceSubordinateWorker(
                     worker_id=worker.id,
+                    worker_name=worker.name,
                     worker_ip=worker.ip,
                     total_gpus=len(worker.status.gpu_devices),
                     gpu_indexes=[],
@@ -1045,6 +1046,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     else:
                         subworker = ModelInstanceSubordinateWorker(
                             worker_id=worker.id,
+                            worker_name=worker.name,
                             worker_ip=worker.ip,
                             total_gpus=len(worker.status.gpu_devices),
                             gpu_indexes=[],

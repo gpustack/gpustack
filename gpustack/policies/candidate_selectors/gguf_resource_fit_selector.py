@@ -90,8 +90,8 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._gpus_allocatable_vram = []
         self._workers_allocatable_vram = []
 
-        self._worker_name_to_worker: Dict[str:Worker] = {}
-        self._worker_id_to_worker: Dict[int:Worker] = {}
+        self._worker_name_to_worker: Dict[str, Worker] = {}
+        self._worker_id_to_worker: Dict[int, Worker] = {}
 
         self._max_gpu_vram = 0
         self._approximate_full_offload_required_gpu_number = 1
@@ -2091,9 +2091,8 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             r_worker_id = combination[i][0]
             r_gpu_index = combination[i][1]
             r_allocatable = combination[i][2]
-            r_is_unified_memory = self._worker_id_to_worker.get(
-                r_worker_id
-            ).status.memory.is_unified_memory
+            r_worker = self._worker_id_to_worker.get(r_worker_id)
+            r_is_unified_memory = r_worker.status.memory.is_unified_memory
 
             position = i - 1
             r_vram_claim = e.vrams[position].nonuma
@@ -2106,6 +2105,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             subordinate_workers.append(
                 ModelInstanceSubordinateWorker(
                     worker_id=r_worker_id,
+                    worker_name=r_worker.name,
                     gpu_indexes=[r_gpu_index],
                     computed_resource_claim=ComputedResourceClaim(
                         is_unified_memory=r_is_unified_memory,
