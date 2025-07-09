@@ -146,7 +146,7 @@ class WorkerStatusCollector:
         try:
             model_instances = self._clientset.model_instances.list()
             for model_instance in model_instances.items:
-                if model_instance.worker_ip != self._worker_ip:
+                if model_instance.worker_name != self._worker_name:
                     continue
 
                 if model_instance.computed_resource_claim is None:
