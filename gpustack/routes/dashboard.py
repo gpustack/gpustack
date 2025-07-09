@@ -1,7 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, Query
-from sqlalchemy import JSON, BigInteger, case, cast, text
 from sqlmodel import desc, distinct, select, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -23,7 +22,6 @@ from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
-from gpustack.server.db import get_engine
 from gpustack.server.deps import SessionDep
 from gpustack.schemas import Worker
 from gpustack.server.system_load import compute_system_load
@@ -243,17 +241,38 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
     statement = active_model_statement()
 
     results = (await session.exec(statement)).all()
+
+    top_model_ids = [result.id for result in results]
+    extra_conditions = [
+        col(ModelInstance.model_id).in_(top_model_ids),
+    ]
+    model_instances: List[ModelInstance] = await ModelInstance.all_by_fields(
+        session, fields={}, extra_conditions=extra_conditions
+    )
+    model_instances_by_id: Dict[int, List[ModelInstance]] = {}
+    for model_instance in model_instances:
+        if model_instance.model_id not in model_instances_by_id:
+            model_instances_by_id[model_instance.model_id] = []
+        model_instances_by_id[model_instance.model_id].append(model_instance)
+
     model_summary = []
     for result in results:
+        # We need to summarize the resource claims for all model instances including distributed servers.
+        # It's complicated to do this in a SQL statement, so we do it in Python.
+        resource_claim = ResourceClaim(
+            ram=0,
+            vram=0,
+        )
+        if result.id in model_instances_by_id:
+            for model_instance in model_instances_by_id[result.id]:
+                aggregate_resource_claim(resource_claim, model_instance)
+
         model_summary.append(
             ModelSummary(
                 id=result.id,
                 name=result.name,
                 categories=result.categories,
-                resource_claim=ResourceClaim(
-                    ram=result.total_ram_claim,
-                    vram=result.total_vram_claim,
-                ),
+                resource_claim=resource_claim,
                 instance_count=result.instance_count,
                 token_count=(
                     result.total_token_count
@@ -266,64 +285,27 @@ async def get_active_models(session: AsyncSession) -> List[ModelSummary]:
     return model_summary
 
 
+def aggregate_resource_claim(
+    resource_claim: ResourceClaim,
+    model_instance: ModelInstance,
+):
+    if model_instance.computed_resource_claim is not None:
+        resource_claim.ram += model_instance.computed_resource_claim.ram or 0
+        for vram in (model_instance.computed_resource_claim.vram or {}).values():
+            resource_claim.vram += vram
+
+    if (
+        model_instance.distributed_servers
+        and model_instance.distributed_servers.subordinate_workers
+    ):
+        for subworker in model_instance.distributed_servers.subordinate_workers:
+            if subworker.computed_resource_claim is not None:
+                resource_claim.ram += subworker.computed_resource_claim.ram or 0
+                for vram in (subworker.computed_resource_claim.vram or {}).values():
+                    resource_claim.vram += vram
+
+
 def active_model_statement() -> select:
-    dialect = get_engine().dialect.name
-    if dialect == 'sqlite':
-        vram_values = func.json_each(
-            ModelInstance.computed_resource_claim, '$.vram'
-        ).table_valued('value', joins_implicitly=True)
-
-        ram_claim = func.cast(
-            func.json_extract(ModelInstance.computed_resource_claim, '$.ram'),
-            BigInteger,
-        )
-    elif dialect == 'mysql':
-        vram_case = case(
-            (
-                func.json_type(
-                    func.json_extract(ModelInstance.computed_resource_claim, '$.vram')
-                )
-                == 'OBJECT',
-                func.json_extract(ModelInstance.computed_resource_claim, '$.vram'),
-            ),
-            else_=func.cast(cast({"0": 0}, JSON), JSON),
-        )
-
-        # Use text() to preserve the native SQL expression
-        vram_values = func.json_table(
-            vram_case, text("""'$.*' COLUMNS (value BIGINT PATH '$')""")
-        ).table_valued('value')
-
-        ram_claim = func.cast(
-            func.json_unquote(
-                func.json_extract(ModelInstance.computed_resource_claim, '$.ram')
-            ),
-            BigInteger,
-        )
-    elif dialect == 'postgresql':
-        vram_values = func.json_each_text(
-            case(
-                (
-                    func.json_typeof(ModelInstance.computed_resource_claim['vram'])
-                    == text("'object'"),
-                    ModelInstance.computed_resource_claim['vram'],
-                ),
-                else_=cast({"0": 0}, JSON),
-            )
-        ).table_valued('value')
-
-        ram_claim = func.cast(
-            func.coalesce(
-                func.json_extract_path_text(
-                    ModelInstance.computed_resource_claim, 'ram'
-                ),
-                '0',
-            ),
-            BigInteger,
-        )
-    else:
-        raise NotImplementedError(f'Unsupported database {dialect}')
-
     usage_sum_query = (
         select(
             Model.id.label('model_id'),
@@ -335,41 +317,19 @@ def active_model_statement() -> select:
         .group_by(Model.id)
     ).alias('usage_sum')
 
-    resource_claim_query = (
-        select(
-            ModelInstance.model_id,
-            func.sum(func.coalesce(ram_claim, 0)).label('total_ram_claim'),
-            func.sum(
-                func.coalesce(func.cast(vram_values.c.value, BigInteger), 0)
-            ).label('total_vram_claim'),
-        ).group_by(ModelInstance.model_id)
-    ).alias('resource_claim')
-
     statement = (
         select(
             Model.id,
             Model.name,
             Model.categories,
             func.count(distinct(ModelInstance.id)).label('instance_count'),
-            func.coalesce(resource_claim_query.c.total_ram_claim, 0).label(
-                'total_ram_claim'
-            ),
-            func.coalesce(resource_claim_query.c.total_vram_claim, 0).label(
-                'total_vram_claim'
-            ),
             usage_sum_query.c.total_token_count,
         )
         .join(ModelInstance, Model.id == ModelInstance.model_id)
-        .outerjoin(
-            resource_claim_query,
-            Model.id == resource_claim_query.c.model_id,
-        )
         .outerjoin(usage_sum_query, Model.id == usage_sum_query.c.model_id)
         .group_by(
             Model.id,
             usage_sum_query.c.total_token_count,
-            resource_claim_query.c.total_ram_claim,
-            resource_claim_query.c.total_vram_claim,
         )
         .order_by(func.coalesce(usage_sum_query.c.total_token_count, 0).desc())
         .limit(10)
