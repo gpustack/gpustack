@@ -866,6 +866,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             subordinate_workers.append(
                 ModelInstanceSubordinateWorker(
                     worker_id=worker.id,
+                    worker_name=worker.name,
                     worker_ip=worker.ip,
                     total_gpus=len(worker.status.gpu_devices),
                     gpu_indexes=gpu_indexes,
@@ -996,6 +997,7 @@ def _create_candidate(
     candidate.subordinate_workers = [
         ModelInstanceSubordinateWorker(
             worker_id=worker.id,
+            worker_name=worker.name,
             worker_ip=worker.ip,
             total_gpus=len(worker.status.gpu_devices),
             gpu_indexes=[gpu.index for gpu in worker.status.gpu_devices],

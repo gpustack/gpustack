@@ -53,6 +53,7 @@ class ModelInstanceScheduleCandidate:
             sw_str = '), ('.join(
                 [
                     f"worker_id: {sw.worker_id}, "
+                    f"worker_name: {sw.worker_name}, "
                     f"worker_ip: {sw.worker_ip}, "
                     f"total_gpus: {sw.total_gpus}, "
                     f"gpu_indexes: {sw.gpu_indexes}, "
