@@ -1349,7 +1349,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 ],
             ),
             [
-                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+                """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
 - The optimal combination ['ascend_0', 'ascend_1'] provides 102.4 GiB of allocatable VRAM.
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and devices."""
@@ -1370,7 +1370,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 ],
             ),
             [
-                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+                """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
 - The optimal combination ['ascend_2', 'ascend_3', 'ascend_1'] provides 76.8 GiB of allocatable VRAM. There are 1 worker that can provide 2 devices, as the workers in the combination, but some devices among them fail to meet requirements.
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and devices."""
@@ -1392,7 +1392,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 distributed_inference_across_workers=False,
             ),
             [
-                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+                """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.2, All GPUs combined need to provide at least 781.20 GiB of total VRAM.
 - The largest available worker has 51.2 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 10.24 GiB of allocatable VRAM."""
             ],
@@ -1493,9 +1493,9 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 ),
             ),
             [
-                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+                """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.9, All GPUs combined need to provide at least 173.60 GiB of total VRAM.
-- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fails to meet the 90.0% allocatable VRAM ratio."""
+- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fail to meet the 90.0% allocatable VRAM ratio."""
             ],
         ),
         (
@@ -1525,7 +1525,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 ),
             ),
             [
-                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+                """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.1, All GPUs combined need to provide at least 1562.40 GiB of total VRAM.
 - Selected GPUs have 51.2 GiB allocatable VRAM, 8/8 of GPUs meet the VRAM utilization ratio, providing 5.12 GiB of allocatable VRAM."""
             ],
@@ -1557,10 +1557,10 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 ),
             ),
             [
-                """- The model requires approximately 0.5 GiB RAM and 156.24 GiB VRAM.
+                """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.9, All GPUs combined need to provide at least 173.60 GiB of total VRAM.
-- Worker ['ascend_0', 'ascend_1']...(more 2) fails to meet the required RAM.
-- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fails to meet the 90.0% allocatable VRAM ratio."""
+- Worker ['ascend_0', 'ascend_1'...(more 2)] fail to meet the required RAM.
+- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fail to meet the 90.0% allocatable VRAM ratio."""
             ],
         ),
     ],
