@@ -364,4 +364,8 @@ def set_default_spec(model: ModelSpec) -> bool:
             model.env = model_spec_in_catalog.env
             modified = True
 
+        if model_spec_in_catalog.categories and not model.categories:
+            model.categories = model_spec_in_catalog.categories
+            modified = True
+
     return modified

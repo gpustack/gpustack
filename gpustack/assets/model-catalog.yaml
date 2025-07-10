@@ -241,7 +241,7 @@
     - quantizations:
         - Q2_K_L
         - Q3_K_S
-        - Q4_0
+        - Q4_1
         - Q5_K_M
         - Q6_K
         - Q8_0
@@ -1497,6 +1497,106 @@
       backend: vllm
       backend_parameters:
         - --trust-remote-code
+- name: GLM 4.1V Thinking
+  description: GLM-4.1V-9B-Thinking is a VLM model based on GLM-4-9B-0414. By introducing a "thinking paradigm" and leveraging reinforcement learning, the model significantly enhances its capabilities. It achieves state-of-the-art performance among 10B-parameter VLMs, matching or even surpassing the 72B-parameter Qwen-2.5-VL-72B on 18 benchmark tasks.
+  home: https://github.com/THUDM/GLM-4.1V-Thinking
+  icon: /static/catalog_icons/ZhipuAI.png
+  categories:
+    - llm
+  capabilities:
+    - context/64K
+    - vision
+  sizes:
+    - 9
+  licenses:
+    - mit
+  release_date: "2025-06-30"
+  templates:
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: THUDM/GLM-4.1V-9B-Thinking
+      replicas: 1
+      backend: vllm
+- name: ERNIE 4.5
+  description: ERNIE 4.5 is a large language model series developed by Baidu.
+  home: https://github.com/PaddlePaddle/ERNIE
+  icon: /static/catalog_icons/baidu.jpeg
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  sizes:
+    - 0.3
+    - 21
+    - 300
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-28"
+  templates:
+    - quantizations: ["BF16"]
+      sizes: [0.3]
+      source: huggingface
+      huggingface_repo_id: baidu/ERNIE-4.5-0.3B-PT
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
+    - quantizations: ["BF16"]
+      sizes: [21]
+      source: huggingface
+      huggingface_repo_id: baidu/ERNIE-4.5-21B-A3B-PT
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
+    - quantizations: ["BF16"]
+      sizes: [300]
+      source: huggingface
+      huggingface_repo_id: baidu/ERNIE-4.5-300B-A47B-PT
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
+- name: Hunyuan A13B Instruct
+  description: Hunyuan-A13B is a large language model based on the Mixture-of-Experts (MoE) architecture, developed by Tencent. Designed for efficiency and scalability, Hunyuan-A13B delivers cutting-edge performance with minimal computational overhead, making it an ideal choice for advanced reasoning and general-purpose applications, especially in resource-constrained environments.
+  home: https://huggingface.co/tencent/Hunyuan-A13B-Instruct
+  icon: /static/catalog_icons/hunyuan.png
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+  sizes:
+    - 80
+  licenses:
+    - tencent-hunyuan-a13b
+  release_date: "2025-06-27"
+  templates:
+    - quantizations:
+        - Q2_K_L
+        - Q3_K_M
+        - Q4_K_M
+        - Q5_K_M
+        - Q8_0
+      source: huggingface
+      huggingface_repo_id: unsloth/Hunyuan-A13B-Instruct-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      backend_parameters:
+        - --ctx-size=32768
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      source: huggingface
+      huggingface_repo_id: tencent/Hunyuan-A13B-Instruct
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - --trust-remote-code
+        - --max-model-len=32768
 # Vision language models
 - name: Qwen2.5 VL
   description: Qwen2.5-VL is a collection of vision-language models of Qwen, excelling in visual understanding, document analysis, and long-video comprehension. It accurately localizes objects, extracts structured data from images, and functions as an interactive visual agent capable of reasoning and tool use. It outperforms previous models and rivals GPT-4o in tasks like document and diagram understanding.
@@ -1947,6 +2047,38 @@
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
+- name: Qwen3 Embedding
+  description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/4096
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-09"
+  templates:
+    - quantizations:
+        - Q8_0
+        - f16
+      sizes: [0.6, 4, 8]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-Embedding-{size}B-GGUF
+      huggingface_filename: "*-{quantization}*.gguf"
+      replicas: 1
+      backend: llama-box
+      cpu_offloading: true
+      distributed_inference_across_workers: true
+    - quantizations: ["BF16"]
+      sizes: [0.6, 4, 8]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-Embedding-{size}B
+      categories:
+        - embedding
+      replicas: 1
+      backend: vllm
 # Reranker models
 - name: BGE Reranker V2 M3
   description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
@@ -2038,6 +2170,28 @@
       backend: llama-box
       cpu_offloading: true
       distributed_inference_across_workers: true
+- name: Qwen3 Reranker
+  description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  categories:
+    - reranker
+  capabilities:
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-09"
+  templates:
+    - quantizations: ["BF16"]
+      sizes: [0.6, 4, 8]
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-Reranker-{size}B
+      categories:
+        - reranker
+      replicas: 1
+      backend: vllm
+      backend_parameters:
+        - '--hf_overrides={"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}'
 # Image models
 - name: Stable Diffusion V3.5 Large
   description: Stable Diffusion 3.5 Large is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
