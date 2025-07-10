@@ -95,7 +95,7 @@ class NvidiaSMI(GPUDetector):
             if "Failed to initialize NVML: Unknown Error" in output and is_docker_env():
                 raise GPUDetectExepction(
                     f"Error: {output}"
-                    "Please ensure nvidia-smi is working properly. It may be caused by a known issue with the NVIDIA Container Toolkit, which can be mitigated by disabling systemd cgroup management in Docker. More info: <a href=\"https://github.com/NVIDIA/nvidia-container-toolkit/issues/48\">https://github.com/NVIDIA/nvidia-container-toolkit/issues/48</a>"
+                    "Please ensure nvidia-smi is working properly. It may be caused by a known issue with the NVIDIA Container Toolkit, which can be mitigated by disabling systemd cgroup management in Docker. More info: <a href=\"https://docs.gpustack.ai/0.6/installation/nvidia-cuda/online-installation/?h=native.cgroupdriver=cgroupfs#prerequisites_1\">Disabling Systemd Cgroup Management in Docker</a>"
                 )
 
             if result.returncode != 0:
