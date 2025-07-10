@@ -611,12 +611,9 @@ def simplify_auto_config_value_error(e: ValueError) -> ValueError:
     Simplify the error message for ValueError exceptions.
     """
     message = str(e)
-    if "argument `trust_remote_code=True`" in message:
+    if "trust_remote_code=True" in message:
         return ValueError(
-            message.replace(
-                "argument `trust_remote_code=True`",
-                "backend parameter `--trust-remote-code`",
-            )
+            "The model contains custom code that must be executed to load correctly. If you trust the source, please pass the backend parameter `--trust-remote-code` to allow custom code to be run."
         )
     return ValueError("Not a supported model.")
 

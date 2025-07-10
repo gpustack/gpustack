@@ -18,7 +18,7 @@ async def test_evaluate_pretrained_config(config):
     # Custom code without --trust-remote-code, should raise ValueError
     with pytest.raises(
         ValueError,
-        match="The repository `microsoft/Phi-4-multimodal-instruct` contains custom code which must be executed to correctly load the model. You can inspect the repository content at https://hf.co/microsoft/Phi-4-multimodal-instruct.\nPlease pass the backend parameter `--trust-remote-code` to allow custom code to be run.",
+        match="The model contains custom code that must be executed to load correctly. If you trust the source, please pass the backend parameter `--trust-remote-code` to allow custom code to be run.",
     ):
         await evaluate_pretrained_config(Phi_4_multimodal)
 
