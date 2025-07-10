@@ -131,8 +131,8 @@ class Server:
         # Use the pymysql driver to execute migrations to avoid compatibility issues between asynchronous drivers and Alembic.
         if db_url.startswith("mysql://"):
             db_url = re.sub(r'^mysql://', 'mysql+pymysql://', db_url)
-
-        alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+        db_url_escaped = db_url.replace("%", "%%")
+        alembic_cfg.set_main_option("sqlalchemy.url", db_url_escaped)
         try:
             command.upgrade(alembic_cfg, "head")
         except Exception as e:
