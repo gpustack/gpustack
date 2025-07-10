@@ -202,6 +202,11 @@ class GGUFParserCommandMutableParameters:
     cache_type_k: Optional[str] = None
     cache_type_v: Optional[str] = None
     ctx_size: int = 8192
+    rope_freq_base: Optional[float] = None
+    rope_freq_scale: Optional[float] = None
+    rope_scale: Optional[float] = None
+    rope_scaling: Optional[str] = None
+    yarn_orig_ctx: Optional[int] = None
     override_tensor: Optional[List[str]] = None
     gpu_layers_draft: Optional[int] = None
     mmap: bool = False
@@ -285,6 +290,31 @@ class GGUFParserCommandMutableParameters:
         parser.add_argument(
             "--ctx-size",
             "-c",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--rope-freq-base",
+            type=float,
+            required=False,
+        )
+        parser.add_argument(
+            "--rope-freq-scale",
+            type=float,
+            required=False,
+        )
+        parser.add_argument(
+            "--rope-scale",
+            type=float,
+            required=False,
+        )
+        parser.add_argument(
+            "--rope-scaling",
+            type=str,
+            required=False,
+        )
+        parser.add_argument(
+            "--yarn-orig-ctx",
             type=int,
             required=False,
         )
