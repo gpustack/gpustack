@@ -723,24 +723,24 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Validate and construct scheduling messages.
         if unsatisfied_workers:
             msg = (
-                f"{unsatisfied_workers[:2]}...(more {len(unsatisfied_workers) - 2})"
+                f"{str(unsatisfied_workers[:2]).rstrip("]")}...(more {len(unsatisfied_workers) - 2})]"
                 if len(unsatisfied_workers) > 2
                 else str(unsatisfied_workers)
             )
             self._scheduling_messages.append(
-                f"Worker {msg} fails to meet the required RAM."
+                f"Worker {msg} fail to meet the required RAM."
             )
 
         for worker_name, devices in unsatisfied_devices_idx.items():
             unsatisfied_devices = (
-                f"{devices[:3]}...(more {len(devices) - 3})"
+                f"{str(devices[:3]).rstrip("]")}...(more {len(devices) - 3})]"
                 if len(devices) > 3
                 else str(devices)
             )
             msg = f"Worker {worker_name} GPU indexes {unsatisfied_devices}"
             if len(unsatisfied_devices_idx) > 1:
-                msg += f" and other {len(unsatisfied_devices_idx) - 1} workers"
-            msg += f" fails to meet the {self._serving_params.npu_memory_fraction * 100}% allocatable VRAM ratio."
+                msg += f" and other {len(unsatisfied_devices_idx) - 1} {'workers' if len(unsatisfied_devices_idx) > 2 else 'worker'}"
+            msg += f" {'fail' if len(unsatisfied_devices_idx) > 2 else 'fails'} to meet the {self._serving_params.npu_memory_fraction * 100}% allocatable VRAM ratio."
             self._scheduling_messages.append(msg)
             break
 
@@ -1166,7 +1166,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             # Nothing can be return, construct scheduling message
             worker_names = [worker.name for worker in workers_combination]
             worker_names_msg = (
-                str(worker_names[:3]) + f"...more {len(worker_names) - 3}"
+                str(worker_names[:3]).rstrip("]")
+                + f"...(more {len(worker_names) - 3})]"
                 if len(worker_names) > 3
                 else str(worker_names)
             )
@@ -1197,7 +1198,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Set default scheduling message
         self._scheduling_messages.append(
-            f"The model requires approximately {byte_to_gib(request_usage.ram)} GiB RAM and {byte_to_gib(request_usage.vram)} GiB VRAM."
+            f"The model requires approximately {byte_to_gib(request_usage.vram)} GiB VRAM and {byte_to_gib(request_usage.ram)} GiB RAM."
         )
         if self._serving_params.npu_memory_fraction:
             self._scheduling_messages.append(

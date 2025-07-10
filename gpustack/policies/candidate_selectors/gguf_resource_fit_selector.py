@@ -411,7 +411,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             if candidates is not None and len(candidates) > 0:
                 break
 
-        if not candidates or len(candidates) == 0:
+        if (not candidates or len(candidates) == 0) and len(
+            self._event_collector.events
+        ) == 0:
             msg = ListMessageBuilder(
                 f"The model requires approximately {byte_to_gib(self._non_uma_single_gpu_full_offload_vram)} GiB VRAM and {byte_to_gib(self._non_uma_single_gpu_full_offload_ram)} GiB RAM."
             )

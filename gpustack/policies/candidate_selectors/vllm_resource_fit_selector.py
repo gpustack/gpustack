@@ -681,12 +681,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 )
                 if len(self._unsatisfied_gpu_messages[worker.name]) > 3:
                     unsatisfied_devices_msg = (
-                        str(self._unsatisfied_gpu_messages[worker.name][:3])
-                        + f"...(more {len(self._unsatisfied_gpu_messages[worker.name]) - 3})"
+                        str(self._unsatisfied_gpu_messages[worker.name][:3]).rstrip("]")
+                        + f"...(more {len(self._unsatisfied_gpu_messages[worker.name]) - 3})]"
                     )
                 scheduling_msg.extend(
                     [
-                        f"Worker {worker.name} GPU indexes {unsatisfied_devices_msg} fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio.",
+                        f"Worker {worker.name} GPU indexes {unsatisfied_devices_msg} fail to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio.",
                         f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM, {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM.",
                     ]
                 )
@@ -805,7 +805,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         elif workers_combination:
             worker_names = [worker.name for worker in workers_combination]
             worker_names_msg = (
-                str(worker_names[:3]) + f"...more {len(worker_names) - 3}"
+                str(worker_names[:3]).rstrip("]")
+                + f"...(more {len(worker_names) - 3})]"
                 if len(worker_names) > 3
                 else str(worker_names)
             )
@@ -893,14 +894,15 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 for worker_name, gpu_indexes in self._unsatisfied_gpu_messages.items():
                     # Some seleted gpu is not meet the utilization
                     devices_msg = (
-                        str(gpu_indexes[:3]) + f"...(more {len(gpu_indexes) - 3})"
+                        str(gpu_indexes[:3]).rstrip("]")
+                        + f"...(more {len(gpu_indexes) - 3})]"
                         if len(gpu_indexes) > 3
                         else str(gpu_indexes)
                     )
                     unsatisfied_msg = f"Worker {worker_name} GPU indexes {devices_msg}"
                     if len(self._unsatisfied_gpu_messages) > 1:
-                        unsatisfied_msg += f" and other {len(self._unsatisfied_gpu_messages) - 1} workers"
-                    unsatisfied_msg += f" fails to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
+                        unsatisfied_msg += f" and other {len(self._unsatisfied_gpu_messages) - 1} {'workers' if len(self._unsatisfied_gpu_messages) > 2 else 'worker'}"
+                    unsatisfied_msg += f" {'fail' if len(self._unsatisfied_gpu_messages) > 1 else 'fails'} to meet the {(self._gpu_memory_utilization * 100):.2f}% allocatable VRAM ratio."
                     scheduling_msg.append(unsatisfied_msg)
                     break
 
