@@ -723,7 +723,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Validate and construct scheduling messages.
         if unsatisfied_workers:
             msg = (
-                f"{str(unsatisfied_workers[:2]).rstrip("]")}...(more {len(unsatisfied_workers) - 2})]"
+                f"{str(unsatisfied_workers[:2]).rstrip(']')}...(more {len(unsatisfied_workers) - 2})]"
                 if len(unsatisfied_workers) > 2
                 else str(unsatisfied_workers)
             )
@@ -733,7 +733,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         for worker_name, devices in unsatisfied_devices_idx.items():
             unsatisfied_devices = (
-                f"{str(devices[:3]).rstrip("]")}...(more {len(devices) - 3})]"
+                f"{str(devices[:3]).rstrip(']')}...(more {len(devices) - 3})]"
                 if len(devices) > 3
                 else str(devices)
             )
