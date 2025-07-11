@@ -1,0 +1,40 @@
+{
+  "estimate": {
+    "items": [
+      {
+        "offloadLayers": 0,
+        "fullOffloaded": false,
+        "ram": {
+          "handleLayers": 61,
+          "handleLastLayer": 60,
+          "handleOutputLayer": true,
+          "remote": false,
+          "position": 0,
+          "uma": 228221051928,
+          "nonuma": 228378338328
+        },
+        "vrams": [
+          {
+            "handleLayers": 0,
+            "handleLastLayer": -1,
+            "handleOutputLayer": false,
+            "remote": false,
+            "position": 0,
+            "uma": 0,
+            "nonuma": 3227518976
+          }
+        ]
+      }
+    ],
+    "type": "model",
+    "architecture": "deepseek2",
+    "contextSize": 8192,
+    "flashAttention": false,
+    "noMMap": false,
+    "embeddingOnly": false,
+    "reranking": false,
+    "distributable": true,
+    "logicalBatchSize": 2048,
+    "physicalBatchSize": 512
+  }
+}
