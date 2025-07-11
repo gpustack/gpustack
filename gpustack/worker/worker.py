@@ -164,6 +164,7 @@ class Worker:
             tools_download_base_url=self._config.tools_download_base_url,
             pipx_path=self._config.pipx_path,
             device=self.get_device_by_gpu_devices(),
+            data_dir=self._config.data_dir,
             bin_dir=self._config.bin_dir,
         )
         tools_manager.prepare_tools()
