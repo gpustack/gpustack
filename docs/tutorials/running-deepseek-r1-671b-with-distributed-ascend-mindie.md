@@ -130,7 +130,7 @@ Once the server and all workers are running, access the GPUStack UI via your bro
 http://your_gpustack_server_ip_or_hostname
 ```
 
-Log in using the `admin` username and the password obtained in Step 1. Navigate to the `Resources` page to verify that all workers are in the Ready state and their GPUs are listed.
+Log in using the `admin` username and the password obtained in Step 1. Navigate to the `Workers` page to verify that all workers are in the Ready state and their GPUs are listed.
 
 ![initial-resources](../assets/tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie/initial-resources.png)
 
@@ -159,7 +159,7 @@ You can monitor the deployment status on the `Models` page. Hover over `distribu
 
 ![model-info](../assets/tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie/model-info.png)
 
-After the model is running, revisit the Resources tab to check GPU utilization. Ascend MindIE uses 95% of NPU memory with above settings.
+After the model is running, navigate to the `Workers` page to check GPU utilization. Ascend MindIE uses 95% of NPU memory with above settings.
 
 ![resources-loaded](../assets/tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie/resources-loaded.png)
 

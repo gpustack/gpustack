@@ -64,7 +64,10 @@ And ensure the driver supports CUDA 12.4 or higher:
     nvidia-smi | findstr "CUDA Version"
     ```
 
-## Installation Script
+## Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 ### Prerequites
 

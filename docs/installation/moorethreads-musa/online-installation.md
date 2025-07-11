@@ -113,7 +113,10 @@ docker run -d --name gpustack \
     2. You can set additional flags for the `gpustack start` command by appending them to the docker run command.
     For configuration details, please refer to the [CLI Reference](../../cli-reference/start.md).
 
-## Installation Script
+## Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 ### Prerequites
 

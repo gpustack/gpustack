@@ -43,7 +43,10 @@ In GPUStack, `llama-box` and `vox-box` backends support CPU inference. However, 
 
     Windows users need to manually verify support for the above instructions.
 
-## Installation Script
+## Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 GPUStack provides a script to install it as a service with default port 80.
 

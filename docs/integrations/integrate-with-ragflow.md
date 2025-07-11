@@ -19,7 +19,7 @@ RAGFlow can integrate with GPUStack to leverage locally deployed LLMs, embedding
 
 ## Create an API Key
 
-1. Navigate to the `API Keys` page and click on `New API Key`.
+1. Hover over the user avatar and navigate to the `API Keys` page, then click on `New API Key`.
 
 2. Fill in the name, then click `Save`.
 

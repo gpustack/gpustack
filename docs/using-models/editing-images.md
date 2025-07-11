@@ -36,7 +36,7 @@ After deployment, you can monitor the model's status on the `Models` page.
 5. Draw a mask over the hair area of the example image.
 6. Input the following text prompt in the `Text Prompt` field:
    ```
-   Pink short hair bang, natural
+   a tiger
    ```
 7. Click the `Submit` button to generate the edited image.
 
@@ -49,15 +49,15 @@ The generated image will be displayed in the UI. Your image may look different g
 If you want to reproduce the result shown above, you can use the following parameters:
 
 ```
-Size: 768x1024(3:4)
+Size: 512x512(1:1)
 Sample Method: euler
 Schedule Method: discrete
 Sampling Steps: 50
-Guidance: 30.0
-CFG Scale: 1.0
+Guidance: 3.5
+CFG Scale: 3.5
 Strength: 1.0
 Seed: 656821733471329
-Text Prompt: Pink short hair bang, natural
+Text Prompt: a tiger
 ```
 
 ## Step 3: Using the Edit Images API

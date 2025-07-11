@@ -1,6 +1,9 @@
 # Quickstart
 
-## Installation Script
+## Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 === "Linux"
 
@@ -26,16 +29,28 @@
     Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
     ```
 
+## Desktop Installer
+
+=== "macOS"
+
+    - Only supported: Apple Silicon (M series), macOS 14+
+    - [Download the installer](https://gpustack.ai)
+
+=== "Windows"
+
+    - Only supported: win 10, win 11
+    - [Download the installer](https://gpustack.ai)
+
 ## Other Installation Methods
 
 For Docker installation, pip installation or detailed configuration options, please refer to the [Installation Documentation](installation/installation-requirements.md).
 
 ## Getting Started
 
-1. Run and chat with the **llama3.2** model:
+1. Run and chat with the **qwen3** model:
 
 ```bash
-gpustack chat llama3.2 "tell me a joke."
+gpustack chat qwen3 "tell me a joke."
 ```
 
 2. Run and generate an image with the **stable-diffusion-v3-5-large-turbo** model:
@@ -78,7 +93,7 @@ Once the command completes, the generated image will appear in the default viewe
 
 ![Playground Screenshot](assets/playground-screenshot.png)
 
-4. Click `API Keys` in the navigation menu, then click the `New API Key` button.
+4. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
 
 5. Fill in the `Name` and click the `Save` button.
 
@@ -92,7 +107,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "llama3.2",
+    "model": "qwen3",
     "messages": [
       {
         "role": "system",

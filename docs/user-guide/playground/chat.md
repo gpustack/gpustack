@@ -2,7 +2,7 @@
 
 Interact with the chat completions API. The following is an example screenshot:
 
-![Playground Screenshot](../../assets/playground-screenshot.png)
+![Playground Screenshot](../../assets/playground/chat.png)
 
 ## Prompts
 

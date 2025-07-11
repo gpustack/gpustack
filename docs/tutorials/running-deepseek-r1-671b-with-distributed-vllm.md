@@ -92,7 +92,7 @@ Once the server and all workers are running, access the GPUStack UI via your bro
 http://your_gpustack_server_ip_or_hostname
 ```
 
-Log in using the `admin` username and the password obtained in Step 1. Navigate to the `Resources` page to verify that all workers are in the Ready state and their GPUs are listed.
+Log in using the `admin` username and the password obtained in Step 1. Navigate to the `Workers` page to verify that all workers are in the Ready state and their GPUs are listed.
 
 ![initial-resources](../assets/tutorials/running-deepseek-r1-671b-with-distributed-vllm/initial-resources.png)
 
@@ -114,7 +114,7 @@ You can monitor the deployment status on the `Models` page. Hover over `distribu
 
 ![model-info](../assets/tutorials/running-deepseek-r1-671b-with-distributed-vllm/model-info.png)
 
-After the model is running, revisit the Resources tab to check GPU utilization. By default, vLLM uses 90% of GPU memory. You may adjust this in the model configuration settings.
+After the model is running, navigate to the `Workers` page to check GPU utilization. By default, vLLM uses 90% of GPU memory. You may adjust this in the model configuration settings.
 
 ![resources-loaded](../assets/tutorials/running-deepseek-r1-671b-with-distributed-vllm/resources-loaded.png)
 

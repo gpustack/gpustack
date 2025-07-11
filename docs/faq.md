@@ -945,16 +945,6 @@ When deploying Safetensors models from Local Path, the path **must point to the 
 
 ![deploy-model-from-local-path](./assets/faq/deploy-model-from-local-path.png)
 
-#### How can I deploy a locally downloaded Ollama model?
-
-Use the following command to find the full path of the model file and deploy it via the Local Path. The example below uses `deepseek-r1:14b-qwen-distill-q4_K_M`, be sure to replace it with your actual Ollama model name:
-
-```bash
-ollama show deepseek-r1:14b-qwen-distill-q4_K_M --modelfile | grep FROM | grep blobs | sed 's/^FROM[[:space:]]*//'
-```
-
-![deploy-downloaded-ollama-model](assets/faq/deploy-downloaded-ollama-model.png)
-
 ### What should I do if the model is stuck in `Pending` state?
 
 `Pending` means that there are currently no workers meeting the model’s requirements, move the mouse over the `Pending` status to view the reason.
@@ -977,16 +967,6 @@ The default value of `--parallel` is `4`, so in this case, the max tokens would 
 On the other hand, the `--parallel` parameter represents the number of parallel sequences to decode, which can roughly be considered as a setting for the model’s concurrent request handling.
 
 Therefore, it is important to appropriately set the `--ctx-size` and `--parallel` parameters, ensuring that the max tokens for a single request is within the limits and that the available GPU memory can support the specified context size.
-
-If you need to align with Ollama’s configuration, you can refer to the following examples:
-
-Set the following parameters in `Edit Model` → `Advanced` → `Backend Parameters`:
-
-```
---ctx-size=8192
---parallel=4
-
-```
 
 If your GPU memory is insufficient, try launching with a lower configuration:
 

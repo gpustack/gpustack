@@ -1,4 +1,7 @@
-# Installation Script
+# Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 ## Linux and macOS
 

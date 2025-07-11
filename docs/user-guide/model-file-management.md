@@ -4,7 +4,7 @@ GPUStack allows admins to download and manage model files.
 
 ## Add Model File
 
-GPUStack currently supports models from [Hugging Face](https://huggingface.co), [ModelScope](https://modelscope.cn), [Ollama](https://ollama.com/library), and local paths. To add model files, navigate to the `Resources` page and click the `Model Files` tab.
+GPUStack currently supports models from [Hugging Face](https://huggingface.co), [ModelScope](https://modelscope.cn), and local paths. To add model files, navigate to the `Model Files` page.
 
 ### Add a Hugging Face Model
 
@@ -25,18 +25,6 @@ GPUStack currently supports models from [Hugging Face](https://huggingface.co), 
 5. _(Optional)_ Specify a `Local Directory` to download the model to a custom path instead of the GPUStack cache directory.
 6. Click the `Save` button.
 
-### Add an Ollama Model
-
-!!! warning
-
-    As of version v0.6.1, Ollama model source is deprecated. For more context, please refer to the [GitHub issue](https://github.com/gpustack/gpustack/issues/1979).
-
-1. Click the `Add Model File` button and select `Ollama Library` from the dropdown.
-2. Select a model from the dropdown list or input a custom Ollama model, e.g., `llama3`, `llama3:70b`, or `youraccount/llama3:70b`.
-3. Select the target worker to download the model file.
-4. _(Optional)_ Specify a `Local Directory` to download the model to a custom path instead of the GPUStack cache directory.
-5. Click the `Save` button.
-
 ### Add a Local Path Model
 
 You can add models from a local path. The path can be a directory (e.g., a Hugging Face model folder) or a file (e.g., a GGUF model) located on the worker.
@@ -50,7 +38,7 @@ You can add models from a local path. The path can be a directory (e.g., a Huggi
 
 If a model file download fails, you can retry it:
 
-1. Navigate to the `Resources` page and click the `Model Files` tab.
+1. Navigate to the `Model Files` page.
 2. Locate the model file with an error status.
 3. Click the ellipsis button in the `Operations` column and select `Retry Download`.
 4. GPUStack will attempt to download the model file again from the specified source.
@@ -59,7 +47,7 @@ If a model file download fails, you can retry it:
 
 Models can be deployed from model files. Since the model is stored on a specific worker, GPUStack will add a worker selector using the `worker-name` key to ensure proper scheduling.
 
-1. Navigate to the `Resources` page and click the `Model Files` tab.
+1. Navigate to the `Model Files` page.
 2. Find the model file you want to deploy.
 3. Click the `Deploy` button in the `Operations` column.
 4. Review or adjust the `Name`, `Replicas`, and other deployment parameters.
@@ -67,7 +55,7 @@ Models can be deployed from model files. Since the model is stored on a specific
 
 ## Delete Model File
 
-1. Navigate to the `Resources` page and click the `Model Files` tab.
+1. Navigate to the `Model Files` page.
 2. Find the model file you want to delete.
 3. Click the ellipsis button in the `Operations` column and select `Delete`.
 4. _(Optional)_ Check the `Also delete the file from disk` option.
