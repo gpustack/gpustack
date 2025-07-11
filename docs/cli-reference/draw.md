@@ -27,6 +27,7 @@ The `model` can be either of the following:
    - `hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:FP16`
    - `hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:stable-diffusion-v3-5-large-turbo-Q4_0.gguf`
 
+
 ## Configurations
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                 |

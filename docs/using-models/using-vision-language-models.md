@@ -115,7 +115,7 @@ When deploying GGUF VLM models with llama-box, GPUStack automatically handles th
 
 ## Step 4: Interact with Vision Language Models
 
-1. Navigate to the `Playground` page in the GPUStack UI.
+1. Navigate to the `Chat` page in the GPUStack UI.
 2. Select the deployed model from the top-right dropdown.
 3. Click on the `Upload Image` button above the input text area and upload an image.
 4. Enter a prompt in the input text area. For example, "Describe the image."

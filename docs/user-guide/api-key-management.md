@@ -4,7 +4,7 @@ GPUStack supports authentication using API keys. Each GPUStack user can generate
 
 ## Create API Key
 
-1. Navigate to the `API Keys` page.
+1. Hover over the user avatar and navigate to the `API Keys` page.
 2. Click the `New API Key` button.
 3. Fill in the `Name`, `Description`, and select the `Expiration` of the API key.
 4. Click the `Save` button.
@@ -16,7 +16,7 @@ GPUStack supports authentication using API keys. Each GPUStack user can generate
 
 ## Delete API Key
 
-1. Navigate to the `API Keys` page.
+1. Hover over the user avatar and navigate to the `API Keys` page.
 2. Find the API key you want to delete.
 3. Click the `Delete` button in the `Operations` column.
 4. Confirm the deletion.

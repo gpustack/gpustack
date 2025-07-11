@@ -25,7 +25,10 @@ Check the Python version:
 python -V
 ```
 
-## Installation Script
+## Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 GPUStack provides a script to install it as a service with default port 80.
 

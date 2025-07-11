@@ -54,7 +54,7 @@ Once the model is deployed, verify the deployment on the `Models` page, where yo
 
 ![model-list](../assets/tutorials/performing-distributed-inference-across-workers/model-list.png)
 
-You can also check worker and GPU resource usage by navigating to the `Resources` page.
+You can also check worker and GPU resource usage by navigating to the `Workers` or the `GPUs` page.
 
 ![gpu-usage](../assets/tutorials/performing-distributed-inference-across-workers/gpu-usage.png)
 

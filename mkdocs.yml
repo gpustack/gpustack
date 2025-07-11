@@ -97,6 +97,7 @@ nav:
       - CPU:
           - Online Installation: installation/cpu/online-installation.md
           - Air-Gapped Installation: installation/cpu/air-gapped-installation.md
+      - Desktop Installer: installation/desktop-installer.md
       - Installation Script: installation/installation-script.md
       - Uninstallation: installation/uninstallation.md
   - Upgrade: upgrade.md
@@ -130,6 +131,7 @@ nav:
       - Using Audio Models: using-models/using-audio-models.md
   - Tutorials:
       - Running DeepSeek R1 671B with Distributed vLLM: tutorials/running-deepseek-r1-671b-with-distributed-vllm.md
+      - Running DeepSeek R1 671B with Distributed Ascend Mindie: tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie.md
       - Performing Distributed Inference Across Workers (llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
       - Inference On CPUs: tutorials/inference-on-cpus.md
       - Inference with Tool Calling: tutorials/inference-with-tool-calling.md

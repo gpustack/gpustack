@@ -11,7 +11,10 @@ You can upgrade GPUStack using the installation script or by manually installing
 
     Before proceeding with an upgrade, it’s strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of the file located at `/var/lib/gpustack/database.db`.
 
-## Upgrade GPUStack Using the Installation Script
+## Upgrade GPUStack Using the Installation Script(Deprecated)
+
+!!! note
+      The installation script method is deprecated as of version 0.7.
 
 To upgrade GPUStack from an older version, re-run the installation script using the same configuration options you originally used.
 
