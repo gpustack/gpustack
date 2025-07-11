@@ -37,6 +37,7 @@ class ToolsManager:
     def __init__(
         self,
         tools_download_base_url: str = None,
+        data_dir: Optional[str] = None,
         bin_dir: Optional[str] = None,
         pipx_path: Optional[str] = None,
         device: Optional[str] = None,
@@ -59,6 +60,7 @@ class ToolsManager:
         self._arch = arch if arch else platform.arch()
         self._device = device if device else platform.device()
         self._download_base_url = tools_download_base_url
+        self._data_dir = data_dir
         self._bin_dir = bin_dir
         self._pipx_path = pipx_path
 
@@ -293,9 +295,7 @@ class ToolsManager:
             version,
         )
 
-    def install_versioned_package_by_pipx(
-        self, package: str, version: str, extra_packages: Optional[list] = None
-    ):
+    def install_versioned_package_by_pipx(self, package: str, version: str):
         """
         Install a versioned package using pipx.
 
@@ -306,6 +306,9 @@ class ToolsManager:
         if target_path.exists():
             logger.debug(f"{package} {version} already exists, skipping installation")
             return
+        elif os.path.lexists(target_path):
+            # In case of a broken symlink, remove it.
+            target_path.unlink()
 
         pipx_path = shutil.which("pipx")
         if self._pipx_path:
@@ -316,12 +319,6 @@ class ToolsManager:
                 f"pipx is required to install versioned {package} but not found in system PATH. "
                 "Please install pipx first or provide the path to pipx using the server option `--pipx-path`. "
                 f"Alternatively, you can install {package} manually and link it to {target_path}."
-            )
-
-        pipx_bin_path = self._get_pipx_bin_dir(pipx_path)
-        if not pipx_bin_path:
-            raise Exception(
-                "Failed to determine pipx binary directory. Ensure pipx is correctly installed."
             )
 
         suffix = f"_{version}"
@@ -335,47 +332,24 @@ class ToolsManager:
             f"{package}=={version}",
         ]
 
+        env = os.environ.copy()
+        if self._data_dir and self._bin_dir:
+            env["PIPX_HOME"] = str(Path(self._data_dir) / "pipx")
+            env["PIPX_BIN_DIR"] = self._bin_dir
+        else:
+            raise Exception(
+                "Both data_dir and bin_dir must be set to install versioned packages using pipx."
+            )
+
         try:
             logger.info(f"Installing {package} {version} using pipx")
-            subprocess.run(install_command, check=True, text=True)
-
-            installed_bin_path = pipx_bin_path / f"{package}{suffix}"
-            if not installed_bin_path.exists():
-                raise Exception(
-                    f"Installation succeeded, but executable not found at {installed_bin_path}"
-                )
-
-            # Create a symlink to the installed binary
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.symlink_to(installed_bin_path)
-
-            if extra_packages:
-                for extra_package in extra_packages:
-                    self._pipx_inject_package(
-                        pipx_path, f"{package}{suffix}", extra_package
-                    )
+            subprocess.run(install_command, env=env, check=True, text=True)
 
             logger.info(
                 f"{package} {version} successfully installed and linked to {target_path}"
             )
         except Exception as e:
             raise Exception(f"Failed to install {package} {version} using pipx: {e}")
-
-    def _pipx_inject_package(self, pipx_path: str, env_name: str, package: str):
-        """
-        Use `pipx inject` to add a package to an existing pipx environment.
-        """
-        try:
-            logger.info(f"Injecting {package} into pipx environment '{env_name}'")
-            subprocess.run(
-                [pipx_path, "inject", env_name, package, "--force"],
-                check=True,
-                text=True,
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to inject {package} into pipx environment '{env_name}': {e}"
-            )
 
     def _get_pipx_bin_dir(self, pipx_path: str) -> Path:
         """

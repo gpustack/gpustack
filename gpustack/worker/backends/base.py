@@ -63,6 +63,7 @@ class InferenceServer(ABC):
             if self._model.backend_version:
                 tools_manager = ToolsManager(
                     tools_download_base_url=cfg.tools_download_base_url,
+                    data_dir=cfg.data_dir,
                     bin_dir=cfg.bin_dir,
                     pipx_path=cfg.pipx_path,
                 )
