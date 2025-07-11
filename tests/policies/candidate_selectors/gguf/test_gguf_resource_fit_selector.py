@@ -15,6 +15,7 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
     ModelInstanceStateEnum,
     PlacementStrategyEnum,
+    ModelInstance,
 )
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_19_4090_24gx2,
@@ -31,6 +32,7 @@ from tests.fixtures.workers.fixtures import (
     linux_cpu_1,
     linux_cpu_2,
     macos_metal_2_m2_24g,
+    macos_metal_3_m2ultra_192g,
 )
 
 from tests.fixtures.estimates.fixtures import (
@@ -52,6 +54,9 @@ from tests.fixtures.estimates.fixtures import (
     deepseek_r1_ud_iq2_xxs_partial_offload_split_6,
     deepseek_r1_ud_iq2_xxs_partial_offload_split_7,
     deepseek_r1_ud_iq2_xxs_partial_offload_split_8,
+    deepseek_v3_0324_ud_iq1_s_disable_offload,
+    deepseek_v3_0324_ud_iq1_s_full_offload,
+    deepseek_v3_0324_ud_iq1_s_partial_offload,
     llama3_70b_disable_offload,
     llama3_70b_full_offload,
     llama3_70b_full_offload_split_2_4080,
@@ -1239,6 +1244,109 @@ async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config
 
         assert len(candidates) == 1
         compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.parametrize(
+    "m, expected",
+    [
+        # Automatic single worker selection.
+        # Check point:
+        # - Total usage exceeds the available resources,
+        #   see https://github.com/gpustack/gpustack/issues/2451.
+        (
+            new_model(
+                id=1,
+                name="automatic_single_worker_selection",
+                replicas=1,
+                huggingface_repo_id="unsloth/DeepSeek-V3-0324-GGUF",
+                cpu_offloading=True,
+                huggingface_filename="UD-IQ1_S/DeepSeek-V3-0324-UD-IQ1_S-00001-of-00004.gguf",
+            ),
+            [],
+        ),
+        # Semi-automatic single worker selection.
+        # Check point:
+        # - Specified offloading requirement still exceeds the available resources,
+        #   see https://github.com/gpustack/gpustack/issues/2451.
+        (
+            new_model(
+                id=1,
+                name="semi_automatic_single_worker_selection",
+                replicas=1,
+                huggingface_repo_id="unsloth/DeepSeek-V3-0324-GGUF",
+                cpu_offloading=True,
+                huggingface_filename="UD-IQ1_S/DeepSeek-V3-0324-UD-IQ1_S-00001-of-00004.gguf",
+                backend_parameters=[
+                    "-ngl=48",
+                ],
+            ),
+            [],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_schedule_candidates_1x_197gx1(config, m, expected):
+    def mock_resource_claim(  # noqa: C901
+        model: Model,
+        offload: GPUOffloadEnum = GPUOffloadEnum.Full,
+        **kwargs,
+    ) -> ModelResourceClaim:
+        if model.huggingface_filename:
+            filename = model.huggingface_filename.lower().replace('-', '_')
+        else:
+            filename = model.model_scope_file_path.lower().replace('-', '_')
+
+        mock = AsyncMock()
+
+        if "deepseek_v3_0324_ud_iq1_s" in filename:
+            if offload == GPUOffloadEnum.Disable:
+                mock = deepseek_v3_0324_ud_iq1_s_disable_offload()
+            elif offload == GPUOffloadEnum.Full:
+                mock = deepseek_v3_0324_ud_iq1_s_full_offload()
+            else:
+                mock = deepseek_v3_0324_ud_iq1_s_partial_offload()
+
+        return ModelResourceClaim(
+            model=model,
+            resource_claim_estimate=mock.estimate,
+        )
+
+    workers = [
+        macos_metal_3_m2ultra_192g(),
+    ]
+    model_instances = [
+        ModelInstance(
+            id=worker.id * 10 + gpu.index,
+            worker_id=worker.id,
+            gpu_indexes=[gpu.index],
+            computed_resource_claim=ComputedResourceClaim(
+                vram={gpu.index: gpu.memory.allocated}
+            ),
+        )
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+        if gpu.memory.allocated
+    ]
+
+    resource_fit_selector = GGUFResourceFitSelector(m)
+
+    with (
+        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            side_effect=mock_resource_claim,
+        ),
+    ):
+        actual = await resource_fit_selector.select_candidates(workers)
+        compare_candidates(actual, expected)
 
 
 def mock_calculate_model_resource_claim(  # noqa: C901

@@ -11,12 +11,68 @@ from gpustack.schemas.workers import (
 )
 
 
-def macos_metal_1_m1pro_21g(reserved=False):
-    return load_from_file("macos_metal_1_m1pro_21g.json", reserved=reserved)
+def macos_metal_1_m1pro_21g(
+    reserved=False,
+    return_device: Optional[int] = None,
+    callback=None,
+):
+    """
+    Return a worker with a M1 Pro GPU device with 21GB of memory.
+    :param reserved: If True, the worker will have reserved system resources.
+    :param return_device: The number of devices to return.
+    :param callback: A callback function to be executed after loading the worker.
+    :return: Worker object with the specified configuration.
+    """
+    worker = load_from_file(
+        "macos_metal_1_m1pro_21g.json", reserved=reserved, return_devices=return_device
+    )
+    if callback:
+        callback(worker)
+    return worker
 
 
-def macos_metal_2_m2_24g(reserved=True):
-    return load_from_file("macos_metal_2_m2_24g.json", reserved=reserved)
+def macos_metal_2_m2_24g(
+    reserved=True,
+    return_device: Optional[int] = None,
+    callback=None,
+):
+    """
+    Return a worker with a M2 GPU device with 24GB (actual allocatable 16GB) of memory.
+    :param reserved: If True, the worker will have reserved system resources.
+    :param return_device: The number of devices to return.
+    :param callback: A callback function to be executed after loading the worker.
+    :return: Worker object with the specified configuration.
+    """
+
+    worker = load_from_file(
+        "macos_metal_2_m2_24g.json", reserved=reserved, return_devices=return_device
+    )
+    if callback:
+        callback(worker)
+    return worker
+
+
+def macos_metal_3_m2ultra_192g(
+    reserved=True,
+    return_device: Optional[int] = None,
+    callback=None,
+):
+    """
+    Return a worker with a M2 Ultra GPU device with 192GB (actual allocatable 187GB) of memory.
+    :param reserved: If True, the worker will have reserved system resources.
+    :param return_device: The number of devices to return.
+    :param callback: A callback function to be executed after loading the worker.
+    :return: Worker object with the specified configuration.
+    """
+
+    worker = load_from_file(
+        "macos_metal_3_m2ultra_192g.json",
+        reserved=reserved,
+        return_devices=return_device,
+    )
+    if callback:
+        callback(worker)
+    return worker
 
 
 def linux_huawei_1_910b_64gx8(

@@ -1,0 +1,161 @@
+{
+  "name": "MacStudioM2Ultra",
+  "hostname": "Seals-Mac-Studio.local",
+  "ip": "192.168.50.4",
+  "port": 10150,
+  "labels": {
+    "os": "darwin",
+    "arch": "arm64",
+    "worker-name": "MacStudioM2Ultra"
+  },
+  "system_reserved": {
+    "ram": 2147483648,
+    "vram": 1073741824
+  },
+  "state": "ready",
+  "state_message": null,
+  "status": {
+    "cpu": {
+      "total": 24,
+      "utilization_rate": 6.090686274509804
+    },
+    "memory": {
+      "total": 206158430208,
+      "utilization_rate": 44.96493339538574,
+      "is_unified_memory": true,
+      "used": 92699000832,
+      "allocated": 32589091760
+    },
+    "swap": {
+      "total": 4294967296,
+      "utilization_rate": 63.7481689453125,
+      "used": 2737963008
+    },
+    "filesystem": [
+      {
+        "name": "Macintosh HD",
+        "mount_point": "/",
+        "mount_from": "/dev/disk3s1s1",
+        "total": 994662584320,
+        "used": 685247287296,
+        "free": 309415297024,
+        "available": 309415297024
+      },
+      {
+        "name": "Data",
+        "mount_point": "/System/Volumes/Data",
+        "mount_from": "/dev/disk3s5",
+        "total": 994662584320,
+        "used": 685247287296,
+        "free": 309415297024,
+        "available": 309415297024
+      },
+      {
+        "name": "Hardware",
+        "mount_point": "/System/Volumes/Hardware",
+        "mount_from": "/dev/disk1s3",
+        "total": 524288000,
+        "used": 17653760,
+        "free": 506634240,
+        "available": 506634240
+      },
+      {
+        "name": "Preboot",
+        "mount_point": "/System/Volumes/Preboot",
+        "mount_from": "/dev/disk3s2",
+        "total": 994662584320,
+        "used": 685134475264,
+        "free": 309528109056,
+        "available": 309528109056
+      },
+      {
+        "name": "Update",
+        "mount_point": "/System/Volumes/Update",
+        "mount_from": "/dev/disk3s4",
+        "total": 994662584320,
+        "used": 679424106496,
+        "free": 315238477824,
+        "available": 315238477824
+      },
+      {
+        "name": "VM",
+        "mount_point": "/System/Volumes/VM",
+        "mount_from": "/dev/disk3s6",
+        "total": 994662584320,
+        "used": 683263229952,
+        "free": 311399354368,
+        "available": 311399354368
+      },
+      {
+        "name": "iSCPreboot",
+        "mount_point": "/System/Volumes/iSCPreboot",
+        "mount_from": "/dev/disk1s1",
+        "total": 524288000,
+        "used": 17653760,
+        "free": 506634240,
+        "available": 506634240
+      },
+      {
+        "name": "xarts",
+        "mount_point": "/System/Volumes/xarts",
+        "mount_from": "/dev/disk1s2",
+        "total": 524288000,
+        "used": 17653760,
+        "free": 506634240,
+        "available": 506634240
+      }
+    ],
+    "os": {
+      "name": "macOS",
+      "version": "15.5"
+    },
+    "kernel": {
+      "name": "Darwin",
+      "release": "24.5.0",
+      "version": "Darwin Kernel Version 24.5.0: Tue Apr 22 19:54:25 PDT 2025; root:xnu-11417.121.6~2/RELEASE_ARM64_T6020",
+      "architecture": ""
+    },
+    "uptime": {
+      "uptime": 3260067088,
+      "boot_time": "2025-06-04T02:17:00.283+0800"
+    },
+    "gpu_devices": [
+      {
+        "index": 0,
+        "device_index": 0,
+        "device_chip_index": 0,
+        "name": "Apple M2 Ultra",
+        "uuid": null,
+        "vendor": "Apple",
+        "core": {
+          "total": 60,
+          "utilization_rate": 0
+        },
+        "memory": {
+          "total": 200789721088,
+          "utilization_rate": 1.061629236574901,
+          "is_unified_memory": true,
+          "used": 2512488436,
+          "allocated": 0
+        },
+        "network": null,
+        "temperature": 36.87187576293945,
+        "labels": {},
+        "type": "mps"
+      }
+    ],
+    "rpc_servers": {
+      "0": {
+        "pid": 40196,
+        "port": 40068,
+        "gpu_index": 0
+      }
+    }
+  },
+  "unreachable": false,
+  "heartbeat_time": "2025-07-11T11:51:27Z",
+  "worker_uuid": "72252a2d-b4ff-41e0-a973-b5bd2998ff68",
+  "id": 1,
+  "created_at": "2025-06-27T09:28:36Z",
+  "updated_at": "2025-07-11T11:51:27Z"
+}
