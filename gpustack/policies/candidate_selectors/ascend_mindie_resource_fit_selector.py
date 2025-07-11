@@ -76,6 +76,7 @@ class ModelParameters:
 
         # Parse
         pretrained_config = get_pretrained_config(model, trust_remote_code=True)
+        pretrained_config = get_hf_text_config(pretrained_config)
         if not pretrained_config:
             raise ValueError(f"Failed to get model {model.name} pretrained config")
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
@@ -87,17 +88,8 @@ class ModelParameters:
                 # which would not register in the argument parser.
                 pass
 
-        # Get maximum sequence length.
-        try:
-            pretrained_config = get_pretrained_config(model)
-            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            self.derived_max_seq_len = get_max_model_len(pretrained_or_hf_text_config)
-        except Exception as e:
-            raise ValueError(
-                f"Failed to get model {model.name} maximum sequence length: {e}"
-            ) from e
-
         # Default
+        self.derived_max_seq_len = get_max_model_len(pretrained_config)
         if not self.num_attention_heads:
             # For backward compatibility, try to get num_attention_heads from llm_config.
             llm_config = getattr(pretrained_config, "llm_config", None)
