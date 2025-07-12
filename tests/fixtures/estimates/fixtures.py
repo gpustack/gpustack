@@ -438,6 +438,39 @@ def deepseek_r1_distill_qwen_32b_bf16_partial_offload_split_3_3():
     )
 
 
+def deepseek_v3_0324_ud_iq1_s_disable_offload():
+    # gguf-parser 0.21.0
+    """
+    gguf-parser --estimate --no-mmap --parallel 4 --ctx-size 8192 --gpu-layers 0 \
+    -hf-repo unsloth/DeepSeek-V3-0324-GGUF \
+    -hf-file UD-IQ1_S/DeepSeek-V3-0324-UD-IQ1_S-00001-of-00004.gguf \
+    --json > deepseek_v3_0324_ud_iq1_s_disable_offload.json
+    """
+    return load_model_claim_from_file("deepseek_v3_0324_ud_iq1_s_disable_offload.json")
+
+
+def deepseek_v3_0324_ud_iq1_s_full_offload():
+    # gguf-parser 0.21.0
+    """
+    gguf-parser --estimate --no-mmap --parallel 4 --ctx-size 8192 --gpu-layers 999 \
+    -hf-repo unsloth/DeepSeek-V3-0324-GGUF \
+    -hf-file UD-IQ1_S/DeepSeek-V3-0324-UD-IQ1_S-00001-of-00004.gguf \
+    --json > deepseek_v3_0324_ud_iq1_s_full_offload.json
+    """
+    return load_model_claim_from_file("deepseek_v3_0324_ud_iq1_s_full_offload.json")
+
+
+def deepseek_v3_0324_ud_iq1_s_partial_offload():
+    # gguf-parser 0.21.0
+    """
+    gguf-parser --estimate --no-mmap --parallel 4 --ctx-size 8192 --gpu-layers-step 1 \
+    -hf-repo unsloth/DeepSeek-V3-0324-GGUF \
+    -hf-file UD-IQ1_S/DeepSeek-V3-0324-UD-IQ1_S-00001-of-00004.gguf \
+    --json > deepseek_v3_0324_ud_iq1_s_partial_offload.json
+    """
+    return load_model_claim_from_file("deepseek_v3_0324_ud_iq1_s_partial_offload.json")
+
+
 def load_model_claim_from_file(file_name) -> GGUFParserOutput:
     dir = os.path.dirname(__file__)
     file_path = os.path.join(dir, file_name)

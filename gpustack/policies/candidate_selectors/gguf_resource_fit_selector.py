@@ -1036,6 +1036,18 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if worker_allocatable_vram < vram_claim_for_current_max_offload_layers:
             return None
 
+        # NB(thxCode): There is a special case that when the worker is unified memory(usually, we assume it is an Apple macOS worker),
+        # the true estimated usage includes both the vram and ram claims.
+        # Since the `worker_allocatable_ram` is guaranteed to reflect the remaining unified memory of the worker,
+        # we can check if the Apple macOS worker can serve the estimated usage or not.
+        if is_unified_memory:
+            if (
+                worker_allocatable_ram
+                < vram_claim_for_current_max_offload_layers
+                + ram_claim_for_current_max_offload_layers
+            ):
+                return None
+
         # User specified gpu layers
         if self._param_gpu_layers:
             if worker_allocatable_ram < ram_claim_for_current_max_offload_layers:
