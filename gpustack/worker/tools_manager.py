@@ -21,8 +21,8 @@ from gpustack.utils import platform, envs
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.163"
-BUILTIN_GGUF_PARSER_VERSION = "v0.20.5"
+BUILTIN_LLAMA_BOX_VERSION = "v0.0.164"
+BUILTIN_GGUF_PARSER_VERSION = "v0.21.0"
 
 
 class ToolsManager:
