@@ -167,6 +167,8 @@ async def proxy_request_by_model(request: Request, endpoint: str):
         request.state.model = model
         request.state.stream = stream
 
+        mutate_request(request, body_json, form_data)
+
         instance = await get_running_instance(session, model.id)
         worker = await WorkerService(session).get_by_id(instance.worker_id)
         if not worker:
@@ -400,3 +402,37 @@ async def get_running_instance(session: AsyncSession, model_id: int):
             is_openai_exception=True,
         )
     return await load_balancer.get_instance(running_instances)
+
+
+def mutate_request(
+    request: Request, body_json: Optional[dict], form_data: Optional[aiohttp.FormData]
+):
+    path = request.url.path
+    model: Model = request.state.model
+    if (
+        path == "/v1/rerank"
+        and body_json
+        and model.env
+        and model.env.get("GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES", False)
+    ):
+        apply_qwen3_reranker_templates(body_json)
+
+
+def apply_qwen3_reranker_templates(body_json: dict):
+    """
+    Apply Qwen3 reranker templates to the request body.
+    See instructions in https://huggingface.co/Qwen/Qwen3-Reranker-0.6B.
+    Note: Once vLLM supports built-in template rendering for this model, this can be removed.
+    """
+    prefix = '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
+    suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+    query_template = "{prefix}<Instruct>: Given a web search query, retrieve relevant passages that answer the query\n<Query>: {query}\n"
+    document_template = "<Document>: {doc}{suffix}"
+    if "query" in body_json and "documents" in body_json:
+        query = body_json["query"]
+        documents = body_json["documents"]
+        body_json["query"] = query_template.format(prefix=prefix, query=query)
+        body_json["documents"] = [
+            document_template.format(doc=doc, suffix=suffix) for doc in documents
+        ]

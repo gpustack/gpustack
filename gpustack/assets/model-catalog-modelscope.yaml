@@ -2203,9 +2203,12 @@
       categories:
         - reranker
       replicas: 1
+      env:
+        GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES: "true"
       backend: vllm
       backend_parameters:
         - '--hf_overrides={"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}'
+        - --task=score
 # Image models
 - name: Stable Diffusion V3.5 Large
   description: Stable Diffusion 3.5 Large is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
