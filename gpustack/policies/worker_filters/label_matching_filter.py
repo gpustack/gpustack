@@ -34,7 +34,7 @@ class LabelMatchingFilter(WorkerFilter):
             if get_backend(self._model) == BackendEnum.VLLM:
                 messages[0] += " (Note: The vLLM backend supports Linux only.)"
             elif get_backend(self._model) == BackendEnum.ASCEND_MINDIE:
-                messages[0] += " (Note: The Ascend MindID backend supports Linux only.)"
+                messages[0] += " (Note: The Ascend MindIE backend supports Linux only.)"
 
         return candidates, messages
 
