@@ -98,14 +98,13 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
     return weight_size * 1.2 + framework_overhead
 
 
-def get_model_num_attention_heads(model: Model) -> Optional[int]:
+def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
     """
     Get the number of attention heads in the model.
     """
 
     num_attention_heads = None
     try:
-        config = get_pretrained_config(model, trust_remote_code=True)
         num_attention_heads_set = set()
 
         # Helper to collect num_attention_heads from configs
@@ -115,10 +114,10 @@ def get_model_num_attention_heads(model: Model) -> Optional[int]:
                 num_attention_heads_set.add(value)
 
         for _config in [
-            config,
-            getattr(config, "llm_config", None),
-            getattr(config, "text_config", None),
-            getattr(config, "vision_config", None),
+            pretrained_config,
+            getattr(pretrained_config, "llm_config", None),
+            getattr(pretrained_config, "text_config", None),
+            getattr(pretrained_config, "vision_config", None),
         ]:
             if _config:
                 add_heads_from(_config)
@@ -129,7 +128,7 @@ def get_model_num_attention_heads(model: Model) -> Optional[int]:
         num_attention_heads = reduce(math.gcd, num_attention_heads_set)
 
     except Exception as e:
-        logger.warning(f"Cannot get num_attention_heads for model {model.name}: {e}")
+        logger.warning(f"Cannot get num_attention_heads: {e}")
 
     return num_attention_heads
 
@@ -231,13 +230,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._gpu_count = world_size
                 self._vram_claim = 0
 
+        self._set_pretrained_config()
         self._set_gpu_memory_utilization()
         self._set_num_attention_heads()
 
     def _set_gpu_memory_utilization(self):
         self._gpu_memory_utilization = 0.9
         model = self._model
-        if model.categories and CategoryEnum.LLM not in model.categories:
+        if self._disable_gpu_memory_utilization():
             # gpu memory utilization is not used for non-LLM models
             self._gpu_memory_utilization = 0
 
@@ -248,8 +248,46 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if gmu:
             self._gpu_memory_utilization = float(gmu)
 
+    def _disable_gpu_memory_utilization(self) -> bool:
+        """
+        Determine whether GPU memory utilization should be disabled. vLLM does not use --gpu-memory-utilization for non-LLM models
+        like embedding and reranker, except for some specific models like Qwen3-Embedding and Qwen3-Reranker.
+
+        Rules:
+        1. For non-LLM models, GPU memory utilization is DISABLED (return True) unless they are in the exception list.
+        2. Otherwise, GPU memory utilization is ENABLED (return False).
+        """
+        if not self._model.categories:
+            return False
+
+        architectures = getattr(self._pretrained_config, "architectures", []) or []
+
+        # Non-LLM models that vLLM still uses GPU memory utilization
+        NON_LLM_GMU_EXCEPTIONS = {
+            "Qwen3ForCausalLM",
+            "Qwen3ForSequenceClassification",  # Qwen3-Embedding & Qwen3-Reranker
+        }
+
+        if CategoryEnum.LLM not in self._model.categories:
+            # Disable for non-LLM models unless they are in the exception list
+            return not any(arch in NON_LLM_GMU_EXCEPTIONS for arch in architectures)
+
+        return False
+
+    def _set_pretrained_config(self):
+        try:
+            self._pretrained_config = get_pretrained_config(
+                self._model, trust_remote_code=True
+            )
+        except Exception as e:
+            raise Exception(
+                f"Cannot get pretrained config for model {self._model.readable_source}: {e}"
+            ) from e
+
     def _set_num_attention_heads(self):
-        self._num_attention_heads = get_model_num_attention_heads(self._model)
+        self._num_attention_heads = get_model_num_attention_heads(
+            self._pretrained_config
+        )
         if (
             self._gpu_count
             and self._num_attention_heads
