@@ -37,8 +37,8 @@
 ARG CANN_VERSION=8.1.rc1.beta1
 ARG CANN_CHIP=910b
 ARG MINDIE_VERSION=2.0.rc2
-ARG VLLM_VERSION=0.7.3
-ARG VLLM_ASCEND_VERSION=0.7.3.post1
+ARG VLLM_VERSION=0.9.2
+ARG VLLM_ASCEND_VERSION=0.9.2rc1
 ARG PYTHON_VERSION=3.11
 
 #
@@ -371,7 +371,7 @@ RUN <<EOF
     else
         pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.1.0
     fi
-    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.1.0.post12 torchvision==0.16.0
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.1.0.post12 torchvision==0.16.0 torchaudio==2.1.0
 
     # Install dependencies.
     cat <<EOT >/tmp/requirements.txt
@@ -525,16 +525,6 @@ RUN <<EOF
     source ${CANN_HOME}/nnal/atb/set_env.sh
     source ${PIPX_LOCAL_VENVS}/vllm/bin/activate
 
-    # Install Torch, Torch-npu, TorchVision,
-    # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
-    # please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
-    if [ ${ARCH} == "x86_64" ]; then
-        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
-    else
-        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.5.1
-    fi
-    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.5.1 torchvision==0.20.1
-
     # Install dependencies.
     cat <<EOT >/tmp/requirements.txt
 ml-dtypes==0.5.0
@@ -552,14 +542,28 @@ EOT
     pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
 
     # Install vLLM & vLLM-Ascend
-    cat <<EOT >/tmp/requirements.txt
-vllm==${VLLM_VERSION}
-vllm-ascend==${VLLM_ASCEND_VERSION}
-EOT
     if [ ${ARCH} == "x86_64" ]; then
-        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm==${VLLM_VERSION} --extra-index-url https://download.pytorch.org/whl/cpu
     else
-        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm==${VLLM_VERSION}
+    fi
+
+    # Install Torch, Torch-npu, TorchVision,
+    # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
+    # please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
+    if [ ${ARCH} == "x86_64" ]; then
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+    else
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch==2.5.1
+    fi
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torchvision==0.20.1 torchaudio==2.5.1
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.5.1.post1.dev20250619 --pre --index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+
+    # Install vLLM & vLLM-Ascend
+    if [ ${ARCH} == "x86_64" ]; then
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm-ascend==${VLLM_ASCEND_VERSION} --extra-index-url https://download.pytorch.org/whl/cpu
+    else
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm-ascend==${VLLM_ASCEND_VERSION}
     fi
 
     # Install MindIE Turbo
