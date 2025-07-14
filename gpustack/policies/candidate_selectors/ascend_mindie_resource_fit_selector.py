@@ -1195,7 +1195,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if self._serving_params.npu_memory_fraction:
             self._scheduling_messages.append(
                 f"With --npu-memory-fraction={self._serving_params.npu_memory_fraction}, "
-                f"All GPUs combined need to provide at least {(byte_to_gib(request_usage.vram) / self._serving_params.npu_memory_fraction):.2f} GiB of total VRAM."
+                f"all GPUs combined need to provide at least {(byte_to_gib(request_usage.vram) / self._serving_params.npu_memory_fraction):.2f} GiB of total VRAM "
+                f"and each GPU needs {int(self._serving_params.npu_memory_fraction * 100)}% of allocatable VRAM."
             )
 
         # Available worker devices: {Worker: {Device Index: Device}},
