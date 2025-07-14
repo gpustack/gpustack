@@ -272,7 +272,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             reqeust_ram = safe_int(self._model.env.get("GPUSTACK_MODEL_RAM_CLAIM", 0))
             request_vram = safe_int(self._model.env.get("GPUSTACK_MODEL_VRAM_CLAIM", 0))
             if request_vram > 0:
-                return reqeust_ram, request_vram
+                return RequestEstimateUsage(reqeust_ram, request_vram)
 
         """
         RAM
