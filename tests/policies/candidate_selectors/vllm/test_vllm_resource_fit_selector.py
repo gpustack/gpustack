@@ -549,7 +549,7 @@ async def test_auto_schedule_single_work_single_gpu(config):
 
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - The current available GPU only has 24.23 GiB allocatable VRAM (100.00%)."""
         ]
         assert resource_fit_selector._messages == expect_msg
@@ -594,7 +594,7 @@ async def test_auto_schedule_single_work_multi_gpu(config):
 
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
         ]
 
@@ -639,7 +639,7 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
 
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - The optimal combination ['host4080', 'host4080-1'] provides 57.57 GiB of allocatable VRAM.
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."""
         ]
@@ -733,7 +733,7 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
 
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - Selected GPUs have 47.22 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 42.50 GiB of allocatable VRAM."""
         ]
 
@@ -749,7 +749,7 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
 
         expect_msg2 = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --gpu-memory-utilization=0.9, All GPUs combined need to provide at least 83.59 GiB of total VRAM.
+- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - Worker host4090 GPU indexes [0] and other 1 worker fail to meet the 90.00% allocatable VRAM ratio.
 - Selected GPUs have 25.87 GiB allocatable VRAM, 0/2 of GPUs meet the VRAM utilization ratio, providing 0.00 GiB of allocatable VRAM."""
         ]
