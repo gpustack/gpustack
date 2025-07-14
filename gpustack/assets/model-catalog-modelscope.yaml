@@ -2080,7 +2080,7 @@
       sizes: [0.6, 4, 8]
       source: model_scope
       model_scope_model_id: Qwen/Qwen3-Embedding-{size}B-GGUF
-      model_scope_filename: "*-{quantization}*.gguf"
+      model_scope_file_path: "*-{quantization}*.gguf"
       replicas: 1
       backend: llama-box
       cpu_offloading: true
