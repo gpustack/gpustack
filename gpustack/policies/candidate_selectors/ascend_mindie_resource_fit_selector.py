@@ -59,6 +59,8 @@ class ModelParameters:
     num_key_value_heads: int = 1
     n_group: Optional[int] = None
     head_dim: Optional[int] = None
+    q_lora_rank: Optional[int] = None
+    kv_lora_rank: Optional[int] = None
     qk_rope_head_dim: Optional[int] = None
     qk_nope_head_dim: Optional[int] = None
     v_head_dim: Optional[int] = None
@@ -97,7 +99,7 @@ class ModelParameters:
                 self.num_attention_heads = getattr(
                     llm_config, "num_attention_heads", None
                 )
-        if not self.qk_nope_head_dim and self.hidden_size and self.num_attention_heads:
+        if not self.head_dim and self.hidden_size and self.num_attention_heads:
             self.head_dim = self.hidden_size // self.num_attention_heads
         if not self.moe_num_experts:
             for key in [
@@ -131,7 +133,7 @@ class ModelParameters:
             ):
                 return ModelAttentionTypeEnum.GQA
             elif self.num_key_value_heads == self.num_attention_heads:
-                if self.n_group and self.n_group > 1:
+                if self.q_lora_rank and self.kv_lora_rank:
                     return ModelAttentionTypeEnum.MLA
                 return ModelAttentionTypeEnum.MHA
         return ModelAttentionTypeEnum.UNK
