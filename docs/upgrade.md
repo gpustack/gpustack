@@ -11,28 +11,6 @@ You can upgrade GPUStack using the installation script or by manually installing
 
     Before proceeding with an upgrade, it’s strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of the file located at `/var/lib/gpustack/database.db`.
 
-## Docker Upgrade
-
-If you installed GPUStack using Docker, upgrade to the a new version by pulling the Docker image with the desired version tag.
-
-For example:
-
-```bash
-docker pull gpustack/gpustack:vX.Y.Z
-```
-
-Then restart the GPUStack service with the new image.
-
-## pip Upgrade
-
-If you install GPUStack manually using pip, upgrade using the common `pip` workflow.
-
-For example, to upgrade GPUStack to the latest version:
-
-```bash
-pip install --upgrade gpustack
-```
-
 ## Upgrade GPUStack Using the Installation Script(Deprecated)
 
 !!! note
@@ -87,6 +65,28 @@ To upgrade to a specific version:
 $env:INSTALL_PACKAGE_SPEC = gpustack==x.y.z
 $env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
 Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } <EXISTING_GPUSTACK_ARGS>"
+```
+
+## Docker Upgrade
+
+If you installed GPUStack using Docker, upgrade to the a new version by pulling the Docker image with the desired version tag.
+
+For example:
+
+```bash
+docker pull gpustack/gpustack:vX.Y.Z
+```
+
+Then restart the GPUStack service with the new image.
+
+## pip Upgrade
+
+If you install GPUStack manually using pip, upgrade using the common `pip` workflow.
+
+For example, to upgrade GPUStack to the latest version:
+
+```bash
+pip install --upgrade gpustack
 ```
 
 Then restart the GPUStack service according to your setup.
