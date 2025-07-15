@@ -17,7 +17,12 @@ from gpustack.schemas.models import (
     get_mmproj_filename,
 )
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
+from gpustack.utils.hub import (
+    filter_filename,
+    list_repo,
+    match_hugging_face_files,
+    match_model_scope_file_paths,
+)
 from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
@@ -544,6 +549,12 @@ async def _gguf_parser_command(  # noqa: C901
     if cache_dir:
         command.extend(["--cache-path", cache_dir])
 
+    cache_expiration = kwargs.get("cache_expiration")
+    if cache_expiration:
+        command.extend(["--cache-expiration", cache_expiration])
+    else:
+        command.extend(["--cache-expiration", "0"])
+
     if offload == GPUOffloadEnum.Full:
         command.extend(["--gpu-layers", "-1"])
     elif offload == GPUOffloadEnum.Partial:
@@ -694,54 +705,46 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
             if ol_base_url:
                 args.extend(["-ol-base-url", ol_base_url])
             return args
-        elif model.source == SourceEnum.HUGGING_FACE:
+        elif model.source in [SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE]:
+            if model.source == SourceEnum.HUGGING_FACE:
+                repo_arg, file_arg, mmproj_arg = [
+                    "--hf-repo",
+                    "--hf-file",
+                    "--hf-mmproj-file",
+                ]
+                repo_id = model.huggingface_repo_id
+                file_name = model.huggingface_filename
+            else:
+                repo_arg, file_arg, mmproj_arg = [
+                    "--ms-repo",
+                    "--ms-file",
+                    "--ms-mmproj-file",
+                ]
+                repo_id = model.model_scope_model_id
+                file_name = model.model_scope_file_path
+
+            args = [repo_arg, repo_id]
+
             global_config = get_global_config()
-
-            args = ["-hf-repo", model.huggingface_repo_id]
-            if model.huggingface_filename:
-                model_filename = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        hf_model_filename,
-                        model.huggingface_repo_id,
-                        model.huggingface_filename,
-                        global_config.huggingface_token,
-                    ),
-                    timeout=fetch_file_timeout_in_seconds,
-                )
-                args.extend(["-hf-file", model_filename])
-
-                mmproj_filename = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        hf_mmproj_filename,
-                        model,
-                        global_config.huggingface_token,
-                    ),
-                    timeout=fetch_file_timeout_in_seconds,
-                )
-                if mmproj_filename:
-                    args.extend(["--hf-mmproj-file", mmproj_filename])
-
-            return args
-        elif model.source == SourceEnum.MODEL_SCOPE:
-            file_path = await asyncio.wait_for(
+            repo_files = await asyncio.wait_for(
                 asyncio.to_thread(
-                    model_scope_file_path,
-                    model.model_scope_model_id,
-                    model.model_scope_file_path,
+                    list_repo,
+                    repo_id,
+                    model.source,
+                    global_config.huggingface_token,
                 ),
                 timeout=fetch_file_timeout_in_seconds,
             )
-            args = ["-ms-repo", model.model_scope_model_id, "-ms-file", file_path]
+            model_filename = filter_filename(file_name, repo_files)
+            if len(model_filename) == 0:
+                raise ValueError(f"File {model_filename} not found in {repo_id}")
 
-            mmproj_file_path = await asyncio.wait_for(
-                asyncio.to_thread(
-                    model_scope_mmproj_file_path,
-                    model,
-                ),
-                timeout=fetch_file_timeout_in_seconds,
-            )
-            if mmproj_file_path:
-                args.extend(["--ms-mmproj-file", mmproj_file_path])
+            args.extend([file_arg, model_filename[0]])
+
+            mmproj_filename = get_mmproj_filename(model)
+            mmproj_filename = filter_filename(mmproj_filename, repo_files)
+            if mmproj_filename:
+                args.extend([mmproj_arg, mmproj_filename[0]])
 
             return args
         elif model.source == SourceEnum.LOCAL_PATH:
