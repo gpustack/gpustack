@@ -475,8 +475,15 @@ class AscendMindIEParameters:
         args_parsed = parser.parse_known_args(args=args)
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
             try:
-                if attr_value := getattr(args_parsed[0], attr_name):
-                    setattr(self, attr_name, attr_value)
+                attr_value = getattr(args_parsed[0], attr_name, None)
+                if attr_value is not None:
+                    try:
+                        setattr(self, attr_name, attr_value)
+                    except ValueError as e:
+                        # Never reach here, but just in case.
+                        raise argparse.ArgumentTypeError(
+                            f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
+                        ) from e
             except AttributeError:
                 # If reach here, that means the field is an internal property,
                 # which would not register in the argument parser.
@@ -490,7 +497,7 @@ class AscendMindIEParameters:
         if self.max_input_token_len <= 0:
             self.max_input_token_len = self.max_seq_len
         # Schedule config
-        if self.max_preempt_count == 0:
+        if self.max_preempt_count == 0 and self.cpu_mem_size > 0:
             self.cpu_mem_size = 0
         # Extends or Features
         # -- Parallelism
@@ -556,7 +563,7 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--cpu-mem-size must be greater than or equal to 0"
             )
-        if not (0 < self.npu_memory_fraction < 1):
+        if not (0 < self.npu_memory_fraction <= 1):
             raise argparse.ArgumentTypeError(
                 "--npu-memory-fraction must be in the range (0, 1]"
             )
