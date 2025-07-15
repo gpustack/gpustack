@@ -33,57 +33,60 @@ For example, to upgrade GPUStack to the latest version:
 pip install --upgrade gpustack
 ```
 
-## Upgrading GPUStack Installed via Script (Legacy Script Installation)
+## Upgrade GPUStack Using the Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows. 
+      The installation script method is deprecated as of version 0.7.
 
+To upgrade GPUStack from an older version, re-run the installation script using the same configuration options you originally used.
 
-If you previously installed GPUStack using the legacy installation script, follow the steps below to upgrade:
+Running the installation script will:
 
-### On Linux
+1. Install the latest version of the GPUStack Python package.
+2. Update the system service (systemd, launchd, or Windows) init script to reflect the arguments passed to the installation script.
+3. Restart the GPUStack service.
 
-#### Step 1: Locate Your Existing Database
+### Linux or macOS
 
-Find the path to your existing database directory (used in the legacy installation). For example:
-
-```bash
-/path/to/your/legacy/gpustack/data
-```
-
-We'll refer to this as `${your-database-file-location}` in the next step.
-
-#### Step 2: Reinstall GPUStack via Docker
-
-Make sure your hardware platform is supported. Then run the following Docker command, replacing the volume mount path with your database location.
-
-**Example: For NVIDIA GPUs**
+For example, to upgrade GPUStack to the latest version on a Linux system and macOS:
 
 ```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v ${your-database-file-location}:/var/lib/gpustack \
-    gpustack/gpustack
+curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
 ```
 
-This will launch GPUStack using Docker, preserving your existing data.
+!!! Note
 
-For other hardware platforms, please refer to the commands in the installation documentation.
+    `<EXISTING_INSTALL_ENV>` are the environment variables you set during the initial installation, and `<EXISTING_GPUSTACK_ARGS>` are the startup parameters you configured back then.
 
-- [Apple Metal](installation/apple-metal-installation.md)
-- [AMD ROCm](installation/amd-rocm/online-installation.md)
-- [Ascend CANN](installation/ascend-cann/online-installation.md)
-- [Hygon DTK](installation/hygon-dtk/online-installation.md)
-- [Moore Threads MUSA](installation/moorethreads-musa/online-installation.md)
-- [Iluvatar Corex](installation/iluvatar-corex/online-installation.md)
+    **Simply execute the same installation command again, and the system will automatically perform an upgrade.**
 
-### On macOS or Windows
+To upgrade to a specific version, specify the `INSTALL_PACKAGE_SPEC` environment variable similar to the `pip install` command:
 
-- Run the Desktop Installer.
+```bash
+curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=gpustack==x.y.z <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+```
 
-- After installation, the status will be shown as To Upgrade.
+### Windows
 
-- Click `Start` to automatically migrate data and configuration for the upgrade.
+To upgrade GPUStack to the latest version on a Windows system:
+
+```powershell
+$env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
+Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+```
+
+!!! Note
+
+    `<EXISTING_INSTALL_ENV>` are the environment variables you set during the initial installation, and `<EXISTING_GPUSTACK_ARGS>` are the startup parameters you configured back then.
+
+    **Simply execute the same installation command again, and the system will automatically perform an upgrade.**
+
+To upgrade to a specific version:
+
+```powershell
+$env:INSTALL_PACKAGE_SPEC = gpustack==x.y.z
+$env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
+Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } <EXISTING_GPUSTACK_ARGS>"
+```
+
+Then restart the GPUStack service according to your setup.
