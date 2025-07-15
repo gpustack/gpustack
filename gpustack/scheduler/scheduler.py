@@ -376,7 +376,7 @@ async def find_candidate(
         else:
             candidates_selector = VLLMResourceFitSelector(config, model)
     except Exception as e:
-        return None, [f"Failed to initial {model.backend} candidates selector: {e}"]
+        return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
     candidates = await candidates_selector.select_candidates(workers)
 

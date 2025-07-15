@@ -83,7 +83,8 @@ class ModelParameters:
             raise ValueError(f"Failed to get model {model.name} pretrained config")
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
             try:
-                if attr_value := getattr(pretrained_config, attr_name):
+                attr_value = getattr(pretrained_config, attr_name, None)
+                if attr_value is not None:
                     setattr(self, attr_name, attr_value)
             except AttributeError:
                 # If reach here, that means the field is an internal property,
