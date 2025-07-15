@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import List, Optional
 from pathlib import Path
@@ -14,9 +15,11 @@ from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, SourceEnum, get_mmproj_filename
+from gpustack.utils.cache import load_cache, save_cache
 
 logger = logging.getLogger(__name__)
 
+LIST_REPO_CACHE_DIR = "repo-skeleton"
 
 MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
     '*.json',
@@ -152,6 +155,44 @@ def match_hugging_face_files(
         matching_files.append(extra_file)
 
     return matching_files
+
+
+def list_repo(repo_id: str, source: str, token: Optional[str] = None) -> List[str]:
+    cache_key = f"{source}:{repo_id}"
+    cached_result, is_succ = load_cache(LIST_REPO_CACHE_DIR, cache_key)
+    if is_succ:
+        result = json.loads(cached_result)
+        if isinstance(result, list):
+            return result
+
+    if source == SourceEnum.HUGGING_FACE:
+        validate_repo_id(repo_id)
+        hffs = HfFileSystem(token=token)
+        files = [
+            file["name"] if isinstance(file, dict) else file
+            for file in hffs.ls(repo_id, recursive=True)
+        ]
+        file_list: List[str] = [
+            Path(file).relative_to(repo_id).as_posix() for file in files
+        ]
+    elif source == SourceEnum.MODEL_SCOPE:
+        msapi = HubApi()
+        files = msapi.get_model_files(repo_id, recursive=True)
+        file_list = [file["Path"] for file in files]
+    else:
+        raise ValueError(f"Invalid source: {source}")
+
+    if not save_cache(LIST_REPO_CACHE_DIR, cache_key, json.dumps(file_list)):
+        logger.info(f"Saved cache {LIST_REPO_CACHE_DIR} {cache_key} fail")
+
+    return file_list
+
+
+def filter_filename(file_path: str, file_paths: List[str]):
+    matching_paths = [p for p in file_paths if fnmatch.fnmatch(p, file_path)]
+    matching_paths = sorted(matching_paths)
+
+    return matching_paths
 
 
 def match_model_scope_file_paths(
