@@ -33,60 +33,57 @@ For example, to upgrade GPUStack to the latest version:
 pip install --upgrade gpustack
 ```
 
-## Upgrade GPUStack Using the Installation Script(Deprecated)
+## Upgrading GPUStack Installed via Script (Legacy Script Installation)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows. 
 
-To upgrade GPUStack from an older version, re-run the installation script using the same configuration options you originally used.
 
-Running the installation script will:
+If you previously installed GPUStack using the legacy installation script, follow the steps below to upgrade:
 
-1. Install the latest version of the GPUStack Python package.
-2. Update the system service (systemd, launchd, or Windows) init script to reflect the arguments passed to the installation script.
-3. Restart the GPUStack service.
+### On Linux
 
-### Linux or macOS
+#### Step 1: Locate Your Existing Database
 
-For example, to upgrade GPUStack to the latest version on a Linux system and macOS:
+Find the path to your existing database directory (used in the legacy installation). For example:
 
 ```bash
-curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+/path/to/your/legacy/gpustack/data
 ```
 
-!!! Note
+We'll refer to this as `${your-database-file-location}` in the next step.
 
-    `<EXISTING_INSTALL_ENV>` are the environment variables you set during the initial installation, and `<EXISTING_GPUSTACK_ARGS>` are the startup parameters you configured back then.
+#### Step 2: Reinstall GPUStack via Docker
 
-    **Simply execute the same installation command again, and the system will automatically perform an upgrade.**
+Make sure your hardware platform is supported. Then run the following Docker command, replacing the volume mount path with your database location.
 
-To upgrade to a specific version, specify the `INSTALL_PACKAGE_SPEC` environment variable similar to the `pip install` command:
+**Example: For NVIDIA GPUs**
 
 ```bash
-curl -sfL https://get.gpustack.ai | INSTALL_PACKAGE_SPEC=gpustack==x.y.z <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --gpus all \
+    --network=host \
+    --ipc=host \
+    -v ${your-database-file-location}:/var/lib/gpustack \
+    gpustack/gpustack
 ```
 
-### Windows
+This will launch GPUStack using Docker, preserving your existing data.
 
-To upgrade GPUStack to the latest version on a Windows system:
+For other hardware platforms, please refer to the commands in the installation documentation.
 
-```powershell
-$env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
-Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-```
+- [Apple Metal](installation/apple-metal-installation.md)
+- [AMD ROCm](installation/amd-rocm/online-installation.md)
+- [Ascend CANN](installation/ascend-cann/online-installation.md)
+- [Hygon DTK](installation/hygon-dtk/online-installation.md)
+- [Moore Threads MUSA](installation/moorethreads-musa/online-installation.md)
+- [Iluvatar Corex](installation/iluvatar-corex/online-installation.md)
 
-!!! Note
+### On macOS or Windows
 
-    `<EXISTING_INSTALL_ENV>` are the environment variables you set during the initial installation, and `<EXISTING_GPUSTACK_ARGS>` are the startup parameters you configured back then.
+- Run the Desktop Installer.
 
-    **Simply execute the same installation command again, and the system will automatically perform an upgrade.**
+- After installation, the status will be shown as To Upgrade.
 
-To upgrade to a specific version:
-
-```powershell
-$env:INSTALL_PACKAGE_SPEC = gpustack==x.y.z
-$env:<EXISTING_INSTALL_ENV> = <EXISTING_INSTALL_ENV_VALUE>
-Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } <EXISTING_GPUSTACK_ARGS>"
-```
-
-Then restart the GPUStack service according to your setup.
+- Click `Start` to automatically migrate data and configuration for the upgrade.
