@@ -8,7 +8,7 @@
 
 | OS      | Arch           | Supported methods                                                                                                                                 |
 | ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-script)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
+| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-scriptdeprecated)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
 | Windows | AMD64          | [Installation Script](#installation-script)<br>[pip Installation](#pip-installation)                                                              |
 
 ## Supported backends
