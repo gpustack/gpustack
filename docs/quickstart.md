@@ -1,75 +1,91 @@
 # Quickstart
 
-## Installation Script(Deprecated)
-
-!!! note
-      The installation script method is deprecated as of version 0.7.
+## Install GPUStack
 
 === "Linux"
 
-    GPUStack provides a script to install it as a systemd service on Linux with default port 80. To install GPUStack using this method, just run:
+    We provide two installation methods on Linux:
+
+    - **Docker installation**(Recommended)
+    - **pip installation**
+
+    We strongly recommend using [Docker](https://docs.docker.com/engine/install/) for installing the GPUStack on Linux. 
+    
+    **For Example: NVIDIA CUDA**
+
+    Run the following command to start the GPUStack server.
 
     ```bash
-    curl -sfL https://get.gpustack.ai | sh -s -
+    docker run -d --name gpustack \
+          --restart=unless-stopped \
+          --gpus all \
+          --network=host \
+          --ipc=host \
+          -v gpustack-data:/var/lib/gpustack \
+          gpustack/gpustack
     ```
+
+    If you need to change the default server port 80, please use the --port parameter:
+
+    ```bash
+    docker run -d --name gpustack \
+          --restart=unless-stopped \
+          --gpus all \
+          --network=host \
+          --ipc=host \
+          -v gpustack-data:/var/lib/gpustack \
+          gpustack/gpustack
+          --port 9090
+    ```
+
+    !!! tip
+        If the quick installation fails, please refer to the [Docker Installation](installation/nvidia-cuda/online-installation/#docker-installation) guide for more detailed instructions.
+
+
+    
+    For on other hardware platforms Docker installation or pip installation details please refer to the [Installation Documentation](installation/installation-requirements.md).
+
+    !!! note
+        If you're a beginner, you don't need to run the `Add worker` action — it's not required for the Quick Start experience.  
+        You can also skip it if you're not sure what `Add worker` does for now.
 
 === "macOS"
 
-    GPUStack provides a script to install it as a launchd service on macOS with default port 80. To install GPUStack using this method, just run:
+    **Supported platforms:** Apple Silicon (M series), macOS 14 or later
 
-    ```bash
-    curl -sfL https://get.gpustack.ai | sh -s -
-    ```
+    1. [Download the installer](https://gpustack.ai)
 
-=== "Windows"
+    2. Run the installer
+    
+    ![mac installer](assets/quick-start/mac-installer.png)
 
-    Run PowerShell as administrator (**avoid** using PowerShell ISE), then run the following command to install GPUStack with default port 80:
+    3. Installation Successful
+    
+    After successful installation, the GPUStack icon appears in the status bar.
 
-    ```powershell
-    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-    ```
+     ![mac installer](assets/quick-start/mac-done.png)
 
-## Desktop Installer
-
-=== "macOS"
-
-    - Only supported: Apple Silicon (M series), macOS 14+
-    - [Download the installer](https://gpustack.ai)
 
 === "Windows"
 
-    - Only supported: win 10, win 11
-    - [Download the installer](https://gpustack.ai)
+    **Supported platforms:** Windows 10, Windows 11
+    
+    1. [Download the installer](https://gpustack.ai)
 
-## Other Installation Methods
+    2. Run the installer
+    
+    ![windows installer](assets/quick-start/windows-installer.png)
 
-For Docker installation, pip installation or detailed configuration options, please refer to the [Installation Documentation](installation/installation-requirements.md).
+    3. Installation Successful
+    
+    After successful installation, the GPUStack icon will appear in the system tray.
+    
+     ![windows done](assets/quick-start/windows-done.png)
 
-## Getting Started
 
-1. Run and chat with the **qwen3** model:
+## Open GPUStack UI
 
-```bash
-gpustack chat qwen3 "tell me a joke."
-```
-
-2. Run and generate an image with the **stable-diffusion-v3-5-large-turbo** model:
-
-!!!tip
-
-      This command downloads the model (~12GB) from Hugging Face. The download time depends on your network speed. Ensure you have enough disk space and VRAM (12GB) to run the model. If you encounter issues, you can skip this step and move to the next one.
-
-```bash
-gpustack draw hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:stable-diffusion-v3-5-large-turbo-Q4_0.gguf \
-"A minion holding a sign that says 'GPUStack'. The background is filled with futuristic elements like neon lights, circuit boards, and holographic displays. The minion is wearing a tech-themed outfit, possibly with LED lights or digital patterns. The sign itself has a sleek, modern design with glowing edges. The overall atmosphere is high-tech and vibrant, with a mix of dark and neon colors." \
---sample-steps 5 --show
-```
-
-Once the command completes, the generated image will appear in the default viewer. You can experiment with the prompt and CLI options to customize the output.
-
-![Generated Image](assets/quickstart-minion.png)
-
-3. Open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+Open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
 
 === "Linux"
 
@@ -89,17 +105,34 @@ Once the command completes, the generated image will appear in the default viewe
     Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
     ```
 
-3. Click `Playground - Chat` in the navigation menu. Now you can chat with the LLM in the UI playground.
+![login](assets/quick-start/quick-start-login.png)
 
-![Playground Screenshot](assets/playground-screenshot.png)
+### Deploy a Model
+1. Navigate to the `Catalog` page in the GPUStack UI.
 
-4. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
+2. In the catalog list page, use the search bar in the top left to search for the model keyword `qwen3`.
 
-5. Fill in the `Name` and click the `Save` button.
+3. In the search results, select `Qwen3`. If the **Compatibility Check Passed** message appears, click the `Save` button to deploy the model. You will be automatically redirected to the `Models` page once the deployment starts successfully.
 
-6. Copy the generated API key and save it somewhere safe. Please note that you can only see it once on creation.
+![deploy qwen3 from catalog](assets/quick-start/quick-start-qwen3.png)
 
-7. Now you can use the API key to access the OpenAI-compatible API. For example, use curl as the following:
+4. When the status shows `Running`, the model has been deployed successfully.
+
+![deploy qwen3 from catalog](assets/quick-start/model-running.png)
+
+5. Click `Playground - Chat` in the navigation menu, then select the  model from the top-right corner `Model` dropdown. Now you can chat with the LLM in the UI playground.
+
+![deploy qwen3 from catalog](assets/quick-start/quick-chat.png)
+
+### Try the Model with curl
+
+1. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
+
+2. Fill in the `Name` and click the `Save` button.
+
+3. Copy the generated API key and save it somewhere safe. Please note that you can only see it once on creation.
+
+4. Now you can use the API key to access the OpenAI-compatible API. For example, use curl as the following:
 
 ```bash
 export GPUSTACK_API_KEY=your_api_key
