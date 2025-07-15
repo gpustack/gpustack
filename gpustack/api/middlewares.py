@@ -3,8 +3,8 @@ import json
 import logging
 import time
 from typing import Type, Union
-from fastapi import Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Request, Response, status
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from jwt import DecodeError, ExpiredSignatureError
 from starlette.middleware.base import BaseHTTPMiddleware
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
@@ -15,6 +15,7 @@ from openai.types.audio.transcription_create_response import (
 from openai.types.create_embedding_response import (
     Usage as EmbeddingUsage,
 )
+from gpustack.api.exceptions import ErrorResponse
 from gpustack.routes.rerank import RerankResponse, RerankUsage
 from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
@@ -35,7 +36,17 @@ logger = logging.getLogger(__name__)
 class RequestTimeMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request.state.start_time = datetime.now(timezone.utc)
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as e:
+            response = JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content=ErrorResponse(
+                    code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    reason="Internal Server Error",
+                    message=f"Unexpected error occurred: {e}",
+                ).model_dump(),
+            )
         return response
 
 
