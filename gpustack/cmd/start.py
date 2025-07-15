@@ -168,7 +168,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--ollama-library-base-url",
         type=str,
-        help="Base URL of the Ollama library. The default is https://registry.ollama.ai.",
+        help=argparse.SUPPRESS,
         default=get_gpustack_env("OLLAMA_LIBRARY_BASE_URL"),
     )
     group.add_argument(
