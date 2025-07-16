@@ -138,15 +138,37 @@ async def get_all_npu_chips_mapping() -> Dict[int, tuple[int, int]]:
 
     NPU ID                         Chip ID                        Chip Logic ID                  Chip Name
     0                              0                              0                              Ascend xxx
+    0                              1                              -                              Mcu
     1                              0                              1                              Ascend xxx
+    1                              1                              -                              Mcu
     2                              0                              2                              Ascend xxx
+    2                              1                              -                              Mcu
     3                              0                              3                              Ascend xxx
+    3                              1                              -                              Mcu
+    4                              0                              4                              Ascend xxx
+    4                              1                              -                              Mcu
+    5                              0                              5                              Ascend xxx
+    5                              1                              -                              Mcu
+    6                              0                              6                              Ascend xxx
+    6                              1                              -                              Mcu
+    7                              0                              7                              Ascend xxx
+    7                              1                              -                              Mcu
 
     # Example output 2:
 
     NPU ID                         Chip ID                        Chip Logic ID                  Chip Name
-    4                              0                              0                              Ascend xxx
-    4                              1                              -                              Mcu
+    1                              0                              0                              Ascend xxx
+    1                              1                              1                              Ascend xxx
+    1                              2                              -                              Mcu
+    2                              0                              2                              Ascend xxx
+    2                              1                              3                              Ascend xxx
+    2                              2                              -                              Mcu
+    4                              0                              4                              Ascend xxx
+    4                              1                              5                              Ascend xxx
+    4                              2                              -                              Mcu
+    5                              0                              6                              Ascend xxx
+    5                              1                              7                              Ascend xxx
+    5                              2                              -                              Mcu
     """
 
     return _parse_all_npu_chips_mapping(output)
@@ -257,21 +279,32 @@ async def get_npu_chips_common_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     Temperature(C)                 : 46
     NPU Real-time Power(W)         : 69.0
 
+    Chip Name                      : mcu
+    Temperature(C)                 : 48
+    NPU Real-time Power(W)         : 45.2
+
     # Example output 2:
 
     NPU ID                         : 1
-    Chip Count                     : 1
+    Chip Count                     : 2
 
     Chip ID                        : 0
-    Memory Usage Rate(%)           : 4
+    Memory Usage Rate(%)           : 3
     Aicore Usage Rate(%)           : 0
     Aicore Freq(MHZ)               : 1080
     Aicore curFreq(MHZ)            : 960
-    Temperature(C)                 : 43
+    Temperature(C)                 : 60
+
+    Chip ID                        : 1
+    Memory Usage Rate(%)           : 3
+    Aicore Usage Rate(%)           : 0
+    Aicore Freq(MHZ)               : 1080
+    Aicore curFreq(MHZ)            : 960
+    Temperature(C)                 : 59
 
     Chip Name                      : mcu
-    Temperature(C)                 : 41
-    NPU Real-time Power(W)         : 13.4
+    Temperature(C)                 : 48
+    NPU Real-time Power(W)         : 45.2
     """
 
     return _parse_npu_chips_common_info(output)
@@ -305,6 +338,8 @@ def _parse_npu_chips_common_info(output: str) -> Dict[int, Dict[str, str]]:
                 else:
                     chip_id = -1
                 continue
+            elif key == "Chip Name":
+                chip_id = -1
 
             chip_info = info.get(chip_id, None)
             if chip_info is None:
@@ -356,15 +391,15 @@ async def get_npu_chips_usages_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     # Example output 2:
 
     NPU ID                         : 1
-    Chip Count                     : 1
+    Chip Count                     : 2
 
-    DDR Capacity(MB)               : 21534
-    DDR Usage Rate(%)              : 4
+    DDR Capacity(MB)               : 44280
+    DDR Usage Rate(%)              : 3
     DDR Hugepages Total(page)      : 0
     DDR Hugepages Usage Rate(%)    : 0
     Aicore Usage Rate(%)           : 0
     Aicpu Usage Rate(%)            : 0
-    Ctrlcpu Usage Rate(%)          : 13
+    Ctrlcpu Usage Rate(%)          : 2
     Vectorcore Usage Rate(%)       : 0
     DDR Bandwidth Usage Rate(%)    : 51
     DVPP VDEC Usage Rate(%)        : 0
@@ -373,6 +408,22 @@ async def get_npu_chips_usages_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     DVPP JPEGE Usage Rate(%)       : 0
     DVPP JPEGD Usage Rate(%)       : 0
     Chip ID                        : 0
+
+    DDR Capacity(MB)               : 43693
+    DDR Usage Rate(%)              : 3
+    DDR Hugepages Total(page)      : 0
+    DDR Hugepages Usage Rate(%)    : 0
+    Aicore Usage Rate(%)           : 0
+    Aicpu Usage Rate(%)            : 0
+    Ctrlcpu Usage Rate(%)          : 3
+    Vectorcore Usage Rate(%)       : 0
+    DDR Bandwidth Usage Rate(%)    : 51
+    DVPP VDEC Usage Rate(%)        : 0
+    DVPP VPC Usage Rate(%)         : 0
+    DVPP VENC Usage Rate(%)        : 0
+    DVPP JPEGE Usage Rate(%)       : 0
+    DVPP JPEGD Usage Rate(%)       : 0
+    Chip ID                        : 1
     """
 
     return _parse_npu_chips_usages_info(output)
