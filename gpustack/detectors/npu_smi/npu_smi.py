@@ -50,7 +50,7 @@ async def _gather_gpu_info() -> GPUDevicesInfo:
 
         # Get the NPU chip info for this Chip ID: {<key> -> <value>}.
         npu_chip_info = npu_chips_info.get(chip_id, {})
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.isEnabledFor(glogging.TRACE_LEVEL):
             logger.trace(
                 f"Gathered NPU chip {chip_logic_id} ({npu_id}, {chip_id}) info: {npu_chip_info}"
             )
@@ -59,7 +59,13 @@ async def _gather_gpu_info() -> GPUDevicesInfo:
         # - Name
         dev_name = npu_chip_info.get("Chip Name", "unknown")
         # - UUID
-        dev_uuid = npu_chip_info.get("VDie ID", "")
+        dev_uuid = ""
+        for key in ["VDie ID", "Die ID"]:
+            if key not in npu_chip_info:
+                continue
+            dev_uuid = npu_chip_info.get(key, "")
+            if dev_uuid:
+                break
         # - Core
         dev_core = GPUCoreInfo(
             total=safe_int(npu_chip_info.get("Aicore Count", 0)),
@@ -68,9 +74,21 @@ async def _gather_gpu_info() -> GPUDevicesInfo:
         # - Memory
         dev_memory = MemoryInfo(
             is_unified_memory=False,
-            total=safe_int(npu_chip_info.get("HBM Capacity(MB)", 0)) * 1024 * 1024,
-            utilization_rate=safe_float(npu_chip_info.get("HBM Usage Rate(%)", 0)),
+            total=0,
+            utilization_rate=0.0,
         )
+        for key in [
+            ["HBM Capacity(MB)", "HBM Usage Rate(%)"],
+            ["DDR Capacity(MB)", "DDR Usage Rate(%)"],
+        ]:
+            if not all(k in npu_chip_info for k in key):
+                continue
+            total = safe_int(npu_chip_info.get(key[0], 0)) * 1024 * 1024
+            utilization_rate = safe_float(npu_chip_info.get(key[1], 0))
+            if total > 0 and utilization_rate >= 0:
+                dev_memory.total = total
+                dev_memory.utilization_rate = utilization_rate
+                break
         dev_memory.used = round(dev_memory.total * dev_memory.utilization_rate / 100)
         # - Network
         dev_network = GPUNetworkInfo(
@@ -109,18 +127,26 @@ async def get_all_npu_chips_mapping() -> Dict[int, tuple[int, int]]:
     """
     Get all NPU chips' mapping,
     return a dictionary with the mapping: {Chip Logic ID -> (NPU ID, Chip ID)},
-    see https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/875cdf74.
+    see:
+    - 910B: https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/875cdf74.
+    - 310P: https://support.huawei.com/enterprise/zh/doc/EDOC1100368198/78616140.
     """
 
     output = await _async_run_command(["npu-smi", "info", "-m"])
     """
-    Example output:
+    # Example output 1:
 
     NPU ID                         Chip ID                        Chip Logic ID                  Chip Name
     0                              0                              0                              Ascend xxx
     1                              0                              1                              Ascend xxx
     2                              0                              2                              Ascend xxx
     3                              0                              3                              Ascend xxx
+
+    # Example output 2:
+
+    NPU ID                         Chip ID                        Chip Logic ID                  Chip Name
+    4                              0                              0                              Ascend xxx
+    4                              1                              -                              Mcu
     """
 
     return _parse_all_npu_chips_mapping(output)
@@ -205,7 +231,9 @@ async def get_npu_chips_common_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     """
     Get NPU chips' common info,
     return a dictionary with the NPU chip common info: {Chip ID -> {<key> -> <value>}},
-    see https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/37eb6c60.
+    see:
+    - 910B: https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/37eb6c60.
+    - 310P: https://support.huawei.com/enterprise/zh/doc/EDOC1100368198/6eb85cfb.
 
     Note:
     - When enabling virtual NPU,
@@ -214,7 +242,7 @@ async def get_npu_chips_common_info(npu_id: str) -> Dict[int, Dict[str, str]]:
 
     output = await _async_run_command(["npu-smi", "info", "-t", "common", "-i", npu_id])
     """
-    Example output:
+    # Example output 1:
 
     NPU ID                         : 0
     Chip Count                     : 1
@@ -229,15 +257,21 @@ async def get_npu_chips_common_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     Temperature(C)                 : 46
     NPU Real-time Power(W)         : 69.0
 
-    Chip ID                        : 1
-    Memory Usage Rate(%)           : 5
-    HBM Usage Rate(%)              : 0
+    # Example output 2:
+
+    NPU ID                         : 1
+    Chip Count                     : 1
+
+    Chip ID                        : 0
+    Memory Usage Rate(%)           : 4
     Aicore Usage Rate(%)           : 0
-    Aicore Freq(MHZ)               : 1000
-    Aicore curFreq(MHZ)            : 1000
-    Aicore Count                   : 32
-    Temperature(C)                 : 35
-    NPU Real-time Power(W)         : 74.0
+    Aicore Freq(MHZ)               : 1080
+    Aicore curFreq(MHZ)            : 960
+    Temperature(C)                 : 43
+
+    Chip Name                      : mcu
+    Temperature(C)                 : 41
+    NPU Real-time Power(W)         : 13.4
     """
 
     return _parse_npu_chips_common_info(output)
@@ -286,18 +320,22 @@ async def get_npu_chips_usages_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     """
     Get the NPU chips' usages info,
     return a dictionary with the chip usages info: {Chip ID -> {<key> -> <value>}},
-    see https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/2e670e83.
+    see:
+    - 910B: https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/2e670e83.
+    - 310P: https://support.huawei.com/enterprise/zh/doc/EDOC1100368198/97b70cda.
 
     Note:
     - When enabling virtual NPU,
-        the "Aicore Usage Rate(%)", "Aicpu Usage Rate(%)", "Ctrlcpu Usage Rate(%)", "HBM Usage Rate(%)", and "DDR Bandwidth Usage Rate(%)" are 0,
+        the "Aicore Usage Rate(%)", "Aicpu Usage Rate(%)", "Ctrlcpu Usage Rate(%)", "HBM Usage Rate(%)", and "DDR Bandwidth Usage Rate(%)" are 0.
+    - When enabling virtual NPU and without DVPP resources,
+        the "DVPP VDEC Usage Rate(%)", "DVPP VPC Usage Rate(%)", "DVPP VENC Usage Rate(%)", "DVPP JPEGE Usage Rate(%)" and "DVPP JPEGD Usage Rate(%)" are 0.
     - When profiling,
         the "Aicore Usage Rate(%)" is 0.
     """
 
     output = await _async_run_command(["npu-smi", "info", "-t", "usages", "-i", npu_id])
     """
-    Example output:
+    # Example output 1:
 
     NPU ID                         : 0
     Chip Count                     : 1
@@ -315,18 +353,26 @@ async def get_npu_chips_usages_info(npu_id: str) -> Dict[int, Dict[str, str]]:
     HBM Bandwidth Usage Rate(%)    : 0
     Chip ID                        : 0
 
-    DDR Capacity(MB)               : 15171
-    DDR Usage Rate(%)              : 5
+    # Example output 2:
+
+    NPU ID                         : 1
+    Chip Count                     : 1
+
+    DDR Capacity(MB)               : 21534
+    DDR Usage Rate(%)              : 4
     DDR Hugepages Total(page)      : 0
     DDR Hugepages Usage Rate(%)    : 0
-    HBM Capacity(MB)               : 32768
-    HBM Usage Rate(%)              : 5
     Aicore Usage Rate(%)           : 0
     Aicpu Usage Rate(%)            : 0
-    Ctrlcpu Usage Rate(%)          : 9
-    DDR Bandwidth Usage Rate(%)    : 0
-    HBM Bandwidth Usage Rate(%)    : 0
-    Chip ID                        : 1
+    Ctrlcpu Usage Rate(%)          : 13
+    Vectorcore Usage Rate(%)       : 0
+    DDR Bandwidth Usage Rate(%)    : 51
+    DVPP VDEC Usage Rate(%)        : 0
+    DVPP VPC Usage Rate(%)         : 0
+    DVPP VENC Usage Rate(%)        : 0
+    DVPP JPEGE Usage Rate(%)       : 0
+    DVPP JPEGD Usage Rate(%)       : 0
+    Chip ID                        : 0
     """
 
     return _parse_npu_chips_usages_info(output)
@@ -370,13 +416,16 @@ async def get_npu_network_info(npu_id: str) -> Dict[str, str]:
     """
     Get the NPU network info,
     return a dictionary with the network info: {<key> -> <value>},
-    see https://support.huawei.com/enterprise/zh/doc/EDOC1100439048/426cffd9.
+    see:
+    - 910B: https://support.huawei.com/enterprise/zh/doc/EDOC1100439048/426cffd9.
     """
 
     hccn_tool = "/usr/local/Ascend/driver/tools/hccn_tool"
     if not is_command_available(hccn_tool):
-        # hccn_tool is not available, return an empty dictionary
-        return {}
+        hccn_tool = "hccn_tool"
+        if not is_command_available(hccn_tool):
+            # hccn_tool is not available, return an empty dictionary
+            return {}
 
     info = {}
 
@@ -430,7 +479,9 @@ async def get_npu_chip_board_info(npu_id: str, chip_id: str) -> Dict[str, str]:
     """
     Get the NPU chip's board info,
     return a dictionary with the chip board info: {<key> -> <value>},
-    see https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/66dc0fff.
+    see:
+    - 910B: https://support.huawei.com/enterprise/zh/doc/EDOC1100438695/66dc0fff.
+    - 310P: https://support.huawei.com/enterprise/zh/doc/EDOC1100368198/95c5adf7.
 
     Note:
     - When enabling virtual NPU,
@@ -443,7 +494,7 @@ async def get_npu_chip_board_info(npu_id: str, chip_id: str) -> Dict[str, str]:
         ["npu-smi", "info", "-t", "board", "-i", npu_id, "-c", chip_id]
     )
     """
-    Example output:
+    # Example output 1:
 
     NPU ID                         : 0
     Chip ID                        : 0
@@ -458,6 +509,19 @@ async def get_npu_chip_board_info(npu_id: str, chip_id: str) -> Dict[str, str]:
     Chip Position ID               : 1
     PCIe Bus Info                  : 0000:81:00.0
     Firmware Version               : 7.1.0.4.218
+
+    # Example output 2:
+
+    NPU ID                         : 1
+    Chip ID                        : 0
+    Chip Type                      : Ascend
+    Chip Name                      : xxx
+    Chip Version                   : V1
+    Board ID                       : 0x64
+    Die ID                         : 409921D4 2140A100 E54BDDD4 07CC040A 9B00301F
+    Chip Position ID               : 0
+    PCIe Bus Info                  : 0000:81:00.0
+    Firmware Version               : 7.1.0.4
     """
 
     info = {}
