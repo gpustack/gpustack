@@ -17,6 +17,7 @@ from gpustack.schemas.models import (
     get_mmproj_filename,
 )
 from gpustack.utils.compat_importlib import pkg_resources
+from gpustack.utils.convert import parse_duration, safe_int
 from gpustack.utils.hub import (
     filter_filename,
     list_repo,
@@ -231,7 +232,7 @@ class GGUFParserCommandMutableParameters:
     image_no_control_net_offload: Optional[bool] = None
     image_width: Optional[int] = None
     # Load
-    cache_expiration: str = "168h0m0s"
+    cache_expiration: str = "0"
     skip_cache: Optional[bool] = None
     skip_dns_cache: Optional[bool] = None
     skip_proxy: Optional[bool] = None
@@ -543,17 +544,10 @@ async def _gguf_parser_command(  # noqa: C901
     params = GGUFParserCommandMutableParameters(backend_version=model.backend_version)
     params.from_args(model.backend_parameters)
     params.extend_command(command)
-
     # Extend the command with controlled arguments.
     cache_dir = kwargs.get("cache_dir")
     if cache_dir:
         command.extend(["--cache-path", cache_dir])
-
-    cache_expiration = kwargs.get("cache_expiration")
-    if cache_expiration:
-        command.extend(["--cache-expiration", cache_expiration])
-    else:
-        command.extend(["--cache-expiration", "0"])
 
     if offload == GPUOffloadEnum.Full:
         command.extend(["--gpu-layers", "-1"])
@@ -578,8 +572,9 @@ async def _gguf_parser_command(  # noqa: C901
     if rpc:
         rpc_str = ",".join([v for v in rpc])
         command.extend(["--rpc", rpc_str])
-
-    source_args = await _gguf_parser_command_args_from_source(model, **kwargs)
+    source_args = await _gguf_parser_command_args_from_source(
+        model, cache_expiration=params.cache_expiration, **kwargs
+    )
     command.extend(source_args)
 
     return command
@@ -706,6 +701,10 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
                 args.extend(["-ol-base-url", ol_base_url])
             return args
         elif model.source in [SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE]:
+            cache_expiration = kwargs.get("cache_expiration")
+            if cache_expiration and cache_expiration != "0":
+                cache_expiration = parse_duration(cache_expiration)
+            cache_expiration = safe_int(cache_expiration)
             if model.source == SourceEnum.HUGGING_FACE:
                 repo_arg, file_arg, mmproj_arg = [
                     "--hf-repo",
@@ -726,15 +725,17 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
             args = [repo_arg, repo_id]
 
             global_config = get_global_config()
-            repo_files = await asyncio.wait_for(
+            repo_file_infos = await asyncio.wait_for(
                 asyncio.to_thread(
                     list_repo,
                     repo_id,
                     model.source,
                     global_config.huggingface_token,
+                    cache_expiration,
                 ),
                 timeout=fetch_file_timeout_in_seconds,
             )
+            repo_files = [file.get("name", "") for file in repo_file_infos]
             model_filename = filter_filename(file_name, repo_files)
             if len(model_filename) == 0:
                 raise ValueError(f"File {model_filename} not found in {repo_id}")

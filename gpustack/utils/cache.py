@@ -1,3 +1,5 @@
+import os
+import time
 from typing import Optional, Tuple
 from pathlib import Path
 import urllib.parse
@@ -13,7 +15,9 @@ def _make_filepath(namespace: str, key: str) -> Path:
     return Path(config.cache_dir) / namespace / safe_key
 
 
-def load_cache(namespace: str, key: str) -> Tuple[Optional[str], bool]:
+def load_cache(
+    namespace: str, key: str, cache_expiration: Optional[int] = None
+) -> Tuple[Optional[str], bool]:
     if not namespace or not key:
         return None, False
 
@@ -21,6 +25,11 @@ def load_cache(namespace: str, key: str) -> Tuple[Optional[str], bool]:
     if not dst_file.exists():
         return None, False
     try:
+        if (
+            cache_expiration
+            and time.time() - os.path.getmtime(dst_file) > cache_expiration
+        ):
+            return None, False
         with dst_file.open('r') as f:
             data = f.read()
         return data, True
