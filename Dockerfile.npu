@@ -12,6 +12,8 @@
 #   - Create a virtual environment to place vLLM: $(pipx environment --value PIPX_LOCAL_VENVS)/vllm.
 #   - Install specific version Torch, Torch-NPU and TorchVision.
 #   - Install specific version MindIE Turbo.
+#     WATCH OUT: MindIE Turbo is compatible with partial vLLM Ascend versions,
+#     please check https://vllm-ascend.readthedocs.io/en/latest/community/versioning_policy.html#release-compatibility-matrix for details.
 #   - Install specific version vLLM and vLLM Ascend.
 # 3. gpustack target (final):
 #   - Install GPUStack, and override the required dependencies after installed.
@@ -566,12 +568,15 @@ EOT
         pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm-ascend==${VLLM_ASCEND_VERSION}
     fi
 
-    # Install MindIE Turbo
-    MINDIE_TURBO_FILE="Ascend-mindie-turbo_${DOWNLOAD_VERSION}_py${PYTHON_VERSION//./}_${OS}_${ARCH}.tar.gz"
-    MINDIE_TURBO_URL="${URL_PREFIX}/${MINDIE_TURBO_FILE}?${URL_SUFFIX}"
-    curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL "${MINDIE_TURBO_URL}" | tar -zx -C /tmp --strip-components 1
-    WHEEL_PACKAGE="$(ls /tmp/Ascend-mindie-turbo_${DOWNLOAD_VERSION}_py${PYTHON_VERSION//./}_${OS}_${ARCH}/*.whl)"
-    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore ${WHEEL_PACKAGE}
+    # Install MindIE Turbo,
+    # check compatibility with https://vllm-ascend.readthedocs.io/en/latest/community/versioning_policy.html#release-compatibility-matrix.
+    if (( $(echo "${VLLM_VERSION%.*} < 0.8" | bc -l) )); then
+        MINDIE_TURBO_FILE="Ascend-mindie-turbo_${DOWNLOAD_VERSION}_py${PYTHON_VERSION//./}_${OS}_${ARCH}.tar.gz"
+        MINDIE_TURBO_URL="${URL_PREFIX}/${MINDIE_TURBO_FILE}?${URL_SUFFIX}"
+        curl -H 'Referer: https://www.hiascend.com/' --retry 3 --retry-connrefused -fL "${MINDIE_TURBO_URL}" | tar -zx -C /tmp --strip-components 1
+        WHEEL_PACKAGE="$(ls /tmp/Ascend-mindie-turbo_${DOWNLOAD_VERSION}_py${PYTHON_VERSION//./}_${OS}_${ARCH}/*.whl)"
+        pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore ${WHEEL_PACKAGE}
+    fi
 
     # Post process
     deactivate
