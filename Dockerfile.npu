@@ -543,12 +543,18 @@ ray[default]==2.43.0
 EOT
     pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt
 
-    # Install vLLM & vLLM-Ascend
+    # Install vLLM
     if [ ${ARCH} == "x86_64" ]; then
         pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm==${VLLM_VERSION} --extra-index-url https://download.pytorch.org/whl/cpu
+        # Fix conflicting packages.
+        # - In x86, triton will be installed, triton doesn't work correctly in Ascend, we need to uninstall it.
+        pip uninstall --disable-pip-version-check --no-cache-dir --root-user-action ignore -y triton || true
     else
         pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm==${VLLM_VERSION}
     fi
+    # Fix conflicting packages.
+    # - In Ascend, opencv-python-headless requires numpy>2.0.0, which is conflicting with Ascend, we need to reinstall it.
+    pip uninstall --disable-pip-version-check --no-cache-dir --root-user-action ignore -y numpy || true
 
     # Install Torch, Torch-npu, TorchVision,
     # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
@@ -561,11 +567,15 @@ EOT
     pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torchvision==0.20.1 torchaudio==2.5.1
     pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore torch-npu==2.5.1.post1.dev20250619 --pre --index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
 
-    # Install vLLM & vLLM-Ascend
+    # Install vLLM Ascend
     if [ ${ARCH} == "x86_64" ]; then
         pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm-ascend==${VLLM_ASCEND_VERSION} --extra-index-url https://download.pytorch.org/whl/cpu
     else
         pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore vllm-ascend==${VLLM_ASCEND_VERSION}
+    fi
+    # Fix SoC version.
+    if [[ "${CANN_CHIP}" == "310p" ]]; then
+        sed -i "s/^__soc_version__.*/__soc_version__ = 'ASCEND310P3'/" ${PIPX_LOCAL_VENVS}/vllm/lib/python3.11/site-packages/vllm_ascend/_build_info.py
     fi
 
     # Install MindIE Turbo,
