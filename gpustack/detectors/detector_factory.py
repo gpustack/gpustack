@@ -33,7 +33,7 @@ class DetectorFactory:
 
         self._validate_detectors()
 
-    def _get_builtin_gpu_detectors(self) -> Dict[str, GPUDetector]:
+    def _get_builtin_gpu_detectors(self) -> Dict[str, List[GPUDetector]]:
         fastfetch = Fastfetch()
         return {
             platform.DeviceTypeEnum.CUDA.value: [NvidiaSMI()],
@@ -80,5 +80,12 @@ class DetectorFactory:
         return self.system_info_detector.gather_system_info()
 
     def _filter_gpu_devices(self, gpu_devices: GPUDevicesInfo) -> GPUDevicesInfo:
-        # Ignore the device without memory.
-        return [device for device in gpu_devices if device.memory.total > 0]
+        filtered: GPUDevicesInfo = []
+        for device in gpu_devices:
+            if not device.memory or not device.memory.total or device.memory.total <= 0:
+                logger.debug(
+                    f"Skipping GPU device {device.name} ({device.device_index}, {device.device_chip_index}) due to invalid memory info"
+                )
+                continue
+            filtered.append(device)
+        return filtered
