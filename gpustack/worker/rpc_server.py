@@ -13,7 +13,7 @@ from gpustack.utils import platform
 from gpustack.utils.command import normalize_parameters
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.process import add_signal_handlers
-from gpustack.worker.backends.base import get_env_name_by_vendor
+from gpustack.worker.backends.base import get_visible_devices_env_name
 from gpustack.worker.tools_manager import (
     is_disabled_dynamic_link,
     BUILTIN_LLAMA_BOX_VERSION,
@@ -110,7 +110,7 @@ class RPCServer:
             args = normalize_parameters(args, removes=remove_arguments)
             arguments.extend(args)
 
-        env_name = get_env_name_by_vendor(vendor)
+        env_name = get_visible_devices_env_name(vendor)
         env = os.environ.copy()
         env[env_name] = str(gpu_index)
         cwd = str(command_path.parent)
