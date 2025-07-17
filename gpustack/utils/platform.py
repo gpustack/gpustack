@@ -217,6 +217,22 @@ def get_cann_chip() -> str:
     Returns the CANN chip version installed on the system.
     """
 
-    # TODO(thxCode): figure out a way to discover the CANN chip version
+    env_cann_chip = os.getenv("CANN_CHIP", "")
+    if env_cann_chip:
+        return env_cann_chip
 
-    return os.getenv("CANN_CHIP", "")
+    try:
+        # Borrowed from https://gitee.com/ascend/pytorch/blob/master/test/npu/test_soc_version.py.
+        import torch  # noqa: F401
+        import torch_npu  # noqa: F401
+        from torch_npu.npu.utils import get_soc_version
+
+        cann_soc_version = get_soc_version()
+        # FIXME: Improve the SoC version list,
+        # extract from MindIE ATB models: examples/models/atb_speed_sdk/atb_speed/common/launcher/npu.py.
+        if cann_soc_version in (100, 101, 102, 103, 104, 200, 201, 202, 203, 204, 205):
+            return "310p"
+    except ImportError:
+        pass
+
+    return ""

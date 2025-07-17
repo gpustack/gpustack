@@ -15,13 +15,13 @@ from gpustack.utils.hub import (
     get_max_model_len,
     get_pretrained_config,
 )
-from gpustack.worker.backends.base import InferenceServer
+from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 
 logger = logging.getLogger(__name__)
 
 
 class VLLMServer(InferenceServer):
-    def start(self):
+    def start(self):  # noqa: C901
         try:
             command_path = get_command_path("vllm")
             if self._model.backend_version:
@@ -38,13 +38,25 @@ class VLLMServer(InferenceServer):
             if derived_max_model_len and derived_max_model_len > 8192:
                 arguments.extend(["--max-model-len", "8192"])
 
-            auto_parallism_arguments = get_auto_parallelism_arguments(
+            auto_parallelism_arguments = get_auto_parallelism_arguments(
                 self._model.backend_parameters, self._model_instance
             )
-            arguments.extend(auto_parallism_arguments)
+            arguments.extend(auto_parallelism_arguments)
 
             if is_distributed_vllm(self._model_instance):
                 arguments.extend(["--distributed-executor-backend", "ray"])
+
+            # For Ascend 310P, we need to enforce eager execution and default dtype to float16,
+            # see example of https://vllm-ascend.readthedocs.io/en/latest/tutorials/single_node_300i.html.
+            # As a workaround, we should allow users to override this with backend parameters.
+            if is_ascend_310p(self._worker):
+                arguments.extend(
+                    [
+                        "--enforce-eager",
+                        "--dtype",
+                        "float16",
+                    ]
+                )
 
             if self._model.backend_parameters:
                 arguments.extend(self._model.backend_parameters)
