@@ -159,8 +159,11 @@ class InferenceServer(ABC):
                 )
                 vendor = gpu_device.vendor if gpu_device else None
 
+            # Keep GPU indexes in ascending order,
+            # this is important for some vendors like Ascend CANN,
+            # see https://github.com/gpustack/gpustack/issues/2527.
             env_name = get_visible_devices_env_name(vendor)
-            env[env_name] = ",".join([str(i) for i in gpu_indexes])
+            env[env_name] = ",".join(map(str, sorted(gpu_indexes)))
 
             if get_backend(self._model) == BackendEnum.VLLM:
                 set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
