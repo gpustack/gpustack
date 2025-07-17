@@ -17,6 +17,7 @@ from gpustack.schemas.model_files import (
     ModelFileStateEnum,
     ModelFileUpdate,
     ModelFilesPublic,
+    RESET_DOWNLOAD_MESSAGE,
 )
 
 router = APIRouter()
@@ -199,7 +200,7 @@ async def reset_model_file(session: SessionDep, id: int):
     try:
         model_file.state = ModelFileStateEnum.DOWNLOADING
         model_file.download_progress = 0
-        model_file.state_message = ""
+        model_file.state_message = RESET_DOWNLOAD_MESSAGE
 
         await model_file.update(session)
     except Exception as e:

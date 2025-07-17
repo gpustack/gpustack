@@ -9,6 +9,9 @@ from gpustack.schemas.links import ModelInstanceModelFileLink
 from gpustack.schemas.models import ModelSource, ModelInstance
 
 
+RESET_DOWNLOAD_MESSAGE = "Retrying download"
+
+
 class ModelFileStateEnum(str, Enum):
     ERROR = "error"
     DOWNLOADING = "downloading"
