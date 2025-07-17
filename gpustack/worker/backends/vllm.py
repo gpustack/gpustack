@@ -74,15 +74,25 @@ class VLLMServer(InferenceServer):
             # they cannot be overridden by the user-defined arguments
             arguments.extend(built_in_arguments)
 
-            logger.info("Starting vllm server")
-            logger.debug(f"Run vllm with arguments: {' '.join(arguments)}")
-            if self._model.env:
-                logger.debug(
-                    f"Model environment variables: {', '.join(f'{key}={value}' for key, value in self._model.env.items())}"
-                )
+            logger.info(f"Starting vLLM server: {command_path}")
+            logger.debug(f"Run vLLM with arguments: {' '.join(arguments)}")
             env = os.environ.copy()
             self.set_vllm_distributed_env(env)
             env = self.get_inference_running_env(env)
+            env_view = None
+            if logger.isEnabledFor(logging.DEBUG):
+                env_view = env
+            elif self._model.env:
+                # If the model instance has its own environment variables,
+                # display the mutated environment variables.
+                env_view = self._model.env
+                for k, v in self._model.env.items():
+                    env_view[k] = env.get(k, v)
+            if env_view:
+                logger.info(
+                    f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
+                    f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
+                )
             result = subprocess.run(
                 [command_path] + arguments,
                 stdout=sys.stdout,
@@ -91,7 +101,7 @@ class VLLMServer(InferenceServer):
             )
             self.exit_with_code(result.returncode)
         except Exception as e:
-            error_message = f"Failed to run the vllm server: {e}"
+            error_message = f"Failed to run the vLLM server: {e}"
             logger.error(error_message)
             try:
                 patch_dict = {
