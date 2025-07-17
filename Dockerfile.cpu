@@ -1,32 +1,58 @@
-FROM ubuntu:22.04
+FROM python:3.12.10-slim-bookworm AS builder
 
 ARG TARGETPLATFORM
-ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    wget \
-    tzdata \
-    iproute2 \
-    python3 \
-    python3-pip \
-    python3-venv \
-    tini \
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive \
+  PIP_NO_CACHE_DIR=on \
+  PIP_DISABLE_PIP_VERSION_CHECK=on \
+  PYTHONUNBUFFERED=1
 
-COPY . /workspace/gpustack
-RUN cd /workspace/gpustack && \
-    make build && \
-    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \
-    pip install pipx && \
-    pip install $WHEEL_PACKAGE && \
-    pip cache purge && \
-    rm -rf /workspace/gpustack
+WORKDIR /app
 
-RUN gpustack download-tools
+COPY . .
 
-# Download dac weights used by audio models like Dia
-RUN python3 -m dac download
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends \
+  build-essential \
+  curl \
+  git \
+  make \
+  tini \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/* \
+  && make build \
+  && THE_WHEEL_FILES=$(ls /app/dist/*.whl) \
+  && pip install "${THE_WHEEL_FILES}[audio]" \
+  && gpustack download-tools \
+  && cd / \
+  && rm -rf /app \
+  && python3 -m dac download
 
-ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
+FROM python:3.12.10-slim-bookworm
+
+ARG TARGETPLATFORM
+
+RUN groupadd --gid 1000 appgroup \
+  && useradd --uid 1000 --gid appgroup --shell /bin/bash --create-home --no-log-init appuser \
+  && mkdir -p /var/lib/gpustack /home/appuser/.cache/descript \
+  && chown appuser:appgroup /var/lib/gpustack
+
+WORKDIR /app
+
+COPY --from=builder /usr/bin/tini /usr/bin/tini
+
+COPY --from=builder --chown=appuser:appgroup /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+
+COPY --from=builder --chown=appuser:appgroup /usr/local/bin /usr/local/bin
+
+# Copy the dac weights file
+COPY --from=builder --chown=appuser:appgroup /root/.cache/descript/dac /home/appuser/.cache/descript/dac
+
+EXPOSE 8080/TCP \
+  10150/TCP
+
+USER appuser
+
+ENTRYPOINT [ "/usr/bin/tini", "--", "gpustack" ]
+
+CMD ["start", "--port", "8080"]
