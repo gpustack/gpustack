@@ -1,7 +1,11 @@
-FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.8.5-ubuntu22.04-dtk25.04.1-py3.10
+FROM image.sourcefind.cn:5000/dcu/admin/base/pytorch:2.4.1-ubuntu22.04-dtk25.04.1-py3.10
 
 ENV PATH="/root/.local/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
+
+RUN pip install https://download.sourcefind.cn:65024/directlink/4/lmslim/DAS1.6/lmslim-0.3.0+das.dtk25041-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip install https://download.sourcefind.cn:65024/directlink/4/vllm/DAS1.6/vllm-0.8.5.post1+das.opt1.dtk25041-cp310-cp310-manylinux_2_28_x86_64.whl \
+    && pip cache purge
 
 RUN apt-get update && apt-get install -y \
     python3-venv \
