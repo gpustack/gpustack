@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.gpu_devices import (
     GPUDevice,
     GPUDevicesPublic,
@@ -15,14 +15,16 @@ router = APIRouter()
 
 
 @router.get("", response_model=GPUDevicesPublic)
-async def get_gpus(session: SessionDep, params: ListParamsDep, search: str = None):
+async def get_gpus(
+    engine: EngineDep, session: SessionDep, params: ListParamsDep, search: str = None
+):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
 
     if params.watch:
         return StreamingResponse(
-            GPUDevice.streaming(session, fuzzy_fields=fuzzy_fields),
+            GPUDevice.streaming(engine, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

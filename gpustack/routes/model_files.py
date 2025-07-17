@@ -9,7 +9,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.model_files import (
     ModelFile,
     ModelFileCreate,
@@ -24,6 +24,7 @@ router = APIRouter()
 
 @router.get("", response_model=ModelFilesPublic)
 async def get_model_files(
+    engine: EngineDep,
     session: SessionDep,
     params: ListParamsDep,
     search: str = None,
@@ -42,7 +43,7 @@ async def get_model_files(
     if params.watch:
         return StreamingResponse(
             ModelFile.streaming(
-                session,
+                engine,
                 fields=fields,
                 filter_func=get_filter_func(search),
             ),

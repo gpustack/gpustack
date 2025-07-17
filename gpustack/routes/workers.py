@@ -6,7 +6,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.workers import (
     WorkerCreate,
     WorkerPublic,
@@ -21,6 +21,7 @@ router = APIRouter()
 
 @router.get("", response_model=WorkersPublic)
 async def get_workers(
+    engine: EngineDep,
     session: SessionDep,
     params: ListParamsDep,
     name: str = None,
@@ -39,7 +40,7 @@ async def get_workers(
 
     if params.watch:
         return StreamingResponse(
-            Worker.streaming(session, fields=fields, fuzzy_fields=fuzzy_fields),
+            Worker.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

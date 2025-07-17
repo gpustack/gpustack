@@ -7,7 +7,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.security import get_secret_hash
-from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep
+from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
 from gpustack.server.services import UserService
 
@@ -15,14 +15,16 @@ router = APIRouter()
 
 
 @router.get("", response_model=UsersPublic)
-async def get_users(session: SessionDep, params: ListParamsDep, search: str = None):
+async def get_users(
+    engine: EngineDep, session: SessionDep, params: ListParamsDep, search: str = None
+):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"username": search, "full_name": search}
 
     if params.watch:
         return StreamingResponse(
-            User.streaming(session, fuzzy_fields=fuzzy_fields),
+            User.streaming(engine, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

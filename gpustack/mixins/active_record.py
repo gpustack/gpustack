@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 import math
-from typing import Any, AsyncGenerator, Callable, List, Optional, Union, overload, Tuple
+from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
@@ -349,34 +349,12 @@ class ActiveRecordMixin:
         except Exception as e:
             logger.error(f"Failed to publish event: {e}")
 
-    @overload
     @classmethod
-    async def subscribe(
-        cls, session_or_engine: AsyncSession
-    ) -> AsyncGenerator[Event, None]: ...
-
-    @overload
-    @classmethod
-    async def subscribe(
-        cls, session_or_engine: AsyncEngine
-    ) -> AsyncGenerator[Event, None]: ...
-
-    @classmethod
-    async def subscribe(
-        cls, session_or_engine: Union[AsyncSession, AsyncEngine]
-    ) -> AsyncGenerator[Event, None]:
-        if isinstance(session_or_engine, AsyncSession):
-            items = await cls.all(session_or_engine)
+    async def subscribe(cls, engine: AsyncEngine) -> AsyncGenerator[Event, None]:
+        async with AsyncSession(engine) as session:
+            items = await cls.all(session)
             for item in items:
                 yield Event(type=EventType.CREATED, data=item)
-            await session_or_engine.close()
-        elif isinstance(session_or_engine, AsyncEngine):
-            async with AsyncSession(session_or_engine) as session:
-                items = await cls.all(session)
-                for item in items:
-                    yield Event(type=EventType.CREATED, data=item)
-        else:
-            raise ValueError("Invalid session or engine.")
 
         subscriber = event_bus.subscribe(cls.__name__.lower())
         heartbeat_interval = timedelta(seconds=15)
@@ -402,28 +380,33 @@ class ActiveRecordMixin:
     @classmethod
     async def streaming(
         cls,
-        session: AsyncSession,
+        engine: AsyncEngine,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream events matching the given criteria as JSON strings."""
-        async for event in cls.subscribe(session):
-            if event.type == EventType.HEARTBEAT:
-                yield "\n\n"
-                continue
+        try:
+            async for event in cls.subscribe(engine):
+                if event.type == EventType.HEARTBEAT:
+                    yield "\n\n"
+                    continue
 
-            if not cls._match_fields(event, fields):
-                continue
+                if not cls._match_fields(event, fields):
+                    continue
 
-            if not cls._match_fuzzy_fields(event, fuzzy_fields):
-                continue
+                if not cls._match_fuzzy_fields(event, fuzzy_fields):
+                    continue
 
-            if filter_func and not filter_func(event.data):
-                continue
+                if filter_func and not filter_func(event.data):
+                    continue
 
-            event.data = cls._convert_to_public_class(event.data)
-            yield cls._format_event(event)
+                event.data = cls._convert_to_public_class(event.data)
+                yield cls._format_event(event)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in streaming {cls.__name__}: {e}")
 
     @classmethod
     def _match_fields(cls, event: Any, fields: Optional[dict]) -> bool:
