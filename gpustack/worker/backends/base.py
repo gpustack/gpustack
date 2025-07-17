@@ -17,8 +17,10 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     get_backend,
 )
-from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo
+from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
+from gpustack.utils.gpu import all_gpu_match
+from gpustack.utils.platform import get_cann_chip
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform, envs
 from gpustack.worker.tools_manager import ToolsManager
@@ -283,3 +285,17 @@ def get_env_name_by_vendor(vendor: str) -> str:
     )
 
     return env_name
+
+
+def is_ascend_310p(worker: WorkerBase) -> bool:
+    """
+    Check if the model instance is running on VLLM Ascend 310P.
+    """
+
+    return (
+        all_gpu_match(
+            worker,
+            lambda gpu: gpu.vendor == VendorEnum.Huawei.value,
+        )
+        and get_cann_chip() == "310p"
+    )
