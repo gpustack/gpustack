@@ -28,7 +28,7 @@ from gpustack.worker.tools_manager import ToolsManager
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
 
-ACCELERATOR_VENDOR_TO_ENV_NAME = {
+_VISIBLE_DEVICES_ENV_NAME_MAPPER = {
     VendorEnum.NVIDIA: "CUDA_VISIBLE_DEVICES",
     VendorEnum.Huawei: "ASCEND_RT_VISIBLE_DEVICES",
     VendorEnum.AMD: "ROCR_VISIBLE_DEVICES",
@@ -159,7 +159,7 @@ class InferenceServer(ABC):
                 )
                 vendor = gpu_device.vendor if gpu_device else None
 
-            env_name = get_env_name_by_vendor(vendor)
+            env_name = get_visible_devices_env_name(vendor)
             env[env_name] = ",".join([str(i) for i in gpu_indexes])
 
             if get_backend(self._model) == BackendEnum.VLLM:
@@ -274,17 +274,22 @@ def set_ascend_mindie_env(
     env.update(env_diff)
 
 
-def get_env_name_by_vendor(vendor: str) -> str:
-    env_name = next(
+def get_visible_devices_env_name(vendor: str) -> str:
+    """
+    Get the environment variable name for visible devices based on the vendor.
+    For example, if the vendor is "NVIDIA", it returns "CUDA_VISIBLE_DEVICES",
+    if the vendor is "Huawei", it returns "ASCEND_RT_VISIBLE_DEVICES".
+    Return "CUDA_VISIBLE_DEVICES" if the vendor is not recognized.
+    """
+
+    return next(
         (
             v
-            for k, v in ACCELERATOR_VENDOR_TO_ENV_NAME.items()
+            for k, v in _VISIBLE_DEVICES_ENV_NAME_MAPPER.items()
             if vendor is not None and k.value.lower() in vendor.lower()
         ),
         "CUDA_VISIBLE_DEVICES",
     )
-
-    return env_name
 
 
 def is_ascend_310p(worker: WorkerBase) -> bool:
