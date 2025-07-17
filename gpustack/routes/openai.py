@@ -27,7 +27,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     Model,
 )
-from gpustack.server.db import get_session_context
+from gpustack.server.db import get_engine
 from gpustack.server.deps import SessionDep
 from gpustack.server.services import ModelInstanceService, ModelService, WorkerService
 
@@ -155,7 +155,7 @@ async def proxy_request_by_model(request: Request, endpoint: str):
     Proxy the request to the model instance that is running the model specified in the
     request body.
     """
-    async with get_session_context() as session:
+    async with AsyncSession(get_engine()) as session:
         model, stream, body_json, form_data = await parse_request_body(request, session)
 
         if not model:

@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+import logging
 import re
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -24,6 +25,9 @@ from gpustack.schemas.stmt import (
     worker_after_drop_view_stmt_mysql,
 )
 
+logger = logging.getLogger(__name__)
+
+
 _engine = None
 
 
@@ -32,12 +36,6 @@ def get_engine():
 
 
 async def get_session():
-    async with AsyncSession(_engine) as session:
-        yield session
-
-
-@asynccontextmanager
-async def get_session_context():
     async with AsyncSession(_engine) as session:
         yield session
 
@@ -100,8 +98,16 @@ def listen_events(engine: AsyncEngine):
 
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", enable_sqlite_foreign_keys)
+        event.listen(engine.sync_engine, "close", ignore_cancel_on_close)
 
 
 def enable_sqlite_foreign_keys(conn, record):
     # Enable foreign keys for SQLite, since it's disabled by default
     conn.execute("PRAGMA foreign_keys=ON")
+
+
+def ignore_cancel_on_close(dbapi_connection, connection_record):
+    try:
+        dbapi_connection.close()
+    except asyncio.CancelledError:
+        pass

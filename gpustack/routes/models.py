@@ -24,7 +24,7 @@ from gpustack.schemas.models import (
     BackendEnum,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, VendorEnum, Worker
-from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -42,6 +42,7 @@ router = APIRouter()
 
 @router.get("", response_model=ModelsPublic)
 async def get_models(
+    engine: EngineDep,
     session: SessionDep,
     params: ListParamsDep,
     search: str = None,
@@ -54,7 +55,7 @@ async def get_models(
     if params.watch:
         return StreamingResponse(
             Model.streaming(
-                session,
+                engine,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
             ),
@@ -132,7 +133,9 @@ async def get_model(session: SessionDep, id: int):
 
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
-async def get_model_instances(session: SessionDep, id: int, params: ListParamsDep):
+async def get_model_instances(
+    engine: EngineDep, session: SessionDep, id: int, params: ListParamsDep
+):
     model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
@@ -140,7 +143,7 @@ async def get_model_instances(session: SessionDep, id: int, params: ListParamsDe
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
-            ModelInstance.streaming(session=session, fields=fields),
+            ModelInstance.streaming(engine, fields=fields),
             media_type="text/event-stream",
         )
 
