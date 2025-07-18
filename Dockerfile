@@ -11,6 +11,8 @@
 # 3. gpustack target(final):
 #    - Install GPUStack.
 #    - (linux/amd64) Install FlashInfer as a Python library for GPUStack.
+#    - Install Vox-Box as an independent executor for GPUStack,
+#      see https://github.com/gpustack/gpustack/pull/2473#issue-3222391256.
 #    - Set up the entrypoint to start GPUStack.
 
 # Arguments description:
@@ -415,6 +417,46 @@ RUN --mount=type=bind,from=flashinfer-build,source=/workspace/flashinfer,target=
 
     # Review
     pip freeze
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
+        && pip cache purge
+EOF
+
+## Install Vox-Box as an independent executor for GPUStack
+
+RUN <<EOF
+    # Vox-Box
+
+    # Get version of Vox-Box from GPUStack
+    VERSION=$(pip freeze | grep vox_box== | head -n 1 | cut -d'=' -f3)
+
+    # Pre process
+    # - Create virtual environment to place vox-box
+    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/vox-box
+    # - Prepare environment
+    source ${PIPX_LOCAL_VENVS}/vox-box/bin/activate
+
+    # Install Vox-Box,
+    # lock the transformers version to avoid conflicts with other packages.
+    cat <<EOT >/tmp/requirements.txt
+transformers==4.51.3
+vox-box==${VERSION}
+EOT
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore -r /tmp/requirements.txt \
+        && ln -vsf ${PIPX_LOCAL_VENVS}/vox-box/bin/vox-box /usr/local/bin/vox-box
+
+    # Download tools
+    # - Download dac weights used by audio models like Dia.
+    python -m dac download
+
+    # Post process
+    deactivate
+
+    # Review
+    pipx runpip vox-box freeze
 
     # Cleanup
     rm -rf /var/tmp/* \
