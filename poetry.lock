@@ -9493,14 +9493,14 @@ tensorizer = ["tensorizer (>=2.9.0)"]
 
 [[package]]
 name = "vox-box"
-version = "0.0.18"
+version = "0.0.19"
 description = "Vox box"
 optional = true
 python-versions = "<4.0,>=3.10"
 files = [
-    {file = "vox_box-0.0.18-py3-none-manylinux2014_aarch64.whl", hash = "sha256:55686af3baca6efb75db6e330ac10f97e8f1bf8261685ce1aa415d7508e2c230"},
-    {file = "vox_box-0.0.18-py3-none-manylinux2014_x86_64.whl", hash = "sha256:6218241c93c4a30563bcd2f7ffdb40ab27c0f75ab37a560e993395535dfeea71"},
-    {file = "vox_box-0.0.18.tar.gz", hash = "sha256:a05b8d19239d19c21f9236446595a49adeff9f80642b886922450aca938b70a1"},
+    {file = "vox_box-0.0.19-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0db45c5125472972855e096a978e820c7aba79569df34fdd372ee09d5ff6661e"},
+    {file = "vox_box-0.0.19-py3-none-manylinux2014_x86_64.whl", hash = "sha256:da06baf270831a9562851dd17451e326458d46727928194178da900a6d3a99fb"},
+    {file = "vox_box-0.0.19.tar.gz", hash = "sha256:b78ae35a08377e5dd7b30b273bc3e2989a0c32d77231314fdcbe10dd92856d56"},
 ]
 
 [package.dependencies]
@@ -10161,4 +10161,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "5adeb2c20421da13bdb0386bf2689180fc5406a5148cfac8ea818f9d410b941e"
+content-hash = "0a787ceda2a16610018f5772630cf9daca0d17d29de429b929998b736a6d2e4e"

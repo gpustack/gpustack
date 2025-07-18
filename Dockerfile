@@ -50,7 +50,7 @@ RUN gpustack download-tools
 # Prepara variables for vox-box installation.
 ENV PATH="/root/.local/bin:${PATH}"
 ENV PIPX_LOCAL_VENVS=/root/.local/share/pipx/venvs
-ARG VOXBOX_VERSION=0.0.18
+ARG VOXBOX_VERSION=0.0.19
 ARG TRANSFORMERS_VERSION=4.51.3
 
 RUN <<EOF
