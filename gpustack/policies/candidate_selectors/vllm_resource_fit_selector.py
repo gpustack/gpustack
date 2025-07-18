@@ -695,6 +695,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 and allocatable_gpu_memory_utilization < self._gpu_memory_utilization
             ):
                 overcommit = True
+                if worker.name not in self._unsatisfied_gpu_messages:
+                    self._unsatisfied_gpu_messages[worker.name] = []
                 self._unsatisfied_gpu_messages[worker.name].append(gpu.index)
 
             # Record allocation info for scheduling message
