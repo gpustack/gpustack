@@ -1,7 +1,7 @@
 # Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 ## Linux and macOS
 

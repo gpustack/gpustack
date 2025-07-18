@@ -8,7 +8,7 @@
 
 | OS    | Version                 | Arch  | Supported methods                                                                                  |
 | ----- | ----------------------- | ----- | -------------------------------------------------------------------------------------------------- |
-| macOS | 14 Sonoma<br>15 Sequoia | ARM64 | [Installation Script](#installation-script) (Recommended)<br>[pip Installation](#pip-installation) |
+| macOS | 14 Sonoma<br>15 Sequoia | ARM64 | [Installation Script](#installation-scriptdeprecated) (Recommended)<br>[pip Installation](#pip-installation) |
 
 ## Supported backends
 
@@ -28,7 +28,7 @@ python -V
 ## Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 GPUStack provides a script to install it as a service with default port 80.
 
