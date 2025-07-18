@@ -4,13 +4,6 @@
 
 === "Linux"
 
-    We provide two installation methods on Linux:
-
-    - **Docker installation**(Recommended)
-    - **pip installation**
-
-    We strongly recommend using [Docker](https://docs.docker.com/engine/install/) for installing the GPUStack on Linux. 
-    
     **For Example: NVIDIA CUDA**
 
     Run the following command to start the GPUStack server.
@@ -25,29 +18,12 @@
           gpustack/gpustack
     ```
 
-    If you need to change the default server port 80, please use the --port parameter:
-
-    ```bash
-    docker run -d --name gpustack \
-          --restart=unless-stopped \
-          --gpus all \
-          --network=host \
-          --ipc=host \
-          -v gpustack-data:/var/lib/gpustack \
-          gpustack/gpustack
-          --port 9090
-    ```
-
     !!! tip
         If the quick installation fails, please refer to the [Docker Installation](installation/nvidia-cuda/online-installation/#docker-installation) guide for more detailed instructions.
-
 
     
     For on other hardware platforms Docker installation or pip installation details please refer to the [Installation Documentation](installation/installation-requirements.md).
 
-    !!! note
-        If you're a beginner, you don't need to run the `Add worker` action — it's not required for the Quick Start experience.  
-        You can also skip it if you're not sure what `Add worker` does for now.
 
 === "macOS"
 
@@ -57,13 +33,11 @@
 
     2. Run the installer
     
-    ![mac installer](assets/quick-start/mac-installer.png)
-
     3. Installation Successful
     
     After successful installation, the GPUStack icon appears in the status bar.
 
-     ![mac installer](assets/quick-start/mac-done.png)
+    ![mac installer](assets/quick-start/mac-done.png)
 
 
 === "Windows"
@@ -74,40 +48,20 @@
 
     2. Run the installer
     
-    ![windows installer](assets/quick-start/windows-installer.png)
-
     3. Installation Successful
     
     After successful installation, the GPUStack icon will appear in the system tray.
     
-     ![windows done](assets/quick-start/windows-done.png)
+    ![windows done](assets/quick-start/windows-done.png)
 
 
 ## Open GPUStack UI
 
-Open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+- If you installed GPUStack using **Docker**, open `http://localhost` in your browser to access the GPUStack UI.
 
-=== "Linux"
+- If you installed it using the **installer** (macOS or Windows), you can also click the `Web Console` option from the GPUStack icon in the menu bar or system tray.
 
-    ```bash
-    cat /var/lib/gpustack/initial_admin_password
-    ```
-
-=== "macOS"
-
-    ```bash
-    cat /var/lib/gpustack/initial_admin_password
-    ```
-
-=== "Windows"
-
-    ```powershell
-    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
-    ```
-
-![login](assets/quick-start/quick-start-login.png)
-
-### Deploy a Model
+## Deploy a Model
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
 2. In the catalog list page, use the search bar in the top left to search for the model keyword `qwen3`.
@@ -124,7 +78,7 @@ Open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to G
 
 ![deploy qwen3 from catalog](assets/quick-start/quick-chat.png)
 
-### Try the Model with curl
+## Try the Model with curl
 
 1. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
 
