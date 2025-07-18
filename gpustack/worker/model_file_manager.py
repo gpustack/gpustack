@@ -17,12 +17,7 @@ from huggingface_hub.utils import build_hf_headers
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
-from gpustack.schemas.model_files import (
-    ModelFile,
-    ModelFileUpdate,
-    ModelFileStateEnum,
-    RESET_DOWNLOAD_MESSAGE,
-)
+from gpustack.schemas.model_files import ModelFile, ModelFileUpdate, ModelFileStateEnum
 from gpustack.client import ClientSet
 from gpustack.schemas.models import SourceEnum
 from gpustack.server.bus import Event, EventType
@@ -232,16 +227,8 @@ class ModelFileManager:
                 state_message=f"Deletion failed: {str(e)}",
             )
 
-    def _download_is_reset(self, model_file: ModelFile) -> bool:
-        return (
-            model_file.download_progress == 0
-            and model_file.state_message == RESET_DOWNLOAD_MESSAGE
-        )
-
     def _create_download_task(self, model_file: ModelFile):
         if model_file.id in self._active_downloads:
-            if self._download_is_reset(model_file):
-                downloaders.reset_file_lock(model_file, self._config.cache_dir)
             return
 
         cancel_flag = self._mp_manager.Event()
@@ -415,9 +402,7 @@ class ModelFileDownloadTask:
         )
 
     def _update_model_file_progress(self, model_file_id: int, progress: float):
-        self._update_model_file(
-            model_file_id, download_progress=progress, state_message=""
-        )
+        self._update_model_file(model_file_id, download_progress=progress)
 
     def _update_model_file(self, id: int, **kwargs):
         model_file_public = self._clientset.model_files.get(id=id)
