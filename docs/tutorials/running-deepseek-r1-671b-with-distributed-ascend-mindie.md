@@ -1,6 +1,6 @@
 # Running DeepSeek R1 671B with Distributed Ascend MindIE
 
-This tutorial guides you through the process of configuring and running the original **DeepSeek R1 671B** using **Distributed Ascend MindIE** on a GPUStack cluster. 
+This tutorial guides you through the process of configuring and running the original **DeepSeek R1 671B** using **Distributed Ascend MindIE** on a GPUStack cluster.
 
 Due to the extremely large size of the model, distributed inference across multiple workers is usually required.
 
@@ -14,9 +14,9 @@ Before you begin, make sure the following requirements are met:
 
 <div class="center-table" markdown>
 
-| **Server(NPU)**       | **Number of Nodes** |
-|-----------------------|---------------------|
-| Atlas 800I (910B x 8) | 4                   |
+| **Server(NPU)**           | **Number of Nodes** |
+| ------------------------- | ------------------- |
+| Atlas 800T A2 (910B3 x 8) | 4                   |
 
 </div>
 
@@ -25,7 +25,7 @@ Before you begin, make sure the following requirements are met:
 
 !!! note
 
-    - In this tutorial, we assume a setup of 4 nodes, each equipped with 8 910B1 NPUs and connected via 200G Huawei Cache Conherence Network (HCCN).
+    - In this tutorial, we assume a setup of 4 nodes, each equipped with 8 910B3 NPUs and connected via 200G Huawei Cache Conherence Network (HCCN).
     - Altas NPUs do not support the FP8 precision originally used by DeepSeek R1. Hence, we use the BF16 version from [Unsloth](https://huggingface.co/unsloth/DeepSeek-R1-BF16).
 
 ## Step 1: Install GPUStack Server
@@ -65,10 +65,10 @@ docker run -d --name gpustack \
 !!! note
 
     - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
-    - Ensure the `npu-smi` tool is installed and configured correctly on your system. This is required for discovering the NPU devices. 
+    - Ensure the `npu-smi` tool is installed and configured correctly on your system. This is required for discovering the NPU devices.
       Replace `/usr/local/bin/npu-smi:/usr/local/bin/npu-smi` with the actual path to the `npu-smi` binary if it is located elsewhere,
       e.g., `/path/to/your/npu-smi:/usr/local/bin/npu-smi`.
-    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication. 
+    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
       Add `/path/to/your/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool` to the `-v` options if it is located elsewhere.
 
 After GPUStack server is up and running, run the following commands to get the initial admin password and the token for worker registration:
@@ -116,10 +116,10 @@ docker run -d --name gpustack \
 
     - Replace the placeholder paths, IP address/hostname, and token accordingly.
     - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
-    - Ensure the `npu-smi` tool is installed and configured correctly on your system. This is required for discovering the NPU devices. 
+    - Ensure the `npu-smi` tool is installed and configured correctly on your system. This is required for discovering the NPU devices.
       Replace `/usr/local/bin/npu-smi:/usr/local/bin/npu-smi` with the actual path to the `npu-smi` binary if it is located elsewhere,
       e.g., `/path/to/your/npu-smi:/usr/local/bin/npu-smi`.
-    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication. 
+    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
       Add `/path/to/your/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool` to the `-v` options if it is located elsewhere.
 
 ## Step 3: Access GPUStack UI
@@ -147,7 +147,7 @@ Log in using the `admin` username and the password obtained in Step 1. Navigate 
    - `--tensor-parallel-size=8`
    - `--moe-tensor-parallel-size=1`
    - `--moe-expert-parallel-size=32`
-   - `--npu-memory-fraction=0.95`, since we are using Data Parallelism, the memory fraction should be set to 0.95 to ensure efficient memory usage across all NPUs. 
+   - `--npu-memory-fraction=0.95`, since we are using Data Parallelism, the memory fraction should be set to 0.95 to ensure efficient memory usage across all NPUs.
 8. After passing the compatibility check, click `Save` to deploy.
 
 ![deploy-model-1](../assets/tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie/deploy-model-1.png)
