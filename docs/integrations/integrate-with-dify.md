@@ -66,7 +66,7 @@ You can now use the models in the `Studio` and `Knowledge`, here is a simple cas
 4. Switch the model to `qwen2.5-vl-3b-instruct`, remove the previously added knowledge base, enable `Vision`, and upload an image in the chat to activate multimodal input:
 
 ![dify-chat-with-vlm](../assets/integrations/integration-dify-chat-with-vlm.png)
-##  Notes for pip-installed GPUStack
+##  Notes for Docker Desktop Installed Dify
 
 If GPUStack is installed via `pip` and runs on the **host machine**, while **Dify runs inside a Docker container**, you must ensure proper network access between them.
 
