@@ -72,22 +72,6 @@ def download_model(
         return file.get_sharded_file_paths(model.local_path)
 
 
-def reset_file_lock(
-    model: ModelSource,
-    cache_dir: Optional[str] = None,
-) -> List[str]:
-    if model.source == SourceEnum.HUGGING_FACE:
-        return HfDownloader.reset_lock(
-            repo_id=model.huggingface_repo_id,
-            cache_dir=os.path.join(cache_dir, "huggingface"),
-        )
-    elif model.source == SourceEnum.MODEL_SCOPE:
-        return ModelScopeDownloader.reset_lock(
-            model_id=model.model_scope_model_id,
-            cache_dir=os.path.join(cache_dir, "model_scope"),
-        )
-
-
 def get_model_file_info(
     model: Model,
     huggingface_token: Optional[str] = None,
@@ -246,20 +230,6 @@ class HfDownloader:
 
         logger.info(f"Downloaded model {repo_id}/{filename}")
         return sorted(downloaded_files)
-
-    @classmethod
-    def reset_lock(
-        cls, repo_id: str, cache_dir: Optional[Union[str, os.PathLike[str]]] = None
-    ):
-        """
-        Reset the lock file for a model.
-        """
-        group_or_owner, name = model_id_to_group_owner_name(repo_id)
-        lock_filename = os.path.join(cache_dir, group_or_owner, f"{name}.lock")
-
-        if os.path.exists(lock_filename):
-            logger.info(f"Resetting lock file: {lock_filename}")
-            os.remove(lock_filename)
 
     def __call__(self):
         return self.download()
@@ -631,17 +601,3 @@ class ModelScopeDownloader:
                 local_dir=local_dir,
             )
             return [local_dir]
-
-    @classmethod
-    def reset_lock(
-        cls, model_id: str, cache_dir: Optional[Union[str, os.PathLike[str]]] = None
-    ):
-        """
-        Reset the lock file for a model.
-        """
-        group_or_owner, name = model_id_to_group_owner_name(model_id)
-        lock_filename = os.path.join(cache_dir, group_or_owner, f"{name}.lock")
-
-        if os.path.exists(lock_filename):
-            logger.info(f"Resetting lock file: {lock_filename}")
-            os.remove(lock_filename)
