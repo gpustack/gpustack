@@ -163,7 +163,9 @@ class ToolsManager:
         elif backend == BackendEnum.VLLM:
             self.install_versioned_vllm(version)
         elif backend == BackendEnum.VOX_BOX:
-            self.install_versioned_package_by_pipx("vox-box", version)
+            self.install_versioned_package_by_pipx(
+                "vox-box", version, "--pip-args='transformers==4.51.3'"
+            )
         elif backend == BackendEnum.ASCEND_MINDIE:
             self.install_versioned_ascend_mindie(version)
         else:
@@ -295,7 +297,7 @@ class ToolsManager:
             version,
         )
 
-    def install_versioned_package_by_pipx(self, package: str, version: str):
+    def install_versioned_package_by_pipx(self, package: str, version: str, *args):
         """
         Install a versioned package using pipx.
 
@@ -331,6 +333,7 @@ class ToolsManager:
             suffix,
             f"{package}=={version}",
         ]
+        install_command.extend(args)
 
         env = os.environ.copy()
         if self._data_dir and self._bin_dir:
