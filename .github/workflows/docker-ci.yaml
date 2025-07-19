@@ -159,20 +159,60 @@ jobs:
             echo "$arg" >> $GITHUB_OUTPUT
           done
           echo "EOF" >> $GITHUB_OUTPUT
-      - name: Get cache tag suffix
-        id: cache-tag-suffix
+      - name: Get Cache Ref
+        id: cache-ref
         run: |
-          # Use different cache tag suffixes for different branches.
+          #
+          # Use different cache ref for different branches.
+          #
           # Examples:
-          # - pr/push to main -> "-cpu-main"
-          # - vx.y.z -> "-cpu"
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            echo "CACHE_TAG_SUFFIX=${{ matrix.tag_suffix }}-${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
-          elif [[ "${GITHUB_REF}" == refs/heads/* ]]; then
-            echo "CACHE_TAG_SUFFIX=${{ matrix.tag_suffix }}-${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+          # CACHE_FROM_REF
+          #   - vX.Y.Z                 -> "gpustack/build-cache:gpustack${TAG_SUFFIX}-${VERSION|DEFAULT_BRANCH}"
+          #   - PR/PUSH to branch      -> "gpustack/build-cache:gpustack${TAG_SUFFIX}-${BRANCH|DEFUALT_BRANCH}"
+          # CACHE_TO_REF
+          #   - vX.Y.Z                 -> "gpustack/build-cache:gpustack${TAG_SUFFIX}-${VERSION}"
+          #   - PUSH to branch         -> "gpustack/build-cache:gpustack${TAG_SUFFIX}-${BRANCH}"
+          #
+          # Stories(device cpu):
+          # CACHE_FROM_REF
+          #   - Release tag v0.7.0rc1      -> gpustack/build-cache:gpustack-cpu-v0.7, if not found, fallback to gpustack/build-cache:gpustack-cpu-main
+          #   - Release tag v0.7.0         -> gpustack/build-cache:gpustack-cpu-v0.7
+          #   - PR to "main" branch        -> gpustack/build-cache:gpustack-cpu-main
+          #   - PR to "v0.7-dev" branch    -> gpustack/build-cache:gpustack-cpu-v0.7, if not found, fallback to gpustack/build-cache:gpustack-cpu-main
+          #   - Push to "main" branch      -> gpustack/build-cache:gpustack-cpu-main
+          #   - Push to "v0.7-dev" branch  -> gpustack/build-cache:gpustack-cpu-v0.7, if not found, fallback to gpustack/build-cache:gpustack-cpu-main
+          # CACHE_TO_REF
+          #   - Release tag v0.7.0rc1      -> gpustack/build-cache:gpustack-cpu-v0.7
+          #   - Release tag v0.7.0         -> gpustack/build-cache:gpustack-cpu-v0.7
+          #   - PR to "main" branch        -> gpustack/build-cache:gpustack-cpu-main
+          #   - PR to "v0.7-dev" branch    -> gpustack/build-cache:gpustack-cpu-v0.7
+          #   - Push to "main" branch      -> gpustack/build-cache:gpustack-cpu-main
+          #   - Push to "v0.7-dev" branch  -> gpustack/build-cache:gpustack-cpu-v0.7
+          DEFAULT_BRANCH="main"
+          TAG_SUFFIX="${{ matrix.tag_suffix }}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            REF="${GITHUB_REF#refs/tags/}"
+            IFS="." read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH <<< "${REF}"
+            VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
+            CACHE_FROM_REF="gpustack/build-cache:gpustack${TAG_SUFFIX}-${VERSION}"
+            CACHE_TO_REF="${CACHE_FROM_REF}"
           else
-            echo "CACHE_TAG_SUFFIX=${{ matrix.tag_suffix }}" >> $GITHUB_ENV
+            REF="${GITHUB_BASE_REF:-${GITHUB_REF}}"
+            BRANCH="${REF#refs/heads/}"
+            BRANCH="${BRANCH%-dev}"
+            CACHE_FROM_REF="gpustack/build-cache:gpustack${TAG_SUFFIX}-${BRANCH}"
+            CACHE_TO_REF="${CACHE_FROM_REF}"
           fi
+          if !docker manifest inspect "${CACHE_FROM_REF}" >/dev/null 2>&1; then
+            CACHE_FROM_REF="gpustack/build-cache:gpustack${TAG_SUFFIX}-${DEFAULT_BRANCH}"
+          fi
+          echo "CACHE_FROM_REF=${CACHE_FROM_REF}" >> $GITHUB_ENV
+          echo "CACHE_TO_REF=${CACHE_TO_REF}" >> $GITHUB_ENV
+          echo "DEBUG: GITHUB_BASE_REF=${GITHUB_BASE_REF}"
+          echo "DEBUG: GITHUB_REF=${GITHUB_REF}"
+          echo "DEBUG: TAG_SUFFIX=${TAG_SUFFIX}"
+          echo "DEBUG: CACHE_FROM_REF=${CACHE_FROM_REF}"
+          echo "DEBUG: CACHE_TO_REF=${CACHE_TO_REF}"
       - name: Package
         uses: docker/build-push-action@v6
         id: package
@@ -188,6 +228,6 @@ jobs:
           build-args: |
             ${{ steps.build-args.outputs.BUILD_ARGS }}
           cache-from: |
-            type=registry,ref=gpustack/build-cache:gpustack${{ env.CACHE_TAG_SUFFIX }}
+            type=registry,ref=${{ env.CACHE_FROM_REF }}
           cache-to: |
-            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref=gpustack/build-cache:gpustack{0},ignore-error=true', env.CACHE_TAG_SUFFIX) || '' }}
+            ${{ github.event_name != 'pull_request' && format('type=registry,mode=max,compression=gzip,ref={0},ignore-error=true', env.CACHE_TO_REF) || '' }}
