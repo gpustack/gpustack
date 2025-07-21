@@ -1520,7 +1520,7 @@
 - name: ERNIE 4.5
   description: ERNIE 4.5 is a large language model series developed by Baidu.
   home: https://github.com/PaddlePaddle/ERNIE
-  icon: /static/catalog_icons/baidu.jpeg
+  icon: /static/catalog_icons/ERNIE.png
   categories:
     - llm
   capabilities:
