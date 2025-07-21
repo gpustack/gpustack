@@ -535,12 +535,18 @@ def is_ready(backend: str, mi: ModelInstance) -> bool:
     """
 
     try:
+        hostname = "127.0.0.1"
+        if backend == BackendEnum.ASCEND_MINDIE:
+            # Connectivity to the loopback address does not work for Ascend MindIE.
+            # Use worker IP instead.
+            hostname = mi.worker_ip
+
         # Check /v1/models by default if dedicated health check endpoint is not available.
-        # This is served by all backends (llama-box, vox-box, vllm)
-        health_check_url = f"http://{mi.worker_ip}:{mi.port}/v1/models"
+        # This is served by all backends (llama-box, vox-box, vllm, mindIE)
+        health_check_url = f"http://{hostname}:{mi.port}/v1/models"
         if backend == BackendEnum.LLAMA_BOX:
             # For llama-box, use /health to avoid printing error logs.
-            health_check_url = f"http://{mi.worker_ip}:{mi.port}/health"
+            health_check_url = f"http://{hostname}:{mi.port}/health"
 
         response = requests.get(health_check_url, timeout=1)
         if response.status_code == 200:
