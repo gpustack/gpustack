@@ -313,6 +313,13 @@ def get_pretrained_config(model: Model, **kwargs):
                 local_files_only=local_files_only,
             )
     elif model.source == SourceEnum.LOCAL_PATH:
+        if not os.path.exists(model.local_path):
+            logger.warning(
+                f"Local Path: {model.readable_source} is not local to the server node and may reside on a worker node."
+            )
+            # Return an empty dict here to facilitate special handling by upstream methods.
+            return {}
+
         from transformers import AutoConfig
 
         pretrained_config = AutoConfig.from_pretrained(
@@ -320,6 +327,7 @@ def get_pretrained_config(model: Model, **kwargs):
             trust_remote_code=trust_remote_code,
             local_files_only=True,
         )
+
     else:
         raise ValueError(f"Unsupported model source: {model.source}")
 
