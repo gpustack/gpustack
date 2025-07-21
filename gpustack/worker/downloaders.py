@@ -154,7 +154,7 @@ class HfDownloader:
         if local_dir is None:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
-        logger.info(f"Retriving file lock: {lock_filename}")
+        logger.info(f"Retrieving file lock: {lock_filename}")
         with SoftFileLock(lock_filename):
             if filename:
                 return cls.download_file(
@@ -331,7 +331,7 @@ class OllamaLibraryDownloader:
         model_path = os.path.join(model_dir, sanitized_filename)
         lock_filename = model_path + ".lock"
 
-        logger.info(f"Retriving file lock: {lock_filename}")
+        logger.info(f"Retrieving file lock: {lock_filename}")
         with SoftFileLock(lock_filename):
             if os.path.exists(model_path):
                 return [model_path]
@@ -578,7 +578,7 @@ class ModelScopeDownloader:
         if local_dir is None:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
-        logger.info(f"Retriving file lock: {lock_filename}")
+        logger.info(f"Retrieving file lock: {lock_filename}")
         with SoftFileLock(lock_filename):
             if file_path:
                 matching_files = match_model_scope_file_paths(
