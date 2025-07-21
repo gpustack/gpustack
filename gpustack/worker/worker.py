@@ -247,6 +247,7 @@ class Worker:
         async def lifespan(app: FastAPI):
             connector = aiohttp.TCPConnector(
                 limit=TCP_CONNECTOR_LIMIT,
+                force_close=True,
             )
             app.state.http_client = aiohttp.ClientSession(connector=connector)
             yield
