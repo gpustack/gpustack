@@ -6,9 +6,9 @@
 
 ## Supported Platforms
 
-| OS    | Arch  | Supported methods                                                                                        |
-| ----- | ----- | -------------------------------------------------------------------------------------------------------- |
-| Linux | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script) |
+| OS    | Arch  | Supported methods                                                                                                               |
+| ----- | ----- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Linux | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-scriptdeprecated) (Deprecated) |
 
 ## Supported backends
 
@@ -116,7 +116,8 @@ docker run -d --name gpustack \
 ## Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+
+    The installation script method is deprecated as of version 0.7.
 
 ### Prerequites
 

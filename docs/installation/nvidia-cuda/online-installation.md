@@ -6,10 +6,10 @@
 
 ## Supported Platforms
 
-| OS      | Arch           | Supported methods                                                                                                                                 |
-| ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-script)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
-| Windows | AMD64          | [Installation Script](#installation-script)<br>[pip Installation](#pip-installation)                                                              |
+| OS      | Arch           | Supported methods                                                                                                                                                        |
+| ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-scriptdeprecated) (Deprecated)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
+| Windows | AMD64          | [Installation Script](#installation-scriptdeprecated) (Deprecated)<br>[pip Installation](#pip-installation)                                                              |
 
 ## Supported backends
 
@@ -67,7 +67,8 @@ And ensure the driver supports CUDA 12.4 or higher:
 ## Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+
+    The installation script method is deprecated as of version 0.7.
 
 ### Prerequites
 

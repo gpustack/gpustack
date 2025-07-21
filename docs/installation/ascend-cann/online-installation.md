@@ -7,9 +7,9 @@
 
 ## Supported Platforms
 
-| OS    | Arch  | Supported methods                                                                                        |
-| ----- | ----- | -------------------------------------------------------------------------------------------------------- |
-| Linux | ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script) |
+| OS    | Arch  | Supported methods                                                                                                               |
+| ----- | ----- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Linux | ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-scriptdeprecated) (Deprecated) |
 
 ## Prerequisites
 
@@ -218,7 +218,8 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
 ## Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+
+    The installation script method is deprecated as of version 0.7.
 
 ### Supported backends
 

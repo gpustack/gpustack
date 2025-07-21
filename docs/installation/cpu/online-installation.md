@@ -8,10 +8,10 @@ In GPUStack, `llama-box` and `vox-box` backends support CPU inference. However, 
 
 ## Supported Platforms
 
-| OS      | Arch           | Supported methods                                                                                                                                 |
-| ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-script)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
-| Windows | AMD64<br>ARM64 | [Installation Script](#installation-script)<br>[pip Installation](#pip-installation)                                                              |
+| OS      | Arch           | Supported methods                                                                                                                                                        |
+| ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-scriptdeprecated) (Deprecated)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
+| Windows | AMD64<br>ARM64 | [Desktop Installer](../desktop-installer.md)<br>[Installation Script](#installation-scriptdeprecated) (Deprecated)<br>[pip Installation](#pip-installation)              |
 
 ## Supported backends
 
@@ -46,7 +46,8 @@ In GPUStack, `llama-box` and `vox-box` backends support CPU inference. However, 
 ## Installation Script(Deprecated)
 
 !!! note
-      The installation script method is deprecated as of version 0.7.
+
+    The installation script method is deprecated as of version 0.7.
 
 GPUStack provides a script to install it as a service with default port 80.
 
