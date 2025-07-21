@@ -164,4 +164,4 @@ The following ports are used on GPUStack worker when Ray is enabled for distribu
 | --------------- | ----------------------------------- |
 | TCP 40098       | Default port for Ray node manager   |
 | TCP 40099       | Default port for Ray object manager |
-| TCP 40100-40131 | Port range for Ray worker processes |
+| TCP 41000-42000 | Port range for Ray worker processes |
