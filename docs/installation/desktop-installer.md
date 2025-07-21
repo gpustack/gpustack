@@ -5,13 +5,12 @@
 === "macOS"
 
     - Only supported: Apple Silicon (M series), macOS 14+
-    - [Download the installer](https://gpustack.ai)
+    - [Download the installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/gpustack.pkg)
 
 === "Windows"
 
     - Only supported: win 10, win 11
-    - [Download the installer](https://gpustack.ai)
-
+    - [Download the installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/GPUStackInstaller.msi)
 
 ## Run GPUStack
 
@@ -28,7 +27,6 @@ Click the `GPUStack icon` in the menu bar (on macOS) or system tray (on Windows)
 ### 1. Get Token
 
 Click the `GPUStack icon` in the menu bar (macOS) or system tray (Windows), then select the `Copy Token` menu on the server machine.
-
 
 ### 2. Register Worker
 
