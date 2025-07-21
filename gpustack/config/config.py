@@ -65,7 +65,7 @@ class Config(BaseSettings):
         rpc_server_port_range: Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40064-40095'.
         ray_node_manager_port: Raylet port for node manager. Used when Ray is enabled. Default is 40098.
         ray_object_manager_port: Raylet port for object manager. Used when Ray is enabled. Default is 40099.
-        ray_worker_port_range: Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40100-40131'.
+        ray_worker_port_range: Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '41000-42000'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
         pipx_path: Path to the pipx executable, used to install versioned backends.
@@ -125,7 +125,7 @@ class Config(BaseSettings):
     metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
     rpc_server_port_range: Optional[str] = "40064-40095"
-    ray_worker_port_range: Optional[str] = "40100-40131"
+    ray_worker_port_range: Optional[str] = "41000-42000"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None

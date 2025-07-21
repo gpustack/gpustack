@@ -51,6 +51,10 @@ class RayManager:
     async def _start_ray(self):
         logger.info(f"Starting Ray {self._role}.")
 
+        min_worker_port, max_worker_port = parse_port_range(
+            self._cfg.ray_worker_port_range
+        )
+
         command_path = get_command_path('ray')
         arguments = [
             "start",
@@ -59,6 +63,10 @@ class RayManager:
             str(self._cfg.ray_node_manager_port),
             "--object-manager-port",
             str(self._cfg.ray_object_manager_port),
+            "--min-worker-port",
+            str(min_worker_port),
+            "--max-worker-port",
+            str(max_worker_port),
         ]
         if self._head:
             arguments.extend(
@@ -71,17 +79,10 @@ class RayManager:
                 ]
             )
         else:
-            min_worker_port, max_worker_port = parse_port_range(
-                self._cfg.ray_worker_port_range
-            )
             arguments.extend(
                 [
                     "--address",
                     self._ray_address,
-                    "--min-worker-port",
-                    str(min_worker_port),
-                    "--max-worker-port",
-                    str(max_worker_port),
                 ]
             )
 
