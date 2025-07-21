@@ -79,7 +79,8 @@ class ModelParameters:
         # Parse
         pretrained_config = get_pretrained_config(model, trust_remote_code=True)
         pretrained_config = get_hf_text_config(pretrained_config)
-        if not pretrained_config:
+        if pretrained_config is None:
+            # Exclude empty dict cases, as they indicate the locally-sourced model is not local to the server node.
             raise ValueError(f"Failed to get model {model.name} pretrained config")
         for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
             try:

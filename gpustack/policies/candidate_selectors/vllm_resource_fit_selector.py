@@ -231,6 +231,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 self._vram_claim = 0
 
         self._set_pretrained_config()
+        # _pretrained_config may be None or an empty dictionary, but subsequent methods are designed to handle this case.
         self._set_gpu_memory_utilization()
         self._set_num_attention_heads()
 
