@@ -24,6 +24,7 @@ from gpustack.config.envs import PROXY_TIMEOUT
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.models import build_category_conditions
 from gpustack.schemas.models import (
+    BackendEnum,
     CategoryEnum,
     Model,
 )
@@ -177,15 +178,30 @@ async def proxy_request_by_model(request: Request, endpoint: str):
                 is_openai_exception=True,
             )
 
-    url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
+    url = f"http://{instance.worker_ip}:{worker.port}/proxy/v1/{endpoint}"
+    token = request.app.state.server_config.token
+    extra_headers = {
+        "X-Target-Port": str(instance.port),
+        "Authorization": f"Bearer {token}",
+    }
+
+    if model.backend == BackendEnum.ASCEND_MINDIE:
+        # Connectivity to the loopback address via worker proxy does not work for Ascend MindIE.
+        # Bypassing the worker proxy and directly connecting to the instance as a workaround.
+        url = f"http://{instance.worker_ip}:{instance.port}/v1/{endpoint}"
+        extra_headers = {}
 
     logger.debug(f"proxying to {url}, instance port: {instance.port}")
 
     try:
         if stream:
-            return await handle_streaming_request(request, url, body_json, form_data)
+            return await handle_streaming_request(
+                request, url, body_json, form_data, extra_headers
+            )
         else:
-            return await handle_standard_request(request, url, body_json, form_data)
+            return await handle_standard_request(
+                request, url, body_json, form_data, extra_headers
+            )
     except asyncio.TimeoutError as e:
         error_message = f"Request to {url} timed out"
         if str(e):
