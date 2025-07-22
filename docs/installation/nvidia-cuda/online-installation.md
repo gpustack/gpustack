@@ -8,8 +8,8 @@
 
 | OS      | Arch           | Supported methods                                                                                                                                 |
 | ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | AMD64<br>ARM64 | [Installation Script](#installation-scriptdeprecated)<br>[Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
-| Windows | AMD64          | [Installation Script](#installation-scriptdeprecated)<br>[pip Installation](#pip-installation)                                                              |
+| Linux   | AMD64<br>ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-scriptdeprecated) |
+| Windows | AMD64          | [Desktop Installer](../desktop-installer.md) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-scriptdeprecated)                                                              |
 
 ## Supported backends
 
@@ -62,134 +62,6 @@ And ensure the driver supports CUDA 12.4 or higher:
 
     ```powershell
     nvidia-smi | findstr "CUDA Version"
-    ```
-
-## Installation Script(Deprecated)
-
-!!! note
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
-
-### Prerequites
-
-- [NVIDIA CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit)
-
-Check if CUDA is installed and verify that its version is at least 12.4:
-
-```bash
-nvcc -V
-```
-
-- [NVIDIA cuDNN 9](https://developer.nvidia.com/cudnn) (Optional, required for audio models)
-
-Check if cuDNN 9 is installed:
-
-=== "Linux"
-
-    ```bash
-    ldconfig -p | grep libcudnn
-    ```
-
-=== "Windows"
-
-    ```powershell
-    Get-ChildItem -Path C:\ -Recurse -Filter "cudnn*.dll" -ErrorAction SilentlyContinue
-    ```
-
-### Run GPUStack
-
-GPUStack provides a script to install it as a service with default port 80.
-
-=== "Linux"
-
-    ```bash
-    curl -sfL https://get.gpustack.ai | sh -s -
-    ```
-
-    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
-
-    After installed, ensure that the GPUStack startup logs are normal:
-
-    ```bash
-    tail -200f /var/log/gpustack.log
-    ```
-
-    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
-
-    ```bash
-    cat /var/lib/gpustack/initial_admin_password
-    ```
-
-    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
-
-=== "Windows"
-
-    ```powershell
-    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-    ```
-
-    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
-
-    After installed, ensure that the GPUStack startup logs are normal:
-
-    ```powershell
-    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
-    ```
-
-    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
-
-    ```powershell
-    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
-    ```
-    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
-
-### (Optional) Add Worker
-
-=== "Linux"
-
-    To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
-
-    To get the token used for adding workers, run the following command on the GPUStack **server node**:
-
-    ```bash
-    cat /var/lib/gpustack/token
-    ```
-
-    If you specify the `--data-dir` parameter to set the data directory, the `token` file will be located in the specified directory.
-
-    To install GPUStack and start it as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
-
-    ```bash
-    curl -sfL https://get.gpustack.ai | sh -s - --server-url http://your_gpustack_url --token your_gpustack_token
-    ```
-
-    After installed, ensure that the GPUStack startup logs are normal:
-
-    ```bash
-    tail -200f /var/log/gpustack.log
-    ```
-
-=== "Windows"
-
-    To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
-
-    To get the token used for adding workers, run the following command on the GPUStack **server node**:
-
-    ```powershell
-    Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
-    ```
-
-    If you specify the `--data-dir` parameter to set the data directory, the `token` file will be located in the specified directory.
-
-    To install GPUStack and start it as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
-
-    ```powershell
-    Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url http://your_gpustack_url --token your_gpustack_token"
-    ```
-
-    After installed, ensure that the GPUStack startup logs are normal:
-
-    ```powershell
-    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
     ```
 
 ## Docker Installation
@@ -522,3 +394,132 @@ And ensure that the GPUStack startup logs are normal:
 ```bash
 tail -200f /var/log/gpustack.log
 ```
+
+
+## Installation Script(Deprecated)
+
+!!! warning
+      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
+
+### Prerequites
+
+- [NVIDIA CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit)
+
+Check if CUDA is installed and verify that its version is at least 12.4:
+
+```bash
+nvcc -V
+```
+
+- [NVIDIA cuDNN 9](https://developer.nvidia.com/cudnn) (Optional, required for audio models)
+
+Check if cuDNN 9 is installed:
+
+=== "Linux"
+
+    ```bash
+    ldconfig -p | grep libcudnn
+    ```
+
+=== "Windows"
+
+    ```powershell
+    Get-ChildItem -Path C:\ -Recurse -Filter "cudnn*.dll" -ErrorAction SilentlyContinue
+    ```
+
+### Run GPUStack
+
+GPUStack provides a script to install it as a service with default port 80.
+
+=== "Linux"
+
+    ```bash
+    curl -sfL https://get.gpustack.ai | sh -s -
+    ```
+
+    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
+
+    After installed, ensure that the GPUStack startup logs are normal:
+
+    ```bash
+    tail -200f /var/log/gpustack.log
+    ```
+
+    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+
+    ```bash
+    cat /var/lib/gpustack/initial_admin_password
+    ```
+
+    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
+
+=== "Windows"
+
+    ```powershell
+    Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
+    ```
+
+    To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](../installation-script.md).
+
+    After installed, ensure that the GPUStack startup logs are normal:
+
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
+    ```
+
+    If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+
+    ```powershell
+    Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
+    ```
+    If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
+
+### (Optional) Add Worker
+
+=== "Linux"
+
+    To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
+
+    To get the token used for adding workers, run the following command on the GPUStack **server node**:
+
+    ```bash
+    cat /var/lib/gpustack/token
+    ```
+
+    If you specify the `--data-dir` parameter to set the data directory, the `token` file will be located in the specified directory.
+
+    To install GPUStack and start it as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
+
+    ```bash
+    curl -sfL https://get.gpustack.ai | sh -s - --server-url http://your_gpustack_url --token your_gpustack_token
+    ```
+
+    After installed, ensure that the GPUStack startup logs are normal:
+
+    ```bash
+    tail -200f /var/log/gpustack.log
+    ```
+
+=== "Windows"
+
+    To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
+
+    To get the token used for adding workers, run the following command on the GPUStack **server node**:
+
+    ```powershell
+    Get-Content -Path "$env:APPDATA\gpustack\token" -Raw
+    ```
+
+    If you specify the `--data-dir` parameter to set the data directory, the `token` file will be located in the specified directory.
+
+    To install GPUStack and start it as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
+
+    ```powershell
+    Invoke-Expression "& { $((Invoke-WebRequest -Uri 'https://get.gpustack.ai' -UseBasicParsing).Content) } -- --server-url http://your_gpustack_url --token your_gpustack_token"
+    ```
+
+    After installed, ensure that the GPUStack startup logs are normal:
+
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\gpustack.log" -Tail 200 -Wait
+    ```

@@ -8,14 +8,16 @@
 
 | OS    | Version                 | Arch  | Supported methods                                                                                  |
 | ----- | ----------------------- | ----- | -------------------------------------------------------------------------------------------------- |
-| macOS | 14 Sonoma<br>15 Sequoia | ARM64 | [Installation Script](#installation-scriptdeprecated) (Recommended)<br>[pip Installation](#pip-installation) |
+| macOS | 14 Sonoma<br>15 Sequoia | ARM64 | [Desktop Installer](desktop-installer.md) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-scriptdeprecated) |
 
 ## Supported backends
 
 - [x] llama-box
 - [x] vox-box (CPU backend)
 
-## Prerequisites
+## pip Installation
+
+### Prerequisites
 
 - Python 3.10 ~ 3.12
 
@@ -24,73 +26,6 @@ Check the Python version:
 ```bash
 python -V
 ```
-
-## Installation Script(Deprecated)
-
-!!! note
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
-
-GPUStack provides a script to install it as a service with default port 80.
-
-### Run GPUStack
-
-```bash
-curl -sfL https://get.gpustack.ai | sh -s -
-```
-
-If you need support for audio models, run:
-
-```bash
-curl -sfL https://get.gpustack.ai | INSTALL_SKIP_BUILD_DEPENDENCIES=0 sh -s -
-```
-
-To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](./installation-script.md).
-
-After installed, ensure that the GPUStack startup logs are normal:
-
-```bash
-tail -200f /var/log/gpustack.log
-```
-
-If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
-
-```bash
-cat /var/lib/gpustack/initial_admin_password
-```
-
-If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
-
-### (Optional) Add Worker
-
-To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
-
-To get the token used for adding workers, run the following command on the GPUStack **server node**:
-
-```bash
-cat /var/lib/gpustack/token
-```
-
-If you specify the `--data-dir` parameter to set the data directory, the `token` file will be located in the specified directory.
-
-To install GPUStack and start it as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
-
-```bash
-curl -sfL https://get.gpustack.ai | sh -s - --server-url http://your_gpustack_url --token your_gpustack_token
-```
-
-If you need support for audio models, run:
-
-```bash
-curl -sfL https://get.gpustack.ai | INSTALL_SKIP_BUILD_DEPENDENCIES=0 sh -s - --server-url http://your_gpustack_url --token your_gpustack_token
-```
-
-After installed, ensure that the GPUStack startup logs are normal:
-
-```bash
-tail -200f /var/log/gpustack.log
-```
-
-## pip Installation
 
 ### Install GPUStack
 
@@ -201,6 +136,81 @@ sudo launchctl print system/ai.gpustack
 ```
 
 And ensure that the GPUStack startup logs are normal:
+
+```bash
+tail -200f /var/log/gpustack.log
+```
+
+## Installation Script(Deprecated)
+
+!!! warning
+      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
+
+GPUStack provides a script to install it as a service with default port 80.
+
+### Prerequisites
+
+- Python 3.10 ~ 3.12
+
+Check the Python version:
+
+```bash
+python -V
+```
+
+### Run GPUStack
+
+```bash
+curl -sfL https://get.gpustack.ai | sh -s -
+```
+
+If you need support for audio models, run:
+
+```bash
+curl -sfL https://get.gpustack.ai | INSTALL_SKIP_BUILD_DEPENDENCIES=0 sh -s -
+```
+
+To configure additional environment variables and startup flags when running the script, refer to the [Installation Script](./installation-script.md).
+
+After installed, ensure that the GPUStack startup logs are normal:
+
+```bash
+tail -200f /var/log/gpustack.log
+```
+
+If the startup logs are normal, open `http://your_host_ip` in the browser to access the GPUStack UI. Log in to GPUStack with username `admin` and the default password. You can run the following command to get the password for the default setup:
+
+```bash
+cat /var/lib/gpustack/initial_admin_password
+```
+
+If you specify the `--data-dir` parameter to set the data directory, the `initial_admin_password` file will be located in the specified directory.
+
+### (Optional) Add Worker
+
+To add workers to the GPUStack cluster, you need to specify the server URL and authentication token when installing GPUStack on the workers.
+
+To get the token used for adding workers, run the following command on the GPUStack **server node**:
+
+```bash
+cat /var/lib/gpustack/token
+```
+
+If you specify the `--data-dir` parameter to set the data directory, the `token` file will be located in the specified directory.
+
+To install GPUStack and start it as a worker, and **register it with the GPUStack server**, run the following command on the **worker node**. Be sure to replace the URL and token with your specific values:
+
+```bash
+curl -sfL https://get.gpustack.ai | sh -s - --server-url http://your_gpustack_url --token your_gpustack_token
+```
+
+If you need support for audio models, run:
+
+```bash
+curl -sfL https://get.gpustack.ai | INSTALL_SKIP_BUILD_DEPENDENCIES=0 sh -s - --server-url http://your_gpustack_url --token your_gpustack_token
+```
+
+After installed, ensure that the GPUStack startup logs are normal:
 
 ```bash
 tail -200f /var/log/gpustack.log

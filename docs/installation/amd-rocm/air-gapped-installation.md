@@ -7,6 +7,7 @@ The following methods are available for installing GPUStack in an air-gapped env
 | OS    | Arch  | Supported methods                           |
 | ----- | ----- | ------------------------------------------- |
 | Linux | AMD64 | [Docker Installation](#docker-installation) |
+| Windows | AMD64 | [Desktop Installer](../desktop-installer.md) |
 
 ## Supported Devices
 
