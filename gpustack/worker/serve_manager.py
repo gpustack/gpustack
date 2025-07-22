@@ -47,7 +47,7 @@ class ServeManager:
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._serving_model_instances: Dict[int, multiprocessing.Process] = {}
-        self._serving_model_instance_ports: Set[int] = set()
+        self._serving_model_instance_ports: Dict[int, Set[int]] = {}
         self._starting_model_instances: Dict[int, ModelInstance] = {}
         self._error_model_instances: Dict[int, ModelInstance] = {}
         self._model_cache_by_instance: Dict[int, Model] = {}
@@ -206,7 +206,12 @@ class ServeManager:
 
             # Assign port.
             if not mi.port:
-                unavailable_ports = self._serving_model_instance_ports.copy()
+                if self._serving_model_instance_ports:
+                    unavailable_ports = set.union(
+                        *self._serving_model_instance_ports.values()
+                    )
+                else:
+                    unavailable_ports = set()
                 mi.port = network.get_free_port(
                     port_range=self._config.service_port_range,
                     unavailable_ports=unavailable_ports,
@@ -244,8 +249,7 @@ class ServeManager:
             process.daemon = False
             process.start()
             self._serving_model_instances[mi.id] = process
-            for port in mi.ports:
-                self._serving_model_instance_ports.add(port)
+            self._serving_model_instance_ports[mi.id] = set(mi.ports)
             self._starting_model_instances[mi.id] = mi
 
             # Get patch dict for main worker.
@@ -347,17 +351,18 @@ class ServeManager:
         return model
 
     def _stop_model_instance(self, mi: ModelInstance):
+        instance_name = mi.name or f"ModelInstance-{mi.id}"
         if mi.id not in self._serving_model_instances:
-            logger.warning(f"Model instance {mi.name} is not running. Skipping.")
+            logger.warning(f"Model instance {instance_name} is not running. Skipping.")
             return
         else:
             pid = self._serving_model_instances[mi.id].pid
             try:
                 terminate_process_tree(pid)
-                logger.info(f"Stopped model instance {mi.name} with pid {pid}.")
+                logger.info(f"Stopped model instance {instance_name} with pid {pid}.")
             except psutil.NoSuchProcess:
                 logger.warning(
-                    f"Model instance {mi.name} with pid {pid} is already stopped."
+                    f"Model instance {instance_name} with pid {pid} is already stopped."
                 )
                 pass
             except Exception as e:
@@ -407,8 +412,14 @@ class ServeManager:
             # Skip if the process is alive and not in starting instances.
             if process.is_alive() and id not in self._starting_model_instances:
                 continue
-
-            mi = self._clientset.model_instances.get(id=id)
+            try:
+                mi = self._clientset.model_instances.get(id=id)
+            except NotFoundException as e:
+                logger.warning(
+                    f"Model instance {id} not found because of {str(e)}, stopping serving process."
+                )
+                self._stop_model_instance(ModelInstance(id=id))
+                continue
 
             is_main_worker = mi.worker_id == self._worker_id
 
@@ -523,8 +534,7 @@ class ServeManager:
         """
 
         self._serving_model_instances.pop(mi.id, None)
-        for port in mi.ports:
-            self._serving_model_instance_ports.remove(port)
+        self._serving_model_instance_ports.pop(mi.id, None)
         self._starting_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
 
