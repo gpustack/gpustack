@@ -619,7 +619,7 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Patch vLLM
     for dir in lib lib64; do
         if [ -d "${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/vllm" ]; then
-            cp /workspace/gpustack/gpustack/_sitecustomize.py ${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/vllm/
+            cp /workspace/gpustack/gpustack/_sitecustomize.py ${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/sitecustomize.py
         fi
     done
 EOF
