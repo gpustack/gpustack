@@ -16,7 +16,7 @@ from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, SourceEnum, get_mmproj_filename
-from gpustack.utils.cache import load_cache, save_cache
+from gpustack.utils.cache import is_cached, load_cache, save_cache
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +156,13 @@ def match_hugging_face_files(
         matching_files.append(extra_file)
 
     return matching_files
+
+
+def is_repo_cached(repo_id: str, source: str) -> bool:
+    if not repo_id or not source:
+        return False
+    cache_key = f"{source}:{repo_id}"
+    return is_cached(LIST_REPO_CACHE_DIR, cache_key)
 
 
 def list_repo(

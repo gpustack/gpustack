@@ -33,6 +33,7 @@ from gpustack.utils.hub import (
     auth_check,
     get_hugging_face_model_min_gguf_path,
     get_model_scope_model_min_gguf_path,
+    is_repo_cached,
 )
 from gpustack.utils.task import run_in_thread
 from gpustack.utils.profiling import time_decorator
@@ -278,12 +279,16 @@ async def evaluate_model_metadata(
             SourceEnum.HUGGING_FACE,
             SourceEnum.MODEL_SCOPE,
         ]:
-            await run_in_thread(
-                auth_check,
-                timeout=15,
-                model=model,
-                huggingface_token=config.huggingface_token,
-            )
+            repo_id = model.huggingface_repo_id
+            if model.source == SourceEnum.MODEL_SCOPE:
+                repo_id = model.model_scope_model_id
+            if not is_repo_cached(repo_id, model.source):
+                await run_in_thread(
+                    auth_check,
+                    timeout=15,
+                    model=model,
+                    huggingface_token=config.huggingface_token,
+                )
 
         if is_gguf_model(model):
             await scheduler.evaluate_gguf_model(config, model)

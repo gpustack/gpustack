@@ -15,21 +15,28 @@ def _make_filepath(namespace: str, key: str) -> Path:
     return Path(config.cache_dir) / namespace / safe_key
 
 
-def load_cache(
-    namespace: str, key: str, cache_expiration: Optional[int] = None
-) -> Tuple[Optional[str], bool]:
+def is_cached(namespace: str, key: str, cache_expiration: Optional[int] = None) -> bool:
     if not namespace or not key:
-        return None, False
+        return False
 
     dst_file = _make_filepath(namespace, key)
     if not dst_file.exists():
-        return None, False
+        return False
+
+    if cache_expiration and time.time() - os.path.getmtime(dst_file) > cache_expiration:
+        return False
+
+    return True
+
+
+def load_cache(
+    namespace: str, key: str, cache_expiration: Optional[int] = None
+) -> Tuple[Optional[str], bool]:
     try:
-        if (
-            cache_expiration
-            and time.time() - os.path.getmtime(dst_file) > cache_expiration
-        ):
+        if not is_cached(namespace, key, cache_expiration):
             return None, False
+
+        dst_file = _make_filepath(namespace, key)
         with dst_file.open('r') as f:
             data = f.read()
         return data, True
