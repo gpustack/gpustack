@@ -5,11 +5,13 @@ import subprocess
 import sys
 from typing import Dict, List, Optional
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
+from gpustack.schemas.workers import VendorEnum
 from gpustack.utils.command import (
     find_parameter,
     get_versioned_command,
     get_command_path,
 )
+from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -121,6 +123,8 @@ class VLLMServer(InferenceServer):
             return
 
         device_str = "GPU"
+        if all_gpu_match(worker, lambda gpu: gpu.vendor == VendorEnum.Huawei.value):
+            device_str = "NPU"
 
         ray_placement_group_bundles: List[Dict[str, float]] = []
         bundle_indexes = []

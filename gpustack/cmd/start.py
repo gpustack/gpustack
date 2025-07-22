@@ -249,7 +249,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--ray-worker-port-range",
         type=str,
-        help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '41000-42000'.",
+        help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40100-40999'.",
         default=get_gpustack_env("RAY_WORKER_PORT_RANGE"),
     )
     group.add_argument(
