@@ -50,6 +50,7 @@ extra_css:
   - stylesheets/extra.css
   - https://unpkg.com/katex@0/dist/katex.min.css
 markdown_extensions:
+  - attr_list
   - md_in_html
   - pymdownx.highlight
   - pymdownx.superfences
