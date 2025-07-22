@@ -4,9 +4,7 @@
 
 === "Linux"
 
-    **For Example: NVIDIA CUDA**
-
-    Run the following command to start the GPUStack server.
+    If you are using NVIDIA GPUs, ensure [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on your system. Then, run the following command to start the GPUStack server.
 
     ```bash
     docker run -d --name gpustack \
@@ -18,67 +16,59 @@
           gpustack/gpustack
     ```
 
-    !!! tip
-        If the quick installation fails, please refer to the [Docker Installation](installation/nvidia-cuda/online-installation/#docker-installation) guide for more detailed instructions.
+    For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](installation/installation-requirements.md).
 
-    
-    For on other hardware platforms Docker installation or pip installation details please refer to the [Installation Documentation](installation/installation-requirements.md).
+    After the server starts, run the following command to get the default admin password:
 
+    ```bash
+    docker exec gpustack cat /var/lib/gpustack/initial_admin_password
+    ```
+
+    Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
 
 === "macOS"
 
-    **Supported platforms:** Apple Silicon (M series), macOS 14 or later
+    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/gpustack.pkg) and run it to install GPUStack.
 
-    1. [Download the installer](https://gpustack.ai)
+    !!! note
 
-    2. Run the installer
-    
-    3. Installation Successful
-    
-    After successful installation, the GPUStack icon appears in the status bar.
+        **Supported platforms:** Apple Silicon (M series), macOS 14 or later
 
-    ![mac installer](assets/quick-start/mac-done.png)
+    After the installation is complete, the GPUStack icon will appear in the status bar. Click the GPUStack icon in the status bar and select `Web Console` to open the GPUStack UI in your browser.
 
+    ![mac installer](assets/quick-start/mac-done.png){width=30%}
 
 === "Windows"
 
-    **Supported platforms:** Windows 10, Windows 11
-    
-    1. [Download the installer](https://gpustack.ai)
+    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/GPUStackInstaller.msi) and run it to install GPUStack.
 
-    2. Run the installer
-    
-    3. Installation Successful
-    
-    After successful installation, the GPUStack icon will appear in the system tray.
-    
-    ![windows done](assets/quick-start/windows-done.png)
+    !!! note
 
+        **Supported platforms:** Windows 10 and Windows 11
 
-## Open GPUStack UI
+    After the installation is complete, the GPUStack icon will appear in the system tray. Click the GPUStack icon in the system tray and select `Web Console` to open the GPUStack UI in your browser.
 
-- If you installed GPUStack using **Docker**, open `http://localhost` in your browser to access the GPUStack UI.
-
-- If you installed it using the **installer** (macOS or Windows), you can also click the `Web Console` option from the GPUStack icon in the menu bar or system tray.
+    ![windows done](assets/quick-start/windows-done.png){width=30%}
 
 ## Deploy a Model
+
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
-2. In the catalog list page, use the search bar in the top left to search for the model keyword `qwen3`.
+2. Select the `Qwen3` model from the list of available models.
 
-3. In the search results, select `Qwen3`. If the **Compatibility Check Passed** message appears, click the `Save` button to deploy the model. You will be automatically redirected to the `Models` page once the deployment starts successfully.
+3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
 
 ![deploy qwen3 from catalog](assets/quick-start/quick-start-qwen3.png)
 
-4. When the status shows `Running`, the model has been deployed successfully.
+4. GPUStack will start downloading the model files and deploying the model. When the deployment status shows `Running`, the model has been deployed successfully.
 
-![deploy qwen3 from catalog](assets/quick-start/model-running.png)
+![model is running](assets/quick-start/model-running.png)
 
-5. Click `Playground - Chat` in the navigation menu, then select the  model from the top-right corner `Model` dropdown. Now you can chat with the LLM in the UI playground.
+5. Click `Playground - Chat` in the navigation menu, check that the model `qwen3` is selected from the top-right `Model` dropdown. Now you can chat with the model in the UI playground.
 
-![deploy qwen3 from catalog](assets/quick-start/quick-chat.png)
+![quick chat](assets/quick-start/quick-chat.png)
 
-## Try the Model with curl
+## Use the model via API
 
 1. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
 
@@ -86,11 +76,13 @@
 
 3. Copy the generated API key and save it somewhere safe. Please note that you can only see it once on creation.
 
-4. Now you can use the API key to access the OpenAI-compatible API. For example, use curl as the following:
+4. You can now use the API key to access the OpenAI-compatible API endpoints provided by GPUStack. For example, use curl as the following:
 
 ```bash
+# Replace `your_api_key` and `your_gpustack_server_url`
+# with your actual API key and GPUStack server URL.
 export GPUSTACK_API_KEY=your_api_key
-curl http://your_gpustack_server_url/v1-openai/chat/completions \
+curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
@@ -102,7 +94,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
       },
       {
         "role": "user",
-        "content": "Hello!"
+        "content": "Tell me a joke."
       }
     ],
     "stream": true
@@ -111,4 +103,4 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
 
 ## Cleanup
 
-After you complete using the deployed models, you can go to the `Models` page in the GPUStack UI and delete the models to free up resources.
+After you complete using the deployed model, you can go to the `Models` page in the GPUStack UI and delete the model to free up resources.
