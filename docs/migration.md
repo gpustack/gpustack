@@ -1,28 +1,26 @@
 # Migration from Legacy Script Installation
 
+If you previously installed GPUStack using the legacy installation script, follow the instructions below to migrate to a supported method.
+
 !!! note
 
-      The installation script method is deprecated as of version 0.7. We recommend using **Docker** on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
-
-If you previously installed GPUStack using the legacy installation script, follow the instructions below to migrate to a supported method.
+    Before proceeding with a migration, it’s strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of the file located at `/var/lib/gpustack/database.db`.
 
 ## Linux Migration
 
-### Step 1: Locate Your Existing Database
+### Step 1: Locate Your Existing Data Directory
 
-Find the path to your existing database directory (used in the legacy installation). For example:
+Find the path to your existing data directory used by the legacy installation. The default path is:
 
 ```bash
-/path/to/your/legacy/gpustack/data
+/var/lib/gpustack
 ```
 
-We'll refer to this as `${your-database-file-location}` in the next step.
+We'll refer to this as `${your-data-dir}` in the next step.
 
 ### Step 2: Reinstall GPUStack via Docker
 
-Make sure your hardware platform is supported. Then run the following Docker command, replacing the volume mount path with your database location.
-
-**Example: For NVIDIA GPUs**
+If you are using Nvidia GPUs, run the following Docker command to migrate your GPUStack server, replacing the volume mount path with your data directory location.
 
 ```bash
 docker run -d --name gpustack \
@@ -30,17 +28,17 @@ docker run -d --name gpustack \
     --gpus all \
     --network=host \
     --ipc=host \
-    -v ${your-database-file-location}:/var/lib/gpustack \
+    -v ${your-data-dir}:/var/lib/gpustack \
     gpustack/gpustack
 ```
 
 This will launch GPUStack using Docker, preserving your existing data.
 
-For other hardware platforms, please refer to the commands in the [Installation Documentation](installation/installation-requirements.md).
+For workers and other GPU hardware platforms, please refer to the commands in the [Installation Documentation](installation/installation-requirements.md).
 
 ## macOS / Windows Migration
 
-Download and install the new version of GPUStack via [Download Installer](./installation/desktop-installer.md#download-installer).
+Download and install the new version of GPUStack via [Desktop Installer](./installation/desktop-installer.md#download-installer).
 
 !!!note
 
