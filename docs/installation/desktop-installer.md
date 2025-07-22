@@ -4,13 +4,19 @@
 
 === "macOS"
 
-    - Only supported: Apple Silicon (M series), macOS 14+
-    - [Download the installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/gpustack.pkg)
+    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/gpustack.pkg).
+
+    !!! note
+
+        **Supported platforms:** Apple Silicon (M series), macOS 14 or later
 
 === "Windows"
 
-    - Only supported: win 10, win 11
-    - [Download the installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/GPUStackInstaller.msi)
+    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/GPUStackInstaller.msi).
+
+    !!! note
+
+        **Supported platforms:** Windows 10 and Windows 11
 
 ## Run GPUStack
 
