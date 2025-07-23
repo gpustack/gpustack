@@ -9,6 +9,8 @@
 # 3. gpustack target(final):
 #    - (linux/amd64) Install FlashInfer as a Python library for GPUStack.
 #    - Install GPUStack.
+#    - Install Vox-Box as an independent executor for GPUStack,
+#      see https://github.com/gpustack/gpustack/pull/2473#issue-3222391256.
 #    - Set up the entrypoint to start GPUStack.
 
 # Arguments description:
@@ -466,6 +468,52 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && rm -rf /tmp/* \
         && rm -rf /var/cache/apt \
         && rm -rf /workspace/gpustack/dist \
+        && pip cache purge
+EOF
+
+## Install Vox-Box as an independent executor for GPUStack
+
+RUN <<EOF
+    # Vox-Box
+
+    # Get version of Vox-Box from GPUStack
+    VERSION=$(pip freeze | grep vox_box== | head -n 1 | cut -d'=' -f3)
+
+    # Install dependencies
+    apt-get install -y --no-install-recommends \
+        ffmpeg
+
+    # Pre process
+    # - Create virtual environment to place vox-box
+    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/vox-box
+    # - Prepare environment
+    source ${PIPX_LOCAL_VENVS}/vox-box/bin/activate
+
+    # Reinstall Vox-Box,
+    # as we create a virtual environment which inherits system site packages,
+    # so we need to reinstall Vox-Box to ensure it is installed in the virtual environment.
+    # We also lock the transformers version here to fix https://github.com/gpustack/gpustack/pull/2473.
+    cat <<EOT >/tmp/requirements.txt
+transformers==4.51.3
+vox-box==${VERSION}
+EOT
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore --force-reinstall --no-dependencies -r /tmp/requirements.txt \
+        && ln -vsf ${PIPX_LOCAL_VENVS}/vox-box/bin/vox-box /usr/local/bin/vox-box
+
+    # Download tools
+    # - Download dac weights used by audio models like Dia.
+    python -m dac download
+
+    # Post process
+    deactivate
+
+    # Review
+    pipx runpip vox-box freeze
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt \
         && pip cache purge
 EOF
 
