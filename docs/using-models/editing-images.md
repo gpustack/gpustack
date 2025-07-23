@@ -25,7 +25,7 @@ Follow these steps to deploy the model from Hugging Face:
 
 ![Deploy Model](../assets/using-models/editing-images/image-edit-catalog.png)
 
-After deployment, you can monitor the model's status on the `Models` page.
+After deployment, you can monitor the model deployment's status on the `Deployments` page.
 
 ## Step 2: Use the Model to Edit Images
 

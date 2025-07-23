@@ -245,7 +245,7 @@ tail -200f /var/log/gpustack.log
 
 ## Installation Script(Deprecated)
 
-!!! note
+!!! warning
       The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 GPUStack provides a script to install it as a service with default port 80.

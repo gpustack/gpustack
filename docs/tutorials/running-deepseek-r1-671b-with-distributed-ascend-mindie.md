@@ -136,7 +136,7 @@ Log in using the `admin` username and the password obtained in Step 1. Navigate 
 
 ## Step 4: Deploy the DeepSeek R1 Model
 
-1. Go to the `Models` page.
+1. Go to the `Deployments` page.
 2. Click `Deploy Model`.
 3. Select `Local Path` as your source.
 4. Enter a name (e.g., `DeepSeek-R1`) in the `Name` field.
@@ -155,7 +155,7 @@ Log in using the `admin` username and the password obtained in Step 1. Navigate 
 
 ## Step 5: Monitor Deployment
 
-You can monitor the deployment status on the `Models` page. Hover over `distributed across workers` to view GPU and worker usage. Click `View Logs` to see real-time logs showing model loading progress. It may take a few minutes to load the model.
+You can monitor the deployment status on the `Deployments` page. Hover over `distributed across workers` to view GPU and worker usage. Click `View Logs` to see real-time logs showing model loading progress. It may take a few minutes to load the model.
 
 ![model-info](../assets/tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie/model-info.png)
 

@@ -103,4 +103,4 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 
 ## Cleanup
 
-After you complete using the deployed model, you can go to the `Models` page in the GPUStack UI and delete the model to free up resources.
+After you complete using the deployed model, you can go to the `Deployments` page in the GPUStack UI and delete the model to free up resources.

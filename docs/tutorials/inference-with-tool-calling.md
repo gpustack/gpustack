@@ -27,7 +27,7 @@ LLMs that support tool calling are marked with the `tools` capability in the cat
 
 When you deploy GGUF models using llama-box, tool calling is enabled by default for models that support it.
 
-1. Navigate to the `Models` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
+1. Navigate to the `Deployments` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
 2. Enable the `GGUF` checkbox to filter models by GGUF format.
 3. Use the search bar to find the `Qwen/Qwen2.5-7B-Instruct-GGUF` model.
 4. Click the `Save` button to deploy the model.
@@ -38,7 +38,7 @@ When you deploy GGUF models using llama-box, tool calling is enabled by default 
 
 When you deploy models using vLLM, you need to enable tool calling with additional parameters.
 
-1. Navigate to the `Models` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
+1. Navigate to the `Deployments` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
 2. Use the search bar to find the `Qwen/Qwen2.5-7B-Instruct` model.
 3. Expand the `Advanced` section in configurations and scroll down to the `Backend Parameters` section.
 4. Click on the `Add Parameter` button and add the following parameters:
@@ -50,7 +50,7 @@ When you deploy models using vLLM, you need to enable tool calling with addition
 
 ![Deploy Model](../assets/tutorials/inference-with-tool-calling/deploy-model.png)
 
-After deployment, you can monitor the model's status on the `Models` page.
+After deployment, you can monitor the model's status on the `Deployments` page.
 
 ## Step 2: Generate an API Key
 

@@ -4,7 +4,7 @@ RAGFlow can integrate with GPUStack to leverage locally deployed LLMs, embedding
 
 ## Deploying Models
 
-1. In GPUStack UI, navigate to the `Models` page and click on `Deploy Model` to deploy the models you need. Here are some example models:
+1. In GPUStack UI, navigate to the `Deployments` page and click on `Deploy Model` to deploy the models you need. Here are some example models:
 
 - qwen3-8b
 - qwen2.5-vl-3b-instruct

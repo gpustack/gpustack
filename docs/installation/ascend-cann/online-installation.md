@@ -217,7 +217,7 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
 
 ## Installation Script(Deprecated)
 
-!!! note
+!!! warning
       The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 ### Supported backends

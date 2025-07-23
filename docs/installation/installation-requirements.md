@@ -2,24 +2,18 @@
 
 This page describes the software and networking requirements for the nodes where GPUStack will be installed.
 
-## Python Requirements
-
-GPUStack requires Python version 3.10 to 3.12.
-
 ## Operating System Requirements
 
 GPUStack is supported on the following operating systems:
 
+- [x] Linux
 - [x] macOS
 - [x] Windows
-- [x] Linux
 
 GPUStack has been tested and verified to work on the following operating systems:
 
 | OS        | Versions        |
 | --------- | --------------- |
-| Windows   | 10, 11          |
-| macOS     | \>= 14          |
 | Ubuntu    | \>= 20.04       |
 | Debian    | \>= 11          |
 | RHEL      | \>= 8           |
@@ -27,6 +21,8 @@ GPUStack has been tested and verified to work on the following operating systems
 | Fedora    | \>= 36          |
 | OpenSUSE  | \>= 15.3 (leap) |
 | OpenEuler | \>= 22.03       |
+| macOS     | \>= 14          |
+| Windows   | 10, 11          |
 
 !!! note
 
