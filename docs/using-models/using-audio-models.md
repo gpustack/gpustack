@@ -18,7 +18,7 @@ Before you begin, ensure that you have the following:
 
 Follow these steps to deploy the model from Hugging Face:
 
-1. Navigate to the `Models` page in the GPUStack UI.
+1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Hugging Face` as the source for your model.
 4. Use the search bar in the top left to search for the model name `Systran/faster-whisper-medium`.
@@ -26,7 +26,7 @@ Follow these steps to deploy the model from Hugging Face:
 
 ![Deploy Model](../assets/using-models/using-audio-models/deploy-stt-model.png)
 
-After deployment, you can monitor the model's status on the `Models` page.
+After deployment, you can monitor the model deployment's status on the `Deployments` page.
 
 ![Model List](../assets/using-models/using-audio-models/stt-model-list.png)
 
@@ -46,7 +46,7 @@ After deployment, you can monitor the model's status on the `Models` page.
 
 Follow these steps to deploy the model from Hugging Face:
 
-1. Navigate to the `Models` page in the GPUStack UI.
+1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Hugging Face` as the source for your model.
 4. Use the search bar in the top left to search for the model name `FunAudioLLM/CosyVoice-300M`.
@@ -54,7 +54,7 @@ Follow these steps to deploy the model from Hugging Face:
 
 ![Deploy Model](../assets/using-models/using-audio-models/deploy-tts-model.png)
 
-After deployment, you can monitor the model's status on the `Models` page.
+After deployment, you can monitor the model deployment's status on the `Deployments` page.
 
 ![Model List](../assets/using-models/using-audio-models/tts-model-list.png)
 

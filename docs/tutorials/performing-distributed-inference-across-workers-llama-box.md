@@ -37,7 +37,7 @@ From the output, we can see that the estimated VRAM requirement for this model e
 
 Follow these steps to deploy the model from Hugging Face, enabling distributed inference:
 
-1. Navigate to the `Models` page in the GPUStack UI.
+1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Hugging Face` as the source for your model.
 4. Enable the `GGUF` checkbox to filter models by GGUF format.
@@ -50,7 +50,7 @@ Follow these steps to deploy the model from Hugging Face, enabling distributed i
 
 ### Step 2: Verify the Model Deployment
 
-Once the model is deployed, verify the deployment on the `Models` page, where you can view details about how the model is running across multiple workers.
+Once the model is deployed, verify the deployment on the `Deployments` page, where you can view details about how the model is running across multiple workers.
 
 ![model-list](../assets/tutorials/performing-distributed-inference-across-workers/model-list.png)
 

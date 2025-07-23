@@ -20,7 +20,7 @@ Large language models in the catalog are marked with the `LLM` category. When yo
 
 Here, we take the deployment of `DeepSeek R1` as an example.
 
-1. Navigate to the `Models` page in the GPUStack UI.
+1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Catalog` as the source for your model.
 4. In the catalog list page, use the search bar in the top left to search for the model keyword `DeepSeek`.
@@ -36,7 +36,7 @@ Here, we take the deployment of `DeepSeek R1` as an example.
 
 ![Deploy GGUF Model](../assets/using-models/using-large-language-models/deploy-model-llama-box.png)
 
-After deployment, you can monitor the model's status on the `Models` page and wait for it to start running.
+After deployment, you can monitor the model deployment's status on the `Deployments` page and wait for it to start running.
 
 #### Deployment Using vLLM
 
@@ -48,7 +48,7 @@ After deployment, you can monitor the model's status on the `Models` page and wa
 
 ![Deploy Safetensors Model](../assets/using-models/using-large-language-models/deploy-model-vllm.png)
 
-After deployment, you can monitor the model's status on the `Models` page and wait for it to start running.
+After deployment, you can monitor the model deployment's status on the `Deployments` page and wait for it to start running.
 
 ## Step 2: Use the LLMs for Text Generation
 
