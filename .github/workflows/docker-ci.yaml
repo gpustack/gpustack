@@ -48,12 +48,14 @@ jobs:
             tag_suffix: ""
             build_args:
               - "CUDA_VERSION=12.4.1"
+              - "CUDA_DEVEL_VERSION=12.6.3"
           - device: cuda
             dockerfile: "Dockerfile"
             platforms: "linux/amd64,linux/arm64"
             tag_suffix: "-cuda12.8"
             build_args:
               - "CUDA_VERSION=12.8.1"
+              - "CUDA_DEVEL_VERSION=12.8.1"
           #
           # HIP RoCM
           #
