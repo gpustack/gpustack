@@ -1541,49 +1541,6 @@
       model_scope_model_id: ZhipuAI/GLM-4.1V-9B-Thinking
       replicas: 1
       backend: vllm
-- name: ERNIE 4.5
-  description: ERNIE 4.5 is a large language model series developed by Baidu.
-  home: https://github.com/PaddlePaddle/ERNIE
-  icon: /static/catalog_icons/ERNIE.png
-  categories:
-    - llm
-  capabilities:
-    - context/128K
-  sizes:
-    - 0.3
-    - 21
-    - 300
-  licenses:
-    - apache-2.0
-  release_date: "2025-06-28"
-  templates:
-    - quantizations: ["BF16"]
-      sizes: [0.3]
-      source: model_scope
-      model_scope_model_id: PaddlePaddle/ERNIE-4.5-0.3B-PT
-      replicas: 1
-      backend: vllm
-      backend_parameters:
-        - --trust-remote-code
-        - --max-model-len=32768
-    - quantizations: ["BF16"]
-      sizes: [21]
-      source: model_scope
-      model_scope_model_id: PaddlePaddle/ERNIE-4.5-21B-A3B-PT
-      replicas: 1
-      backend: vllm
-      backend_parameters:
-        - --trust-remote-code
-        - --max-model-len=32768
-    - quantizations: ["BF16"]
-      sizes: [300]
-      source: model_scope
-      model_scope_model_id: PaddlePaddle/ERNIE-4.5-300B-A47B-PT
-      replicas: 1
-      backend: vllm
-      backend_parameters:
-        - --trust-remote-code
-        - --max-model-len=32768
 - name: Hunyuan A13B Instruct
   description: Hunyuan-A13B is a large language model based on the Mixture-of-Experts (MoE) architecture, developed by Tencent. Designed for efficiency and scalability, Hunyuan-A13B delivers cutting-edge performance with minimal computational overhead, making it an ideal choice for advanced reasoning and general-purpose applications, especially in resource-constrained environments.
   home: https://huggingface.co/tencent/Hunyuan-A13B-Instruct
