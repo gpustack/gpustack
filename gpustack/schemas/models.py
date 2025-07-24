@@ -317,6 +317,8 @@ class DistributedServers(BaseModel):
     mode: DistributedServerCoordinateModeEnum = (
         DistributedServerCoordinateModeEnum.DELEGATED
     )
+    # Indicates if subordinate workers should download model files.
+    download_model_files: Optional[bool] = True
     subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = Field(
         sa_column=Column(JSON), default=[]
     )

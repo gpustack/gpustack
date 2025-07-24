@@ -331,6 +331,8 @@ class Scheduler:
                     model_instance.distributed_servers.mode = (
                         DistributedServerCoordinateModeEnum.INITIALIZE_LATER
                     )
+                elif get_backend(model) == BackendEnum.LLAMA_BOX:
+                    model_instance.distributed_servers.download_model_files = False
 
                 await ModelInstanceService(session).update(model_instance)
 
