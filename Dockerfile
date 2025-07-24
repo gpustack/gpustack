@@ -485,7 +485,7 @@ RUN <<EOF
 
     # Pre process
     # - Create virtual environment to place vox-box
-    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/vox-box
+    python -m venv ${PIPX_LOCAL_VENVS}/vox-box
     # - Prepare environment
     source ${PIPX_LOCAL_VENVS}/vox-box/bin/activate
 
@@ -497,7 +497,7 @@ RUN <<EOF
 transformers==4.51.3
 vox-box==${VERSION}
 EOT
-    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore --force-reinstall --no-dependencies -r /tmp/requirements.txt \
+    pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore --force-reinstall -r /tmp/requirements.txt \
         && ln -vsf ${PIPX_LOCAL_VENVS}/vox-box/bin/vox-box /usr/local/bin/vox-box
 
     # Download tools
