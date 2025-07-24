@@ -44,6 +44,9 @@ async def get_worker_allocatable_resource(  # noqa: C901
             for (
                 subordinate_worker
             ) in model_instance.distributed_servers.subordinate_workers:
+                if subordinate_worker.worker_id != worker.id:
+                    continue
+
                 if subordinate_worker.computed_resource_claim:
                     # rpc server only consider the vram
                     update_allocated_vram(
