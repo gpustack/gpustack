@@ -22,7 +22,7 @@ class RayManager:
         self._pure_head = pure_head
         self._role = "head" if head else "worker"
         if not head:
-            self._ray_address = get_ray_address(cfg.server_url, 40096)
+            self._ray_address = get_ray_address(cfg.server_url, cfg.ray_port)
 
         self._ray_args = cfg.ray_args
         self._ray_process = None
