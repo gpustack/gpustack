@@ -4,7 +4,7 @@
 
 === "macOS"
 
-    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/gpustack.pkg).
+    Download the [installer](https://gpustack.ai/download/gpustack.pkg).
 
     !!! note
 
@@ -12,7 +12,7 @@
 
 === "Windows"
 
-    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/GPUStackInstaller.msi).
+    Download the [installer](https://gpustack.ai/download/GPUStackInstaller.msi).
 
     !!! note
 

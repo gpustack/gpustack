@@ -28,7 +28,7 @@
 
 === "macOS"
 
-    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/gpustack.pkg) and run it to install GPUStack.
+    Download the [installer](https://gpustack.ai/download/gpustack.pkg) and run it to install GPUStack.
 
     !!! note
 
@@ -40,7 +40,7 @@
 
 === "Windows"
 
-    Download the [installer](https://gpustack-installer-1303613262.cos.ap-guangzhou.myqcloud.com/releases/latest/GPUStackInstaller.msi) and run it to install GPUStack.
+    Download the [installer](https://gpustack.ai/download/GPUStackInstaller.msi) and run it to install GPUStack.
 
     !!! note
 
