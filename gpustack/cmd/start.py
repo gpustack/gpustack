@@ -114,6 +114,24 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Port of Ray object manager. Used when Ray is enabled. The default is 40099.",
         default=get_gpustack_env("RAY_OBJECT_MANAGER_PORT"),
     )
+    group.add_argument(
+        "--ray-dashboard-agent-grpc-port",
+        type=int,
+        help="Port for Ray dashboard agent gPRC listen. Used when Ray is enabled. The default is 40101.",
+        default=get_gpustack_env("RAY_DASHBOARD_AGENT_GRPC_PORT"),
+    )
+    group.add_argument(
+        "--ray-dashboard-agent-listen-port",
+        type=int,
+        help="Port for Ray dashboard agent HTTP listen. Used when Ray is enabled. The default is 52365.",
+        default=get_gpustack_env("RAY_DASHBOARD_AGENT_LISTEN_PORT"),
+    )
+    group.add_argument(
+        "--ray-metrics-export-port",
+        type=int,
+        help="Port for Ray metrics export. Used when Ray is enabled. The default is 40103.",
+        default=get_gpustack_env("RAY_METRICS_EXPORT_PORT"),
+    )
 
     group = parser_server.add_argument_group("Server settings")
     group.add_argument(
@@ -207,6 +225,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Port of Ray Client Server. Used when Ray is enabled. The default is 40097.",
         default=get_gpustack_env("RAY_CLIENT_SERVER_PORT"),
     )
+    group.add_argument(
+        "--ray-dashboard-port",
+        type=int,
+        help="Port of Ray dashboard. Used when Ray is enabled. The default is 8265.",
+        default=get_gpustack_env("RAY_DASHBOARD_PORT"),
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -249,7 +273,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--ray-worker-port-range",
         type=str,
-        help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40100-40999'.",
+        help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40200-40999'.",
         default=get_gpustack_env("RAY_WORKER_PORT_RANGE"),
     )
     group.add_argument(
@@ -486,6 +510,7 @@ def set_worker_options(args, config_data: dict):
         "rpc_server_args",
         "system_reserved",
         "tools_download_base_url",
+        "ray_metrics_export_port",
         "ray_worker_port_range",
         "enable_hf_transfer",
         "enable_hf_xet",

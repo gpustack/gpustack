@@ -63,6 +63,12 @@ class RayManager:
             str(self._cfg.ray_node_manager_port),
             "--object-manager-port",
             str(self._cfg.ray_object_manager_port),
+            "--dashboard-agent-grpc-port",
+            str(self._cfg.ray_dashboard_agent_grpc_port),
+            "--dashboard-agent-listen-port",
+            str(self._cfg.ray_dashboard_agent_listen_port),
+            "--metrics-export-port",
+            str(self._cfg.ray_metrics_export_port),
             "--min-worker-port",
             str(min_worker_port),
             "--max-worker-port",
@@ -76,6 +82,8 @@ class RayManager:
                     str(self._cfg.ray_port),
                     "--ray-client-server-port",
                     str(self._cfg.ray_client_server_port),
+                    "--dashboard-port",
+                    str(self._cfg.ray_dashboard_port),
                 ]
             )
         else:
