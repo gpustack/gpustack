@@ -67,6 +67,9 @@ def migrate_model_instance_distributed_servers():
         rpc_servers = dist_data.get("rpc_servers", []) or []
         ray_actors = dist_data.get("ray_actors", []) or []
 
+        if not rpc_servers and not ray_actors:
+            continue
+
         def convert_to_subordinate(entry):
             new_entry = dict(entry)
             # Convert rpc_server.gpu_index to subordinate_worker.gpu_indexes
@@ -81,6 +84,7 @@ def migrate_model_instance_distributed_servers():
 
         new_dist_data = {
             "mode": "delegated",
+            "download_model_files": bool(ray_actors),
             "subordinate_workers": subordinate_workers
         }
 

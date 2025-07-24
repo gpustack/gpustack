@@ -271,7 +271,7 @@ async def get_or_create_model_files_for_instance(
     """
 
     model_files = await get_model_files_for_instance(session, instance)
-    worker_ids = _get_worker_ids_of_model_instance(instance)
+    worker_ids = _get_worker_ids_for_file_download(instance)
 
     # Return early if all model files are already created for the workers
     if len(model_files) == len(worker_ids):
@@ -310,7 +310,7 @@ async def get_or_create_model_files_for_instance(
 async def get_model_files_for_instance(
     session: AsyncSession, instance: ModelInstance
 ) -> List[ModelFile]:
-    worker_ids = _get_worker_ids_of_model_instance(instance)
+    worker_ids = _get_worker_ids_for_file_download(instance)
 
     model_files = await ModelFileService(session).get_by_source_index(
         instance.model_source_index
@@ -609,6 +609,12 @@ async def sync_distributed_model_file_state(  # noqa: C901
     if instance.state == ModelInstanceStateEnum.ERROR:
         return
 
+    if (
+        not instance.distributed_servers
+        or not instance.distributed_servers.download_model_files
+    ):
+        return
+
     logger.trace(
         f"Syncing distributed model file {file.id} with model instance {instance.name}, file state: {file.state}, "
         f"progress: {file.download_progress}, message: {file.state_message}, instance state: {instance.state}"
@@ -646,7 +652,10 @@ def model_instance_download_completed(instance: ModelInstance):
     if instance.download_progress != 100:
         return False
 
-    if instance.distributed_servers:
+    if (
+        instance.distributed_servers
+        and instance.distributed_servers.download_model_files
+    ):
         for subworker in instance.distributed_servers.subordinate_workers or []:
             if subworker.download_progress != 100:
                 return False
@@ -654,17 +663,21 @@ def model_instance_download_completed(instance: ModelInstance):
     return True
 
 
-def _get_worker_ids_of_model_instance(
+def _get_worker_ids_for_file_download(
     instance: ModelInstance,
 ) -> List[str]:
     """
-    Get the all worker IDs of the model instance,
+    Get the all worker IDs of the model instance that are
+    responsible for downloading the model files,
     including the main worker and distributed workers.
     """
 
     worker_ids = [instance.worker_id] if instance.worker_id else []
 
-    if instance.distributed_servers:
+    if (
+        instance.distributed_servers
+        and instance.distributed_servers.download_model_files
+    ):
         worker_ids += [
             item.worker_id
             for item in instance.distributed_servers.subordinate_workers or []
