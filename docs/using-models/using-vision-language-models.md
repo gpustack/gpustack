@@ -25,23 +25,32 @@ Before you begin, ensure that you have the following:
 
 ## Step 1: Install GPUStack
 
-Run the following command to install GPUStack:
+Please ensure [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on your system. Then, run the following command to start the GPUStack server.
 
 ```bash
-curl -sfL https://get.gpustack.ai | sh -s - --huggingface-token <Hugging Face API Key>
+docker run -d --name gpustack \
+      --restart=unless-stopped \
+      --gpus all \
+      --network=host \
+      --ipc=host \
+      -v gpustack-data:/var/lib/gpustack \
+      gpustack/gpustack \
+      --huggingface-token <Hugging Face API Key>
 ```
 
 Replace `<Hugging Face API Key>` with your [Hugging Face API key](https://huggingface.co/settings/tokens). GPUStack will use this key to download the model files.
 
+For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](installation/installation-requirements.md).
+
 ## Step 2: Log in to GPUStack UI
 
-Run the following command to get the default password:
+After the server starts, run the following command to get the default admin password:
 
 ```bash
-cat /var/lib/gpustack/initial_admin_password
+docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
-Open your browser and navigate to `http://<your-server-ip>`. Replace `<your-server-ip>` with the IP address of your server. Log in using the username `admin` and the password you obtained in the previous step.
+Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
 
 ## Step 3: Deploy Vision Language Models
 
