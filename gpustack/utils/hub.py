@@ -293,11 +293,21 @@ def get_pretrained_config(model: Model, **kwargs):
     if model.source == SourceEnum.HUGGING_FACE:
         from transformers import AutoConfig
 
+        huggingface_cache_dir = os.path.join(global_config.cache_dir, "huggingface")
+        object_id = model.huggingface_repo_id.replace("/", "--")
+        repo_cache_dir = os.path.join(huggingface_cache_dir, f"models--{object_id}")
+        local_files_only = False
+        pretrained_model_name_or_path = model.huggingface_repo_id
+        if os.path.exists(repo_cache_dir):
+            local_files_only = True
+            pretrained_model_name_or_path = repo_cache_dir
+
         pretrained_config = AutoConfig.from_pretrained(
             model.huggingface_repo_id,
             token=global_config.huggingface_token,
             trust_remote_code=trust_remote_code,
-            cache_dir=os.path.join(global_config.cache_dir, "huggingface"),
+            cache_dir=huggingface_cache_dir,
+            local_files_only=local_files_only,
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
         from modelscope import AutoConfig
