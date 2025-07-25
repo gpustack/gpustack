@@ -493,6 +493,7 @@ RUN <<EOF
     # We also lock the transformers version here to fix https://github.com/gpustack/gpustack/pull/2473.
     cat <<EOT >/tmp/requirements.txt
 transformers==4.51.3
+triton==3.3.1
 vox-box==${VERSION}
 EOT
     pip install --disable-pip-version-check --no-cache-dir --root-user-action ignore --force-reinstall --no-dependencies -r /tmp/requirements.txt \
