@@ -6,9 +6,9 @@
 
 ## Supported Platforms
 
-| OS    | Arch  | Supported methods                                                                                        |
-| ----- | ----- | -------------------------------------------------------------------------------------------------------- |
-| Linux | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-scriptdeprecated) |
+| OS    | Arch  | Supported methods                                                                                                                |
+| ----- | ----- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Linux | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script-deprecated) (Deprecated) |
 
 ## Supported backends
 
@@ -17,12 +17,12 @@
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
-- CPU support for llama-box backend: AMD64 with AVX2
+- CPU support for llama-box backend: AMD64 with AVX
 
 Check if the CPU is supported:
 
 ```bash
-lscpu | grep avx2
+lscpu | grep avx
 ```
 
 - [Driver for MTT S80/S3000/S4000](https://developer.mthreads.com/sdk/download/musa)
@@ -113,10 +113,11 @@ docker run -d --name gpustack \
     2. You can set additional flags for the `gpustack start` command by appending them to the docker run command.
     For configuration details, please refer to the [CLI Reference](../../cli-reference/start.md).
 
-## Installation Script(Deprecated)
+## Installation Script (Deprecated)
 
 !!! warning
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
+
+    The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 ### Prerequites
 

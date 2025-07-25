@@ -52,6 +52,7 @@ GPUStack supports the following accelerators:
 - [x] Hygon DTK
 - [x] Moore Threads MUSA
 - [x] Iluvatar Corex
+- [x] Cambricon MLU
 
 Ensure all necessary drivers and libraries are installed on the system prior to installing GPUStack.
 
@@ -136,7 +137,7 @@ GPUStack uses the following ports for communication:
 The following ports are used on GPUStack server when Ray is enabled for distributed vLLM across workers:
 
 | Ray Port  | Description                                      |
-|-----------|--------------------------------------------------|
+| --------- | ------------------------------------------------ |
 | TCP 40096 | Default port for Ray (GCS server)                |
 | TCP 40097 | Default port for Ray Client Server               |
 | TCP 40098 | Default port for Ray node manager                |
@@ -160,7 +161,7 @@ For more information about Ray ports, refer to the [Ray documentation](https://d
 The following ports are used on GPUStack worker when Ray is enabled for distributed vLLM across workers:
 
 | Ray Port        | Description                                      |
-|-----------------|--------------------------------------------------|
+| --------------- | ------------------------------------------------ |
 | TCP 40098       | Default port for Ray node manager                |
 | TCP 40099       | Default port for Ray object manager              |
 | TCP 40101       | Default port for Ray dashboard agent gRPC listen |

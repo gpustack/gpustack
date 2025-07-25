@@ -4,22 +4,22 @@
 
 ### Hybird Cluster Support
 
-GPUStack supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 and arm64 architectures. Additionally, It also supports various GPUs, including NVIDIA, Apple Metal, AMD, Ascend, Hygon and Moore Threads.
+GPUStack supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 and arm64 architectures. Additionally, It also supports various GPUs, including NVIDIA, Apple Metal, AMD, Ascend, Hygon, Moore Threads, Iluvatar and Cambricon.
 
 ### Distributed Inference Support
 
 **Single-Node Multi-GPU**
 
-- [x] llama-box (Image Generation models are not supported)
 - [x] vLLM
 - [x] MindIE
+- [x] llama-box (Image Generation models are not supported)
 - [ ] vox-box
 
 **Multi-Node Multi-GPU**
 
-- [x] llama-box
 - [x] vLLM
 - [x] MindIE
+- [x] llama-box
 
 **Heterogeneous-Node Multi-GPU**
 
@@ -31,6 +31,8 @@ GPUStack supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 an
 
     **vLLM**：[Distributed Inference and Serving](https://docs.vllm.ai/en/latest/serving/distributed_serving.html)
 
+    **MindIE**: [Multi-Node Inference](https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html)
+
     **llama-box**：[Distributed LLM inference with llama.cpp](https://github.com/ggml-org/llama.cpp/tree/master/examples/rpc)
 
 ## Installation
@@ -39,520 +41,662 @@ GPUStack supports a mix of Linux, Windows, and macOS nodes, as well as x86_64 an
 
 By default, the GPUStack server uses port 80. You can change it using the following method:
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    Add the `--port` parameter at the end of the `docker run` command, as shown below:
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --port 9090
+    ```
 
-Add the `--port` parameter:
+=== "Installer"
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --port 9090
-```
+    Click the `GPUStack icon` in the menu bar (macOS) or system tray (Windows), choose `Quick Config`, change the port, and restart the service to apply the changes.
 
-Save and restart GPUStack:
+    ![Quick Config](./assets/faq/quick-config.png)
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+=== "pip"
 
-- macOS
+    Add the `--port` parameter at the end of the `gpustack start`:
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    gpustack start --port 9090
+    ```
 
-Add the `--port` parameter:
+=== "Script (Legacy)"
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--port</string>
-    <string>9090</string>
-  </array>
-```
+    - Linux
 
-Save and start GPUStack:
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    Add the `--port` parameter:
 
-- Windows
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --port 9090
+    ```
 
-```powershell
-nssm edit GPUStack
-```
+    Save and restart GPUStack:
 
-Add parameter after `start`:
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-```
-start --port 9090
-```
+    - macOS
 
-Save and restart GPUStack:
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    Add the `--port` parameter:
 
-**Docker Installation**
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--port</string>
+        <string>9090</string>
+      </array>
+    ```
 
-Add the `--port` parameter at the end of the `docker run` command, as shown below:
+    Save and start GPUStack:
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --port 9090
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-**pip Installation**
+    - Windows
 
-Add the `--port` parameter at the end of the `gpustack start`:
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-```bash
-gpustack start --port 9090
-```
+    Add parameter after `start`:
+
+    ```
+    start --port 9090
+    ```
+
+    Save and restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### How can I change the registered worker name?
 
 You can set it to a custom name using the `--worker-name` parameter when running GPUStack:
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    Add the `--worker-name` parameter at the end of the `docker run` command, as shown below:
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --worker-name New-Name
+    ```
 
-Add the `--worker-name` parameter:
+=== "Installer"
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --worker-name New-Name
-```
+    - macOS
 
-Save and restart GPUStack:
+    Click the `GPUStack icon` in the menu bar, then select `Config Directory` to open the Finder. Edit the `config.yaml` file and add the `worker_name` parameter:
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```yaml
+    worker_name: New-Name
+    ```
 
-- macOS
+    Save the file, then click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    - Windows
 
-Add the `--worker-name` parameter:
+    Right-click the `GPUStack icon` in the system tray, then select `Config Directory` to open the File Explorer. Edit the `config.yaml` file and add the `worker_name` parameter:
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--worker-name</string>
-    <string>New-Name</string>
-  </array>
-```
+    ```yaml
+    worker_name: New-Name
+    ```
 
-Save and start GPUStack:
+    Save the file, then right-click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+=== "pip"
 
-- Windows
+    Add the `--worker-name` parameter at the end of the `gpustack start`:
 
-```powershell
-nssm edit GPUStack
-```
+    ```bash
+    gpustack start --worker-name New-Name
+    ```
 
-Add parameter after `start`:
+=== "Script (Legacy)"
 
-```
-start --worker-name New-Name
-```
+    - Linux
 
-Save and restart GPUStack:
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    Add the `--worker-name` parameter:
 
-**Docker Installation**
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --worker-name New-Name
+    ```
 
-Add the `--worker-name` parameter at the end of the `docker run` command, as shown below:
+    Save and restart GPUStack:
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --worker-name New-Name
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-**pip Installation**
+    - macOS
 
-Add the `--worker-name` parameter at the end of the `gpustack start`:
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```bash
-gpustack start --worker-name New-Name
-```
+    Add the `--worker-name` parameter:
+
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--worker-name</string>
+        <string>New-Name</string>
+      </array>
+    ```
+
+    Save and start GPUStack:
+
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    - Windows
+
+    ```powershell
+    nssm edit GPUStack
+    ```
+
+    Add parameter after `start`:
+
+    ```
+    start --worker-name New-Name
+    ```
+
+    Save and restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### How can I change the registered worker IP?
 
 You can set it to a custom IP using the `--worker-ip` parameter when running GPUStack:
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    Add the `--worker-ip` parameter at the end of the `docker run` command, as shown below:
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --worker-ip xx.xx.xx.xx
+    ```
 
-Add the `--worker-ip` parameter:
+=== "Installer"
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --worker-ip xx.xx.xx.xx
-```
+    - macOS
 
-Save and restart GPUStack:
+    Click the `GPUStack icon` in the menu bar, then select `Config Directory` to open the Finder. Edit the `config.yaml` file and add the `worker_ip` parameter:
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```yaml
+    worker_ip: xx.xx.xx.xx
+    ```
 
-- macOS
+    Save the file, then click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    - Windows
 
-Add the `--worker-ip` parameter:
+    Right-click the `GPUStack icon` in the system tray, then select `Config Directory` to open the File Explorer. Edit the `config.yaml` file and add the `worker_ip` parameter:
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--worker-ip</string>
-    <string>xx.xx.xx.xx</string>
-  </array>
-```
+    ```yaml
+    worker_ip: xx.xx.xx.xx
+    ```
 
-Save and start GPUStack:
+    Save the file, then right-click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+=== "pip"
 
-- Windows
+    Add the `--worker-ip` parameter at the end of the `gpustack start`:
 
-```powershell
-nssm edit GPUStack
-```
+    ```bash
+    gpustack start --worker-ip xx.xx.xx.xx
+    ```
 
-Add parameter after `start`:
+=== "Script (Legacy)"
 
-```
-start --worker-ip xx.xx.xx.xx
-```
+    - Linux
 
-Save and restart GPUStack:
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    Add the `--worker-ip` parameter:
 
-**Docker Installation**
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --worker-ip xx.xx.xx.xx
+    ```
 
-Add the `--worker-ip` parameter at the end of the `docker run` command, as shown below:
+    Save and restart GPUStack:
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --worker-ip xx.xx.xx.xx
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-**pip Installation**
+    - macOS
 
-Add the `--worker-ip` parameter at the end of the `gpustack start`:
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```bash
-gpustack start --worker-ip xx.xx.xx.xx
-```
+    Add the `--worker-ip` parameter:
+
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--worker-ip</string>
+        <string>xx.xx.xx.xx</string>
+      </array>
+    ```
+
+    Save and start GPUStack:
+
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    - Windows
+
+    ```powershell
+    nssm edit GPUStack
+    ```
+
+    Add parameter after `start`:
+
+    ```
+    start --worker-ip xx.xx.xx.xx
+    ```
+
+    Save and restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### Where are GPUStack's data stored?
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    When running the GPUStack container, the Docker volume is mounted using `-v` parameter. The default data path is under the Docker data directory, specifically in the volumes subdirectory, and the default path is:
 
-The default path is as follows:
+    ```bash
+    /var/lib/docker/volumes/gpustack-data/_data
+    ```
 
-```bash
-/var/lib/gpustack
-```
+    You can check it by the following method:
 
-You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
+    ```bash
+    docker volume ls
+    docker volume inspect gpustack-data
+    ```
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    If you need to change it to a custom path, modify the mount configuration when running container. For example, to mount the host directory `/data/gpustack`:
 
-Add the `--data-dir` parameter:
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v /data/gpustack:/var/lib/gpustack  \
+        gpustack/gpustack
+    ```
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --data-dir /data/gpustack-data
-```
+=== "Installer"
 
-Save and restart GPUStack:
+    The default path is as follows:
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    - macOS
 
-- macOS
+    ```bash
+    /Library/Application Support/GPUStack
+    ```
 
-The default path is as follows:
+    - Windows
 
-```bash
-/var/lib/gpustack
-```
+    ```powershell
+    C:\ProgramData\GPUStack
+    ```
 
-You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
+    And modifying the data directory is not allowed when using the installer.
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+=== "pip"
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--data-dir</string>
-    <string>/Users/gpustack/data/gpustack-data</string>
-  </array>
-```
+    The default path is as follows:
 
-Save and start GPUStack:
+    - Linux & macOS
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    /var/lib/gpustack
+    ```
 
-- Windows
+    - Windows
 
-The default path is as follows:
+    ```powershell
+    "$env:APPDATA\gpustack"
+    ```
 
-```powershell
-"$env:APPDATA\gpustack"
-```
+    You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
 
-You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
+    ```bash
+    gpustack start --data-dir /data/gpustack-data
+    ```
 
-```powershell
-nssm edit GPUStack
-```
+=== "Script (Legacy)"
 
-Add parameter after `start`:
+    - Linux
 
-```
-start --data-dir D:\gpustack-data
-```
+    The default path is as follows:
 
-Save and restart GPUStack:
+    ```bash
+    /var/lib/gpustack
+    ```
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
 
-**Docker Installation**
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-When running the GPUStack container, the Docker volume is mounted using `-v` parameter. The default data path is under the Docker data directory, specifically in the volumes subdirectory, and the default path is:
+    Add the `--data-dir` parameter:
 
-```bash
-/var/lib/docker/volumes/gpustack-data/_data
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --data-dir /data/gpustack-data
+    ```
 
-You can check it by the following method:
+    Save and restart GPUStack:
 
-```bash
-docker volume ls
-docker volume inspect gpustack-data
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-If you need to change it to a custom path, modify the mount configuration when running container. For example, to mount the host directory `/data/gpustack`:
+    - macOS
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v /data/gpustack:/var/lib/gpustack  \
-    gpustack/gpustack
-```
+    The default path is as follows:
 
-**pip Installation**
+    ```bash
+    /var/lib/gpustack
+    ```
 
-Add the `--data-dir` parameter at the end of the `gpustack start`:
+    You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
 
-```bash
-gpustack start --data-dir /data/gpustack-data
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--data-dir</string>
+        <string>/Users/gpustack/data/gpustack-data</string>
+      </array>
+    ```
+
+    Save and start GPUStack:
+
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    - Windows
+
+    The default path is as follows:
+
+    ```powershell
+    "$env:APPDATA\gpustack"
+    ```
+
+    You can set it to a custom path using the `--data-dir` parameter when running GPUStack:
+
+    ```powershell
+    nssm edit GPUStack
+    ```
+
+    Add parameter after `start`:
+
+    ```
+    start --data-dir D:\gpustack-data
+    ```
+
+    Save and restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### Where are model files stored?
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    When running the GPUStack container, the Docker volume is mounted using `-v` parameter. The default cache path is under the Docker data directory, specifically in the volumes subdirectory, and the default path is:
 
-The default path is as follows:
+    ```bash
+    /var/lib/docker/volumes/gpustack-data/_data/cache
+    ```
 
-```bash
-/var/lib/gpustack/cache
-```
+    You can check it by the following method:
 
-You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
+    ```bash
+    docker volume ls
+    docker volume inspect gpustack-data
+    ```
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    If you need to change it to a custom path, modify the mount configuration when running container.
 
-Add the `--cache-dir` parameter:
+    > **Note**: If the data directory is already mounted, the cache directory should not be mounted inside the data directory. You need to specify a different path using the `--cache-dir` parameter.
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --cache-dir /data/model-cache
-```
+    For example, to mount the host directory `/data/model-cache`:
 
-Save and restart GPUStack:
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v /data/gpustack:/var/lib/gpustack  \
+        -v /data/model-cache:/data/model-cache \
+        gpustack/gpustack \
+        --cache-dir /data/model-cache
+    ```
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+=== "Installer"
 
-- macOS
+    - macOS
 
-The default path is as follows:
+    The default path is as follows:
 
-```bash
-/var/lib/gpustack/cache
-```
+    ```bash
+    /Library/Application Support/GPUStack/cache
+    ```
 
-You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
+    If you need to change it to a custom path, click the `GPUStack icon` in the menu bar, then select `Config Directory` to open the Finder. Edit the `config.yaml` file and add the `cache_dir` parameter:
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```yaml
+    cache_dir: /Users/gpustack/data/model-cache
+    ```
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--cache-dir</string>
-    <string>/Users/gpustack/data/model-cache</string>
-  </array>
-```
+    Save the file, then click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-Save and start GPUStack:
+    - Windows
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    The default path is as follows:
 
-- Windows
+    ```powershell
+    C:\ProgramData\GPUStack\cache
+    ```
 
-The default path is as follows:
+    If you need to change it to a custom path, click the `GPUStack icon` in the menu bar, then select `Config Directory` to open the Finder. Edit the `config.yaml` file and add the `cache_dir` parameter:
 
-```powershell
-"$env:APPDATA\gpustack\cache"
-```
+    ```yaml
+    cache_dir: D:\model-cache
+    ```
 
-You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
+    Save the file, then right-click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-```powershell
-nssm edit GPUStack
-```
+=== "pip"
 
-Add parameter after `start`:
+    The default path is as follows:
 
-```
-start --cache-dir D:\model-cache
-```
+    - Linux & macOS
 
-Save and restart GPUStack:
+    ```bash
+    /var/lib/gpustack/cache
+    ```
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    - Windows
 
-**Docker Installation**
+    ```powershell
+    "$env:APPDATA\gpustack\cache"
+    ```
 
-When running the GPUStack container, the Docker volume is mounted using `-v` parameter. The default cache path is under the Docker data directory, specifically in the volumes subdirectory, and the default path is:
+    You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
 
-```bash
-/var/lib/docker/volumes/gpustack-data/_data/cache
-```
+    ```bash
+    gpustack start --cache-dir /data/model-cache
+    ```
 
-You can check it by the following method:
+=== "Script (Legacy)"
 
-```bash
-docker volume ls
-docker volume inspect gpustack-data
-```
+    - Linux
 
-If you need to change it to a custom path, modify the mount configuration when running container.
+    The default path is as follows:
 
-> **Note**: If the data directory is already mounted, the cache directory should not be mounted inside the data directory. You need to specify a different path using the `--cache-dir` parameter.
+    ```bash
+    /var/lib/gpustack/cache
+    ```
 
-For example, to mount the host directory `/data/model-cache`:
+    You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v /data/gpustack:/var/lib/gpustack  \
-    -v /data/model-cache:/data/model-cache \
-    gpustack/gpustack \
-    --cache-dir /data/model-cache
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-**pip Installation**
+    Add the `--cache-dir` parameter:
 
-Add the `--cache-dir` parameter at the end of the `gpustack start`:
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --cache-dir /data/model-cache
+    ```
 
-```bash
-gpustack start --cache-dir /data/model-cache
-```
+    Save and restart GPUStack:
+
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
+
+    - macOS
+
+    The default path is as follows:
+
+    ```bash
+    /var/lib/gpustack/cache
+    ```
+
+    You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
+
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--cache-dir</string>
+        <string>/Users/gpustack/data/model-cache</string>
+      </array>
+    ```
+
+    Save and start GPUStack:
+
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    - Windows
+
+    The default path is as follows:
+
+    ```powershell
+    "$env:APPDATA\gpustack\cache"
+    ```
+
+    You can set it to a custom path using the `--cache-dir` parameter when running GPUStack:
+
+    ```powershell
+    nssm edit GPUStack
+    ```
+
+    Add parameter after `start`:
+
+    ```
+    start --cache-dir D:\model-cache
+    ```
+
+    Save and restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### What parameters can I set when starting GPUStack?
 
 Please refer to: [gpustack start](cli-reference/start.md)
+
+---
 
 ## Upgrade
 
@@ -573,51 +717,55 @@ sudo ln -s $(pipx environment --value PIPX_LOCAL_VENVS)/vllm-v0-8-5-post1/bin/vl
 
 If you still need to upgrade the built-in vLLM, you can upgrade vLLM on all worker nodes using the following method:
 
-**Script Installation**
+**Docker**
+
+```bash
+docker exec -it gpustack bash
+pip list | grep vllm
+pip install -U vllm
+```
+
+**pip**
+
+```bash
+pip list | grep vllm
+pip install -U vllm
+```
+
+**Script (Legacy)**
 
 ```bash
 pipx runpip gpustack list | grep vllm
 pipx runpip gpustack install -U vllm
 ```
 
-**Docker Installation**
-
-```bash
-docker exec -it gpustack bash
-pip list | grep vllm
-pip install -U vllm
-```
-
-**pip Installation**
-
-```bash
-pip list | grep vllm
-pip install -U vllm
-```
+---
 
 ### How can I upgrade the built-in Transformers?
 
-**Script Installation**
+**Docker**
+
+```bash
+docker exec -it gpustack bash
+pip list | grep transformers
+pip install -U transformers
+```
+
+**pip**
+
+```bash
+pip list | grep transformers
+pip install -U transformers
+```
+
+**Script (Legacy)**
 
 ```bash
 pipx runpip gpustack list | grep transformers
 pipx runpip gpustack install -U transformers
 ```
 
-**Docker Installation**
-
-```bash
-docker exec -it gpustack bash
-pip list | grep transformers
-pip install -U transformers
-```
-
-**pip Installation**
-
-```bash
-pip list | grep transformers
-pip install -U transformers
-```
+---
 
 ### How can I upgrade the built-in llama-box?
 
@@ -631,18 +779,20 @@ Download a newly released llama-box binary from [llama-box releases](https://git
 
 And you need to stop the GPUStack first, then replace the binary, and finally restart the GPUStack. You can check the file location through some directories, for example:
 
-**Script & pip Installation**
-
-```bash
-ps -ef | grep llama-box
-```
-
-**Docker Installation**
+**Docker**
 
 ```bash
 docker exec -it gpustack bash
 ps -ef | grep llama-box
 ```
+
+**pip & Script (Legacy)**
+
+```bash
+ps -ef | grep llama-box
+```
+
+---
 
 ## View Logs
 
@@ -650,137 +800,187 @@ ps -ef | grep llama-box
 
 The GPUStack logs provide information on the startup status, calculated model resource requirements, and more. Refer to the [Troubleshooting](troubleshooting.md#view-gpustack-logs) for viewing the GPUStack logs.
 
+---
+
 ### How can I enable debug mode in GPUStack?
 
 You can temporarily enable debug mode without interrupting the GPUStack service. Refer to the [Troubleshooting](./troubleshooting.md#configure-log-level) for guidance.
 
 If you want to enable debug mode persistently, both server and worker can add the `--debug` parameter when running GPUStack:
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    Add the `--debug` parameter at the end of the `docker run` command, as shown below:
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --debug
+    ```
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --debug
-```
+=== "Installer"
 
-Save and restart GPUStack:
+    - macOS
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    Click the `GPUStack icon` in the menu bar, then select `Config Directory` to open the Finder. Edit the `config.yaml` file and add the `debug` parameter:
 
-- macOS
+    ```yaml
+    debug: true
+    ```
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    Save the file, then click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--debug</string>
-  </array>
-```
+    - Windows
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    Right-click the `GPUStack icon` in the system tray, then select `Config Directory` to open the File Explorer. Edit the `config.yaml` file and add the `debug` parameter:
 
-- Windows
+    ```yaml
+    debug: true
+    ```
 
-```powershell
-nssm edit GPUStack
-```
+    Save the file, then right-click the `GPUStack icon` again, go to `Status - Restart` to apply the changes.
 
-Add parameter after `start`:
+=== "pip"
 
-```
-start --debug
-```
+    Add the `--debug` parameter at the end of the `gpustack start`:
 
-Save and restart GPUStack:
+    ```bash
+    gpustack start --debug
+    ```
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+=== "Script (Legacy)"
 
-**Docker Installation**
+    - Linux
 
-Add the `--debug` parameter at the end of the `docker run` command, as shown below:
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --debug
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --debug
+    ```
 
-**pip Installation**
+    Save and restart GPUStack:
 
-Add the `--debug` parameter at the end of the `gpustack start`:
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-```bash
-gpustack start --debug
-```
+    - macOS
+
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--debug</string>
+      </array>
+    ```
+
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
+
+    - Windows
+
+    ```powershell
+    nssm edit GPUStack
+    ```
+
+    Add parameter after `start`:
+
+    ```
+    start --debug
+    ```
+
+    Save and restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### How can I view the RPC server logs?
 
 RPC Server is used for distributed inference of GGUF models. If the model starts abnormally or if there are issues with distributed inference, you can check the RPC Server logs on the corresponding node:
 
-**Script Installation**
+=== "Docker"
 
-- Linux & macOS
+    The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
 
-The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
+    ```bash
+    docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
+    ```
 
-```bash
-tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
-```
+    Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
 
-Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
+    ```bash
+    docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
+    ```
 
-```bash
-tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
-```
+=== "Installer"
 
-- Windows
+    - macOS
 
-The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
+    The default path is as follows. If the `--log-dir` parameter is set, please modify it to the actual path you have configured:
 
-```powershell
-Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
-```
+    ```bash
+    tail -200f /Library/Application\ Support/GPUStack/log/rpc_server/gpu-0.log
+    ```
 
-Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
+    - Windows
 
-```powershell
-Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
-```
+    The default path is as follows. If the `--log-dir` parameter is set, please modify it to the actual path you have configured:
 
-**Docker Installation**
+    ```powershell
+    Get-Content "C:\ProgramData\GPUStack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
+    ```
 
-The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
+    Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
 
-```bash
-docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
-```
+    ```powershell
+    Get-Content "C:\ProgramData\GPUStack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
+    ```
 
-Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
+=== "pip & Script (Legacy)"
 
-```bash
-docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
-```
+    - Linux & macOS
+
+    The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
+
+    ```bash
+    tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
+    ```
+
+    Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
+
+    ```bash
+    tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
+    ```
+
+    - Windows
+
+    The default path is as follows. If the `--data-dir` or `--log-dir` parameters are set, please modify it to the actual path you have configured:
+
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
+    ```
+
+    Each GPU corresponds to an RPC Server. For other GPU indices, modify it to the actual index:
+
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
+    ```
 
 ### How can I view the Ray logs?
 
@@ -808,35 +1008,55 @@ Ray component logs:
 
 ### Where are the model logs stored?
 
-The model instance logs are stored in the `/var/lib/gpustack/log/serve/` directory of the corresponding worker node or worker container, with the log file named `id.log`, where id is the model instance ID. If the `--data-dir` or `--log-dir` parameter is set, the logs will be stored in the actual path specified by the parameter.
+=== "Docker"
+
+    The model instance logs are stored in the `/var/lib/gpustack/log/serve/` directory of the corresponding worker container, with the log file named `id.log`, where id is the model instance ID. If the `--data-dir` or `--log-dir` parameter is set, the logs will be stored in the actual path specified by the parameter.
+
+=== "pip & Script (Legacy)"
+
+    - Linux & macOS
+
+    The model instance logs are stored in the `/var/lib/gpustack/log/serve/` directory of the corresponding worker node, with the log file named `id.log`, where id is the model instance ID. If the `--data-dir` or `--log-dir` parameter is set, the logs will be stored in the actual path specified by the parameter.
+
+    - Windows
+
+    The model instance logs are stored in the `$env:APPDATA\gpustack\log\serve\` directory of the corresponding worker node, with the log file named `id.log`, where id is the model instance ID. If the `--data-dir` or `--log-dir` parameter is set, the logs will be stored in the actual path specified by the parameter.
+
+---
 
 ### How can I enable the backend debug mode?
 
-**llama-box backend (GGUF models)**
+=== "vLLM"
 
-Add the `--verbose` parameter in `Edit Model` → `Advanced` → `Backend Parameters` and recreate the model instance:
+    Add the `VLLM_LOGGING_LEVEL=DEBUG` environment variable in `Edit Model` → `Advanced` → `Environment Variables` and recreate the model instance:
 
-![enable-llama-box-debug-mode](assets/faq/enable-llama-box-debug-mode.png)
+    ![enable-vllm-debug-mode](assets/faq/enable-vllm-debug-mode.png)
 
-**vLLM backends (Safetensors models)**
+=== "llama-box"
 
-Add the `VLLM_LOGGING_LEVEL=DEBUG` environment variable in `Edit Model` → `Advanced` → `Environment Variables` and recreate the model instance:
+    Add the `--verbose` parameter in `Edit Model` → `Advanced` → `Backend Parameters` and recreate the model instance:
 
-![enable-vllm-debug-mode](assets/faq/enable-vllm-debug-mode.png)
+    ![enable-llama-box-debug-mode](assets/faq/enable-llama-box-debug-mode.png)
+
+---
 
 ## Managing Workers
 
 ### What should I do if the worker is stuck in `Unreachable` state?
 
-Try accessing the URL shown in the error from the server. If the server is running in container, you need to enter the server container to execute the command:
+Try accessing the URL shown in the error from the server. If the server is running in container, you need to **enter the server container** to execute the command:
 
 ```
 curl http://10.10.10.1:10150/healthz
 ```
 
+---
+
 ### What should I do if the worker is stuck in `NotReady` state?
 
 Check the GPUStack logs on the corresponding worker [here](troubleshooting.md#view-gpustack-logs). If there are no abnormalities in the logs, verify that the time zones and system clocks are consistent across all nodes.
+
+---
 
 ## Detect GPUs
 
@@ -870,19 +1090,11 @@ docker run -d --name gpustack \
     --device /dev/davinci5 \
     --device /dev/davinci6 \
     --device /dev/davinci7 \
-    --device /dev/davinci_manager \
-    --device /dev/devmm_svm \
-    --device /dev/hisi_hdc \
-    -v /usr/local/dcmi:/usr/local/dcmi \
-    -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-    -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
-    -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
-    -v /etc/ascend_install.info:/etc/ascend_install.info \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
+    ... \
     gpustack/gpustack:latest-npu
 ```
+
+---
 
 ## Managing Models
 
@@ -894,46 +1106,88 @@ To deploy models from Hugging Face, the server node and the worker nodes where t
 
 For example, configure the `hf-mirror.com` mirror:
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    Add the `HF_ENDPOINT` environment variable when running container, as shown below:
 
-Create or edit `/etc/default/gpustack` on **all nodes** , add the `HF_ENDPOINT` environment variable to use `https://hf-mirror.com` as the Hugging Face mirror:
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        -e HF_ENDPOINT=https://hf-mirror.com \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack
+    ```
 
-```shell
-vim /etc/default/gpustack
-```
+=== "Installer"
 
-```shell
-HF_ENDPOINT=https://hf-mirror.com
-```
+    Click the `GPUStack icon` in the menu bar (macOS) or system tray (Windows), choose `Quick Config - Environments`, add the environment variable `HF_ENDPOINT=https://hf-mirror.com`, and restart the service to apply the changes.
 
-Save and restart GPUStack:
+=== "pip"
 
-```shell
-systemctl restart gpustack
-```
+    ```bash
+    HF_ENDPOINT=https://hf-mirror.com gpustack start
+    ```
 
-**Docker Installation**
+=== "Script (Legacy)"
 
-Add the `HF_ENDPOINT` environment variable when running container, as shown below:
+    - Linux
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    -e HF_ENDPOINT=https://hf-mirror.com \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack
-```
+    Create or edit `/etc/default/gpustack` on **all nodes** , add the `HF_ENDPOINT` environment variable to use `https://hf-mirror.com` as the Hugging Face mirror:
 
-**pip Installation**
+    ```bash
+    vim /etc/default/gpustack
+    ```
 
-```
-HF_ENDPOINT=https://hf-mirror.com gpustack start
-```
+    ```bash
+    HF_ENDPOINT=https://hf-mirror.com
+    ```
+
+    Save and restart GPUStack:
+
+    ```bash
+    systemctl restart gpustack
+    ```
+
+    - macOS
+
+    Create or edit `/etc/default/gpustack` on **all nodes** , add the `HF_ENDPOINT` environment variable to use `https://hf-mirror.com` as the Hugging Face mirror:
+
+    ```bash
+    vim /etc/default/gpustack
+    ```
+
+    ```bash
+    HF_ENDPOINT=https://hf-mirror.com
+    ```
+
+    Then re-run the installation script using the same configuration options you originally used:
+
+    ```bash
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
+
+    - Windows
+
+    Create or edit `$env:APPDATA\gpustack\gpustack.env` and add the proxy configuration:
+
+    ```powershell
+    notepad $env:APPDATA\gpustack\gpustack.env
+    ```
+
+    ```powershell
+    HF_ENDPOINT=https://hf-mirror.com
+    ```
+
+    Then re-run the installation script using the same configuration options you originally used:
+
+    ```powershell
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
+
+---
 
 #### How can I deploy the model from Local Path?
 
@@ -945,6 +1199,8 @@ When deploying Safetensors models from Local Path, the path **must point to the 
 
 ![deploy-model-from-local-path](./assets/faq/deploy-model-from-local-path.png)
 
+---
+
 ### What should I do if the model is stuck in `Pending` state?
 
 `Pending` means that there are currently no workers meeting the model’s requirements, move the mouse over the `Pending` status to view the reason.
@@ -953,55 +1209,61 @@ First, check the `Resources`-`Workers` section to ensure that the worker status 
 
 Then, for different backends:
 
-- llama-box
+=== "vLLM"
 
-llama-box uses the [GGUF Parser](https://github.com/gpustack/gguf-parser-go) to calculate the model’s memory requirements. You need to ensure that the allocatable memory is greater than the calculated memory requirements of the model. Note that even if other models are in an `Error` or `Downloading` state, the GPU memory has already been allocated. If you are unsure how much GPU memory the model requires, you can use the [GGUF Parser](https://github.com/gpustack/gguf-parser-go) to calculate it.
+    vLLM requires that all GPUs have more than 90% of their memory available by default (controlled by the `--gpu-memory-utilization` parameter). Ensure that there is enough allocatable GPU memory exceeding 90%. Note that even if other models are in an `Error` or `Downloading` state, the GPU memory has already been allocated.
 
-The context size for the model also affects the required GPU memory. You can adjust the `--ctx-size` parameter to set a smaller context. In GPUStack, if this parameter is not set, its default value is `8192`. If it is specified in the backend parameters, the actual setting will take effect.
+    If all GPUs have more than 90% available memory but still show `Pending`, it indicates insufficient memory. For `safetensors` models in BF16 format, the required GPU memory (GB) can be estimated as:
 
-You can adjust it to a smaller context in `Edit Model` → `Advanced` → `Backend Parameters` as needed, for example, `--ctx-size=2048`. However, keep in mind that the max tokens for each inference request is influenced by both the `--ctx-size` and `--parallel` parameters:
-`max tokens = context size / parallel`
+    ```
+    GPU Memory (GB) = Model weight size (GB) * 1.2 + 2
+    ```
 
-The default value of `--parallel` is `4`, so in this case, the max tokens would be `512`. If the token count exceeds the max tokens, the inference output will be truncated.
+    If the allocatable GPU memory is less than 90%, but you are sure the model can run with a lower allocation, you can adjust the `--gpu-memory-utilization` parameter. For example, add `--gpu-memory-utilization=0.5` in `Edit Model` → `Advanced` → `Backend Parameters` to allocate 50% of the GPU memory.
 
-On the other hand, the `--parallel` parameter represents the number of parallel sequences to decode, which can roughly be considered as a setting for the model’s concurrent request handling.
+    **Note**: If the model encounters an error after running and the logs show `CUDA: out of memory`, it means the allocated GPU memory is insufficient. You will need to further adjust `--gpu-memory-utilization`, add more resources, or deploy a smaller model.
 
-Therefore, it is important to appropriately set the `--ctx-size` and `--parallel` parameters, ensuring that the max tokens for a single request is within the limits and that the available GPU memory can support the specified context size.
+    The context size for the model also affects the required GPU memory. You can adjust the `--max-model-len` parameter to set a smaller context. In GPUStack, if this parameter is not set, its default value is 8192. If it is specified in the backend parameters, the actual setting will take effect.
 
-If your GPU memory is insufficient, try launching with a lower configuration:
+    You can adjust it to a smaller context as needed, for example, `--max-model-len=2048`. However, keep in mind that the max tokens for each inference request cannot exceed the value of `--max-model-len`. Therefore, setting a very small context may cause inference truncation.
 
-```
---ctx-size=2048
---parallel=1
-```
+    The `--enforce-eager` parameter also helps reduce GPU memory usage. However, this parameter in vLLM forces the model to execute in eager execution mode, meaning that operations are executed immediately as they are called, rather than being deferred for optimization in graph-based execution (like in lazy execution). This can make the execution slower but easier to debug. However, it can also reduce performance due to the lack of optimizations provided by graph execution.
 
-- vLLM
+=== "llama-box"
 
-vLLM requires that all GPUs have more than 90% of their memory available by default (controlled by the `--gpu-memory-utilization` parameter). Ensure that there is enough allocatable GPU memory exceeding 90%. Note that even if other models are in an `Error` or `Downloading` state, the GPU memory has already been allocated.
+    llama-box uses the [GGUF Parser](https://github.com/gpustack/gguf-parser-go) to calculate the model’s memory requirements. You need to ensure that the allocatable memory is greater than the calculated memory requirements of the model. Note that even if other models are in an `Error` or `Downloading` state, the GPU memory has already been allocated. If you are unsure how much GPU memory the model requires, you can use the [GGUF Parser](https://github.com/gpustack/gguf-parser-go) to calculate it.
 
-If all GPUs have more than 90% available memory but still show `Pending`, it indicates insufficient memory. For `safetensors` models in BF16 format, the required GPU memory (GB) can be estimated as:
+    The context size for the model also affects the required GPU memory. You can adjust the `--ctx-size` parameter to set a smaller context. In GPUStack, if this parameter is not set, its default value is `8192`. If it is specified in the backend parameters, the actual setting will take effect.
 
-```
-GPU Memory (GB) = Number of Parameters (B) * 2 * 1.2 + 2
-```
+    You can adjust it to a smaller context in `Edit Model` → `Advanced` → `Backend Parameters` as needed, for example, `--ctx-size=2048`. However, keep in mind that the max tokens for each inference request is influenced by both the `--ctx-size` and `--parallel` parameters:
+    `max tokens = context size / parallel`
 
-If the allocatable GPU memory is less than 90%, but you are sure the model can run with a lower allocation, you can adjust the `--gpu-memory-utilization` parameter. For example, add `--gpu-memory-utilization=0.5` in `Edit Model` → `Advanced` → `Backend Parameters` to allocate 50% of the GPU memory.
+    The default value of `--parallel` is `4`, so in this case, the max tokens would be `512`. If the token count exceeds the max tokens, the inference output will be truncated.
 
-**Note**: If the model encounters an error after running and the logs show `CUDA: out of memory`, it means the allocated GPU memory is insufficient. You will need to further adjust `--gpu-memory-utilization`, add more resources, or deploy a smaller model.
+    On the other hand, the `--parallel` parameter represents the number of parallel sequences to decode, which can roughly be considered as a setting for the model’s concurrent request handling.
 
-The context size for the model also affects the required GPU memory. You can adjust the `--max-model-len` parameter to set a smaller context. In GPUStack, if this parameter is not set, its default value is 8192. If it is specified in the backend parameters, the actual setting will take effect.
+    Therefore, it is important to appropriately set the `--ctx-size` and `--parallel` parameters, ensuring that the max tokens for a single request is within the limits and that the available GPU memory can support the specified context size.
 
-You can adjust it to a smaller context as needed, for example, `--max-model-len=2048`. However, keep in mind that the max tokens for each inference request cannot exceed the value of `--max-model-len`. Therefore, setting a very small context may cause inference truncation.
+    If your GPU memory is insufficient, try launching with a lower configuration:
 
-The `--enforce-eager` parameter also helps reduce GPU memory usage. However, this parameter in vLLM forces the model to execute in eager execution mode, meaning that operations are executed immediately as they are called, rather than being deferred for optimization in graph-based execution (like in lazy execution). This can make the execution slower but easier to debug. However, it can also reduce performance due to the lack of optimizations provided by graph execution.
+    ```
+    --ctx-size=2048
+    --parallel=1
+    ```
+
+---
 
 ### What should I do if the model is stuck in `Scheduled` state?
 
 Try [restarting the GPUStack service](faq.md#how-can-i-manage-the-gpustack-service) where the model is scheduled. If the issue persists, check the worker logs [here](troubleshooting.md#view-gpustack-logs) to analyze the cause.
 
+---
+
 ### What should I do if the model is stuck in `Error` state?
 
 Move the mouse over the `Error` status to view the reason. If there is a `View More` button, click it to check the error messages in the model logs and analyze the cause of the error.
+
+---
 
 ### How can I resolve the error \*.so: cannot open shared object file: No such file or directory?
 
@@ -1012,6 +1274,10 @@ llama-box: error while loading shared libraries: libcudart.so.12: cannot open sh
 ```
 
 The cause is that GPUStack doesn’t recognize the `LD_LIBRARY_PATH` environment variable, which may be due to a missing environment variable or unconfigured toolkits (such as CUDA, CANN, etc.) during GPUStack installation.
+
+!!! note
+
+    This issue only occurs in non-containerized environments. The installation script has already been deprecated, and we strongly recommend using the Docker installation method instead.
 
 To check if the environment variable is set:
 
@@ -1053,6 +1319,8 @@ Save and restart GPUStack:
 systemctl restart gpustack
 ```
 
+---
+
 ### Why did it fail to load the model when using the local path?
 
 When deploying a model using Local Path and encountering a `failed to load model` error, you need to check whether the model files exist on the node that the model instance is scheduled to, and if the absolute path is correct.
@@ -1063,47 +1331,59 @@ If using Docker installation, the model files must be mounted into the container
 
 ![deploy-model-from-local-path](./assets/faq/deploy-model-from-local-path.png)
 
+---
+
 ### Why doesn’t deleting a model free up disk space?
 
-This is to avoid re-downloading the model when redeploying. You need to clean it up in `Resources` → `Model Files` manually.
+This is to avoid re-downloading the model when redeploying. You need to clean it up in `Resources - Model Files` manually.
+
+---
 
 ### Why does each GPU have a llama-box process by default?
 
 This process is the RPC server used for llama-box’s distributed inference. If you are sure that you do not need distributed inference with llama-box, you can disable the RPC server service by adding the `--disable-rpc-servers` parameter when running GPUStack.
 
+---
+
 ### Backend Parameters
 
 #### How can I know the purpose of the backend parameters?
 
+- [vLLM](https://docs.vllm.ai/en/latest/configuration/engine_args.html#engineargs)
+
+- [MindIE](https://github.com/gpustack/gpustack/blob/main/gpustack/worker/backends/ascend_mindie.py#L103-L473)
+
 - [llama-box](https://github.com/gpustack/llama-box?tab=readme-ov-file#usage)
 
-- [vLLM](https://docs.vllm.ai/en/stable/serving/openai_compatible_server.html#named-arguments)
-
-- [MindIE](https://github.com/gpustack/gpustack/blob/main/gpustack/worker/backends/ascend_mindie.py#L50-L211)
+---
 
 #### How can I set the model’s context length?
 
-**llama-box backend (GGUF models)**
+=== "vLLM"
 
-GPUStack sets the default context length for models to 8K. You can customize the context length using the `--ctx-size` parameter, but it cannot exceed the model’s maximum context length:
+    GPUStack sets the default context length for models to 8K. You can customize the context length using the `--max-model-len` parameter, but it cannot exceed the model’s maximum context length:
 
-![set-the-model-context-length-for-llama-box](./assets/faq/set-the-model-context-length-for-llama-box.png)
+    ![set-the-model-context-length-for-vllm](./assets/faq/set-the-model-context-length-for-vllm.png)
 
-If editing, save the change and then recreate the model instance to take effect.
+     If editing, save the change and then recreate the model instance to take effect.
 
-**vLLM backend (Safetensors models)**
+=== "MindIE"
 
-GPUStack sets the default context length for models to 8K. You can customize the context length using the `--max-model-len` parameter, but it cannot exceed the model’s maximum context length:
+    GPUStack sets the default context length for models to 8K. You can customize the context length using the `--max-seq-len` parameter, but it cannot exceed the model’s maximum context length:
 
-![set-the-model-context-length-for-vllm](./assets/faq/set-the-model-context-length-for-vllm.png)
+    ![set-the-model-context-length-for-mindie](./assets/faq/set-the-model-context-length-for-mindie.png)
 
-**MindIE backend (Safetensors models)**
+    If editing, save the change and then recreate the model instance to take effect.
 
-GPUStack sets the default context length for models to 8K. You can customize the context length using the `--max-seq-len` parameter, but it cannot exceed the model’s maximum context length:
+=== "llama-box"
 
-![set-the-model-context-length-for-mindie](./assets/faq/set-the-model-context-length-for-mindie.png)
+    GPUStack sets the default context length for models to 8K. You can customize the context length using the `--ctx-size` parameter, but it cannot exceed the model’s maximum context length:
 
-If editing, save the change and then recreate the model instance to take effect.
+    ![set-the-model-context-length-for-llama-box](./assets/faq/set-the-model-context-length-for-llama-box.png)
+
+    If editing, save the change and then recreate the model instance to take effect.
+
+---
 
 ## Using Models
 
@@ -1111,118 +1391,210 @@ If editing, save the change and then recreate the model instance to take effect.
 
 #### How can I resolve the error At most 1 image(s) may be provided in one request?
 
-This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` parameter in `Edit Model` → `Advanced` → `Backend Parameters` as needed. For example, `--limit-mm-per-prompt=image=4` means that it supports up to 4 images per inference request, see the details [here](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#vllm-serve).
+This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` parameter in `Edit Model - Advanced - Backend Parameters` as needed. For example, `--limit-mm-per-prompt=image=4` means that it supports up to 4 images per inference request, see the details [here](https://docs.vllm.ai/en/latest/configuration/engine_args.html#-limit-mm-per-prompt).
+
+---
 
 ## Managing GPUStack
 
 ### How can I manage the GPUStack service?
 
-**Script Installation**
+=== "Docker"
 
-- Linux
+    Restart GPUStack container:
 
-Stop GPUStack:
+    ```bash
+    docker restart gpustack
+    ```
 
-```bash
-sudo systemctl stop gpustack
-```
+=== "Installer"
 
-Start GPUStack:
+    Click the `GPUStack icon` in the menu bar (macOS) or system tray (Windows), then choose `Status - Start/Stop/Restart` to control the service.
 
-```bash
-sudo systemctl start gpustack
-```
+=== "Script (Legacy)"
 
-Restart GPUStack:
+    - Linux
 
-```bash
-sudo systemctl restart gpustack
-```
+    Stop GPUStack:
 
-- macOS
+    ```bash
+    sudo systemctl stop gpustack
+    ```
 
-Stop GPUStack:
+    Start GPUStack:
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo systemctl start gpustack
+    ```
 
-Start GPUStack:
+    Restart GPUStack:
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo systemctl restart gpustack
+    ```
 
-Restart GPUStack:
+    - macOS
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    Stop GPUStack:
 
-- Windows
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-Run PowerShell as administrator (**avoid** using PowerShell ISE).
+    Start GPUStack:
 
-Stop GPUStack:
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```powershell
-Stop-Service -Name "GPUStack"
-```
+    Restart GPUStack:
 
-Start GPUStack:
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```powershell
-Start-Service -Name "GPUStack"
-```
+    - Windows
 
-Restart GPUStack:
+    You can control the service status by right-clicking the GPUStack icon in the system tray, or by using PowerShell commands.
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    Run PowerShell as administrator (**avoid** using PowerShell ISE).
 
-**Docker Installation**
+    Stop GPUStack:
 
-Restart GPUStack container:
+    ```powershell
+    Stop-Service -Name "GPUStack"
+    ```
 
-```bash
-docker restart gpustack
-```
+    Start GPUStack:
+
+    ```powershell
+    Start-Service -Name "GPUStack"
+    ```
+
+    Restart GPUStack:
+
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
+
+---
 
 ### How do I use GPUStack behind a proxy?
 
-**Script Installation**
+=== "Docker"
 
-- Linux & macOS
+    Pass environment variables when running GPUStack:
 
-Create or edit `/etc/default/gpustack` and add the proxy configuration:
+    ```bash
+    docker run -e HTTP_PROXY="http://username:password@proxy-server:port" \
+               -e HTTPS_PROXY="http://username:password@proxy-server:port" \
+               -e ALL_PROXY="socks5://username:password@proxy-server:port" \
+               -e NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8" \
+               ...
+    ```
 
-```bash
-vim /etc/default/gpustack
-```
+=== "Installer"
 
-```bash
-http_proxy="http://username:password@proxy-server:port"
-https_proxy="http://username:password@proxy-server:port"
-all_proxy="socks5://username:password@proxy-server:port"
-no_proxy="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
-```
+    Click the `GPUStack icon` in the menu bar (macOS) or system tray (Windows), choose `Quick Config - Environments`, add the required environment variables, and restart the service to apply the changes.
 
-Save and restart GPUStack:
+=== "pip"
 
-```bash
-systemctl restart gpustack
-```
+    - Linux & macOS
 
-**Docker Installation**
+    Set the proxy environment variables:
 
-Pass environment variables when running GPUStack:
+    ```bash
+    export HTTP_PROXY="http://username:password@proxy-server:port"
+    export HTTPS_PROXY="http://username:password@proxy-server:port"
+    export ALL_PROXY="socks5://username:password@proxy-server:port"
+    export NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
 
-```bash
-docker run -e http_proxy="http://username:password@proxy-server:port" \
-           -e https_proxy="http://username:password@proxy-server:port" \
-           -e all_proxy="socks5://username:password@proxy-server:port" \
-           -e no_proxy="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8" \
-           ……
-```
+    Then start GPUStack:
+
+    ```bash
+    gpustack start
+    ```
+
+    - Windows
+
+    Set the proxy environment variables:
+
+    ```powershell
+    $env:HTTP_PROXY = "http://username:password@proxy-server:port"
+    $env:HTTPS_PROXY = "http://username:password@proxy-server:port"
+    $env:ALL_PROXY = "socks5://username:password@proxy-server:port"
+    $env:NO_PROXY = "localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
+
+    Then start GPUStack:
+
+    ```powershell
+    gpustack start
+    ```
+
+=== "Script (Legacy)"
+
+    - Linux
+
+    Create or edit `/etc/default/gpustack` and add the proxy configuration:
+
+    ```bash
+    vim /etc/default/gpustack
+    ```
+
+    ```bash
+    HTTP_PROXY="http://username:password@proxy-server:port"
+    HTTPS_PROXY="http://username:password@proxy-server:port"
+    ALL_PROXY="socks5://username:password@proxy-server:port"
+    NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
+
+    Save and restart GPUStack:
+
+    ```bash
+    systemctl restart gpustack
+    ```
+
+    - macOS
+
+    Create or edit `/etc/default/gpustack` and add the proxy configuration:
+
+    ```bash
+    vim /etc/default/gpustack
+    ```
+
+    ```bash
+    HTTP_PROXY="http://username:password@proxy-server:port"
+    HTTPS_PROXY="http://username:password@proxy-server:port"
+    ALL_PROXY="socks5://username:password@proxy-server:port"
+    NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
+
+    Then re-run the installation script using the same configuration options you originally used:
+
+    ```bash
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
+
+    - Windows
+
+    Create or edit `$env:APPDATA\gpustack\gpustack.env` and add the proxy configuration:
+
+    ```powershell
+    notepad $env:APPDATA\gpustack\gpustack.env
+    ```
+
+    ```powershell
+    HTTP_PROXY="http://username:password@proxy-server:port"
+    HTTPS_PROXY="http://username:password@proxy-server:port"
+    ALL_PROXY="socks5://username:password@proxy-server:port"
+    NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
+
+    Then re-run the installation script using the same configuration options you originally used:
+
+    ```powershell
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```

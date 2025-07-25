@@ -6,9 +6,9 @@
 
 ## Supported Platforms
 
-| OS    | Version                 | Arch  | Supported methods                                                                                  |
-| ----- | ----------------------- | ----- | -------------------------------------------------------------------------------------------------- |
-| macOS | 14 Sonoma<br>15 Sequoia | ARM64 | [Desktop Installer](desktop-installer.md) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-scriptdeprecated) |
+| OS    | Version                 | Arch  | Supported methods                                                                                                                                                       |
+| ----- | ----------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS | 14 Sonoma<br>15 Sequoia | ARM64 | [Desktop Installer](desktop-installer.md) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-script-deprecated) (Deprecated) |
 
 ## Supported backends
 
@@ -141,10 +141,11 @@ And ensure that the GPUStack startup logs are normal:
 tail -200f /var/log/gpustack.log
 ```
 
-## Installation Script(Deprecated)
+## Installation Script (Deprecated)
 
 !!! warning
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
+
+    The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 GPUStack provides a script to install it as a service with default port 80.
 

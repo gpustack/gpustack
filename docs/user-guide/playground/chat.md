@@ -34,7 +34,7 @@ Click the `Clear` button to clear all the prompts.
 
 ## Select Model
 
-You can select available models in GPUStack by clicking the model dropdown at the top-right corner of the playground. Please refer to [Model Management](../model-management.md) to learn about how to manage models.
+You can select available models in GPUStack by clicking the model dropdown at the top-right corner of the playground. Please refer to [Model Management](../model-deployment-management.md) to learn about how to manage models.
 
 ## Customize Parameters
 

@@ -7,9 +7,9 @@
 
 ## Supported Platforms
 
-| OS    | Arch  | Supported methods                                                                                        |
-| ----- | ----- | -------------------------------------------------------------------------------------------------------- |
-| Linux | ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-scriptdeprecated) |
+| OS    | Arch  | Supported methods                                                                                                                |
+| ----- | ----- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Linux | ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script-deprecated) (Deprecated) |
 
 ## Prerequisites
 
@@ -215,10 +215,11 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
 
-## Installation Script(Deprecated)
+## Installation Script (Deprecated)
 
 !!! warning
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
+
+    The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 ### Supported backends
 

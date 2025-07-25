@@ -102,6 +102,7 @@ nav:
       - Installation Script: installation/installation-script.md
       - Uninstallation: installation/uninstallation.md
   - Upgrade: upgrade.md
+  - Migration: migration.md
   - User Guide:
       - Playground:
           - Playgound: user-guide/playground/index.md
@@ -152,4 +153,3 @@ nav:
       - Chat: cli-reference/chat.md
       - Draw: cli-reference/draw.md
       - Download Tools: cli-reference/download-tools.md
-  - Migration: migration.md

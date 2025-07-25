@@ -16,7 +16,7 @@ gpustack start [OPTIONS]
 ### Common Options
 
 | <div style="width:180px">Flag</div>       | <div style="width:100px">Default</div> | Description                                                                                                                                                                                                                                                                                           |
-|-------------------------------------------|----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--config-file` value                     | (empty)                                | Path to the YAML config file.                                                                                                                                                                                                                                                                         |
 | `-d` value, `--debug` value               | `False`                                | To enable debug mode, the short flag -d is not supported in Windows because this flag is reserved by PowerShell for CommonParameters.                                                                                                                                                                 |
 | `--data-dir` value                        | (empty)                                | Directory to store data. Default is OS specific.                                                                                                                                                                                                                                                      |
@@ -34,7 +34,7 @@ gpustack start [OPTIONS]
 ### Server Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                             |
-|-------------------------------------|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--host` value                      | `0.0.0.0`                              | Host to bind the server to.                                                                                                                                                             |
 | `--port` value                      | `80`                                   | Port to bind the server to.                                                                                                                                                             |
 | `--disable-worker`                  | `False`                                | Disable built-in worker.                                                                                                                                                                |
@@ -58,7 +58,7 @@ gpustack start [OPTIONS]
 ### Worker Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                                                                                                                                                                      |
-|-------------------------------------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-s` value, `--server-url` value    | (empty)                                | Server to connect to.                                                                                                                                                                                                                                                                                                            |
 | `--worker-name` value               | (empty)                                | Name of the worker node. Use the hostname by default.                                                                                                                                                                                                                                                                            |
 | `--worker-ip` value                 | (empty)                                | IP address of the worker node. Auto-detected by default.                                                                                                                                                                                                                                                                         |
@@ -89,9 +89,10 @@ Below are additional environment variables that can be set:
 | `HF_ENDPOINT`                       | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` |
 
 Below are prefixed with `GPUSTACK_` special environment variables that can be set:
-| <div style="width:360px">Flag</div>        | Description                                              |
-| -----------------------------------        | -------------------------------------------------------- |
-| `GPUSTACK_DISABLE_DYNAMIC_LINK_LLAMA_BOX`  | Dynamic linking is used by default. Setting this to `true` enables static linking. |
+
+| <div style="width:360px">Flag</div>       | Description                                                                        |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| `GPUSTACK_DISABLE_DYNAMIC_LINK_LLAMA_BOX` | Dynamic linking is used by default. Setting this to `true` enables static linking. |
 
 ## Config File
 
