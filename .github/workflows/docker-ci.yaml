@@ -205,7 +205,7 @@ jobs:
             CACHE_FROM_REF="gpustack/build-cache:gpustack${TAG_SUFFIX}-${BRANCH}"
             CACHE_TO_REF="${CACHE_FROM_REF}"
           fi
-          if !docker manifest inspect "${CACHE_FROM_REF}" >/dev/null 2>&1; then
+          if ! docker manifest inspect "${CACHE_FROM_REF}" >/dev/null 2>&1; then
             CACHE_FROM_REF="gpustack/build-cache:gpustack${TAG_SUFFIX}-${DEFAULT_BRANCH}"
           fi
           echo "CACHE_FROM_REF=${CACHE_FROM_REF}" >> $GITHUB_ENV
