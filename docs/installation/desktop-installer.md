@@ -28,6 +28,20 @@ Click the `GPUStack icon` in the menu bar (on macOS) or system tray (on Windows)
 
 ![web console](../assets/desktop-installer/open-web-console.png)
 
+No password verification is required when using the method above. If you need to access via IP, use the following command to check the initial password.
+
+- macOS
+
+```bash
+cat /Library/Application\ Support/GPUStack/initial_admin_password
+```
+
+- Windows
+
+```powershell
+Get-Content "C:\ProgramData\GPUStack\initial_admin_password" -Tail 200 -Wait
+```
+
 ## (Optional) Add Worker
 
 ### 1. Get Token

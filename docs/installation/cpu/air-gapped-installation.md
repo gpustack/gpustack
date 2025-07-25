@@ -12,7 +12,7 @@ The following methods are available for installing GPUStack in an air-gapped env
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
-- CPUs (AMD64 with AVX2 or ARM64 with NEON)
+- CPUs (AMD64 with AVX or ARM64 with NEON)
 
 === "Linux"
 
@@ -21,7 +21,7 @@ The following methods are available for installing GPUStack in an air-gapped env
     === "AMD64"
 
         ```bash
-        lscpu | grep avx2
+        lscpu | grep avx
         ```
 
     === "ARM64"
