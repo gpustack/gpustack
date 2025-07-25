@@ -588,6 +588,7 @@ async def sync_main_model_file_state(
         if model_instance_download_completed(instance):
             # All files are downloaded
             instance.state = ModelInstanceStateEnum.STARTING
+            instance.state_message = ""
         need_update = True
     elif file.state == ModelFileStateEnum.ERROR:
         # Download failed
@@ -637,6 +638,7 @@ async def sync_distributed_model_file_state(  # noqa: C901
                 if model_instance_download_completed(instance):
                     # All files are downloaded
                     instance.state = ModelInstanceStateEnum.STARTING
+                    instance.state_message = ""
                 need_update = True
             elif file.state == ModelFileStateEnum.ERROR:
                 instance.state = ModelInstanceStateEnum.ERROR
