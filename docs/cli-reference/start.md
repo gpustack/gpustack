@@ -39,7 +39,7 @@ gpustack start [OPTIONS]
 | `--port` value                      | `80`                                   | Port to bind the server to.                                                                                                                                                             |
 | `--disable-worker`                  | `False`                                | Disable built-in worker.                                                                                                                                                                |
 | `--bootstrap-password` value        | Auto-generated.                        | Initial password for the default admin user.                                                                                                                                            |
-| `--database-url` value              | `sqlite:///<data-dir>/database.db`     | URL of the database. Supports SQLite, PostgreSQL 13.0+, and MySQL 8.0+. Example: postgresql://user:password@hostname:port/db_name or mysql://user:password@host:port/db_name            |
+| `--database-url` value              | `sqlite:///<data-dir>/database.db`     | URL of the database. Supports SQLite, PostgreSQL 13.0+, and MySQL 8.0+. Example: postgresql://user:password@host:port/db_name or mysql://user:password@host:port/db_name                |
 | `--ssl-keyfile` value               | (empty)                                | Path to the SSL key file.                                                                                                                                                               |
 | `--ssl-certfile` value              | (empty)                                | Path to the SSL certificate file.                                                                                                                                                       |
 | `--force-auth-localhost`            | `False`                                | Force authentication for requests originating from localhost (127.0.0.1).When set to True, all requests from localhost will require authentication.                                     |
@@ -68,9 +68,6 @@ gpustack start [OPTIONS]
 | `--worker-port` value               | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                                                                                                                                                              |
 | `--service-port-range` value        | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                                                                                              |
 | `--rpc-server-port-range` value     | `40064-40095`                          | Port range for llama-box RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                                                                                           |
-| `--ray-node-manager-port` value     | `40098`                                | Port of Ray node manager. Used when Ray is enabled.                                                                                                                                                                                                                                                                              |
-| `--ray-object-manager-port` value   | `40099`                                | Port of Ray object manager. Used when Ray is enabled.                                                                                                                                                                                                                                                                            |
-| `--ray-metrics-export-port` value   | `40100`                                | Port of Ray metrics export. Used when Ray is enabled.                                                                                                                                                                                                                                                                            |
 | `--ray-worker-port-range` value     | `40200-40999`                          | Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                                                                                            |
 | `--log-dir` value                   | (empty)                                | Directory to store logs.                                                                                                                                                                                                                                                                                                         |
 | `--rpc-server-args` value           | (empty)                                | Arguments to pass to the RPC servers. Use `=` to avoid the CLI recognizing rpc-server-args as a server argument. This can be used multiple times to pass a list of arguments. Example: `--rpc-server-args=--verbose --rpc-server-args=--log-colors --rpc-server-args="rpc-server-cache-dir /var/lib/gpustack/cache/rpc_server/"` |
@@ -103,34 +100,41 @@ You can configure start options using a YAML-format config file when starting GP
 debug: false
 data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
-token: mytoken
+token: your_token
+huggingface-token: your_huggingface_token
 enable_ray: false
 ray_args: ["--port=6379", "--verbose"]
+ray_node_manager_port: 40098
+ray_object_manager_port: 40099
+ray_dashboard_agent_grpc_port: 40101
+ray_dashboard_agent_listen_port: 52365
+ray_metrics_export_port: 40103
 
 # Server Options
 host: 0.0.0.0
 port: 80
 disable_worker: false
-database_url: postgresql://user:password@hostname:port/db_name
+bootstrap_password: your_admin_password
+database_url: postgresql://user:password@host:port/db_name
 # database_url: mysql://user:password@host:port/db_name
 ssl_keyfile: /path/to/keyfile
 ssl_certfile: /path/to/certfile
 force_auth_localhost: false
-bootstrap_password: myadminpassword
 disable_update_check: false
 disable_openapi_docs: false
 model_catalog_file: /path_or_url/to/model_catalog_file
 ray_port: 40096
 ray_client_server_port: 40097
+ray_dashboard_port: 8265
 enable_cors: false
-allow_origins: ["*"]
 allow_credentials: false
+allow_origins: ["*"]
 allow_methods: ["GET", "POST"]
 allow_headers: ["Authorization", "Content-Type"]
 
 # Worker Options
 server_url: http://your_gpustack_server_url
-worker_name: myworker
+worker_name: your_worker_name
 worker_ip: 192.168.1.101
 disable_metrics: false
 disable_rpc_servers: false
@@ -138,15 +142,12 @@ metrics_port: 10151
 worker_port: 10150
 service_port_range: 40000-40063
 rpc_server_port_range: 40064-40095
-ray_node_manager_port: 40098
-ray_object_manager_port: 40099
-ray_metrics_export_port: 40100
 ray_worker_port_range: 40200-40999
 log_dir: /path/to/log_dir
 rpc_server_args: ["--verbose"]
 system_reserved:
   ram: 2
   vram: 1
-tools_download_base_url: https://mirror.mycompany.com
+tools_download_base_url: https://mirror.your_company.com
 enable_hf_transfer: false
 ```
