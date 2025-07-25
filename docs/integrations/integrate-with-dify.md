@@ -100,9 +100,9 @@ If it returns the list of models, the integration is successful.
 
 ### Quick Reference
 
-| Scenario                                             | Server URL                                                                                           |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Host machine deployed GPUStack <br>(macOS / Windows) | `http://host.docker.internal:80/v1-openai`                                                           |
-| GPUStack running in Docker                           | Use `--network=host` (Linux) or expose port to host (macOS/Windows) and use appropriate host address |
+| <div style="width:220px">Scenario</div>            | Server URL                                                                                           |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Host machine deployed GPUStack <br>(macOS/Windows) | `http://host.docker.internal:80/v1-openai`                                                           |
+| GPUStack running in Docker                         | Use `--network=host` (Linux) or expose port to host (macOS/Windows) and use appropriate host address |
 
-> 💡 If you did not specify the --port parameter when installing GPUStack, the default port is 80. Therefore, the Server URL should be set to http://host.docker.internal:80
+> 💡 If you did not specify the `--port` parameter when installing GPUStack, the default port is `80`. Therefore, the Server URL should be set to `http://host.docker.internal:80/v1-openai`.

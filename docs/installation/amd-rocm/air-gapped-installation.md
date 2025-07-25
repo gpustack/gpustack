@@ -4,9 +4,9 @@ You can install GPUStack in an air-gapped environment. An air-gapped environment
 
 The following methods are available for installing GPUStack in an air-gapped environment:
 
-| OS    | Arch  | Supported methods                           |
-| ----- | ----- | ------------------------------------------- |
-| Linux | AMD64 | [Docker Installation](#docker-installation) |
+| OS      | Arch  | Supported methods                            |
+| ------- | ----- | -------------------------------------------- |
+| Linux   | AMD64 | [Docker Installation](#docker-installation)  |
 | Windows | AMD64 | [Desktop Installer](../desktop-installer.md) |
 
 ## Supported Devices
@@ -27,12 +27,12 @@ The following methods are available for installing GPUStack in an air-gapped env
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
-- CPU support for llama-box backend: AMD64 with AVX2
+- CPU support for llama-box backend: AMD64 with AVX
 
 Check if the CPU is supported:
 
 ```bash
-lscpu | grep avx2
+lscpu | grep avx
 ```
 
 ## Docker Installation
