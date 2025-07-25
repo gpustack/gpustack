@@ -15,6 +15,9 @@ async def test_evaluate_pretrained_config(config):
         backend_parameters=[],
     )
 
+    # First run,will cache all file and automatic carry --trust-remote-code.
+    await evaluate_pretrained_config(Phi_4_multimodal)
+
     # Custom code without --trust-remote-code, should raise ValueError
     with pytest.raises(
         ValueError,
