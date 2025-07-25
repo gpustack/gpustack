@@ -1,6 +1,6 @@
 # Upgrade
 
-You can upgrade GPUStack using the installation script or by manually installing the desired version of the GPUStack Python package.
+You can upgrade GPUStack using Docker or by manually installing the desired version of the GPUStack Python package.
 
 !!! note
 
@@ -10,7 +10,6 @@ You can upgrade GPUStack using the installation script or by manually installing
 !!! note
 
     Before proceeding with an upgrade, it’s strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of the file located at `/var/lib/gpustack/database.db`.
-
 
 ## Docker Upgrade
 
@@ -34,6 +33,6 @@ For example, to upgrade GPUStack to the latest version:
 pip install --upgrade gpustack
 ```
 
-##  Upgrade from Legacy Script
+## Upgrade from Legacy Script
 
 If you installed GPUStack using the installation script, follow the [migration guide](migration.md) to upgrade and preserve your existing data.

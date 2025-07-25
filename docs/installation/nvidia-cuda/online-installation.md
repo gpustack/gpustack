@@ -6,10 +6,10 @@
 
 ## Supported Platforms
 
-| OS      | Arch           | Supported methods                                                                                                                                 |
-| ------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | AMD64<br>ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-scriptdeprecated) |
-| Windows | AMD64          | [Desktop Installer](../desktop-installer.md) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-scriptdeprecated)                                                              |
+| OS      | Arch           | Supported methods                                                                                                                                                          |
+| ------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux   | AMD64<br>ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-script-deprecated) (Deprecated)  |
+| Windows | AMD64          | [Desktop Installer](../desktop-installer.md) (Recommended)<br>[pip Installation](#pip-installation)<br>[Installation Script](#installation-script-deprecated) (Deprecated) |
 
 ## Supported backends
 
@@ -20,7 +20,7 @@
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
-- CPU support for llama-box backend: AMD64 with AVX2, or ARM64 with NEON
+- CPU support for llama-box backend: AMD64 with AVX, or ARM64 with NEON
 
 === "Linux"
 
@@ -29,7 +29,7 @@
     === "AMD64"
 
         ```bash
-        lscpu | grep avx2
+        lscpu | grep avx
         ```
 
     === "ARM64"
@@ -395,11 +395,11 @@ And ensure that the GPUStack startup logs are normal:
 tail -200f /var/log/gpustack.log
 ```
 
-
-## Installation Script(Deprecated)
+## Installation Script (Deprecated)
 
 !!! warning
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
+
+    The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](https://gpustack.ai/) on macOS or Windows.
 
 ### Prerequites
 

@@ -6,22 +6,22 @@
 
 ## Supported Platforms
 
-| OS      | Version                      | Arch  | Supported methods                                                                                        |
-| ------- | ---------------------------- | ----- | -------------------------------------------------------------------------------------------------------- |
-| Linux   | Ubuntu 22.04<br>Ubuntu 24.04 | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-scriptdeprecated) |
-| Windows | 10<br>11      | AMD64 | [Desktop Installer](../desktop-installer.md) (Recommended)<br>[Installation Script](#installation-scriptdeprecated)                                                              |
+| OS      | Version                      | Arch  | Supported methods                                                                                                                 |
+| ------- | ---------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Linux   | Ubuntu 22.04<br>Ubuntu 24.04 | AMD64 | [Docker Installation](#docker-installation) (Recommended)<br>[Installation Script](#installation-script-deprecated) (Deprecated)  |
+| Windows | 10<br>11                     | AMD64 | [Desktop Installer](../desktop-installer.md) (Recommended)<br>[Installation Script](#installation-script-deprecated) (Deprecated) |
 
 ## Prerequisites
 
 - [Port Requirements](../installation-requirements.md#port-requirements)
-- CPU support for llama-box backend: AMD64 with AVX2
+- CPU support for llama-box backend: AMD64 with AVX
 
 === "Linux"
 
     Check if the CPU is supported:
 
     ```bash
-    lscpu | grep avx2
+    lscpu | grep avx
     ```
 
 === "Windows"
@@ -180,10 +180,11 @@ docker run -d --name gpustack \
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
 
-## Installation Script(Deprecated)
+## Installation Script (Deprecated)
 
 !!! warning
-      The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](../desktop-installer.md) on macOS or Windows.
+
+    The installation script method is deprecated as of version 0.7. We recommend using Docker on Linux, and the [desktop installer](../desktop-installer.md) on macOS or Windows.
 
 #### Supported Devices
 
