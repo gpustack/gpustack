@@ -50,83 +50,71 @@ GPUStack は、AI モデルを実行するためのオープンソース GPU ク
 
 ## インストール
 
-### Linux または macOS
+### Linux
 
-GPUStack は、systemd または launchd ベースのシステムでサービスとしてインストールするスクリプトを提供しており、デフォルトポートは 80 です。この方法で GPUStack をインストールするには、以下を実行します：
-
-```bash
-curl -sfL https://get.gpustack.ai | sh -s -
-```
-
-### Windows
-
-管理者として PowerShell を実行し（PowerShell ISE の使用は**避けてください**）、以下のコマンドを実行して GPUStack をインストールします：
-
-```powershell
-Invoke-Expression (Invoke-WebRequest -Uri "https://get.gpustack.ai" -UseBasicParsing).Content
-```
-
-### その他のインストール方法
-
-手動インストール、Docker インストール、または詳細な構成オプションについては、[インストールドキュメント](https://docs.gpustack.ai/latest/installation/installation-script/)を参照してください。
-
-## はじめに
-
-1. **llama3.2**モデルを実行してチャットする：
+NVIDIA GPU を使用している場合は、Docker と NVIDIA Container Toolkit をインストールしてください。その後、以下のコマンドで GPUStack サーバーを起動します：
 
 ```bash
-gpustack chat llama3.2 "tell me a joke."
+docker run -d --name gpustack \
+      --restart=unless-stopped \
+      --gpus all \
+      --network=host \
+      --ipc=host \
+      -v gpustack-data:/var/lib/gpustack \
+      gpustack/gpustack
 ```
 
-2. **stable-diffusion-v3-5-large-turbo**モデルで画像を生成する：
+詳細なインストール手順やその他の GPU ハードウェアプラットフォームについては、インストールドキュメント を参照してください。
 
-> ### 💡 ヒント
->
-> このコマンドは Hugging Face からモデル（約 12GB）をダウンロードします。ダウンロード時間はネットワーク速度に依存します。モデルを実行するために十分なディスクスペースと VRAM（12GB）があることを確認してください。問題が発生した場合は、このステップをスキップして次に進むことができます。
-
-```bash
-gpustack draw hf.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF:stable-diffusion-v3-5-large-turbo-Q4_0.gguf \
-"A minion holding a sign that says 'GPUStack'. The background is filled with futuristic elements like neon lights, circuit boards, and holographic displays. The minion is wearing a tech-themed outfit, possibly with LED lights or digital patterns. The sign itself has a sleek, modern design with glowing edges. The overall atmosphere is high-tech and vibrant, with a mix of dark and neon colors." \
---sample-steps 5 --show
-```
-
-コマンドが完了すると、生成された画像がデフォルトビューアに表示されます。プロンプトと CLI オプションを実験して出力をカスタマイズできます。
-
-![Generated Image](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/quickstart-minion.png)
-
-3. ブラウザで`http://your_host_ip`を開いて GPUStack UI にアクセスします。ユーザー名`admin`とデフォルトパスワードで GPUStack にログインします。デフォルト設定のパスワードを取得するには、以下のコマンドを実行します：
-
-**Linux または macOS**
+サーバー起動後、次のコマンドでデフォルト管理者パスワードを取得できます：
 
 ```bash
 cat /var/lib/gpustack/initial_admin_password
 ```
 
-**Windows**
+ブラウザで http://your_host_ip にアクセスし、ユーザー名 admin と取得したパスワードでログインします。
 
-```powershell
-Get-Content -Path "$env:APPDATA\gpustack\initial_admin_password" -Raw
-```
+### macOS & Windows
 
-4. ナビゲーションメニューで`Playground - Chat`をクリックします。これで UI プレイグラウンドで LLM とチャットできます。
+macOS および Windows 向けにデスクトップインストーラーが用意されています。インストールの詳細は [ドキュメント](https://docs.gpustack.ai/latest/installation/desktop-installer/) をご覧ください。
 
-![Playground Screenshot](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/playground-screenshot.png)
+## モデルのデプロイ
 
-5. ナビゲーションメニューで`API Keys`をクリックし、`New API Key`ボタンをクリックします。
+1. GPUStack UI の Catalog ページに移動します。
 
-6. `Name`を入力し、`Save`ボタンをクリックします。
+2. モデルリストから Qwen3 モデルを選択します。
 
-7. 生成された API キーをコピーして安全な場所に保存します。作成時にのみ一度だけ表示されることに注意してください。
+3. デプロイ互換性チェックが完了したら、Save ボタンをクリックしてデプロイします。
 
-8. これで API キーを使用して OpenAI 互換 API にアクセスできます。例えば、curl を使用する場合：
+![deploy qwen3 from catalog](docs/assets/quick-start/quick-start-qwen3.png)
+
+4. モデルのダウンロードとデプロイが開始されます。ステータスが Running になると、デプロイ成功です。
+
+![model is running](docs/assets/quick-start/model-running.png)
+
+5. ナビゲーションメニューから Playground - Chat を選択し、右上の Model ドロップダウンで qwen3 が選択されていることを確認してチャットを開始します。
+
+![quick chat](docs/assets/quick-start/quick-chat.png)
+
+## API でモデルを使用する
+
+1. ユーザーアバターをホバーし、API Keys ページに移動後、New API Key をクリックします。
+
+2. Name を入力し、Save をクリックします。
+
+3. 生成された API キーをコピーして安全な場所に保管してください（一度しか表示されません）。
+
+4. OpenAI 互換エンドポイントにアクセスできます。例：
 
 ```bash
+# Replace `your_api_key` and `your_gpustack_server_url`
+# with your actual API key and GPUStack server URL.
 export GPUSTACK_API_KEY=your_api_key
-curl http://your_gpustack_server_url/v1-openai/chat/completions \
+curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "llama3.2",
+    "model": "qwen3",
     "messages": [
       {
         "role": "system",
@@ -134,7 +122,7 @@ curl http://your_gpustack_server_url/v1-openai/chat/completions \
       },
       {
         "role": "user",
-        "content": "Hello!"
+        "content": "Tell me a joke."
       }
     ],
     "stream": true
