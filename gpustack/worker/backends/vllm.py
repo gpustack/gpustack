@@ -34,11 +34,14 @@ class VLLMParameters:
     # Parallelism config
     #
     pipeline_parallel_size: Optional[int] = None
+    data_parallel_size: Optional[int] = None
+    data_parallel_size_local: Optional[int] = None
     tensor_parallel_size: Optional[int] = None
 
     def is_parallelism_configured(self) -> bool:
         return (
             self.pipeline_parallel_size is not None
+            or self.data_parallel_size is not None
             or self.tensor_parallel_size is not None
         )
 
@@ -59,6 +62,18 @@ class VLLMParameters:
         parser.add_argument(
             "--pipeline-parallel-size",
             "-pp",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--data-parallel-size",
+            "-dp",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--data-parallel-size-local",
+            "-dpl",
             type=int,
             required=False,
         )
@@ -116,6 +131,19 @@ class VLLMServer(InferenceServer):
                     self._model_instance
                 )
                 arguments.extend(auto_parallelism_arguments)
+
+            # For data parallelism, we are using Ray as the backend.
+            if params.data_parallel_size and params.data_parallel_size > 0:
+                arguments.extend(["--data-parallel-backend", "ray"])
+                # Specify the local data parallel size if not specified.
+                if not params.data_parallel_size_local:
+                    local_world_size = len(self._model_instance.gpu_indexes)
+                    data_parallel_size_local = (
+                        (params.tensor_parallel_size or 1) + local_world_size - 1
+                    ) // local_world_size
+                    arguments.extend(
+                        ["--data-parallel-size-local", str(data_parallel_size_local)]
+                    )
 
             if is_distributed_vllm(self._model_instance):
                 arguments.extend(["--distributed-executor-backend", "ray"])

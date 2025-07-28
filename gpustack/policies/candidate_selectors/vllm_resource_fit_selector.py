@@ -222,15 +222,19 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     f"Failed to parse model {self._model.name} serve parameters: {e}"
                 )
 
-        # When parallelism params are set, the gpu count is calculated by pp * tp.
+        # When parallelism params are set, the gpu count is calculated by pp * tp or dp * tp.
         # Pick the candidate with satisfied gpu count.
         # Otherwise, estimate gpu count by vram requirement heuristically.
-        pp, tp = (
+        pp, dp, tp = (
             self._serving_params.pipeline_parallel_size,
+            self._serving_params.data_parallel_size,
             self._serving_params.tensor_parallel_size,
         )
-        if pp or tp:
-            world_size = int(pp or 1) * int(tp or 1)
+        if pp or dp or tp:
+            if dp and dp > 1:
+                world_size = dp * int(tp or 1)
+            else:
+                world_size = int(pp or 1) * int(tp or 1)
 
             if self._gpu_count and self._gpu_count != world_size:
                 # Both gpu selector and tp/pp are set, validate they match.
