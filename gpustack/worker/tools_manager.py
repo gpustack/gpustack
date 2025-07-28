@@ -606,11 +606,11 @@ class ToolsManager:
         elif toolkit == "hip":
             toolkit_version = "6.2"
         elif toolkit == "musa":
-            # Since v0.0.TBD, llama-box supports MUSA rc4.2,
+            # Since v0.0.167, llama-box supports MUSA rc4.2,
             # Since v0.0.150, llama-box supports MUSA rc4.0,
             # and no longer supports MUSA rc3.1.
             toolkit_version = "rc3.1"
-            if version > "v0.0.TBD":
+            if version > "v0.0.166":
                 toolkit_version = "rc4.2"
             elif version > "v0.0.149":
                 toolkit_version = "rc4.0"
