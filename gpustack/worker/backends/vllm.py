@@ -8,6 +8,7 @@ import sys
 from typing import Dict, List, Optional
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
 from gpustack.schemas.workers import VendorEnum
+from gpustack.utils import network
 from gpustack.utils.command import (
     get_versioned_command,
     get_command_path,
@@ -144,6 +145,16 @@ class VLLMServer(InferenceServer):
                     arguments.extend(
                         ["--data-parallel-size-local", str(data_parallel_size_local)]
                     )
+                # When vLLM creates data parallelism coordinator,
+                # vLLM will serve it behind serval TCP-established ZMQ services.
+                # In order to avoid port conflicts,
+                # we need to tell vLLM how to choose a port with an environment patch.
+                if not self._model.env:
+                    self._model.env = {}
+                start_port, _ = network.parse_port_range(
+                    self._config.rpc_server_port_range,
+                )
+                self._model.env["VLLM_DP_PORT_START"] = str(start_port)
 
             if is_distributed_vllm(self._model_instance):
                 arguments.extend(["--distributed-executor-backend", "ray"])

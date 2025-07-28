@@ -469,6 +469,18 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && pip cache purge
 EOF
 
+## Patch vLLM for GPUStack
+
+RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
+    pushd $(pip show gpustack | grep -w Location: | head -n 1 | cut -d':' -f 2)
+    if [[ -d vllm ]]; then
+        for patch in /workspace/gpustack/pack/vllm/patches/*.patch; do
+            patch -p1 < "${patch}"
+        done
+    fi
+    popd
+EOF
+
 ## Install Vox-Box as an independent executor for GPUStack
 
 RUN <<EOF

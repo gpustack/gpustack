@@ -615,14 +615,6 @@ FROM mindie-install AS gpustack
 ## Copy vLLM from vllm-install stage
 
 COPY --from=vllm-install ${PIPX_LOCAL_VENVS}/vllm ${PIPX_LOCAL_VENVS}/vllm
-RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
-    # Patch vLLM
-    for dir in lib lib64; do
-        if [ -d "${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/vllm" ]; then
-            cp /workspace/gpustack/gpustack/_sitecustomize.py ${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/sitecustomize.py
-        fi
-    done
-EOF
 
 ## Install GPUStack
 
@@ -676,6 +668,19 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && rm -rf /var/cache/apt \
         && rm -rf /workspace/gpustack/dist \
         && pip cache purge
+EOF
+
+## Patch vLLM for GPUStack
+
+RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
+    # Patch vLLM
+    # - Allow Ray to pick up specific selected nodes to join the distributed inferencing.
+    cp /workspace/gpustack/gpustack/_sitecustomize.py ${PIPX_LOCAL_VENVS}/vllm/lib/python${PYTHON_VERSION}/site-packages/sitecustomize.py
+    # - Apply other patches.
+    pushd ${PIPX_LOCAL_VENVS}/vllm/lib/python${PYTHON_VERSION}/site-packages/
+    for patch in /workspace/gpustack/pack/vllm/patches/*.patch; do
+        patch -p1 < "${patch}"
+    done
 EOF
 
 ## Setup environment
