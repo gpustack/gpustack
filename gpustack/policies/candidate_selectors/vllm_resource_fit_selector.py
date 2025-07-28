@@ -27,11 +27,11 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import GPUDevicesInfo, Worker
 from gpustack.config import Config
 from gpustack.server.db import get_engine
-from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_model_weight_size, get_pretrained_config
 from gpustack.utils.unit import byte_to_gib
+from gpustack.worker.backends.vllm import VLLMParameters
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def get_local_model_weight_size(local_path: str) -> int:
 
 
 class VLLMResourceFitSelector(ScheduleCandidatesSelector):
-    def __init__(
+    def __init__(  # noqa: C901
         self,
         cfg: Config,
         model: Model,
@@ -177,6 +177,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._engine = get_engine()
         self._cfg = cfg
         self._model = model
+        self._serving_params = VLLMParameters()
         self._gpu_count = None
         self._vram_claim = 0
         self._largest_single_gpu_vram = 0
@@ -213,18 +214,29 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             # When user defined gpu selector, we use the gpu count from it.
             self._gpu_count = len(self._model.gpu_selector.gpu_ids)
 
-        # When tp/pp is set, the gpu count is calculated by tp * pp.
+        if self._model.backend_parameters:
+            try:
+                self._serving_params.from_args(self._model.backend_parameters)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to parse model {self._model.name} serve parameters: {e}"
+                )
+
+        # When parallelism params are set, the gpu count is calculated by pp * tp.
         # Pick the candidate with satisfied gpu count.
         # Otherwise, estimate gpu count by vram requirement heuristically.
-        tp = find_parameter(model.backend_parameters, ["tensor-parallel-size", "tp"])
-        pp = find_parameter(model.backend_parameters, ["pipeline-parallel-size", "pp"])
-        if tp or pp:
-            world_size = int(tp or 1) * int(pp or 1)
+        pp, tp = (
+            self._serving_params.pipeline_parallel_size,
+            self._serving_params.tensor_parallel_size,
+        )
+        if pp or tp:
+            world_size = int(pp or 1) * int(tp or 1)
 
             if self._gpu_count and self._gpu_count != world_size:
                 # Both gpu selector and tp/pp are set, validate they match.
                 raise ValueError(
-                    f"Model {model.name} has -tp/-pp set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."
+                    f"Model {model.name} has parallelism params set, "
+                    f"but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."
                 )
             else:
                 self._gpu_count = world_size
@@ -236,18 +248,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._set_num_attention_heads()
 
     def _set_gpu_memory_utilization(self):
-        self._gpu_memory_utilization = 0.9
-        model = self._model
+        self._gpu_memory_utilization = self._serving_params.gpu_memory_utilization
         if self._disable_gpu_memory_utilization():
             # gpu memory utilization is not used for non-LLM models
             self._gpu_memory_utilization = 0
-
-        self._gpu_memory_utilization_parameter_name = "gpu-memory-utilization"
-        gmu = find_parameter(
-            model.backend_parameters, [self._gpu_memory_utilization_parameter_name]
-        )
-        if gmu:
-            self._gpu_memory_utilization = float(gmu)
 
     def _disable_gpu_memory_utilization(self) -> bool:
         """
@@ -372,7 +376,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         )
         if self._gpu_memory_utilization != 0:
             default_msg_list.append(
-                f"With --{self._gpu_memory_utilization_parameter_name}={self._gpu_memory_utilization}, "
+                f"With --gpu-memory-utilization={self._gpu_memory_utilization}, "
                 f"all GPUs combined need to provide at least {byte_to_gib(int(self._vram_claim / self._gpu_memory_utilization))} GiB of total VRAM "
                 f"and each GPU needs {int(self._gpu_memory_utilization * 100)}% of allocatable VRAM."
             )
