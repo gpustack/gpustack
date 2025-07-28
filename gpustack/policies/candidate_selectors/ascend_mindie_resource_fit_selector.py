@@ -341,8 +341,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if self._model_params.quantization_config:
                 kv_quant_type = self._model_params.quantization_config.get(
                     "kv_quant_type", ""
-                ).lower()
-                if kv_quant_type == "c8":
+                )
+                if (
+                    kv_quant_type
+                    and isinstance(kv_quant_type, str)
+                    and kv_quant_type.lower() == "c8"
+                ):
                     ct_size = 1
 
             if attention_type == ModelAttentionTypeEnum.MHA:
