@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.9.1/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.10.0/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 vllm_supported_embedding_architectures = [
     "BertModel",
@@ -21,19 +21,21 @@ vllm_supported_reranker_architectures = [
     "RobertaForSequenceClassification",
     "XLMRobertaForSequenceClassification",
     "ModernBertForSequenceClassification",
-    "Qwen2ForSequenceClassification",
-    "Qwen3ForSequenceClassification",
+    "JinaVLForRanking",
 ]
 
 vllm_supported_llm_architectures = [
     # Text generation models
     "AquilaModel",
     "AquilaForCausalLM",
+    "ArceeForCausalLM",
     "ArcticForCausalLM",
+    "MiniMaxForCausalLM",
     "MiniMaxText01ForCausalLM",
     "MiniMaxM1ForCausalLM",
     "BaiChuanForCausalLM",
     "BaichuanForCausalLM",
+    "BailingMoeForCausalLM",
     "BambaForCausalLM",
     "BloomForCausalLM",
     "ChatGLMModel",
@@ -49,6 +51,7 @@ vllm_supported_llm_architectures = [
     "Ernie4_5_ForCausalLM",
     "Ernie4_5_MoeForCausalLM",
     "ExaoneForCausalLM",
+    "Exaone4ForCausalLM",
     "FalconForCausalLM",
     "Fairseq2LlamaForCausalLM",
     "GemmaForCausalLM",
@@ -57,6 +60,7 @@ vllm_supported_llm_architectures = [
     "Gemma3nForConditionalGeneration",
     "GlmForCausalLM",
     "Glm4ForCausalLM",
+    "Glm4MoeForCausalLM",
     "GPT2LMHeadModel",
     "GPTBigCodeForCausalLM",
     "GPTJForCausalLM",
@@ -68,6 +72,7 @@ vllm_supported_llm_architectures = [
     "GritLM",
     "Grok1ModelForCausalLM",
     "HunYuanMoEV1ForCausalLM",
+    "HunYuanDenseV1ForCausalLM",
     "InternLMForCausalLM",
     "InternLM2ForCausalLM",
     "InternLM2VEForCausalLM",
@@ -99,6 +104,7 @@ vllm_supported_llm_architectures = [
     "Phi3ForCausalLM",
     "Phi3SmallForCausalLM",
     "PhiMoEForCausalLM",
+    "Phi4FlashForCausalLM",
     "Plamo2ForCausalLM",
     "QWenLMHeadModel",
     "Qwen2ForCausalLM",
@@ -133,6 +139,7 @@ vllm_supported_llm_architectures = [
     "SmolVLMForConditionalGeneration",
     "KeyeForConditionalGeneration",
     "KimiVLForConditionalGeneration",
+    "Llama_Nemotron_Nano_VL",
     "LlavaForConditionalGeneration",
     "LlavaNextForConditionalGeneration",
     "LlavaNextVideoForConditionalGeneration",
@@ -158,6 +165,7 @@ vllm_supported_llm_architectures = [
     "Phi4MMForCausalLM",
     "TarsierForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
+    "VoxtralForConditionalGeneration",
     "Florence2ForConditionalGeneration",
     "MllamaForConditionalGeneration",
     "Llama4ForConditionalGeneration",
