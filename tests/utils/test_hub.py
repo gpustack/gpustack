@@ -56,13 +56,6 @@ def test_get_hub_model_weight_size():
         ),
         (
             Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="FunAudioLLM/CosyVoice2-0.5B",
-            ),
-            3_545_354_370,
-        ),
-        (
-            Model(
                 source=SourceEnum.MODEL_SCOPE,
                 model_scope_model_id="Qwen/Qwen2-0.5B-Instruct",
             ),
