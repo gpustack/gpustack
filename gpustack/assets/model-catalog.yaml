@@ -262,7 +262,6 @@
       replicas: 1
       backend: vllm
       backend_parameters: &qwen3_thinking_vllm_parameters
-        - --enable-reasoning
         - --reasoning-parser=deepseek_r1
     - quantizations: ["FP8"]
       source: huggingface
@@ -2036,6 +2035,8 @@
         - embedding
       replicas: 1
       backend: vllm
+      backend_parameters:
+        - --task=embed
 # Reranker models
 - name: BGE Reranker V2 M3
   description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
