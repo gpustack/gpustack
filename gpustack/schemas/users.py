@@ -12,6 +12,7 @@ class UserBase(SQLModel):
     username: str
     is_admin: bool = False
     full_name: Optional[str] = None
+    source: Optional[str] = Field(default="local")
     require_password_change: bool = Field(default=False)
 
 
