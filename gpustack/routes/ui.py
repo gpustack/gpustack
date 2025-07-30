@@ -24,17 +24,17 @@ def register(app: FastAPI):
     # Provide configuration interface
     @app.get("/get_config")
     async def get_config():
-        authentication_info = json.loads(os.getenv('GPUSTACK_authentication_info', '{}'))
+        authentication_info = json.loads(os.getenv('GPUSTACK_EXTERNAL_AUTH', '{}'))
         req_dict = {}
         if authentication_info.get('type') == 'oidc':
-            req_dict = {"base_entrypoint": authentication_info.get('base_entrypoint'),
-                        "redirect_uri": authentication_info.get('redirect_uri'),
-                        "CLIENT_ID": authentication_info.get('CLIENT_ID'),
+            req_dict = {
                         "is_oidc": True,
                         "is_saml": False
                         }
         if authentication_info.get('type') == 'saml':
-            req_dict = {"is_oidc": False,
-                        "is_saml": True}
+            req_dict = {
+                        "is_oidc": False,
+                        "is_saml": True
+                        }
 
         return req_dict
