@@ -120,3 +120,39 @@ class ListMessageBuilder:
 
     def __str__(self) -> str:
         return "\n".join([f"- {line}" for line in self._messages])
+
+
+def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
+    """
+    Get the number of attention heads in the model.
+    Priority: llm_config > text_config > root-level settings
+    """
+
+    num_attention_heads = None
+    try:
+        # Helper to get num_attention_heads from config
+        def get_heads_from(cfg, key="num_attention_heads"):
+            value = getattr(cfg, key, None)
+            if isinstance(value, int) and value > 0:
+                return value
+            return None
+
+        # Check in priority order: llm_config > text_config > root-level
+        configs_by_priority = [
+            getattr(pretrained_config, "llm_config", None),
+            getattr(pretrained_config, "text_config", None),
+            pretrained_config,
+        ]
+
+        for config in configs_by_priority:
+            if not config:
+                continue
+            heads = get_heads_from(config)
+            if heads is not None:
+                num_attention_heads = heads
+                break
+
+    except Exception as e:
+        logger.warning(f"Cannot get num_attention_heads: {e}")
+
+    return num_attention_heads
