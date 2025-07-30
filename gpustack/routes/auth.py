@@ -83,7 +83,7 @@ async def saml_callback(request: Request, session: SessionDep):
     if '+' not in authentication_info['full_name']:
         full_name = authentication_info['full_name']
     else:
-        full_name = ' '.join([attributes.get(v) for v in authentication_info['full_name'].split('+')])
+        full_name = ' '.join([attributes.get(v.strip()) for v in authentication_info['full_name'].split('+')])
     # determine whether the user already exists
     user = await User.first_by_fields(session=session,
                                       fields={"username": username,
@@ -117,9 +117,9 @@ async def saml_callback(request: Request, session: SessionDep):
 # oidc login
 @router.get("/oidc/login")
 async def oidc_login():
-    authUrl = f'{authentication_info.base_entrypoint}auth?response_type=code&' \
-              f'client_id={authentication_info.CLIENT_ID}&' \
-              f'redirect_uri={authentication_info.redirect_uri}&' \
+    authUrl = f'{authentication_info.get("base_entrypoint")}auth?response_type=code&' \
+              f'client_id={authentication_info.get("CLIENT_ID")}&' \
+              f'redirect_uri={authentication_info.get("redirect_uri")}&' \
               f'scope=openid profile email&state=random_state_string'
 
     return RedirectResponse(url=authUrl)
@@ -154,7 +154,7 @@ async def oidc_callback(request: Request,session: SessionDep):
             if '+' not in authentication_info['full_name']:
                 full_name = authentication_info['full_name']
             else:
-                full_name = ' '.join([user_data.get(v) for v in authentication_info['full_name'].split('+')])
+                full_name = ' '.join([user_data.get(v.strip()) for v in authentication_info['full_name'].split('+')])
         except Exception as e:
             raise UnauthorizedException(message=str(e))
     # determine whether the user already exists

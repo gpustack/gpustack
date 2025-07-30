@@ -570,9 +570,9 @@ def set_ulimit(target_soft_limit=65535):
 
 
 def set_authentication_info_env(cfg: Config):
-    if cfg.authentication_info:
+    if cfg.EXTERNAL_AUTH:
         if isinstance(cfg.authentication_info, dict):
-            os.environ["GPUSTACK_EXTERNAL_AUTH"] = json.dumps(cfg.authentication_info)
+            os.environ["GPUSTACK_EXTERNAL_AUTH"] = json.dumps(cfg.EXTERNAL_AUTH)
         else:
-            os.environ["GPUSTACK_EXTERNAL_AUTH"] = cfg.authentication_info
-        logger.debug(f"set env cfg.authentication_info={cfg.authentication_info}")
+            os.environ["GPUSTACK_EXTERNAL_AUTH"] = cfg.EXTERNAL_AUTH
+        logger.debug(f"set env cfg.authentication_info={cfg.EXTERNAL_AUTH}")

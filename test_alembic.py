@@ -13,7 +13,7 @@ alembic_cfg.set_main_option(
     "script_location", os.path.join(pkg_path, "migrations")
 )
 
-db_url = "mysql://a_appconnect:lPjK:POUNm0Z@10.62.175.98:3306/gpustack"
+db_url = "mysql://a_appconnect:lPjK:POUNm0Z@10.62.175.98:3306/gpustack_pre"
 # Use the pymysql driver to execute migrations to avoid compatibility issues between asynchronous drivers and Alembic.
 if db_url.startswith("mysql://"):
     db_url = re.sub(r'^mysql://', 'mysql+pymysql://', db_url)
