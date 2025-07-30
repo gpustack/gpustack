@@ -1,10 +1,8 @@
 import asyncio
-import math
 from collections import defaultdict
 import logging
 import os
 import re
-from functools import reduce
 from typing import Dict, List, Optional
 from gpustack.policies.base import (
     Allocatable,
@@ -16,6 +14,7 @@ from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     get_worker_model_instances,
     ListMessageBuilder,
+    get_model_num_attention_heads,
 )
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -96,41 +95,6 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
 
     # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
     return weight_size * 1.2 + framework_overhead
-
-
-def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
-    """
-    Get the number of attention heads in the model.
-    """
-
-    num_attention_heads = None
-    try:
-        num_attention_heads_set = set()
-
-        # Helper to collect num_attention_heads from configs
-        def add_heads_from(cfg, key="num_attention_heads"):
-            value = getattr(cfg, key, None)
-            if isinstance(value, int) and value > 0:
-                num_attention_heads_set.add(value)
-
-        for _config in [
-            pretrained_config,
-            getattr(pretrained_config, "llm_config", None),
-            getattr(pretrained_config, "text_config", None),
-            getattr(pretrained_config, "vision_config", None),
-        ]:
-            if _config:
-                add_heads_from(_config)
-
-        if not num_attention_heads_set:
-            return None
-
-        num_attention_heads = reduce(math.gcd, num_attention_heads_set)
-
-    except Exception as e:
-        logger.warning(f"Cannot get num_attention_heads: {e}")
-
-    return num_attention_heads
 
 
 def parse_model_size_by_name(model_name: str) -> int:

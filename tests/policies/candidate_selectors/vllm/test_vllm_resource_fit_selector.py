@@ -2,6 +2,8 @@ from typing import List
 
 import pytest
 from unittest.mock import patch, AsyncMock
+
+from gpustack.policies.utils import get_model_num_attention_heads
 from tests.utils.model import new_model, new_model_instance
 from gpustack.policies.candidate_selectors import VLLMResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
@@ -755,3 +757,83 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
         ]
 
         assert resource_fit_selector2._messages == expect_msg2
+
+
+@pytest.mark.parametrize(
+    "pretrained_config, expect_num",
+    [
+        (
+            {
+                "_name_or_path": "Qwen/Qwen2.5-VL-72B-Instruct",
+                "num_attention_heads": 64,
+            },
+            64,
+        ),
+        (
+            {
+                "model_type": "llama4",
+                "vision_config": {
+                    "model_type": "llama4_vision_model",
+                    "num_attention_heads": 4,
+                },
+                "text_config": {
+                    "model_type": "llama4_text",
+                    "num_attention_heads": 10,
+                },
+            },
+            10,
+        ),
+        (
+            {
+                "_name_or_path": "/mnt/petrelfs/wangweiyun/workspace_wwy/open_source/InternVL/internvl_chat/work_dirs/internvl_chat_v3_0/InternVL3_0-78B-MPO-try0-2/checkpoint-400",
+                "llm_config": {
+                    "num_attention_heads": 64,
+                },
+                "vision_config": {
+                    "num_attention_heads": 25,
+                },
+            },
+            64,
+        ),
+        (
+            # case: num_attention_heads define error in config
+            {
+                "num_attention_heads": 128,
+                "_name_or_path": "/mnt/petrelfs/wangweiyun/workspace_wwy/open_source/InternVL/internvl_chat/work_dirs/internvl_chat_v3_0/InternVL3_0-78B-MPO-try0-2/checkpoint-400",
+                "llm_config": {
+                    "num_attention_heads": 64,
+                },
+                "vision_config": {
+                    "num_attention_heads": 25,
+                },
+            },
+            64,
+        ),
+        (
+            {
+                # model_scope/LLM-Research/gemma-3-27b-it
+                "text_config": {
+                    "num_attention_heads": 32,
+                },
+                "vision_config": {
+                    "num_attention_heads": 16,
+                },
+            },
+            32,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_num_attention_heads(config, pretrained_config, expect_num):
+    class DictToObj:
+        def __init__(self, dictionary):
+            for key, value in dictionary.items():
+                if isinstance(value, dict):
+                    setattr(self, key, DictToObj(value))
+                else:
+                    setattr(self, key, value)
+
+    pretrained_config_obj = DictToObj(pretrained_config)
+    num_attention_heads = get_model_num_attention_heads(pretrained_config_obj)
+
+    assert num_attention_heads == expect_num
