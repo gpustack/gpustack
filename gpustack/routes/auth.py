@@ -80,10 +80,10 @@ async def saml_callback(request: Request, session: SessionDep):
         values = [v.text for v in attr.xpath('saml:AttributeValue', namespaces=ns)]
         attributes[attr_name] = values[0] if len(values) == 1 else values
     username = attributes.get(authentication_info['username'])
-    if '+' not in authentication_info['username']:
-        full_name = authentication_info['username']
+    if '+' not in authentication_info['full_name']:
+        full_name = authentication_info['full_name']
     else:
-        full_name = ' '.join([attributes.get(v) for v in authentication_info['username'].split('+')])
+        full_name = ' '.join([attributes.get(v) for v in authentication_info['full_name'].split('+')])
     # determine whether the user already exists
     user = await User.first_by_fields(session=session,
                                       fields={"username": username,
@@ -151,10 +151,10 @@ async def oidc_callback(request: Request,session: SessionDep):
             )
             user_data = json.loads(user_res.text)
             username = user_data.get(authentication_info['username'])
-            if '+' not in authentication_info['username']:
-                full_name = authentication_info['username']
+            if '+' not in authentication_info['full_name']:
+                full_name = authentication_info['full_name']
             else:
-                full_name = ' '.join([user_data.get(v) for v in authentication_info['username'].split('+')])
+                full_name = ' '.join([user_data.get(v) for v in authentication_info['full_name'].split('+')])
         except Exception as e:
             raise UnauthorizedException(message=str(e))
     # determine whether the user already exists
