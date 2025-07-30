@@ -16,6 +16,7 @@ from gpustack.logging import (
 from gpustack.utils import network, platform
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
+from gpustack.worker.daily_rotating_logger import DailyRotatingLogFile
 from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.vllm import VLLMServer
@@ -182,6 +183,18 @@ class ServeManager:
     def _start_serve_process(self, mi: ModelInstance):  # noqa: C901
         is_main_worker = mi.worker_id == self._worker_id
 
+        # 创建基于模型名/副本名的日志目录结构
+        model_log_dir = f"{self._serve_log_dir}/{mi.model_name}"
+        replica_log_dir = f"{model_log_dir}/{mi.name}"
+        os.makedirs(replica_log_dir, exist_ok=True)
+        
+        logger.debug(f"Created log directory for instance {mi.name} (ID: {mi.id}): {replica_log_dir}")
+        
+        # 更新实例ID到日志目录的映射文件，避免重复条目
+        mapping_file = f"{self._serve_log_dir}/instance_mapping.txt"
+        self._update_instance_mapping(mapping_file, mi.id, replica_log_dir)
+
+        # 保留向后兼容的日志文件路径（用于老式日志查找）
         log_file_path = f"{self._serve_log_dir}/{mi.id}.log"
         if os.path.exists(log_file_path) and platform.system() != "windows":
             # TODO Windows does not support os.remove() on open files.
@@ -241,7 +254,7 @@ class ServeManager:
                     mi,
                     backend,
                     self._clientset.headers,
-                    log_file_path,
+                    replica_log_dir,
                     self._config,
                     self._worker_id,
                 ),
@@ -306,7 +319,7 @@ class ServeManager:
         mi: ModelInstance,
         backend: BackendEnum,
         client_headers: dict,
-        log_file_path: str,
+        log_dir_path: str,
         cfg: Config,
         worker_id: int,
     ):
@@ -319,8 +332,11 @@ class ServeManager:
             headers=client_headers,
         )
 
-        with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
-            with RedirectStdoutStderr(log_file):
+        # 使用按日期轮转的日志文件
+        rotating_log = DailyRotatingLogFile(log_dir_path)
+        
+        try:
+            with RedirectStdoutStderr(rotating_log):
                 if backend == BackendEnum.LLAMA_BOX:
                     LlamaBoxServer(clientset, mi, cfg, worker_id).start()
                 elif backend == BackendEnum.VLLM:
@@ -331,6 +347,68 @@ class ServeManager:
                     AscendMindIEServer(clientset, mi, cfg, worker_id).start()
                 else:
                     raise ValueError(f"Unsupported backend {backend}")
+        finally:
+            rotating_log.close()
+
+    def _update_instance_mapping(self, mapping_file: str, instance_id: int, log_dir: str):
+        """更新实例ID到日志目录的映射，避免重复条目"""
+        mappings = {}
+        
+        # 读取现有映射
+        if os.path.exists(mapping_file):
+            try:
+                with open(mapping_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and ':' in line:
+                            inst_id, dir_path = line.split(':', 1)
+                            try:
+                                mappings[int(inst_id)] = dir_path
+                            except ValueError:
+                                continue
+            except Exception:
+                pass
+        
+        # 更新当前实例的映射
+        mappings[instance_id] = log_dir
+        
+        # 写回映射文件
+        try:
+            with open(mapping_file, "w", encoding="utf-8") as f:
+                for inst_id, dir_path in mappings.items():
+                    f.write(f"{inst_id}:{dir_path}\n")
+        except Exception:
+            pass  # 映射文件更新失败不影响主流程
+
+    def _remove_instance_mapping(self, mapping_file: str, instance_id: int):
+        """从映射文件中移除指定实例的映射"""
+        if not os.path.exists(mapping_file):
+            return
+            
+        mappings = {}
+        
+        # 读取现有映射
+        try:
+            with open(mapping_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and ':' in line:
+                        inst_id, dir_path = line.split(':', 1)
+                        try:
+                            if int(inst_id) != instance_id:
+                                mappings[int(inst_id)] = dir_path
+                        except ValueError:
+                            continue
+        except Exception:
+            return
+        
+        # 写回映射文件
+        try:
+            with open(mapping_file, "w", encoding="utf-8") as f:
+                for inst_id, dir_path in mappings.items():
+                    f.write(f"{inst_id}:{dir_path}\n")
+        except Exception:
+            pass
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
@@ -531,12 +609,17 @@ class ServeManager:
           - Remove ports from serving model instance ports.
           - Remove from starting model instances.
           - Remove from model cache by instance.
+          - Remove from instance mapping file.
         """
 
         self._serving_model_instances.pop(mi.id, None)
         self._serving_model_instance_ports.pop(mi.id, None)
         self._starting_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
+        
+        # 清理映射文件中的条目
+        mapping_file = f"{self._serve_log_dir}/instance_mapping.txt"
+        self._remove_instance_mapping(mapping_file, mi.id)
 
 
 def is_ready(backend: str, mi: ModelInstance) -> bool:
