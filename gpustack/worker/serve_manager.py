@@ -335,6 +335,10 @@ class ServeManager:
         # 使用按日期轮转的日志文件
         rotating_log = DailyRotatingLogFile(log_dir_path)
         
+        # 确保日志文件立即创建并可写入
+        test_msg = f"Model instance {mi.name} (ID: {mi.id}) started at {datetime.now()}\n"
+        rotating_log.write(test_msg)
+        
         try:
             with RedirectStdoutStderr(rotating_log):
                 if backend == BackendEnum.LLAMA_BOX:

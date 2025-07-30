@@ -50,8 +50,9 @@ class DailyRotatingLogFile:
         with self._lock:
             self._rotate_if_needed()
             if self._current_file:
-                self._current_file.write(data)
+                result = self._current_file.write(data)
                 self._current_file.flush()  # 立即刷新，确保实时写入
+                return result
             return len(data)  # 返回写入的字符数，模拟标准文件行为
     
     def flush(self):
@@ -63,10 +64,31 @@ class DailyRotatingLogFile:
         with self._lock:
             if self._current_file and not self._current_file.closed:
                 self._current_file.close()
+                self._current_file = None
     
     def fileno(self):
         with self._lock:
             self._rotate_if_needed()
             if self._current_file:
                 return self._current_file.fileno()
+            return None
+    
+    def readable(self):
+        return False
+    
+    def writable(self):
+        return True
+    
+    def seekable(self):
+        return False
+    
+    def isatty(self):
+        return False
+    
+    def get_current_log_file(self):
+        """获取当前日志文件路径，用于调试"""
+        with self._lock:
+            self._rotate_if_needed()
+            if self._current_file:
+                return self._current_file.name
             return None
