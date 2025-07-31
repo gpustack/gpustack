@@ -85,9 +85,9 @@ async def saml_callback(request: Request, session: SessionDep):
     else:
         full_name = ' '.join([attributes.get(v.strip()) for v in authentication_info['full_name'].split('+')])
     # determine whether the user already exists
-    user = await User.first_by_fields(session=session,
-                                      fields={"username": username,
-                                              "source": authentication_info.get('type')})
+    user = await User.first_by_field(
+        session=session, field="username", value=username
+    )
     # create user
     if not user:
         user_info = User(
@@ -158,9 +158,9 @@ async def oidc_callback(request: Request,session: SessionDep):
         except Exception as e:
             raise UnauthorizedException(message=str(e))
     # determine whether the user already exists
-    user = await User.first_by_fields(session=session,
-                                      fields={"username": username,
-                                              "source": authentication_info.get('type')})
+    user = await User.first_by_field(
+        session=session, field="username", value=username
+    )
     # create user
     if not user:
         user_info = User(
