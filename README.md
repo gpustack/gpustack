@@ -236,25 +236,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ## SSO Authentication
-add config GPUSTACK_EXTERNAL_AUTH to environment variable  
-1、examples such as OIDC certification
+Add config GPUSTACK_EXTERNAL_AUTH to environment variable  
+1. Examples such as OIDC certification
 ```
 {
     "type": "OIDC", 
-    "username": "",  # Mapping of OIDC user information to local username
-    "full_name": "", # Mapping of OIDC user information to local full_name
+    "username": "",  # Mapping of OIDC user information to local username for example "preferred_username"
+    "full_name": "", # Mapping of OIDC user information to local full_name 
+                       Multiple elements combined for use + splicing for example "name" or "firstName+lastName"
     "CLIENT_ID": "your CLIENT ID", 
     "CLIENT_SECRET": "your CLIENT SECRET", 
     "redirect_uri": "{your server url}/auth/oidc/callback", 
     "base_entrypoint": "sso server url"
 }
 ```  
-2、examples such as SAML certification
+2. Examples such as SAML certification
 ```
 {
     "type": "SAML", 
-    "username": "", # Mapping of SAML user information to local username
-    "full_name": "", # Mapping of SAML user information to local full_name
+    "username": "", # Mapping of SAML user information to local username for example "username"
+    "full_name": "", # Mapping of SAML user information to local full_name 
+                       Multiple elements combined for use + splicing for example "fullName" or "firstName+lastName"
     "sp_entityId": "your sp_entityId",  
     "sp_asc_url": "{your server url}/auth/saml/callback", 
     "sp_x509cert": "SP Public Key",
