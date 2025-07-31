@@ -363,6 +363,13 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         action='append',
         help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers Content-Type. Default: ["Authorization", "Content-Type"].',
     )
+    # authentication configuration
+    group.add_argument(
+        "--EXTERNAL_AUTH",
+        type=str,
+        help="A SSO authentication info.",
+        default=get_gpustack_env("authentication_info")
+    )
 
     parser_server.set_defaults(func=run)
 
@@ -373,6 +380,7 @@ def run(args: argparse.Namespace):
         setup_logging(cfg.debug)
         debug_env_info()
         set_third_party_env(cfg=cfg)
+        set_authentication_info_env(cfg=cfg)
         set_ulimit()
         multiprocessing.set_start_method('spawn')
 
@@ -559,3 +567,12 @@ def set_ulimit(target_soft_limit=65535):
                 f"Current soft limit: {current_soft}. "
                 "Consider increasing with `ulimit -n`."
             )
+
+
+def set_authentication_info_env(cfg: Config):
+    if cfg.EXTERNAL_AUTH:
+        if isinstance(cfg.authentication_info, dict):
+            os.environ["GPUSTACK_EXTERNAL_AUTH"] = json.dumps(cfg.EXTERNAL_AUTH)
+        else:
+            os.environ["GPUSTACK_EXTERNAL_AUTH"] = cfg.EXTERNAL_AUTH
+        logger.debug(f"set env cfg.authentication_info={cfg.EXTERNAL_AUTH}")

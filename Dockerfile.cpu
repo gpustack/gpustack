@@ -1,11 +1,13 @@
 FROM ubuntu:22.04
 
+
 ARG TARGETPLATFORM
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    vim \
     wget \
     tzdata \
     iproute2 \
@@ -17,12 +19,17 @@ RUN apt-get update && apt-get install -y \
 
 COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && \
+    chmod a+x /workspace/gpustack/hack/build.sh && \
     make build && \
     WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \
     pip install pipx && \
+    pip install httpx && \
+    pip install python3-saml && \
+    pip install lxml==5.2.1 && \
+    pip install xmlsec==1.3.14 && \
+    pip install authlib && \
     pip install $WHEEL_PACKAGE && \
-    pip cache purge && \
-    rm -rf /workspace/gpustack
+    pip cache purge
 
 RUN gpustack download-tools
 

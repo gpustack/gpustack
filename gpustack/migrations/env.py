@@ -8,6 +8,8 @@ from alembic import context
 
 from gpustack import schemas
 from sqlmodel import SQLModel
+import typing
+typing.TYPE_CHECKING = False
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

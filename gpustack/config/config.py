@@ -138,6 +138,7 @@ class Config(BaseSettings):
     rpc_server_args: Optional[List[str]] = None
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
+    EXTERNAL_AUTH: Optional[str] = None  # authentication configuration
 
     def __init__(self, **values):
         super().__init__(**values)
