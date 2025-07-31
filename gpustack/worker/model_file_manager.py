@@ -5,7 +5,9 @@ import glob
 from itertools import chain
 import logging
 from pathlib import Path
+import platform
 import time
+import threading
 from typing import Dict, Tuple
 from modelscope.hub.constants import TEMPORARY_FOLDER_NAME
 from multiprocessing import Manager, cpu_count
@@ -267,6 +269,9 @@ class ModelFileDownloadTask:
         self._model_file = model_file
         self._config = cfg
         self._cancel_flag = cancel_flag
+        # Store download log file paths for related model instances
+        self._instance_download_log_file = None
+        self._download_completed = False
 
     def prerun(self):
         setup_logging(self._config.debug)
@@ -275,11 +280,21 @@ class ModelFileDownloadTask:
             username=f"system/worker/{self._config.worker_ip}",
             password=self._config.token,
         )
-
+        self._download_start_time = time.time()
         self._ensure_model_file_size_and_paths()
 
-        self._last_download_update_time = 0
+        self._speed_lock = threading.Lock()
+        # Lock for _model_downloaded_size/_last_download_update_time/_last_downloaded_size to avoid race condition
         self._model_downloaded_size = 0
+        self._last_download_update_time = 0
+        self._last_downloaded_size = 0
+
+        self._setup_instance_log_files()
+
+        self._model_downloaded_size = 0
+        self._last_download_update_time = 0
+        self._last_downloaded_size = 0
+
         logger.debug(f"Initializing task for {self._model_file.readable_source}")
         self._update_progress_func = partial(
             self._update_model_file_progress, self._model_file.id
@@ -288,15 +303,132 @@ class ModelFileDownloadTask:
         self._model_downloaded_size = 0
         self.hijack_tqdm_progress()
 
+    def _setup_instance_log_files(self):
+        try:
+            log_dir = Path(self._config.log_dir) / "serve"
+
+            # Use model file ID for shared download log across all instances using the same model file
+            download_log_file_path = (
+                log_dir / f"model_file_{self._model_file.id}.download.log"
+            )
+            self._instance_download_log_file = str(download_log_file_path)
+
+            logger.debug(f"Setup shared download log file: {download_log_file_path}")
+
+        except Exception as e:
+            logger.warning(f"Failed to setup instance download log files: {e}")
+
+    def _write_log_with_windows_lock(self, log_file_path: str, log_message: str):
+        """
+        Write log message to file using Windows msvcrt file locking
+        """
+        try:
+            import msvcrt
+        except ImportError:
+            # msvcrt not available, fallback to basic write
+            self._write_log_without_lock(log_file_path, log_message)
+            return
+
+        with open(log_file_path, 'a', encoding='utf-8') as f:
+            try:
+                # Acquire exclusive lock on the file
+                # Lock a single byte at the beginning of the file for coordination
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                f.seek(0, 2)  # Move to end of file for appending
+                f.write(log_message)
+                f.flush()  # Ensure immediate write to disk
+            except (OSError, IOError):
+                # If locking fails, fallback to basic write
+                f.seek(0, 2)  # Move to end of file for appending
+                f.write(log_message)
+                f.flush()
+            finally:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass  # Ignore unlock errors
+
+    def _write_log_with_unix_lock(self, log_file_path: str, log_message: str):
+        """
+        Write log message to file using Unix/Linux fcntl file locking
+        """
+        try:
+            import fcntl
+        except ImportError:
+            # fcntl not available, fallback to basic write
+            self._write_log_without_lock(log_file_path, log_message)
+            return
+
+        with open(log_file_path, 'a', encoding='utf-8') as f:
+            try:
+                # Acquire exclusive lock on the file
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                f.write(log_message)
+                f.flush()  # Ensure immediate write to disk
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    def _write_log_without_lock(self, log_file_path: str, log_message: str):
+        """
+        Write log message to file without file locking (fallback method)
+        """
+        try:
+            with open(log_file_path, 'a', encoding='utf-8') as f:
+                f.write(log_message)
+                f.flush()  # Ensure immediate write to disk
+        except Exception as e:
+            logger.warning(
+                f"Failed to write to instance download log {log_file_path}: {e}"
+            )
+
+    def _write_to_instance_download_logs(self, message: str, is_error=False):
+        """
+        Write download log message to all associated model instance download log files
+        Skip writing if download is completed to avoid unnecessary logs
+        """
+        if not self._instance_download_log_file or self._download_completed:
+            return
+
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        log_level = "ERROR" if is_error else "INFO"
+        log_message = f"[{timestamp}] [{log_level}] {message}\n"
+
+        # Determine file locking mechanism based on platform
+        is_windows = platform.system() == 'Windows'
+
+        # Ensure log directory exists
+        Path(self._instance_download_log_file).parent.mkdir(parents=True, exist_ok=True)
+
+        # Use appropriate locking method based on platform
+        if is_windows:
+            self._write_log_with_windows_lock(
+                self._instance_download_log_file, log_message
+            )
+        else:
+            self._write_log_with_unix_lock(
+                self._instance_download_log_file, log_message
+            )
+
     def run(self):
         try:
             self.prerun()
+            self._write_to_instance_download_logs(
+                f"Model file download task started: {self._model_file.readable_source}"
+            )
             self._download_model_file()
+            self._write_to_instance_download_logs(
+                f"Model file download task completed successfully: {self._model_file.readable_source}"
+            )
         except asyncio.CancelledError:
-            logger.info(f"Download cancelled for {self._model_file.readable_source}")
+            self._write_to_instance_download_logs(
+                f"Download task cancelled: {self._model_file.readable_source}"
+            )
         except Exception as e:
-            logger.error(
-                f"Download failed for {self._model_file.readable_source}: {str(e)}"
+            self._write_to_instance_download_logs(
+                f"Download task failed: {self._model_file.readable_source} - {str(e)}",
+                is_error=True,
             )
             self._update_model_file(
                 self._model_file.id,
@@ -305,7 +437,10 @@ class ModelFileDownloadTask:
             )
 
     def _download_model_file(self):
-        logger.info(f"Downloading model file {self._model_file.readable_source}")
+        self._write_to_instance_download_logs(
+            f"Downloading model file: {self._model_file.readable_source}"
+        )
+
         model_paths = downloaders.download_model(
             self._model_file,
             local_dir=self._model_file.local_dir,
@@ -313,13 +448,16 @@ class ModelFileDownloadTask:
             ollama_library_base_url=self._config.ollama_library_base_url,
             huggingface_token=self._config.huggingface_token,
         )
+        self._download_completed = True
         self._update_model_file(
             self._model_file.id,
             state=ModelFileStateEnum.READY,
             download_progress=100,
             resolved_paths=model_paths,
         )
-        logger.info(f"Successfully downloaded {self._model_file.readable_source}")
+        self._write_to_instance_download_logs(
+            f"Successfully downloaded {self._model_file.readable_source}"
+        )
 
     def hijack_tqdm_progress(task_self):
         """
@@ -336,48 +474,111 @@ class ModelFileDownloadTask:
         )
 
         def _new_init(self: tqdm, *args, **kwargs):
-            kwargs["disable"] = False  # enable the progress bar anyway
-            _original_init(self, *args, **kwargs)
-
-            if hasattr(task_self, '_model_file_size'):
-                # Resume downloading
-                task_self._model_downloaded_size += self.n
+            task_self._handle_tqdm_init(self, _original_init, *args, **kwargs)
 
         def _new_update(self: tqdm, n=1):
-            _original_update(self, n)
-
-            if task_self._cancel_flag.is_set():
-                raise asyncio.CancelledError("Download cancelled")
-
-            # This is the default for single tqdm downloader like ollama
-            # TODO we may want to unify to always get the size before downloading.
-            total_size = self.total
-            downloaded_size = self.n
-            if hasattr(task_self, '_model_file_size'):
-                # This is summary for group downloading
-                total_size = task_self._model_file_size
-                task_self._model_downloaded_size += n
-                downloaded_size = task_self._model_downloaded_size
-
-            try:
-                if (
-                    time.time() - task_self._last_download_update_time < 2
-                    and downloaded_size != total_size
-                ):
-                    # Only update after 2-second interval or download is completed.
-                    return
-
-                task_self._update_progress_func(
-                    round((downloaded_size / total_size) * 100, 2)
-                )
-                task_self._last_download_update_time = time.time()
-            except Exception as e:
-                raise Exception(f"Failed to update model file: {e}")
+            task_self._handle_tqdm_update(self, _original_update, n)
 
         tqdm.__init__ = _new_init
         tqdm.update = _new_update
         tqdm._original_init = _original_init
         tqdm._original_update = _original_update
+
+    def _handle_tqdm_init(self, tqdm_instance, original_init, *args, **kwargs):
+        kwargs["disable"] = False  # enable the progress bar anyway
+        original_init(tqdm_instance, *args, **kwargs)
+
+        if hasattr(self, '_model_file_size'):
+            # Resume downloading
+            self._model_downloaded_size += tqdm_instance.n
+
+        # Log download start info to model instance logs
+        if hasattr(tqdm_instance, 'desc') and tqdm_instance.desc:
+            self._write_to_instance_download_logs(
+                f"Starting download: {tqdm_instance.desc}"
+            )
+        else:
+            self._write_to_instance_download_logs(
+                f"Starting model file download: {self._model_file.readable_source}"
+            )
+
+    def _handle_tqdm_update(self, tqdm_instance, original_update, n=1):
+        original_update(tqdm_instance, n)
+
+        if self._cancel_flag.is_set():
+            raise asyncio.CancelledError("Download cancelled")
+
+        # Calculate download sizes
+        total_size = tqdm_instance.total
+        downloaded_size = tqdm_instance.n
+
+        if hasattr(self, '_model_file_size'):
+            # This is summary for group downloading
+            total_size = self._model_file_size
+            with self._speed_lock:
+                self._model_downloaded_size += n
+                downloaded_size = self._model_downloaded_size
+
+        try:
+            self._update_progress_and_log(total_size, downloaded_size)
+        except Exception as e:
+            error_msg = f"Failed to update model file: {e}"
+            self._write_to_instance_download_logs(
+                f"Download error: {error_msg}", is_error=True
+            )
+            raise Exception(error_msg)
+
+    def _update_progress_and_log(self, total_size, downloaded_size):
+        if total_size <= 0:
+            return
+
+        progress_percent = (
+            round((downloaded_size / total_size) * 100, 2) if total_size > 0 else 0
+        )
+        current_time = time.time()
+        # Download speed to show in logs
+        speed_mb_per_sec = 0
+
+        with self._speed_lock:
+            # Only update after 2-second interval or download is completed.
+            if (
+                current_time - self._last_download_update_time < 2
+                and downloaded_size != total_size
+            ):
+                return
+
+            # Update progress to DB
+            self._update_progress_func(progress_percent)
+
+            # Calculate download speed
+            time_elapsed = current_time - self._last_download_update_time
+            if time_elapsed > 0 and self._last_download_update_time > 0:
+                bytes_downloaded_since_last = (
+                    downloaded_size - self._last_downloaded_size
+                )
+                speed_bytes_per_sec = bytes_downloaded_since_last / time_elapsed
+                speed_mb_per_sec = speed_bytes_per_sec / (1024 * 1024)
+
+            self._last_download_update_time = current_time
+            self._last_downloaded_size = downloaded_size
+
+        # Log download progress to download log files
+        downloaded_mb = downloaded_size / (1024 * 1024)
+        total_mb = total_size / (1024 * 1024)
+
+        if downloaded_size == total_size:
+            log_msg = (
+                f"Download completed: {self._model_file.readable_source} - "
+                f"{downloaded_mb:.2f}MB/{total_mb:.2f}MB (100.00%)"
+            )
+        else:
+            log_msg = (
+                f"Download progress: {self._model_file.readable_source} - "
+                f"{downloaded_mb:.2f}MB/{total_mb:.2f}MB ({progress_percent:.2f}%) - "
+                f"Speed: {speed_mb_per_sec:.2f}MB/s"
+            )
+
+        self._write_to_instance_download_logs(log_msg)
 
     def _ensure_model_file_size_and_paths(self):
         if self._model_file.size is not None:
