@@ -1,0 +1,154 @@
+diff --git a/vllm/envs.py b/vllm/envs.py
+index 0cc6792d7..a3451af81 100644
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -114,6 +114,7 @@ if TYPE_CHECKING:
+     VLLM_DP_SIZE: int = 1
+     VLLM_DP_MASTER_IP: str = ""
+     VLLM_DP_MASTER_PORT: int = 0
++    VLLM_DP_PORT_START: int = 0
+     VLLM_MOE_DP_CHUNK_SIZE: int = 256
+     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: bool = False
+     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
+@@ -816,6 +817,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_DP_MASTER_IP":
+     lambda: os.getenv("VLLM_DP_MASTER_IP", "127.0.0.1"),
+ 
++    # Port start position for the data parallel setting.
++    "VLLM_DP_PORT_START":
++    lambda: int(os.getenv("VLLM_DP_PORT_START", "0")),
++
+     # Port of the master node in the data parallel setting
+     "VLLM_DP_MASTER_PORT":
+     lambda: int(os.getenv("VLLM_DP_MASTER_PORT", "0")),
+diff --git a/vllm/utils/__init__.py b/vllm/utils/__init__.py
+index 9550b056f..bc15a27d6 100644
+--- a/vllm/utils/__init__.py
++++ b/vllm/utils/__init__.py
+@@ -667,7 +667,7 @@ def get_open_zmq_inproc_path() -> str:
+     return f"inproc://{uuid4()}"
+ 
+ 
+-def get_open_port() -> int:
++def get_open_port(count: int = 1, port_start: Optional[int] = None) -> Union[int|list[int]]:
+     """
+     Get an open port for the vLLM process to listen on.
+     An edge case to handle, is when we run data parallel,
+@@ -680,13 +680,34 @@ def get_open_port() -> int:
+         dp_master_port = envs.VLLM_DP_MASTER_PORT
+         reserved_port_range = range(dp_master_port, dp_master_port + 10)
+         while True:
+-            candidate_port = _get_open_port()
++            candidate_port = _get_open_port(count, port_start)
+             if candidate_port not in reserved_port_range:
+                 return candidate_port
+-    return _get_open_port()
++    return _get_open_port(count, port_start)
+ 
+ 
+-def _get_open_port() -> int:
++def _get_open_port(count: int = 1, port_start: Optional[int] = None) -> Union[int|list[int]]:
++    if ps := port_start or envs.VLLM_DP_PORT_START:
++        logger.info(f"Gaining open ports from {ps}")
++        ports: list[int] = []
++        while len(ports) != count:
++            po = (ports[-1] - ps + 1) if ports else 0
++            port = ps + po
++            while True:
++                try:
++                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
++                        s.bind(("", port))
++                        ports.append(port)
++                    break
++                except OSError:
++                    port += 1
++                    logger.info("Port %d is already in use, trying port %d",
++                                port - 1, port)
++        logger.info(f"Gained open ports {ports}")
++        if count == 1:
++            return ports[0]
++        return ports
++
+     port = envs.VLLM_PORT
+     if port is not None:
+         while True:
+diff --git a/vllm/v1/engine/coordinator.py b/vllm/v1/engine/coordinator.py
+index b3e7a2e85..c2f04849d 100644
+--- a/vllm/v1/engine/coordinator.py
++++ b/vllm/v1/engine/coordinator.py
+@@ -54,7 +54,7 @@ class DPCoordinator:
+     request wave / running state changes.
+     """
+ 
+-    def __init__(self, parallel_config: ParallelConfig):
++    def __init__(self, parallel_config: ParallelConfig, ports: set[int] = None):
+ 
+         dp_size = parallel_config.data_parallel_size
+         assert dp_size > 1, "Coordinator only used for data parallel"
+@@ -65,11 +65,11 @@ class DPCoordinator:
+         # Assume coordinator is colocated with front-end procs when not in
+         # external DP LB mode.
+         front_publish_address = get_engine_client_zmq_addr(
+-            local_only=not external_lb, host=host)
++            local_only=not external_lb, host=host, port=0 if not external_lb or not ports else ports.pop())
+ 
+         local_only_eng = dp_size == parallel_config.data_parallel_size_local
+-        back_publish_address = get_engine_client_zmq_addr(local_only_eng, host)
+-        back_output_address = get_engine_client_zmq_addr(local_only_eng, host)
++        back_publish_address = get_engine_client_zmq_addr(local_only_eng, host, 0 if local_only_eng or not ports else ports.pop())
++        back_output_address = get_engine_client_zmq_addr(local_only_eng, host, 0 if local_only_eng or not ports else ports.pop())
+ 
+         # When in external LB mode, load stats aren't published, only changes
+         # to request wave / running state, so we don't need to rate-limit the
+diff --git a/vllm/v1/engine/utils.py b/vllm/v1/engine/utils.py
+index c40124194..50842d6af 100644
+--- a/vllm/v1/engine/utils.py
++++ b/vllm/v1/engine/utils.py
+@@ -15,7 +15,7 @@ import zmq
+ 
+ from vllm.config import CacheConfig, ParallelConfig, VllmConfig
+ from vllm.logger import init_logger
+-from vllm.utils import get_mp_context, get_open_zmq_ipc_path, zmq_socket_ctx
++from vllm.utils import get_mp_context, get_open_zmq_ipc_path, zmq_socket_ctx, get_open_port
+ from vllm.v1.engine.coordinator import DPCoordinator
+ from vllm.v1.executor.abstract import Executor
+ from vllm.v1.utils import get_engine_client_zmq_addr, shutdown
+@@ -337,14 +337,27 @@ def launch_core_engines(
+     client_local_only = offline_mode or external_dp_lb or (local_engine_count
+                                                            == dp_size)
+ 
++    # Gain port for the engine client ZMQ sockets.
++    # Assuming that the X is the number of data_parallel_master_port,
++    # X+1, X+2 will be used for data parallelism initialization,
++    # so we need to start from X+3 to gain enough ports.
++    count = 0
++    if not client_local_only:
++        count += 2 * num_api_servers
++    if parallel_config.data_parallel_external_lb:
++        count += 1
++    if parallel_config.data_parallel_size != parallel_config.data_parallel_size_local:
++        count += 2
++    ports = set(get_open_port(count, parallel_config.data_parallel_master_port + 3))
++
+     # Set up input and output addresses.
+     addresses = EngineZmqAddresses(
+         inputs=[
+-            get_engine_client_zmq_addr(client_local_only, host)
++            get_engine_client_zmq_addr(client_local_only, host, 0 if client_local_only else ports.pop())
+             for _ in range(num_api_servers)
+         ],
+         outputs=[
+-            get_engine_client_zmq_addr(client_local_only, host)
++            get_engine_client_zmq_addr(client_local_only, host, 0 if client_local_only else ports.pop())
+             for _ in range(num_api_servers)
+         ],
+     )
+@@ -354,7 +367,7 @@ def launch_core_engines(
+     run_coordinator = dp_size > 1 and not offline_mode and dp_rank == 0
+ 
+     if run_coordinator:
+-        coordinator = DPCoordinator(parallel_config)
++        coordinator = DPCoordinator(parallel_config, ports)
+ 
+         addresses.coordinator_input, addresses.coordinator_output = (
+             coordinator.get_engine_socket_addresses())

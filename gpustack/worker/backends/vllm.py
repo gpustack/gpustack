@@ -1,3 +1,5 @@
+import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -6,8 +8,8 @@ import sys
 from typing import Dict, List, Optional
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
 from gpustack.schemas.workers import VendorEnum
+from gpustack.utils import network
 from gpustack.utils.command import (
-    find_parameter,
     get_versioned_command,
     get_command_path,
 )
@@ -22,8 +24,93 @@ from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 logger = logging.getLogger(__name__)
 
 
+# FIXME: Improve this to receive more parameters from frontend.
+@dataclasses.dataclass
+class VLLMParameters:
+    #
+    # Model config
+    #
+    gpu_memory_utilization: float = 0.9
+    #
+    # Parallelism config
+    #
+    pipeline_parallel_size: Optional[int] = None
+    data_parallel_size: Optional[int] = None
+    data_parallel_size_local: Optional[int] = None
+    tensor_parallel_size: Optional[int] = None
+
+    def is_parallelism_configured(self) -> bool:
+        return (
+            self.pipeline_parallel_size is not None
+            or self.data_parallel_size is not None
+            or self.tensor_parallel_size is not None
+        )
+
+    def from_args(self, args: List[str]):
+        parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
+        #
+        # Model config
+        #
+        parser.add_argument(
+            "--gpu-memory-utilization",
+            type=float,
+            default=self.gpu_memory_utilization,
+            required=False,
+        )
+        #
+        # Parallelism config
+        #
+        parser.add_argument(
+            "--pipeline-parallel-size",
+            "-pp",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--data-parallel-size",
+            "-dp",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--data-parallel-size-local",
+            "-dpl",
+            type=int,
+            required=False,
+        )
+        parser.add_argument(
+            "--tensor-parallel-size",
+            "-tp",
+            type=int,
+            required=False,
+        )
+
+        args_parsed = parser.parse_known_args(args=args)
+        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+            try:
+                attr_value = getattr(args_parsed[0], attr_name, None)
+                if attr_value is not None:
+                    try:
+                        setattr(self, attr_name, attr_value)
+                    except ValueError as e:
+                        # Never reach here, but just in case.
+                        raise argparse.ArgumentTypeError(
+                            f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
+                        ) from e
+            except AttributeError:
+                # If reach here, that means the field is an internal property,
+                # which would not register in the argument parser.
+                pass
+
+        # TODO: default and validate the values
+
+
 class VLLMServer(InferenceServer):
     def start(self):  # noqa: C901
+        params = VLLMParameters()
+        if self._model.backend_parameters:
+            params.from_args(self._model.backend_parameters)
+
         try:
             command_path = get_command_path("vllm")
             if self._model.backend_version:
@@ -40,10 +127,34 @@ class VLLMServer(InferenceServer):
             if derived_max_model_len and derived_max_model_len > 8192:
                 arguments.extend(["--max-model-len", "8192"])
 
-            auto_parallelism_arguments = get_auto_parallelism_arguments(
-                self._model.backend_parameters, self._model_instance
-            )
-            arguments.extend(auto_parallelism_arguments)
+            if not params.is_parallelism_configured():
+                auto_parallelism_arguments = get_auto_parallelism_arguments(
+                    self._model_instance
+                )
+                arguments.extend(auto_parallelism_arguments)
+
+            # For data parallelism, we are using Ray as the backend.
+            if params.data_parallel_size and params.data_parallel_size > 0:
+                arguments.extend(["--data-parallel-backend", "ray"])
+                # Specify the local data parallel size if not specified.
+                if not params.data_parallel_size_local:
+                    local_world_size = len(self._model_instance.gpu_indexes)
+                    data_parallel_size_local = (
+                        (params.tensor_parallel_size or 1) + local_world_size - 1
+                    ) // local_world_size
+                    arguments.extend(
+                        ["--data-parallel-size-local", str(data_parallel_size_local)]
+                    )
+                # When vLLM creates data parallelism coordinator,
+                # vLLM will serve it behind serval TCP-established ZMQ services.
+                # In order to avoid port conflicts,
+                # we need to tell vLLM how to choose a port with an environment patch.
+                if not self._model.env:
+                    self._model.env = {}
+                start_port, _ = network.parse_port_range(
+                    self._config.rpc_server_port_range,
+                )
+                self._model.env["VLLM_DP_PORT_START"] = str(start_port)
 
             if is_distributed_vllm(self._model_instance):
                 arguments.extend(["--distributed-executor-backend", "ray"])
@@ -178,17 +289,7 @@ class VLLMServer(InferenceServer):
         return None
 
 
-def get_auto_parallelism_arguments(
-    backend_parameters: List[str], model_instance: ModelInstance
-) -> List[str]:
-    parallelism = find_parameter(
-        backend_parameters,
-        ["tensor-parallel-size", "tp", "pipeline-parallel-size", "pp"],
-    )
-
-    if parallelism is not None:
-        return []
-
+def get_auto_parallelism_arguments(model_instance: ModelInstance) -> List[str]:
     if is_distributed_vllm(model_instance):
         # distributed across multiple workers
         pp = len(model_instance.distributed_servers.subordinate_workers) + 1

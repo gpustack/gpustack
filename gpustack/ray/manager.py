@@ -21,10 +21,7 @@ class RayManager:
         self._head = head
         self._pure_head = pure_head
         self._role = "head" if head else "worker"
-        if not head:
-            self._ray_address = get_ray_address(cfg.server_url, cfg.ray_port)
-
-        self._ray_args = cfg.ray_args
+        self._ray_head_host = cfg.worker_ip if head else extract_host(cfg.server_url)
         self._ray_process = None
         self._log_file_path = f"{cfg.log_dir}/ray-{self._role}.log"
         self._check_interval = 15
@@ -86,11 +83,21 @@ class RayManager:
                     str(self._cfg.ray_dashboard_port),
                 ]
             )
+            # If the worker IP is provided, use it as the dashboard host.
+            # Therefore, the dashboard will be accessible from the worker IP,
+            # and allow all non-head nodes to connect to it.
+            if self._ray_head_host:
+                arguments.extend(
+                    [
+                        "--dashboard-host",
+                        str(self._ray_head_host),
+                    ]
+                )
         else:
             arguments.extend(
                 [
                     "--address",
-                    self._ray_address,
+                    f"{self._ray_head_host}:{self._cfg.ray_port}",
                 ]
             )
 
@@ -100,8 +107,8 @@ class RayManager:
         if self._cfg.worker_ip:
             arguments.extend(["--node-ip-address", self._cfg.worker_ip])
 
-        if self._ray_args:
-            arguments.extend(self._ray_args)
+        if self._cfg.ray_args:
+            arguments.extend(self._cfg.ray_args)
 
         logger.debug(f"Run Ray with arguments: {' '.join([command_path] + arguments)}")
 
@@ -123,14 +130,11 @@ class RayManager:
         logger.info(f"Started Ray {self._role}.")
 
 
-def get_ray_address(server_url: str, ray_port: int) -> str:
+def extract_host(url: str) -> str:
     """
-    Get the Ray address from the server URL and ray port.
+    Extract the host from the given URL.
     """
-    parsed = urlsplit(server_url)
-    hostport = parsed.netloc
+    us = urlsplit(url)
+    ps = us.netloc.rsplit(':', 1)
 
-    parts = hostport.rsplit(':', 1)
-    host = parts[0] if len(parts) == 2 else hostport
-
-    return f"{host}:{ray_port}"
+    return ps[0] if len(ps) == 2 else us.netloc
