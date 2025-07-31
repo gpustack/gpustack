@@ -26,12 +26,12 @@ def register(app: FastAPI):
     async def get_config():
         authentication_info = json.loads(os.getenv('GPUSTACK_EXTERNAL_AUTH', '{}'))
         req_dict = {}
-        if authentication_info.get('type') == 'oidc':
+        if authentication_info.get('type').lower() == 'oidc':
             req_dict = {
                         "is_oidc": True,
                         "is_saml": False
                         }
-        if authentication_info.get('type') == 'saml':
+        if authentication_info.get('type').lower() == 'saml':
             req_dict = {
                         "is_oidc": False,
                         "is_saml": True
