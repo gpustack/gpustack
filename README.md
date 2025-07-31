@@ -237,7 +237,8 @@ limitations under the License.
 
 ## SSO Authentication
 add config GPUSTACK_EXTERNAL_AUTH to environment variable  
-```1、examples such as OIDC certification
+1、examples such as OIDC certification
+```
 {
     "type": "OIDC", 
     "username": "",  # Mapping of OIDC user information to local username
@@ -247,8 +248,9 @@ add config GPUSTACK_EXTERNAL_AUTH to environment variable
     "redirect_uri": "{your server url}/auth/oidc/callback", 
     "base_entrypoint": "sso server url"
 }
+```  
+2、examples such as SAML certification
 ```
-```2、examples such as SAML certification
 {
     "type": "SAML", 
     "username": "", # Mapping of SAML user information to local username
