@@ -18,6 +18,7 @@ from gpustack.schemas.models import (
     ModelInstancePublic,
     ModelInstanceUpdate,
     ModelInstancesPublic,
+    ModelInstanceStateEnum,
 )
 
 router = APIRouter()
@@ -85,7 +86,7 @@ async def fetch_worker(session, worker_id):
 
 
 @router.get("/{id}/logs")
-async def get_serving_logs(
+async def get_serving_logs(  # noqa: C901
     request: Request, session: SessionDep, id: int, log_options: LogOptionsDep
 ):
     model_instance = await fetch_model_instance(session, id)
@@ -95,6 +96,12 @@ async def get_serving_logs(
         f"http://{worker.ip}:{worker.port}/serveLogs"
         f"/{model_instance.id}?{log_options.url_encode()}"
     )
+    if (
+        model_instance.state != ModelInstanceStateEnum.RUNNING
+        and model_instance.model_files
+    ):
+        # Get model file ID for injected download logs if instance is downloading
+        model_instance_log_url += f"&model_file_id={model_instance.model_files[0].id}"
 
     timeout = aiohttp.ClientTimeout(total=5 * 60, sock_connect=5)
 
