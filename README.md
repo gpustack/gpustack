@@ -234,3 +234,31 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+## SSO Authentication
+add config GPUSTACK_EXTERNAL_AUTH to environment variable
+1、examples such as OIDC certification
+{
+    "type": "OIDC", 
+    "username": "",  # Mapping of OIDC user information to local username
+    "full_name": "", # Mapping of OIDC user information to local full_name
+    "CLIENT_ID": "your CLIENT ID", 
+    "CLIENT_SECRET": "your CLIENT SECRET", 
+    "redirect_uri": "{your server url}/auth/oidc/callback", 
+    "base_entrypoint": "sso server url"
+}
+2、examples such as SAML certification
+{
+    "type": "SAML", 
+    "username": "", # Mapping of SAML user information to local username
+    "full_name": "", # Mapping of SAML user information to local full_name
+    "sp_entityId": "your sp_entityId",  
+    "sp_asc_url": "{your server url}/auth/saml/callback", 
+    "sp_x509cert": "SP Public Key",
+    "sp_privateKey": "sp PrivateKey",
+    "idp_entityId": "your idp_entityId", 
+    "idp_server_url": "your idp_server_url",
+    "idp_x509cert": "IDP Public Key",
+    "security": {} # Signature configuration
+}
+
