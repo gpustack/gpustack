@@ -17,11 +17,11 @@ RUN apt-get update && apt-get install -y \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /workspace/gpustack-source
-RUN cd /workspace/gpustack-source && \
-    chmod a+x /workspace/gpustack-source/hack/build.sh && \
+COPY . /workspace/gpustack
+RUN cd /workspace/gpustack && \
+    chmod a+x /workspace/gpustack/hack/build.sh && \
     make build && \
-    WHEEL_PACKAGE="$(ls /workspace/gpustack-source/dist/*.whl)[audio]" && \
+    WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \
     pip install pipx && \
     pip install httpx && \
     pip install python3-saml && \
