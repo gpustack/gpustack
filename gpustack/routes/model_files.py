@@ -18,6 +18,8 @@ from gpustack.schemas.model_files import (
     ModelFileUpdate,
     ModelFilesPublic,
 )
+from gpustack.schemas.models import ModelInstancesPublic
+from gpustack.schemas.common import Pagination
 
 router = APIRouter()
 
@@ -122,6 +124,31 @@ async def get_model_file(session: SessionDep, id: int):
     if not model_file:
         raise NotFoundException(message=f"Model file {id} not found")
     return model_file
+
+
+@router.get("/{id}/instances", response_model=ModelInstancesPublic)
+async def get_model_file_instances(session: SessionDep, id: int, params: ListParamsDep):
+    model_file = await ModelFile.one_by_id(session, id)
+    if not model_file:
+        raise NotFoundException(message=f"Model file {id} not found")
+
+    instances = model_file.instances or []
+    count = len(instances)
+
+    # Apply pagination
+    start_idx = (params.page - 1) * params.perPage
+    end_idx = start_idx + params.perPage
+    paginated_instances = instances[start_idx:end_idx]
+
+    total_page = (count + params.perPage - 1) // params.perPage
+    pagination = Pagination(
+        page=params.page,
+        perPage=params.perPage,
+        total=count,
+        totalPage=total_page,
+    )
+
+    return ModelInstancesPublic(items=paginated_instances, pagination=pagination)
 
 
 @router.post("", response_model=ModelFilePublic)

@@ -107,3 +107,12 @@ class ModelFileClient:
     def delete(self, id: int):
         response = self._client.get_httpx_client().delete(f"{self._url}/{id}")
         raise_if_response_error(response)
+
+    def get_instances(
+        self, id: int, params: Dict[str, Any] = None
+    ) -> ModelInstancesPublic:
+        response = self._client.get_httpx_client().get(
+            f"{self._url}/{id}/instances", params=params
+        )
+        raise_if_response_error(response)
+        return ModelInstancesPublic.model_validate(response.json())
