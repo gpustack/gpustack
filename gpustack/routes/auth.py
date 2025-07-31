@@ -81,7 +81,7 @@ async def saml_callback(request: Request, session: SessionDep):
         attributes[attr_name] = values[0] if len(values) == 1 else values
     username = attributes.get(authentication_info['username'])
     if '+' not in authentication_info['full_name']:
-        full_name = authentication_info['full_name']
+        full_name = attributes.get(authentication_info['full_name'])
     else:
         full_name = ' '.join([attributes.get(v.strip()) for v in authentication_info['full_name'].split('+')])
     # determine whether the user already exists
@@ -152,7 +152,7 @@ async def oidc_callback(request: Request,session: SessionDep):
             user_data = json.loads(user_res.text)
             username = user_data.get(authentication_info['username'])
             if '+' not in authentication_info['full_name']:
-                full_name = authentication_info['full_name']
+                full_name = user_data.get(authentication_info['full_name'])
             else:
                 full_name = ' '.join([user_data.get(v.strip()) for v in authentication_info['full_name'].split('+')])
         except Exception as e:
