@@ -81,7 +81,7 @@ async def is_url_reachable(
     end_time = time.time() + timeout_in_second
     while time.time() < end_time:
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(url, timeout=2) as response:
                     if response.status == 200:
                         return True

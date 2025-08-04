@@ -64,7 +64,7 @@ async def proxy(request: Request, url: str):
             else None
         )
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.request(
                 method=request.method,
                 url=url,
