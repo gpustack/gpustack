@@ -249,7 +249,9 @@ class Worker:
                 limit=TCP_CONNECTOR_LIMIT,
                 force_close=True,
             )
-            app.state.http_client = aiohttp.ClientSession(connector=connector)
+            app.state.http_client = aiohttp.ClientSession(
+                connector=connector, trust_env=True
+            )
             yield
             await app.state.http_client.close()
 

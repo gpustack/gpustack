@@ -241,7 +241,7 @@ async def main(
         limit=2000,
         force_close=True,
     )
-    async with ClientSession(connector=connector) as aiohttp_session:
+    async with ClientSession(connector=connector, trust_env=True) as aiohttp_session:
         if headers:
             set_headers(aiohttp_session, headers)
         transport = AiohttpTransport(client=aiohttp_session)
