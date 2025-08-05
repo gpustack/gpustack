@@ -557,23 +557,60 @@ async def test_auto_schedule_single_work_single_gpu(config):
         assert resource_fit_selector._messages == expect_msg
 
 
+@pytest.mark.parametrize(
+    "index, workers, model, expect_msg",
+    [
+        (
+            1,
+            [linux_nvidia_4_4080_16gx4()],
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen2.5-Omni-7B",
+                cpu_offloading=False,
+                backend_parameters=[],
+            ),
+            [
+                '- The model requires approximately 26.99 GiB of VRAM.\n'
+                '- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at '
+                'least 29.99 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.\n'
+                '- Total number of attention heads (25) must be divisible by gpu count (4).\n'
+                '- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs '
+                'meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM.'
+            ],
+        ),
+        (
+            2,
+            [linux_nvidia_4_4080_16gx4()],
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen3-32B",
+                cpu_offloading=False,
+                backend_parameters=[],
+            ),
+            [
+                """- The model requires approximately 75.23 GiB of VRAM.
+- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
+- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
+            ],
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_auto_schedule_single_work_multi_gpu(config):
-    workers = [
-        linux_nvidia_4_4080_16gx4(),
-    ]
-
-    m = new_model(
-        1,
-        "test_name",
-        1,
-        huggingface_repo_id="Qwen/Qwen3-32B",
-        cpu_offloading=False,
-        backend_parameters=[],
-    )
+async def test_auto_schedule_single_work_multi_gpu(
+    config, index, workers, model, expect_msg
+):
+    m = model
 
     resource_fit_selector = VLLMResourceFitSelector(config, m)
     placement_scorer = PlacementScorer(m)
+
+    if index == 1:
+        # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
+        resource_fit_selector._num_attention_heads = 25
 
     with (
         patch(
@@ -594,13 +631,7 @@ async def test_auto_schedule_single_work_multi_gpu(config):
         candidates = await resource_fit_selector.select_candidates(workers)
         _ = await placement_scorer.score(candidates)
 
-        expect_msg = [
-            """- The model requires approximately 75.23 GiB of VRAM.
-- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
-- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
-        ]
-
-        assert expect_msg == resource_fit_selector._messages
+        assert resource_fit_selector._messages == expect_msg
 
 
 @pytest.mark.asyncio
@@ -820,6 +851,20 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
                 },
             },
             32,
+        ),
+        (
+            # Qwen/Qwen2.5-Omni-7B
+            {
+                "thinker_config": {
+                    "text_config": {
+                        "num_attention_heads": 28,
+                    }
+                },
+                "talker_config": {
+                    "num_attention_heads": 12,
+                },
+            },
+            28,
         ),
     ],
 )

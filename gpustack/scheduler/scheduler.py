@@ -364,7 +364,9 @@ async def find_candidate(
 
     worker_filter_chain = WorkerFilterChain(filters)
     workers, filter_messages = await worker_filter_chain.filter(workers)
-    messages = [str(ListMessageBuilder(filter_messages))]
+    messages = []
+    if filter_messages:
+        messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
 
     try:
         if is_gguf_model(model):

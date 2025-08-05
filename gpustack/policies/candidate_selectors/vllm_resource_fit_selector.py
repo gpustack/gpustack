@@ -590,7 +590,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             if self._gpu_count and gpu_sum >= self._gpu_count:
-                found_candidate = True
+                if vram_sum >= self._vram_claim:
+                    found_candidate = True
+                # if self._gpu_count is set, cannot return more than gpu_count
                 break
 
             if self._gpu_count is None and vram_sum >= self._vram_claim:
@@ -607,18 +609,30 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     ),
                 )
             ]
-
+        event_msg_list = []
+        if (
+            self._num_attention_heads
+            and self._num_attention_heads
+            % self._largest_multi_gpu_utilization_satisfied_count
+            != 0
+        ):
+            event_msg_list.append(
+                f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by gpu count "
+                f"({self._largest_multi_gpu_utilization_satisfied_count})."
+            )
         event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM."
         if self._gpu_memory_utilization != 0:
             event_msg = (
                 event_msg.rstrip(".")
                 + f", {self._largest_multi_gpu_utilization_satisfied_count}/{self._largest_multi_gpu_total} of GPUs meet the VRAM utilization ratio, providing {self._cal_effective_vram():.2f} GiB of allocatable VRAM."
             )
+        event_msg_list.append(event_msg)
 
         self._event_collector.add(
             EventLevelEnum.INFO,
             EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
-            str(ListMessageBuilder(event_msg)),
+            str(ListMessageBuilder(event_msg_list)),
         )
 
         return []

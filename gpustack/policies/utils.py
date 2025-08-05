@@ -125,7 +125,7 @@ class ListMessageBuilder:
 def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
     """
     Get the number of attention heads in the model.
-    Priority: llm_config > text_config > root-level settings
+    Priority: llm_config > text_config > root-level setting > thinker_config.text_config
     """
 
     num_attention_heads = None
@@ -137,11 +137,16 @@ def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
                 return value
             return None
 
-        # Check in priority order: llm_config > text_config > root-level
+        thinker_config = getattr(pretrained_config, "thinker_config", None)
+        thinker_text_config = (
+            getattr(thinker_config, "text_config", None) if thinker_config else None
+        )
+
         configs_by_priority = [
             getattr(pretrained_config, "llm_config", None),
             getattr(pretrained_config, "text_config", None),
             pretrained_config,
+            thinker_text_config,
         ]
 
         for config in configs_by_priority:
