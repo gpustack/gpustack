@@ -64,6 +64,9 @@ def migrate_model_instance_distributed_servers():
             except json.JSONDecodeError:
                 continue
 
+        if dist_data is None:
+            continue
+
         rpc_servers = dist_data.get("rpc_servers", []) or []
         ray_actors = dist_data.get("ray_actors", []) or []
 
