@@ -68,6 +68,7 @@ class GPUDeviceInfo(BaseModel):
     temperature: Optional[float] = Field(default=None)  # in celsius
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
     type: Optional[str] = Field(default="")
+    flavor_name: Optional[str] = Field(default="")
 
 
 GPUDevicesInfo = List[GPUDeviceInfo]

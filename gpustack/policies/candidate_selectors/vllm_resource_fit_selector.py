@@ -28,7 +28,10 @@ from gpustack.config import Config
 from gpustack.server.db import get_engine
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
-from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
+from gpustack.utils.gpu import (
+    parse_gpu_id,
+    parse_gpu_ids_by_worker,
+)
 from gpustack.utils.hub import get_model_weight_size, get_pretrained_config
 from gpustack.utils.unit import byte_to_gib
 
@@ -176,6 +179,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
             # When user defined gpu selector, we use the gpu count from it.
             self._gpu_count = len(self._model.gpu_selector.gpu_ids)
+        elif self._model.gpu_selector and self._model.gpu_selector.gpu_count:
+            # When gpu_count is specified, it indicates the user has selected GPUs using gpu_type.
+            # Assign it to self._gpu_count to maintain consistent logic in subsequent operations.
+            self._gpu_count = self._model.gpu_selector.gpu_count
 
         # When tp/pp is set, the gpu count is calculated by tp * pp.
         # Pick the candidate with satisfied gpu count.
@@ -414,7 +421,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def _find_single_worker_single_gpu_full_offloading_candidates(
+    async def _find_single_worker_single_gpu_full_offloading_candidates(  # noqa: C901
         self, worker: Worker, selected_gpu_index: Optional[int]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -429,9 +436,26 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if not worker.status.gpu_devices:
             return []
 
+        # Check gpu_count
+        if (
+            self._model.gpu_selector
+            and self._model.gpu_selector.gpu_count
+            and self._model.gpu_selector.gpu_count > 1
+        ):
+            # Worker doesn't have enough GPUs
+            return []
+
         for _, gpu in enumerate(worker.status.gpu_devices):
 
             if selected_gpu_index is not None and gpu.index != selected_gpu_index:
+                continue
+
+            # Additional check for gpu_type on individual GPU level
+            if (
+                self._model.gpu_selector
+                and self._model.gpu_selector.gpu_type
+                and gpu.flavor_name != self._model.gpu_selector.gpu_type
+            ):
                 continue
 
             gpu_index = gpu.index
@@ -539,6 +563,15 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if total_gpu < 2:
             return None
 
+        # Check gpu_count
+        if (
+            self._model.gpu_selector
+            and self._model.gpu_selector.gpu_count
+            and self._model.gpu_selector.gpu_count > len(worker.status.gpu_devices)
+        ):
+            # Worker doesn't have enough GPUs
+            return []
+
         if self._selected_gpu_workers:
             return await self.manually_select_single_worker_multi_gpu_candidates(worker)
 
@@ -550,6 +583,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         for gpu in worker.status.gpu_devices:
             if gpu.memory is None or gpu.memory.total is None:
+                continue
+
+            # Additional check for gpu_type on individual GPU level
+            if (
+                self._model.gpu_selector
+                and self._model.gpu_selector.gpu_type
+                and gpu.flavor_name != self._model.gpu_selector.gpu_type
+            ):
                 continue
 
             allocatable_vram = allocatable.vram.get(gpu.index, 0)

@@ -206,6 +206,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             # the parsing logic will raise an error.
             self._serving_params.local_world_size = selected_worker_devices_cnt
             self._serving_params.world_size = selected_devices_cnt
+        elif model.gpu_selector and model.gpu_selector.gpu_count:
+            self._serving_params.world_size = model.gpu_selector.gpu_count
 
         # Parse model config.
         try:
@@ -569,11 +571,18 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     continue
 
                 # Get selected devices of the worker: {Device Index: Device}.
-                selected_devices_idx: Dict[int, GPUDeviceInfo] = {
-                    device.index: device
-                    for device in self.__worker_sorted_devices_idx[worker.id]
-                    if device.type == "npu"
-                }
+                selected_devices_idx: Dict[int, GPUDeviceInfo] = {}
+                for device in self.__worker_sorted_devices_idx[worker.id]:
+                    if device.type != "npu":
+                        continue
+                    if (
+                        self._model.gpu_selector
+                        and self._model.gpu_selector.gpu_type
+                        and self._model.gpu_selector.gpu_type != device.flavor_name
+                    ):
+                        continue
+
+                    selected_devices_idx[device.index] = device
 
                 # Index the worker and its devices.
                 available_worker_devices_idx[worker] = selected_devices_idx

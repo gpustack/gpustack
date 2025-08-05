@@ -18,6 +18,7 @@ from gpustack.routes import (
     openai,
     voice,
     workers,
+    gpu_flavors,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -56,6 +57,9 @@ v1_admin_router.include_router(
 )
 v1_admin_router.include_router(
     gpu_devices.router, prefix="/gpu-devices", tags=["GPU Devices"]
+)
+v1_admin_router.include_router(
+    gpu_flavors.router, prefix="/gpu-flavors", tags=["GPU Flavors"]
 )
 
 api_router.include_router(
