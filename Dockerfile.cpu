@@ -23,11 +23,6 @@ RUN cd /workspace/gpustack && \
     make build && \
     WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \
     pip install pipx && \
-    pip install httpx && \
-    pip install python3-saml && \
-    pip install lxml==5.2.1 && \
-    pip install xmlsec==1.3.14 && \
-    pip install authlib && \
     pip install $WHEEL_PACKAGE && \
     pip cache purge
 
