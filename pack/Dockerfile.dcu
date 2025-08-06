@@ -1,4 +1,4 @@
-FROM image.sourcefind.cn:5000/dcu/admin/base/vllm:0.8.5-ubuntu22.04-dtk25.04.1-py3.10
+FROM crpi-thyzhdzt86bexebt.cn-hangzhou.personal.cr.aliyuncs.com/gpustack_ai/gpustack:hygon-dtk25.04.1-vllm0.8.5-py3.10
 
 ENV PATH="/root/.local/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
