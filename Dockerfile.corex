@@ -1,4 +1,4 @@
-FROM crpi-92uj7jb20gffz04j.cn-guangzhou.personal.cr.aliyuncs.com/iluvatar_common/vllm0.8.3-4.2.0:v1 AS build
+FROM crpi-thyzhdzt86bexebt.cn-hangzhou.personal.cr.aliyuncs.com/gpustack_ai/gpustack:iluvator-vllm0.8.3-4.2.0 AS build
 
 RUN apt-get update && apt-get install -y \
     git \
@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
 COPY . /workspace/gpustack
 RUN cd /workspace/gpustack && make build
 
-FROM crpi-92uj7jb20gffz04j.cn-guangzhou.personal.cr.aliyuncs.com/iluvatar_common/vllm0.8.3-4.2.0:v1 AS runtime
+FROM crpi-thyzhdzt86bexebt.cn-hangzhou.personal.cr.aliyuncs.com/gpustack_ai/gpustack:iluvator-vllm0.8.3-4.2.0 AS runtime
 
 RUN apt-get update && apt-get install -y \
     python3 \

@@ -107,13 +107,11 @@ jobs:
           #
           # Iluvatar Corex
           #
-          # Skip until the base image is fixed.
-          # Ref: https://github.com/gpustack/gpustack/issues/2675
-          # - device: corex
-          #   dockerfile: "Dockerfile.corex"
-          #   platforms: "linux/amd64"
-          #   tag_suffix: "-corex"
-          #   build_args: []
+          - device: corex
+            dockerfile: "Dockerfile.corex"
+            platforms: "linux/amd64"
+            tag_suffix: "-corex"
+            build_args: []
 
     steps:
       - name: Checkout
