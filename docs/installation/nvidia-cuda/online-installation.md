@@ -229,7 +229,7 @@ ENTRYPOINT [ "gpustack", "start" ]
 Run the following command to build the Docker image:
 
 ```bash
-docker build -t gpustack:cuda-12.8 --build-arg CUDA_VERSION=12.8.1 .
+docker build -t gpustack:cuda-12.8 --build-arg CUDA_VERSION=12.8.1 --file pack/Dockerfile .
 ```
 
 ## pip Installation

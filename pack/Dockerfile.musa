@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     git \
     curl
 
-COPY . /workspace/gpustack
+COPY .. /workspace/gpustack
 RUN cd /workspace/gpustack && make build
 
 FROM ${BASE_MUSA_RUN_CONTAINER} AS runtime

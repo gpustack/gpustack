@@ -38,7 +38,7 @@ ARG PYTHON_VERSION=3.11
 # Stage Base
 #
 # Example build command:
-#   docker build --tag=gpustack/gpustack:cuda-base --file=Dockerfile --target=base --progress=plain .
+#   docker build --tag=gpustack/gpustack:cuda-base --file=pack/Dockerfile --target=base --progress=plain .
 #
 
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu22.04 AS base
@@ -143,7 +143,7 @@ ENV PIPX_LOCAL_VENVS=/root/.local/share/pipx/venvs
 # Stage Build Base
 #
 # Example build command:
-#   docker build --tag=gpustack/gpustack:cuda-base-build --file=Dockerfile --target=build-base --progress=plain .
+#   docker build --tag=gpustack/gpustack:cuda-base-build --file=pack/Dockerfile --target=build-base --progress=plain .
 #
 
 FROM nvidia/cuda:${CUDA_DEVEL_VERSION}-cudnn-devel-ubuntu22.04 AS base-build
@@ -274,7 +274,7 @@ EOF
 # Stage FlashInfer Build (linux/amd64 only)
 #
 # Example build command:
-#   docker build --platform=linux/amd64 --tag=gpustack/gpustack:cuda-flashinfer-build --file=Dockerfile --target=flashinfer-build --progress=plain .
+#   docker build --platform=linux/amd64 --tag=gpustack/gpustack:cuda-flashinfer-build --file=pack/Dockerfile --target=flashinfer-build --progress=plain .
 #
 
 FROM --platform=linux/amd64 base-build AS flashinfer-build
@@ -378,7 +378,7 @@ EOF
 # Stage GPUStack
 #
 # Example build command:
-#   docker build --tag=gpustack/gpustack:cuda --file=Dockerfile --progress=plain .
+#   docker build --tag=gpustack/gpustack:cuda --file=pack/Dockerfile --progress=plain .
 #
 
 FROM base AS gpustack
