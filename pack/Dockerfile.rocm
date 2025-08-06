@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     tzdata \
     iproute2 \
     build-essential \
+    git git-lfs \
     tini \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
