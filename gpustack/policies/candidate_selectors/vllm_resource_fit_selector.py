@@ -612,6 +612,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         event_msg_list = []
         if (
             self._num_attention_heads
+            and self._largest_multi_gpu_utilization_satisfied_count != 0
             and self._num_attention_heads
             % self._largest_multi_gpu_utilization_satisfied_count
             != 0
