@@ -1,8 +1,8 @@
-"""GPUStack v0.7.0
+"""GPUStack v0.7.1
 
-Revision ID: cbbc03c88985
-Revises: c45e397531d1
-Create Date: 2025-06-09 15:07:05.299418
+Revision ID: d19176de3b74
+Revises: cbbc03c88985
+Create Date: 2025-08-05 16:40:05.299418
 
 """
 import json

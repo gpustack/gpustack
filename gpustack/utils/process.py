@@ -127,7 +127,7 @@ def terminate_process(process):
 
 
 def safe_b64decode(data):
-    # 移除非法字符并补足等号
+    # Remove illegal characters and add equal signs
     cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', data)
     padding = '=' * (-len(cleaned) % 4)
     return base64.b64decode(cleaned + padding)

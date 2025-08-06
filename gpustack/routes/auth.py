@@ -1,6 +1,6 @@
-import os
 import json
 import httpx
+from gpustack.config import Config
 from typing import Annotated
 from fastapi import APIRouter, Form, Request, Response
 from pydantic import BaseModel
@@ -21,9 +21,8 @@ from lxml import etree
 from gpustack.utils.process import safe_b64decode, inflate_data
 
 router = APIRouter()
+config = Config()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
-# get authentication configuration
-authentication_info = json.loads(os.getenv('GPUSTACK_EXTERNAL_AUTH', '{}'))
 
 
 # Initialize Saml authentication configuration
@@ -31,23 +30,23 @@ def init_saml_auth(request: Request):
     saml_settings = {
         "strict": True,
         "sp": {
-            "entityId": authentication_info.get("sp_entityId"),  # sp_entityId
+            "entityId": config.saml_sp_entity_id,  # sp_entityId
             "assertionConsumerService": {
-                "url": authentication_info.get("sp_asc_url"),  # callback url
+                "url": config.saml_sp_asc_url,  # callback url
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
             },
-            "x509cert": authentication_info.get("sp_x509cert", ""),  # SP public key
-            "privateKey": authentication_info.get("sp_privateKey", "")  # sp privateKey
+            "x509cert": config.saml_sp_x509cert,  # SP public key
+            "privateKey": config.saml_sp_privateKey  # sp privateKey
         },
         "idp": {
-            "entityId": authentication_info.get("idp_entityId"),  # idp_entityId
+            "entityId": config.saml_idp_entity_id,  # idp_entityId
             "singleSignOnService": {
-                "url": authentication_info.get("idp_server_url"),  # server url
+                "url": config.saml_idp_server_url,  # server url
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
             },
-            "x509cert": authentication_info.get("idp_x509cert", "")  # idp public key
+            "x509cert": config.saml_idp_x509cert  # idp public key
         },
-        "security": authentication_info.get("security", {})}  # Signature configuration
+        "security": json.loads(config.saml_security)}  # Signature configuration
     req = {
         "http_host": request.client.host,
         "script_name": request.url.path,
@@ -79,11 +78,11 @@ async def saml_callback(request: Request, session: SessionDep):
         attr_name = attr.get('Name')
         values = [v.text for v in attr.xpath('saml:AttributeValue', namespaces=ns)]
         attributes[attr_name] = values[0] if len(values) == 1 else values
-    username = attributes.get(authentication_info['username'])
-    if '+' not in authentication_info['full_name']:
-        full_name = attributes.get(authentication_info['full_name'])
+    username = attributes.get(config.exteranl_auth_name)
+    if '+' not in config.exteranl_auth_fullname:
+        full_name = attributes.get(config.exteranl_auth_fullname)
     else:
-        full_name = ' '.join([attributes.get(v.strip()) for v in authentication_info['full_name'].split('+')])
+        full_name = ' '.join([attributes.get(v.strip()) for v in config.exteranl_auth_fullname.split('+')])
     # determine whether the user already exists
     user = await User.first_by_field(
         session=session, field="username", value=username
@@ -95,7 +94,7 @@ async def saml_callback(request: Request, session: SessionDep):
             full_name=full_name,
             hashed_password="",
             is_admin=False,
-            source=authentication_info.get('type'),
+            source=config.exteranl_auth_type,
             require_password_change=False,
         )
         await User.create(session, user_info)
@@ -117,9 +116,9 @@ async def saml_callback(request: Request, session: SessionDep):
 # oidc login
 @router.get("/oidc/login")
 async def oidc_login():
-    authUrl = f'{authentication_info.get("base_entrypoint")}auth?response_type=code&' \
-              f'client_id={authentication_info.get("CLIENT_ID")}&' \
-              f'redirect_uri={authentication_info.get("redirect_uri")}&' \
+    authUrl = f'{config.oidc_base_entrypoint}auth?response_type=code&' \
+              f'client_id={config.oidc_client_id}&' \
+              f'redirect_uri={config.oidc_redirect_uri}&' \
               f'scope=openid profile email&state=random_state_string'
 
     return RedirectResponse(url=authUrl)
@@ -132,14 +131,14 @@ async def oidc_callback(request: Request,session: SessionDep):
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "client_id": authentication_info.get('CLIENT_ID'),
-        "client_secret": authentication_info.get('CLIENT_SECRET'),
-        "redirect_uri": authentication_info.get('redirect_uri')
+        "client_id": config.oidc_client_id,
+        "client_secret": config.oidc_client_secret,
+        "redirect_uri": config.oidc_redirect_uri
     }
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             token_res = await client.request(
-                "POST", authentication_info.get('base_entrypoint') + "token", data=data
+                "POST", config.oidc_base_entrypoint + "token", data=data
             )
             res_data = json.loads(token_res.text)
             if "access_token" not in res_data:
@@ -147,14 +146,14 @@ async def oidc_callback(request: Request,session: SessionDep):
             token = res_data['access_token']
             headers = {'Authorization': f'Bearer {token}'}
             user_res = await client.request(
-                'get', authentication_info.get('base_entrypoint') + "userinfo", headers=headers
+                'get', config.oidc_base_entrypoint + "userinfo", headers=headers
             )
             user_data = json.loads(user_res.text)
-            username = user_data.get(authentication_info['username'])
-            if '+' not in authentication_info['full_name']:
-                full_name = user_data.get(authentication_info['full_name'])
+            username = user_data.get(config.exteranl_auth_name)
+            if '+' not in config.exteranl_auth_fullname:
+                full_name = user_data.get(config.exteranl_auth_fullname)
             else:
-                full_name = ' '.join([user_data.get(v.strip()) for v in authentication_info['full_name'].split('+')])
+                full_name = ' '.join([user_data.get(v.strip()) for v in config.exteranl_auth_fullname.split('+')])
         except Exception as e:
             raise UnauthorizedException(message=str(e))
     # determine whether the user already exists
@@ -168,7 +167,7 @@ async def oidc_callback(request: Request,session: SessionDep):
             full_name=full_name,
             hashed_password="",
             is_admin=False,
-            source=authentication_info.get('type'),
+            source=config.exteranl_auth_type,
             require_password_change=False,
         )
         await User.create(session, user_info)
