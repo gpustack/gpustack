@@ -25,6 +25,8 @@ ALLOWED_SITES = [
 
 HEADER_FORWARDED_PREFIX = "x-forwarded-"
 HEADER_SKIPPED = [
+    "date",
+    "set-cookie",
     "host",
     "port",
     "proto",
@@ -72,7 +74,11 @@ async def proxy(request: Request, url: str):
                 data=data,
             ) as resp:
                 content = await resp.read()
-                headers = dict(resp.headers)
+                headers = {
+                    k: v
+                    for k, v in resp.headers.items()
+                    if k.lower() not in HEADER_SKIPPED
+                }
                 return Response(
                     status_code=resp.status,
                     content=content,
