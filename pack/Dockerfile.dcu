@@ -4,6 +4,7 @@ ENV PATH="/root/.local/bin:$PATH"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
+    git git-lfs \
     python3-venv \
     tzdata \
     iproute2 \
