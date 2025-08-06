@@ -49,7 +49,7 @@ Follow these steps to deploy the model from Hugging Face:
 1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Hugging Face` as the source for your model.
-4. Use the search bar in the top left to search for the model name `FunAudioLLM/CosyVoice-300M`.
+4. Use the search bar in the top left to search for the model name `gpustack/CosyVoice-300M`.
 5. Leave everything as default and click the `Save` button to deploy the model.
 
 ![Deploy Model](../assets/using-models/using-audio-models/deploy-tts-model.png)

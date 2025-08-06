@@ -2688,7 +2688,7 @@
   templates:
     - quantizations: ["FP16"]
       source: huggingface
-      huggingface_repo_id: FunAudioLLM/CosyVoice-300M
+      huggingface_repo_id: gpustack/CosyVoice-300M
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M Instruct
@@ -2703,7 +2703,7 @@
   templates:
     - quantizations: ["FP16"]
       source: huggingface
-      huggingface_repo_id: FunAudioLLM/CosyVoice-300M-Instruct
+      huggingface_repo_id: gpustack/CosyVoice-300M-Instruct
       replicas: 1
       backend: vox-box
 - name: CosyVoice 300M SFT
@@ -2718,7 +2718,7 @@
   templates:
     - quantizations: ["FP16"]
       source: huggingface
-      huggingface_repo_id: FunAudioLLM/CosyVoice-300M-SFT
+      huggingface_repo_id: gpustack/CosyVoice-300M-SFT
       replicas: 1
       backend: vox-box
 - name: Dia
