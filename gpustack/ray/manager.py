@@ -63,6 +63,8 @@ class RayManager:
             str(self._cfg.ray_node_manager_port),
             "--object-manager-port",
             str(self._cfg.ray_object_manager_port),
+            "--runtime-env-agent-port",
+            str(self._cfg.ray_runtime_env_agent_port),
             "--dashboard-agent-grpc-port",
             str(self._cfg.ray_dashboard_agent_grpc_port),
             "--dashboard-agent-listen-port",

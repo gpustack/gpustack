@@ -65,6 +65,10 @@ class Config(BaseSettings):
         rpc_server_port_range: Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40064-40095'.
         ray_node_manager_port: Raylet port for node manager. Used when Ray is enabled. Default is 40098.
         ray_object_manager_port: Raylet port for object manager. Used when Ray is enabled. Default is 40099.
+        ray_runtime_env_agent_port: Port for Ray Runtime Environment Agent. Used when Ray is enabled. Default is 40100.
+        ray_dashboard_agent_grpc_port: Port for Ray Dashboard Agent gRPC. Used when Ray is enabled. Default is 40101.
+        ray_dashboard_agent_listen_port: Port for Ray Dashboard Agent to listen on. Used when Ray is enabled. Default is 52365.
+        ray_metrics_export_port: Port for Ray Metrics Exporter. Used when Ray is enabled. Default is 40103.
         ray_worker_port_range: Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40200-40999'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
@@ -90,6 +94,7 @@ class Config(BaseSettings):
     ray_args: Optional[List[str]] = None
     ray_node_manager_port: int = 40098
     ray_object_manager_port: int = 40099
+    ray_runtime_env_agent_port: int = 40100
     ray_dashboard_agent_grpc_port: int = 40101
     ray_dashboard_agent_listen_port: int = 52365
     ray_metrics_export_port: int = 40103
