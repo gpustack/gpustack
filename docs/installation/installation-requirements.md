@@ -137,11 +137,12 @@ GPUStack uses the following ports for communication:
 The following ports are used on GPUStack server when Ray is enabled for distributed vLLM across workers:
 
 | Ray Port  | Description                                      |
-| --------- | ------------------------------------------------ |
+|-----------|--------------------------------------------------|
 | TCP 40096 | Default port for Ray (GCS server)                |
 | TCP 40097 | Default port for Ray Client Server               |
 | TCP 40098 | Default port for Ray node manager                |
 | TCP 40099 | Default port for Ray object manager              |
+| TCP 40100 | Default port for Ray runtime env agent           |
 | TCP 8265  | Default Port for Ray dashboard                   |
 | TCP 40101 | Default port for Ray dashboard agent gRPC listen |
 | TCP 52365 | Default port for Ray dashboard agent HTTP listen |

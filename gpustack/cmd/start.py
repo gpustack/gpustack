@@ -115,6 +115,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("RAY_OBJECT_MANAGER_PORT"),
     )
     group.add_argument(
+        "--ray-runtime-env-agent-port",
+        type=int,
+        help="Port for Ray runtime env agent. Used when Ray is enabled. The default is 40100.",
+        default=get_gpustack_env("RAY_RUNTIME_ENV_AGENT_PORT"),
+    )
+    group.add_argument(
         "--ray-dashboard-agent-grpc-port",
         type=int,
         help="Port for Ray dashboard agent gPRC listen. Used when Ray is enabled. The default is 40101.",
