@@ -6,7 +6,7 @@ from fastapi import APIRouter, Form, Request, Response
 from pydantic import BaseModel
 from gpustack.api.exceptions import InvalidException, UnauthorizedException
 from gpustack.schemas.users import UpdatePassword
-from gpustack.schemas.users import User
+from gpustack.schemas.users import User, SourceEnum
 from gpustack.security import (
     JWT_TOKEN_EXPIRE_MINUTES,
     JWTManager,
@@ -94,7 +94,7 @@ async def saml_callback(request: Request, session: SessionDep):
             full_name=full_name,
             hashed_password="",
             is_admin=False,
-            source=config.exteranl_auth_type,
+            source=SourceEnum.SAML,
             require_password_change=False,
         )
         await User.create(session, user_info)
@@ -167,7 +167,7 @@ async def oidc_callback(request: Request,session: SessionDep):
             full_name=full_name,
             hashed_password="",
             is_admin=False,
-            source=config.exteranl_auth_type,
+            source=SourceEnum.OIDC,
             require_password_change=False,
         )
         await User.create(session, user_info)
