@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /workspace/gpustack
+COPY .. /workspace/gpustack
 RUN cd /workspace/gpustack && \
     make build && \
     WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]" && \

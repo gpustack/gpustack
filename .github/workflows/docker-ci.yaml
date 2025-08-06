@@ -15,18 +15,15 @@ on:
       - "**.png"
       - "**.jpg"
       - "**.gif"
-      - "Dockerfile.rocm.base"
-      - "Dockerfile.dcu.base"
+      - "pack/**.base"
   pull_request:
     branches:
       - main
       - "v*-dev"
     paths:
-      - "Dockerfile"
-      - "Dockerfile.*"
       - ".github/workflows/docker-ci.yaml"
-      - "!Dockerfile.rocm.base"
-      - "!Dockerfile.dcu.base"
+      - "pack/**"
+      - "!pack/**.base"
 
 jobs:
   publish-docker:
@@ -222,7 +219,7 @@ jobs:
         id: package
         with:
           push: ${{ github.event_name != 'pull_request' }}
-          file: ${{ github.workspace }}/${{ matrix.dockerfile }}
+          file: ${{ github.workspace }}/pack/${{ matrix.dockerfile }}
           context: ${{ github.workspace }}
           platforms: ${{ matrix.platforms }}
           tags: ${{ steps.metadata.outputs.tags }}
