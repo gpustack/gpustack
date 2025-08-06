@@ -29,10 +29,13 @@
 #   which should be properly set, it must be 3.x.
 ARG CUDA_VERSION=12.4.1
 ARG CUDA_DEVEL_VERSION=12.6.3
-ARG TORCH_VERSION=2.7.0
+ARG TORCH_VERSION=2.7.1
 ARG TORCH_CUDA_ARCH_LIST=""
-ARG FLASHINFER_VERSION=0.2.6.post1
+ARG FLASHINFER_VERSION=0.2.8rc1
 ARG FLASHINFER_BUILD_MAX_JOBS=""
+# Flag to control whether to use pre-built FlashInfer wheels (set to false to force build from source)
+# Currently disabled because the pre-built wheels are not available for FLASHINFER_VERSION
+ARG FLASHINFER_USE_PREBUILT_WHEEL=false
 ARG PYTHON_VERSION=3.11
 
 # Stage Base
@@ -314,7 +317,7 @@ RUN <<EOF
     IFS="." read -r TORCH_MAJOR TORCH_MINOR TORCH_PATCH <<< "${TORCH_VERSION}"
     ldconfig /usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/compat/
 
-    if [[ "${CUDA_MAJOR}.${CUDA_MINOR}" == "12.8" && "${TORCH_MAJOR}.${TORCH_MINOR}" == "2.7" ]]; then
+    if [[ "${CUDA_MAJOR}.${CUDA_MINOR}" == "12.8" && "${TORCH_MAJOR}.${TORCH_MINOR}" == "2.7" && "$FLASHINFER_USE_PREBUILT_WHEEL" == "true" ]]; then
         mkdir -p /workspace/flashinfer/dist
         if curl --retry 3 --retry-connrefused -fL https://download.pytorch.org/whl/cu128/flashinfer/flashinfer_python-${FLASHINFER_VERSION}%2Bcu128torch2.7-cp39-abi3-linux_x86_64.whl \
             -o /workspace/flashinfer/dist/flashinfer_python-${FLASHINFER_VERSION}+cu128torch2.7-cp39-abi3-linux_x86_64.whl; then
