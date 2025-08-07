@@ -54,6 +54,16 @@ def parse_gpu_ids_by_worker(gpu_ids: list) -> dict:
     return worker_gpu_ids
 
 
+def get_gpu_flavor_name(gpu: GPUDeviceInfo) -> str:
+    vram_gb = gpu.memory.total // (1024**3)
+    if gpu.vendor in gpu.name:
+        # If vendor is part of the name, use just the name
+        gpu_flavor_name = f"{gpu.name} {vram_gb}GB"
+    else:
+        gpu_flavor_name = f"{gpu.vendor} {gpu.name} {vram_gb}GB"
+    return gpu_flavor_name
+
+
 def all_gpu_match(
     worker: Union[List[WorkerBase], WorkerBase], verify: Callable[[GPUDeviceInfo], bool]
 ) -> bool:
