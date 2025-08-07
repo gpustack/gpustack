@@ -584,6 +584,7 @@ class ToolsManager:
                 elif major == 12 and minor >= 8:
                     toolkit_version = "12.8"
         elif toolkit == "cann":
+            # Since v0.0.169, llama-box supports CANN 8.2 by default,
             # Since v0.0.145, llama-box supports CANN 8.1 by default,
             # and supports CANN 8.0 only for backward compatibility.
             toolkit_version = "8.0"
@@ -591,10 +592,12 @@ class ToolsManager:
             match = re.match(r"(\d+)\.(\d+)", cann_version)
             if match:
                 major, minor = map(int, match.groups())
+                if major == 8 and minor >= 2 and version > "v0.0.168":
+                    toolkit_version = "8.2"
                 if major == 8 and minor >= 1 and version > "v0.0.144":
                     toolkit_version = "8.1"
-            # Currently, llama-box only supports release candidate version of CANN 8.1.
-            if toolkit_version == "8.1":
+            # Currently, llama-box only supports release candidate version of CANN 8.1/8.2.
+            if toolkit_version in ["8.1", "8.2"]:
                 match = re.search(r"\.rc\d+", cann_version)
                 if match:
                     rc = match.group(0)
@@ -606,11 +609,11 @@ class ToolsManager:
         elif toolkit == "hip":
             toolkit_version = "6.2"
         elif toolkit == "musa":
-            # Since v0.0.167, llama-box supports MUSA rc4.2,
+            # Since v0.0.169, llama-box supports MUSA rc4.2,
             # Since v0.0.150, llama-box supports MUSA rc4.0,
             # and no longer supports MUSA rc3.1.
             toolkit_version = "rc3.1"
-            if version > "v0.0.166":
+            if version > "v0.0.168":
                 toolkit_version = "rc4.2"
             elif version > "v0.0.149":
                 toolkit_version = "rc4.0"
