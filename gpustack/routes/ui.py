@@ -1,4 +1,6 @@
 import os
+import json
+from gpustack.config import Config
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,3 +21,23 @@ def register(app: FastAPI):
     @app.get("/", include_in_schema=False)
     async def index():
         return FileResponse(os.path.join(ui_dir, "index.html"))
+
+    # Provide configuration interface
+    @app.get("/get_config")
+    async def get_exteranl_auth_type(config: Config):
+        req_dict = {}
+        auth_type = 'Local'
+        if config.exteranl_auth_type:
+            auth_type = config.exteranl_auth_type
+        if auth_type.lower() == 'oidc':
+            req_dict = {
+                        "is_oidc": True,
+                        "is_saml": False
+                        }
+        if auth_type.lower() == 'saml':
+            req_dict = {
+                        "is_oidc": False,
+                        "is_saml": True
+                        }
+
+        return req_dict
