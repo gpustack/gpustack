@@ -10,7 +10,7 @@
         <img alt="Documentation" src="https://img.shields.io/badge/文档-GPUStack-blue?logo=readthedocs&logoColor=white"></a>
     <a href="./LICENSE" target="_blank">
         <img alt="License" src="https://img.shields.io/github/license/gpustack/gpustack?logo=github&logoColor=white&label=License&color=blue"></a>
-    <a href="./docs/assets/wechat-assistant.png" target="_blank">
+    <a href="./docs/assets/wechat-group-qrcode.jpg" target="_blank">
         <img alt="WeChat" src="https://img.shields.io/badge/微信群-GPUStack-blue?logo=wechat&logoColor=white"></a>
     <a href="https://discord.gg/VXYJzuaqwD" target="_blank">
         <img alt="Discord" src="https://img.shields.io/badge/Discord-GPUStack-blue?logo=discord&logoColor=white"></a>
@@ -219,10 +219,10 @@ GPUStack 用户可以在 UI 中生成自己的 API 密钥。
 
 ## 加入社区
 
-扫码添加 GPUStack 微信小助手加入社区群：
+扫码加入社区群：
 
 <p align="left">
-    <img alt="Wechat-assistant" src="./docs/assets/wechat-assistant.png" width="300px"/>
+    <img alt="Wechat-group" src="./docs/assets/wechat-group-qrcode.jpg" width="300px"/>
 </p>
 
 ## License
