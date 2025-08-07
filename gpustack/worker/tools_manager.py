@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 BUILTIN_LLAMA_BOX_VERSION = "v0.0.167"
-BUILTIN_GGUF_PARSER_VERSION = "v0.21.4"
+BUILTIN_GGUF_PARSER_VERSION = "v0.22.0"
 
 
 class ToolsManager:
