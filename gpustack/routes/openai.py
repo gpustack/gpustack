@@ -316,7 +316,7 @@ async def handle_streaming_request(
     form_data: Optional[aiohttp.FormData],
     extra_headers: Optional[dict] = None,
 ):
-    timeout = aiohttp.ClientTimeout(total=300)
+    timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
