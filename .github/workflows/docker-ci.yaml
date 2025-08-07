@@ -46,6 +46,7 @@ jobs:
             build_args:
               - "CUDA_VERSION=12.4.1"
               - "CUDA_DEVEL_VERSION=12.6.3"
+              - "FLASHINFER_BUILD_MAX_JOBS=1"
           - device: cuda
             dockerfile: "Dockerfile"
             platforms: "linux/amd64,linux/arm64"
@@ -53,6 +54,7 @@ jobs:
             build_args:
               - "CUDA_VERSION=12.8.1"
               - "CUDA_DEVEL_VERSION=12.8.1"
+              - "FLASHINFER_BUILD_MAX_JOBS=1"
           #
           # HIP RoCM
           #
