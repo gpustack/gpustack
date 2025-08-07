@@ -15,18 +15,15 @@ on:
       - "**.png"
       - "**.jpg"
       - "**.gif"
-      - "Dockerfile.rocm.base"
-      - "Dockerfile.dcu.base"
+      - "pack/**.base"
   pull_request:
     branches:
       - main
       - "v*-dev"
     paths:
-      - "Dockerfile"
-      - "Dockerfile.*"
       - ".github/workflows/docker-ci.yaml"
-      - "!Dockerfile.rocm.base"
-      - "!Dockerfile.dcu.base"
+      - "pack/**"
+      - "!pack/**.base"
 
 jobs:
   publish-docker:
@@ -107,18 +104,17 @@ jobs:
           #
           # Iluvatar Corex
           #
-          # Skip until the base image is fixed.
-          # Ref: https://github.com/gpustack/gpustack/issues/2675
-          # - device: corex
-          #   dockerfile: "Dockerfile.corex"
-          #   platforms: "linux/amd64"
-          #   tag_suffix: "-corex"
-          #   build_args: []
+          - device: corex
+            dockerfile: "Dockerfile.corex"
+            platforms: "linux/amd64"
+            tag_suffix: "-corex"
+            build_args: []
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          lfs: true
           fetch-depth: 1
           persist-credentials: false
       - name: Maximize Docker Build Space
@@ -222,7 +218,7 @@ jobs:
         id: package
         with:
           push: ${{ github.event_name != 'pull_request' }}
-          file: ${{ github.workspace }}/${{ matrix.dockerfile }}
+          file: ${{ github.workspace }}/pack/${{ matrix.dockerfile }}
           context: ${{ github.workspace }}
           platforms: ${{ matrix.platforms }}
           tags: ${{ steps.metadata.outputs.tags }}

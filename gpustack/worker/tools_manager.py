@@ -401,6 +401,10 @@ class ToolsManager:
 
         target_file_arch = "x86_64" if self._arch == "amd64" else "aarch64"
         target_file_name = f"Ascend-mindie_{version}_linux-{target_file_arch}.run"
+        if version >= "2.1.rc1":
+            target_file_name = (
+                f"Ascend-mindie_{version}_linux-{target_file_arch}_abi0.run"
+            )
 
         # Construct download url, for example:
         # - https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/MindIE/MindIE%201.0.0/Ascend-mindie_1.0.0_linux-x86_64.run?response-content-type=application/octet-stream
