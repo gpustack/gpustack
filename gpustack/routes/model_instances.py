@@ -20,6 +20,7 @@ from gpustack.schemas.models import (
     ModelInstancesPublic,
     ModelInstanceStateEnum,
 )
+from gpustack.schemas.model_files import ModelFileStateEnum
 
 router = APIRouter()
 
@@ -99,6 +100,7 @@ async def get_serving_logs(  # noqa: C901
     if (
         model_instance.state != ModelInstanceStateEnum.RUNNING
         and model_instance.model_files
+        and model_instance.model_files[0].state != ModelFileStateEnum.READY
     ):
         # Get model file ID for injected download logs if instance is downloading
         model_instance_log_url += f"&model_file_id={model_instance.model_files[0].id}"
