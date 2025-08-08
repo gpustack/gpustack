@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 max_concurrent_downloads = 5
 
 
+def _cleanup_download_log(config_log_dir, model_file_id):
+    """
+    Clean up the download log file after download completion, cancellation, or failure.
+    This prevents log accumulation and avoids confusion when rebuilding models.
+    """
+    try:
+        log_dir = Path(config_log_dir) / "serve"
+        download_log_file_path = log_dir / f"model_file_{model_file_id}.download.log"
+
+        if download_log_file_path.exists():
+            download_log_file_path.unlink()
+            logger.debug(f"Cleaned up download log file: {download_log_file_path}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to clean up download log file for model file {model_file_id}: {e}"
+        )
+
+
 class ModelFileManager:
     def __init__(
         self,
@@ -216,6 +234,10 @@ class ModelFileManager:
                     delete_path(path)
 
             await self._delete_incomplete_model_files(model_file)
+
+            # Clean up download log file when deleting model file
+            _cleanup_download_log(self._config.log_dir, model_file.id)
+
             logger.info(
                 f"Deleted model file {model_file.readable_source}(id: {model_file.id}) from disk"
             )
@@ -444,6 +466,9 @@ class ModelFileDownloadTask:
                 state=ModelFileStateEnum.ERROR,
                 state_message=str(e),
             )
+        finally:
+            # Clean up download log file regardless of success, failure, or cancellation
+            _cleanup_download_log(self._config.log_dir, self._model_file.id)
 
     def _download_model_file(self):
         self._write_to_instance_download_logs(
