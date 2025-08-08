@@ -272,6 +272,9 @@ class ModelFileDownloadTask:
         # Store download log file paths for related model instances
         self._instance_download_log_file = None
         self._download_completed = False
+        # Time control for log updates
+        self._last_log_update_time = 0
+        self._log_update_interval = 2.0  # 2 seconds interval
 
     def prerun(self):
         setup_logging(self._config.debug)
@@ -383,7 +386,9 @@ class ModelFileDownloadTask:
                 f"Failed to write to instance download log {log_file_path}: {e}"
             )
 
-    def _write_to_instance_download_logs(self, message: str, is_error=False):
+    def _write_to_instance_download_logs(
+        self, message: str, is_error=False, use_tqdm_format=False
+    ):
         """
         Write download log message to all associated model instance download log files
         Skip writing if download is completed to avoid unnecessary logs
@@ -391,9 +396,13 @@ class ModelFileDownloadTask:
         if not self._instance_download_log_file or self._download_completed:
             return
 
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        log_level = "ERROR" if is_error else "INFO"
-        log_message = f"[{timestamp}] [{log_level}] {message}\n"
+        if use_tqdm_format:
+            # For tqdm-style progress, write with \r control character for single-line updates
+            log_message = f"\r{message}"
+        else:
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            log_level = "ERROR" if is_error else "INFO"
+            log_message = f"[{timestamp}] [{log_level}] {message}\n"
 
         # Determine file locking mechanism based on platform
         is_windows = platform.system() == 'Windows'
@@ -520,65 +529,29 @@ class ModelFileDownloadTask:
                 downloaded_size = self._model_downloaded_size
 
         try:
-            self._update_progress_and_log(total_size, downloaded_size)
+            # tqdm_instance is required for progress logging
+            progress = round((downloaded_size / total_size) * 100, 2)
+            self._update_progress_func(progress)
+
+            # Control log update frequency to avoid excessive file size
+            current_time = time.time()
+            should_log = (
+                current_time - self._last_log_update_time >= self._log_update_interval
+            )
+
+            # Always log when download is complete (100%) regardless of time interval
+            if should_log or progress >= 100.0:
+                # Use tqdm format for logging
+                self._write_to_instance_download_logs(
+                    str(tqdm_instance), use_tqdm_format=True
+                )
+                self._last_log_update_time = current_time
         except Exception as e:
             error_msg = f"Failed to update model file: {e}"
             self._write_to_instance_download_logs(
                 f"Download error: {error_msg}", is_error=True
             )
             raise Exception(error_msg)
-
-    def _update_progress_and_log(self, total_size, downloaded_size):
-        if total_size <= 0:
-            return
-
-        progress_percent = (
-            round((downloaded_size / total_size) * 100, 2) if total_size > 0 else 0
-        )
-        current_time = time.time()
-        # Download speed to show in logs
-        speed_mb_per_sec = 0
-
-        with self._speed_lock:
-            # Only update after 2-second interval or download is completed.
-            if (
-                current_time - self._last_download_update_time < 2
-                and downloaded_size != total_size
-            ):
-                return
-
-            # Update progress to DB
-            self._update_progress_func(progress_percent)
-
-            # Calculate download speed
-            time_elapsed = current_time - self._last_download_update_time
-            if time_elapsed > 0 and self._last_download_update_time > 0:
-                bytes_downloaded_since_last = (
-                    downloaded_size - self._last_downloaded_size
-                )
-                speed_bytes_per_sec = bytes_downloaded_since_last / time_elapsed
-                speed_mb_per_sec = speed_bytes_per_sec / (1024 * 1024)
-
-            self._last_download_update_time = current_time
-            self._last_downloaded_size = downloaded_size
-
-        # Log download progress to download log files
-        downloaded_mb = downloaded_size / (1024 * 1024)
-        total_mb = total_size / (1024 * 1024)
-
-        if downloaded_size == total_size:
-            log_msg = (
-                f"Download completed: {self._model_file.readable_source} - "
-                f"{downloaded_mb:.2f}MB/{total_mb:.2f}MB (100.00%)"
-            )
-        else:
-            log_msg = (
-                f"Download progress: {self._model_file.readable_source} - "
-                f"{downloaded_mb:.2f}MB/{total_mb:.2f}MB ({progress_percent:.2f}%) - "
-                f"Speed: {speed_mb_per_sec:.2f}MB/s"
-            )
-
-        self._write_to_instance_download_logs(log_msg)
 
     def _ensure_model_file_size_and_paths(self):
         if self._model_file.size is not None:
