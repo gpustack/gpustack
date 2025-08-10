@@ -43,9 +43,9 @@ ARG CANN_VERSION=8.2.rc1
 ARG CANN_CHIP=910b
 ARG MINDIE_VERSION=2.1.rc1
 ARG MINDIE_TORCH_VERSION=2.1.0
-ARG VLLM_VERSION=0.9.2
-ARG VLLM_TORCH_VERSION=2.5.1
-ARG VLLM_ASCEND_VERSION=0.9.2rc1
+ARG VLLM_VERSION=0.10.0
+ARG VLLM_TORCH_VERSION=2.7.1
+ARG VLLM_ASCEND_VERSION=0.10.0rc1
 ARG PYTHON_VERSION=3.11
 
 #
@@ -620,7 +620,7 @@ torchaudio
 EOT
     pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
         -r /tmp/requirements.txt
-    pip install torch-npu==${VLLM_TORCH_VERSION}.* --pre --index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+    pip install torch-npu==${VLLM_TORCH_VERSION}.* --pre --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
 
     # Install vLLM Ascend
     pip install vllm-ascend==${VLLM_ASCEND_VERSION} --pre --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
