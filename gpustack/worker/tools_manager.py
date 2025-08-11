@@ -17,6 +17,7 @@ from gpustack.schemas.models import BackendEnum
 from gpustack.utils.command import get_versioned_command
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils import platform, envs
+from gpustack.worker.backend_dependency_manager import BackendDependencyManager
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,20 @@ class ToolsManager:
         self._data_dir = data_dir
         self._bin_dir = bin_dir
         self._pipx_path = pipx_path
+
+        # Initialize backend dependency manager
+        self._dependency_manager = None
+
+    def init_dependency_manager(
+        self, backend: str, version: str, model_env: Dict[str, str]
+    ):
+        """
+        Init dependency_manager for custom backend version and dependencies.
+        No need for other scenarios.
+        """
+        self._dependency_manager = BackendDependencyManager(
+            backend=backend, version=version, model_env=model_env
+        )
 
     def _check_and_set_download_base_url(self):
         urls = [
@@ -161,11 +176,9 @@ class ToolsManager:
         if backend == BackendEnum.LLAMA_BOX:
             self.install_versioned_llama_box(version)
         elif backend == BackendEnum.VLLM:
-            self.install_versioned_vllm(version)
+            self.install_versioned_vllm_with_deps(version)
         elif backend == BackendEnum.VOX_BOX:
-            self.install_versioned_package_by_pipx(
-                "vox-box", version, "--pip-args='transformers==4.51.3'"
-            )
+            self.install_versioned_vox_box_with_deps(version)
         elif backend == BackendEnum.ASCEND_MINDIE:
             self.install_versioned_ascend_mindie(version)
         else:
@@ -275,7 +288,7 @@ class ToolsManager:
 
         self._download_llama_box(version, target_dir, file_name, disabled_dynamic_link)
 
-    def install_versioned_vllm(self, version: str):
+    def install_versioned_vllm_with_deps(self, version: str):
         system = platform.system()
         arch = platform.arch()
         device = platform.device()
@@ -292,10 +305,22 @@ class ToolsManager:
                     f"Auto-installation for versioned vLLM is only supported on CUDA devices. Please install vLLM manually and link it to {target_path}."
                 )
 
-        self.install_versioned_package_by_pipx(
-            "vllm",
-            version,
+        # Get custom dependencies from dependency manager
+        install_args = (
+            self._dependency_manager.get_pipx_install_args()
+            if self._dependency_manager is not None
+            else []
         )
+        self.install_versioned_package_by_pipx("vllm", version, *install_args)
+
+    def install_versioned_vox_box_with_deps(self, version: str):
+        # Get custom dependencies from dependency manager
+        install_args = (
+            self._dependency_manager.get_pipx_install_args()
+            if self._dependency_manager is not None
+            else []
+        )
+        self.install_versioned_package_by_pipx("vox-box", version, *install_args)
 
     def install_versioned_package_by_pipx(self, package: str, version: str, *args):
         """

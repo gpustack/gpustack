@@ -70,6 +70,9 @@ class InferenceServer(ABC):
                     pipx_path=cfg.pipx_path,
                 )
                 backend = get_backend(self._model)
+                tools_manager.init_dependency_manager(
+                    backend, self._model.backend_version, self._model.env
+                )
                 tools_manager.prepare_versioned_backend(
                     backend, self._model.backend_version
                 )
