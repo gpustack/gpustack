@@ -1,5 +1,7 @@
 import logging
 import re
+import zlib
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -45,3 +47,14 @@ def parse_duration(duration_str: str, default: int = 0) -> int:
     except Exception as e:
         logger.error(f"Error parsing duration: {e}")
         return default
+
+
+def safe_b64decode(data):
+    # Remove illegal characters and add equal signs
+    cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', data)
+    padding = '=' * (-len(cleaned) % 4)
+    return base64.b64decode(cleaned + padding)
+
+
+def inflate_data(compressed):
+    return zlib.decompress(compressed, -15)
