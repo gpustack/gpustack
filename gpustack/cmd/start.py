@@ -368,98 +368,98 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--exteranl_auth_type",
         type=str,
         help="A type of SSO authentication.",
-        default=get_gpustack_env("EXTERANL_AUTH_TYPE")
+        default=get_gpustack_env("EXTERANL_AUTH_TYPE"),
     )
     # authentication username
     group.add_argument(
         "--exteranl_auth_name",
         type=str,
         help="username of SSO authentication.",
-        default=get_gpustack_env("EXTERANL_AUTH_NAME")
+        default=get_gpustack_env("EXTERANL_AUTH_NAME"),
     )
     # authentication fullname
     group.add_argument(
         "--exteranl_auth_fullname",
         type=str,
         help="fullname of SSO authentication.",
-        default=get_gpustack_env("EXTERANL_AUTH_FULLNAME")
+        default=get_gpustack_env("EXTERANL_AUTH_FULLNAME"),
     )
     # oidc client id
     group.add_argument(
         "--oidc_client_id",
         type=str,
         help="client id of oidc.",
-        default=get_gpustack_env("OIDC_CLIENT_ID")
+        default=get_gpustack_env("OIDC_CLIENT_ID"),
     )
     # oidc client secret
     group.add_argument(
         "--oidc_client_secret",
         type=str,
         help="client secret of oidc.",
-        default=get_gpustack_env("OIDC_CLIENT_SECRET")
+        default=get_gpustack_env("OIDC_CLIENT_SECRET"),
     )
     # oidc redirect uri
     group.add_argument(
         "--oidc_redirect_uri",
         type=str,
         help="redirect uri of oidc.",
-        default=get_gpustack_env("OIDC_REDIRECT_URL")
+        default=get_gpustack_env("OIDC_REDIRECT_URL"),
     )
     # oidc base entrypoint
     group.add_argument(
         "--oidc_base_entrypoint",
         type=str,
         help="base entrypoint of oidc.",
-        default=get_gpustack_env("OIDC_BASE_ENTRYPOINT")
+        default=get_gpustack_env("OIDC_BASE_ENTRYPOINT"),
     )
     # saml sp_entityId
     group.add_argument(
         "--saml_sp_entity_id",
         type=str,
         help="sp entityId of saml.",
-        default=get_gpustack_env("SAML_SP_ENTITYID")
+        default=get_gpustack_env("SAML_SP_ENTITYID"),
     )
     # saml sp_asc_url
     group.add_argument(
         "--saml_sp_asc_url",
         type=str,
         help="sp asc url of saml.",
-        default=get_gpustack_env("SAML_SP_ASC_URL")
+        default=get_gpustack_env("SAML_SP_ASC_URL"),
     )
     # saml sp_x509cert
     group.add_argument(
         "--saml_sp_x509cert",
         type=str,
         help="sp_x509cert of saml.",
-        default=get_gpustack_env("SAML_SP_X509CERT")
+        default=get_gpustack_env("SAML_SP_X509CERT"),
     )
     # saml sp_privateKey
     group.add_argument(
         "--saml_sp_privateKey",
         type=str,
         help="sp_privateKey of saml.",
-        default=get_gpustack_env("SAML_SP_PRIVATEKEY")
+        default=get_gpustack_env("SAML_SP_PRIVATEKEY"),
     )
     # saml idp_entityId
     group.add_argument(
         "--saml_idp_entity_id",
         type=str,
         help="idp_entityId of saml.",
-        default=get_gpustack_env("SAML_IDP_ENTITYID")
+        default=get_gpustack_env("SAML_IDP_ENTITYID"),
     )
     # saml idp_server_url
     group.add_argument(
         "--saml_idp_server_url",
         type=str,
         help="idp_server_url of saml.",
-        default=get_gpustack_env("SAML_IDP_SERVER_URL")
+        default=get_gpustack_env("SAML_IDP_SERVER_URL"),
     )
     # saml idp_x509cert
     group.add_argument(
         "--saml_idp_x509cert",
         type=str,
         help="idp_x509cert of saml.",
-        default=get_gpustack_env("SAML_IDP_X509CERT")
+        default=get_gpustack_env("SAML_IDP_X509CERT"),
     )
 
     # saml security
@@ -467,7 +467,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--saml_security",
         type=str,
         help="security of saml.",
-        default=get_gpustack_env("SAML_SECURITY")
+        default=get_gpustack_env("SAML_SECURITY"),
     )
     parser_server.set_defaults(func=run)
 
@@ -608,7 +608,7 @@ def set_server_options(args, config_data: dict):
         "saml_idp_entity_id",
         "saml_idp_server_url",
         "saml_idp_x509cert",
-        "saml_security"
+        "saml_security",
     ]
 
     for option in options:
@@ -638,6 +638,7 @@ def set_worker_options(args, config_data: dict):
 
     for option in options:
         set_config_option(args, config_data, option)
+
 
 def debug_env_info():
     hf_endpoint = os.getenv("HF_ENDPOINT")

@@ -30,14 +30,8 @@ def register(app: FastAPI):
         if config.exteranl_auth_type:
             auth_type = config.exteranl_auth_type
         if auth_type.lower() == 'oidc':
-            req_dict = {
-                        "is_oidc": True,
-                        "is_saml": False
-                        }
+            req_dict = {"is_oidc": True, "is_saml": False}
         if auth_type.lower() == 'saml':
-            req_dict = {
-                        "is_oidc": False,
-                        "is_saml": True
-                        }
+            req_dict = {"is_oidc": False, "is_saml": True}
 
         return req_dict
