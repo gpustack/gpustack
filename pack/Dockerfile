@@ -729,4 +729,6 @@ EOT
         && rm -rf /tmp/*
 EOF
 
+ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+
 ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
