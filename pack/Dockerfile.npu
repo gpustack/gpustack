@@ -10,10 +10,10 @@
 #   - Add ATB models.
 #   - Install dependencies for MindIE into system site packages, including Torch, Torch-NPU and TorchVision,
 #     which is used to support multi-versions of MindIE.
-#   - Create a virtual environment to place MindIE: $(pipx environment --value PIPX_LOCAL_VENVS)/mindie.
+#   - Create a virtual environment to place MindIE: /opt/venvs/mindie.
 #   - Install specific version MindIE.
 # 2.2. vllm-install target (parallel against mindie-install):
-#   - Create a virtual environment to place vLLM: $(pipx environment --value PIPX_LOCAL_VENVS)/vllm.
+#   - Create a virtual environment to place vLLM: /opt/venvs/vllm.
 #   - Install specific version Torch, Torch-NPU and TorchVision.
 #   - Install specific version vLLM and vLLM Ascend.
 # 3. gpustack target (final):
@@ -248,10 +248,8 @@ EOT
         && rm -rf /tmp/*
 EOF
 
-## Preset this to simplify configuration,
-## it is the output of $(pipx environment --value PIPX_LOCAL_VENVS).
-ENV PIPX_HOME=/root/.local/share/pipx \
-    PIPX_LOCAL_VENVS=/root/.local/share/pipx/venvs \
+## Preset this to simplify configuration.
+ENV LOCAL_VENVS=/opt/venvs \
     USE_EMOJI="false"
 
 ## Install CANN buildkit if needed
@@ -501,11 +499,11 @@ EOT
 
     # Pre process
     # - Create virtual environment to place MindIE
-    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/mindie
+    python -m venv --system-site-packages ${LOCAL_VENVS}/mindie
     # - Prepare environment
     source ${CANN_HOME}/ascend-toolkit/set_env.sh
     source ${CANN_HOME}/nnal/atb/set_env.sh
-    source ${PIPX_LOCAL_VENVS}/mindie/bin/activate
+    source ${LOCAL_VENVS}/mindie/bin/activate
 
     # Install MindIE
     MINDIE_FILE="Ascend-mindie_${DOWNLOAD_VERSION}_${OS}-${ARCH}.run"
@@ -526,7 +524,7 @@ EOT
     cat <<EOT >>"${CANN_HOME}/mindie/${DOWNLOAD_VERSION}/mindie-service/set_env.sh"
 
 # NB(thxCode): This is a workaround for GPUStack to activate MindIE.
-source ${PIPX_LOCAL_VENVS}/mindie/bin/activate || true
+source ${LOCAL_VENVS}/mindie/bin/activate || true
 EOT
     chmod -w "${CANN_HOME}/mindie/${DOWNLOAD_VERSION}/mindie-service/set_env.sh"
 
@@ -578,11 +576,11 @@ RUN <<EOF
 
     # Pre process
     # - Create virtual environment to place vLLM
-    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/vllm
+    python -m venv --system-site-packages ${LOCAL_VENVS}/vllm
     # - Prepare environment
     source ${CANN_HOME}/ascend-toolkit/set_env.sh
     source ${CANN_HOME}/nnal/atb/set_env.sh
-    source ${PIPX_LOCAL_VENVS}/vllm/bin/activate
+    source ${LOCAL_VENVS}/vllm/bin/activate
 
     # Install dependencies.
     cat <<EOT >/tmp/requirements.txt
@@ -626,7 +624,7 @@ EOT
     pip install vllm-ascend==${VLLM_ASCEND_VERSION} --pre --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
     # Fix SoC version.
     if [[ "${CANN_CHIP}" == "310p" ]]; then
-        sed -i "s/^__soc_version__.*/__soc_version__ = 'ASCEND310P3'/" ${PIPX_LOCAL_VENVS}/vllm/lib/python3.11/site-packages/vllm_ascend/_build_info.py
+        sed -i "s/^__soc_version__.*/__soc_version__ = 'ASCEND310P3'/" ${LOCAL_VENVS}/vllm/lib/python3.11/site-packages/vllm_ascend/_build_info.py
     fi
 
     # Review
@@ -655,12 +653,12 @@ ARG TARGETARCH
 
 ## Copy vLLM from vllm-install stage
 
-COPY --from=vllm-install ${PIPX_LOCAL_VENVS}/vllm ${PIPX_LOCAL_VENVS}/vllm
+COPY --from=vllm-install ${LOCAL_VENVS}/vllm ${LOCAL_VENVS}/vllm
 RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # Patch vLLM
     for dir in lib lib64; do
-        if [ -d "${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/vllm" ]; then
-            cp /workspace/gpustack/gpustack/_sitecustomize.py ${PIPX_LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/sitecustomize.py
+        if [ -d "${LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/vllm" ]; then
+            cp /workspace/gpustack/gpustack/_sitecustomize.py ${LOCAL_VENVS}/vllm/${dir}/python${PYTHON_VERSION}/site-packages/sitecustomize.py
         fi
     done
 EOF
@@ -678,15 +676,15 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
 
     # Pre process
     # - Create virtual environment to place gpustack
-    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/gpustack
+    python -m venv --system-site-packages ${LOCAL_VENVS}/gpustack
     # - Prepare environment
-    source ${PIPX_LOCAL_VENVS}/gpustack/bin/activate
+    source ${LOCAL_VENVS}/gpustack/bin/activate
 
     # Install GPUStack,
     # vox-box relies on PyTorch 2.7, which is not compatible with MindIE.
     WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)"
     pip install ${WHEEL_PACKAGE} \
-        && ln -vsf ${PIPX_LOCAL_VENVS}/gpustack/bin/gpustack /usr/local/bin/gpustack
+        && ln -vsf ${LOCAL_VENVS}/gpustack/bin/gpustack /usr/local/bin/gpustack
 
     # Download tools
     gpustack download-tools --device npu
@@ -697,10 +695,10 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     # so we need to active MindIE manually at GPUStack.
 
     # Active vLLM
-    ln -vsf ${PIPX_LOCAL_VENVS}/vllm/bin/vllm ${PIPX_LOCAL_VENVS}/gpustack/bin/vllm
+    ln -vsf ${LOCAL_VENVS}/vllm/bin/vllm ${LOCAL_VENVS}/gpustack/bin/vllm
     # - Redirect RAY.
-    rm -rf ${PIPX_LOCAL_VENVS}/gpustack/bin/ray \
-        && ln -vsf ${PIPX_LOCAL_VENVS}/vllm/bin/ray ${PIPX_LOCAL_VENVS}/gpustack/bin/ray
+    rm -rf ${LOCAL_VENVS}/gpustack/bin/ray \
+        && ln -vsf ${LOCAL_VENVS}/vllm/bin/ray ${LOCAL_VENVS}/gpustack/bin/ray
 
     # Set up environment
     mkdir -p /var/lib/gpustack \
@@ -761,5 +759,9 @@ RUN <<EOF
 
     # NB(thxCode): Any tuning environment variables should NOT be set here.
 EOF
+
+# Persist pipx venvs in the data directory
+ENV PIPX_HOME=/var/lib/gpustack/pipx \
+    PIPX_BIN_DIR=/var/lib/gpustack/bin
 
 ENTRYPOINT [ "tini", "--", "/usr/bin/bash", "-c", "source /etc/profile && exec gpustack start \"$@\"", "--" ]

@@ -686,6 +686,9 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && rm -rf /workspace/gpustack/dist
 EOF
 
+# Directory for built-in backend venvs.
+ENV LOCAL_VENVS=/opt/venvs
+
 ## Install Vox-Box as an independent executor for GPUStack
 
 RUN <<EOF
@@ -696,9 +699,9 @@ RUN <<EOF
 
     # Pre process
     # - Create virtual environment to place vox-box
-    python -m venv --system-site-packages ${PIPX_LOCAL_VENVS}/vox-box
+    python -m venv --system-site-packages ${LOCAL_VENVS}/vox-box
     # - Prepare environment
-    source ${PIPX_LOCAL_VENVS}/vox-box/bin/activate
+    source ${LOCAL_VENVS}/vox-box/bin/activate
 
     # Reinstall Vox-Box,
     # as we create a virtual environment which inherits system site packages,
@@ -709,7 +712,7 @@ transformers==4.51.3
 vox-box==${VERSION}
 EOT
     pip install --force-reinstall --no-dependencies -r /tmp/requirements.txt \
-        && ln -vsf ${PIPX_LOCAL_VENVS}/vox-box/bin/vox-box /usr/local/bin/vox-box
+        && ln -vsf ${LOCAL_VENVS}/vox-box/bin/vox-box /usr/local/bin/vox-box
 
     if [[ "${TARGETARCH}" == "amd64" ]]; then
         # Since no compatible version exists for arm64, triton installation is restricted to amd64 architectures,
@@ -729,6 +732,11 @@ EOT
         && rm -rf /tmp/*
 EOF
 
-ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+# 1. Remove cuda paths from LD_LIBRARY_PATH
+# 2. Persist pipx venvs in the data directory
+ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
+    PIPX_HOME=/var/lib/gpustack/pipx \
+    PIPX_LOCAL_VENVS=/var/lib/gpustack/pipx/venvs \
+    PIPX_BIN_DIR=/var/lib/gpustack/bin
 
 ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
