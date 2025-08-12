@@ -143,6 +143,21 @@ class Config(BaseSettings):
     rpc_server_args: Optional[List[str]] = None
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
+    exteranl_auth_type: Optional[str] = None  # exteranl auth type
+    exteranl_auth_name: Optional[str] = None  # exteranl auth name
+    exteranl_auth_fullname: Optional[str] = None  # exteranl auth fullname
+    oidc_client_id: Optional[str] = None  # oidc client id
+    oidc_client_secret: Optional[str] = None  # oidc client secret
+    oidc_redirect_uri: Optional[str] = None  # oidc redirect uri
+    oidc_base_entrypoint: Optional[str] = None  # exteranl auth redirect uri
+    saml_sp_entity_id: Optional[str] = None  # saml sp_entity_id
+    saml_sp_asc_url: Optional[str] = None  # saml sp_asc_url
+    saml_sp_x509cert: Optional[str] = ''  # saml sp_x509cert
+    saml_sp_privateKey: Optional[str] = ''  # saml sp_privateKey
+    saml_idp_entity_id: Optional[str] = None  # saml idp_entityId
+    saml_idp_server_url: Optional[str] = None  # saml idp_server_url
+    saml_idp_x509cert: Optional[str] = ''  # saml idp_x509cert
+    saml_security: Optional[str] = '{}'  # saml security
 
     def __init__(self, **values):
         super().__init__(**values)
