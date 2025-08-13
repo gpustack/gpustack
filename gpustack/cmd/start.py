@@ -369,110 +369,91 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         action='append',
         help='HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: --allow-headers Authorization --allow-headers Content-Type. Default: ["Authorization", "Content-Type"].',
     )
-    # authentication type
+    # External authentication settings
     group.add_argument(
-        "--exteranl_auth_type",
+        "--external-auth-name",
         type=str,
-        help="A type of SSO authentication.",
-        default=get_gpustack_env("EXTERANL_AUTH_TYPE"),
+        help="Mapping of external authentication user information to username, e.g., preferred_username.",
+        default=get_gpustack_env("EXTERNAL_AUTH_NAME"),
     )
-    # authentication username
     group.add_argument(
-        "--exteranl_auth_name",
+        "--external-auth-full-name",
         type=str,
-        help="username of SSO authentication.",
-        default=get_gpustack_env("EXTERANL_AUTH_NAME"),
+        help="Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.",
+        default=get_gpustack_env("EXTERNAL_AUTH_FULL_NAME"),
     )
-    # authentication fullname
+    # OIDC settings
     group.add_argument(
-        "--exteranl_auth_fullname",
+        "--oidc-issuer",
         type=str,
-        help="fullname of SSO authentication.",
-        default=get_gpustack_env("EXTERANL_AUTH_FULLNAME"),
+        help="The issuer URL of the OIDC provider. OIDC discovery under `<issuer>/.well-known/openid-configuration` will be used to discover the OIDC configuration.",
+        default=get_gpustack_env("OIDC_ISSUER"),
     )
-    # oidc client id
     group.add_argument(
-        "--oidc_client_id",
+        "--oidc-client-id",
         type=str,
-        help="client id of oidc.",
+        help="OIDC client ID.",
         default=get_gpustack_env("OIDC_CLIENT_ID"),
     )
-    # oidc client secret
     group.add_argument(
-        "--oidc_client_secret",
+        "--oidc-client-secret",
         type=str,
-        help="client secret of oidc.",
+        help="OIDC client secret.",
         default=get_gpustack_env("OIDC_CLIENT_SECRET"),
     )
-    # oidc redirect uri
     group.add_argument(
-        "--oidc_redirect_uri",
+        "--oidc-redirect-uri",
         type=str,
-        help="redirect uri of oidc.",
-        default=get_gpustack_env("OIDC_REDIRECT_URL"),
+        help="The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.",
+        default=get_gpustack_env("OIDC_REDIRECT_URI"),
     )
-    # oidc base entrypoint
+    # SAML settings
     group.add_argument(
-        "--oidc_base_entrypoint",
+        "--saml-idp-server-url",
         type=str,
-        help="base entrypoint of oidc.",
-        default=get_gpustack_env("OIDC_BASE_ENTRYPOINT"),
-    )
-    # saml sp_entityId
-    group.add_argument(
-        "--saml_sp_entity_id",
-        type=str,
-        help="sp entityId of saml.",
-        default=get_gpustack_env("SAML_SP_ENTITYID"),
-    )
-    # saml sp_asc_url
-    group.add_argument(
-        "--saml_sp_asc_url",
-        type=str,
-        help="sp asc url of saml.",
-        default=get_gpustack_env("SAML_SP_ASC_URL"),
-    )
-    # saml sp_x509cert
-    group.add_argument(
-        "--saml_sp_x509cert",
-        type=str,
-        help="sp_x509cert of saml.",
-        default=get_gpustack_env("SAML_SP_X509CERT"),
-    )
-    # saml sp_privateKey
-    group.add_argument(
-        "--saml_sp_privateKey",
-        type=str,
-        help="sp_privateKey of saml.",
-        default=get_gpustack_env("SAML_SP_PRIVATEKEY"),
-    )
-    # saml idp_entityId
-    group.add_argument(
-        "--saml_idp_entity_id",
-        type=str,
-        help="idp_entityId of saml.",
-        default=get_gpustack_env("SAML_IDP_ENTITYID"),
-    )
-    # saml idp_server_url
-    group.add_argument(
-        "--saml_idp_server_url",
-        type=str,
-        help="idp_server_url of saml.",
+        help="SAML IdP server URL.",
         default=get_gpustack_env("SAML_IDP_SERVER_URL"),
     )
-    # saml idp_x509cert
     group.add_argument(
-        "--saml_idp_x509cert",
+        "--saml-idp-entity-id",
         type=str,
-        help="idp_x509cert of saml.",
-        default=get_gpustack_env("SAML_IDP_X509CERT"),
+        help="SAML IdP entity ID.",
+        default=get_gpustack_env("SAML_IDP_ENTITY_ID"),
     )
-
-    # saml security
     group.add_argument(
-        "--saml_security",
+        "--saml-idp-x509-cert",
         type=str,
-        help="security of saml.",
+        help="SAML IdP X.509 certificate.",
+        default=get_gpustack_env("SAML_IDP_X509_CERT"),
+    )
+    group.add_argument(
+        "--saml-sp-entity-id",
+        type=str,
+        help="SAML SP entity ID.",
+        default=get_gpustack_env("SAML_SP_ENTITY_ID"),
+    )
+    group.add_argument(
+        "--saml-sp-acs-url",
+        type=str,
+        help="SAML SP Assertion Consumer Service(ACS) URL. It should be set to `<server-url>/auth/saml/callback`.",
+        default=get_gpustack_env("SAML_SP_ACS_URL"),
+    )
+    group.add_argument(
+        "--saml-sp-x509-cert",
+        type=str,
+        help="SAML SP X.509 certificate.",
+        default=get_gpustack_env("SAML_SP_X509_CERT"),
+    )
+    group.add_argument(
+        "--saml-sp-private-key",
+        type=str,
+        help="SAML SP private key.",
+        default=get_gpustack_env("SAML_SP_PRIVATE_KEY"),
+    )
+    group.add_argument(
+        "--saml-security",
+        type=str,
+        help="SAML security settings in JSON.",
         default=get_gpustack_env("SAML_SECURITY"),
     )
     parser_server.set_defaults(func=run)
@@ -600,20 +581,19 @@ def set_server_options(args, config_data: dict):
         "allow_credentials",
         "allow_methods",
         "allow_headers",
-        "exteranl_auth_type",
-        "exteranl_auth_name",
-        "exteranl_auth_fullname",
+        "external_auth_name",
+        "external_auth_full_name",
+        "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",
         "oidc_redirect_uri",
-        "oidc_base_entrypoint",
-        "saml_sp_entity_id",
-        "saml_sp_asc_url",
-        "saml_sp_x509cert",
-        "saml_sp_privateKey",
-        "saml_idp_entity_id",
         "saml_idp_server_url",
-        "saml_idp_x509cert",
+        "saml_idp_entity_id",
+        "saml_idp_x509_cert",
+        "saml_sp_entity_id",
+        "saml_sp_acs_url",
+        "saml_sp_x509_cert",
+        "saml_sp_private_key",
         "saml_security",
     ]
 

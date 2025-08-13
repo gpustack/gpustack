@@ -23,12 +23,12 @@ def register(app: FastAPI):
 
     # Provide configuration interface
     @app.get("/auth_config")
-    async def get_exteranl_auth_type(request: Request):
+    async def get_external_auth_type(request: Request):
         req_dict = {}
         config: Config = request.app.state.server_config
         auth_type = 'Local'
-        if config.exteranl_auth_type:
-            auth_type = config.exteranl_auth_type
+        if config.external_auth_type:
+            auth_type = config.external_auth_type
         if auth_type.lower() == 'oidc':
             req_dict = {"is_oidc": True, "is_saml": False}
         if auth_type.lower() == 'saml':

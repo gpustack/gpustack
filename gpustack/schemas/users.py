@@ -10,7 +10,7 @@ from .common import PaginatedList
 from ..mixins import BaseModelMixin
 
 
-class SourceEnum(str, Enum):
+class AuthProviderEnum(str, Enum):
     Local = "Local"
     OIDC = "OIDC"
     SAML = "SAML"
@@ -20,7 +20,9 @@ class UserBase(SQLModel):
     username: str
     is_admin: bool = False
     full_name: Optional[str] = None
-    source: Optional[str] = Field(default=SourceEnum.Local, sa_type=SQLEnum(SourceEnum))
+    source: Optional[str] = Field(
+        default=AuthProviderEnum.Local, sa_type=SQLEnum(AuthProviderEnum)
+    )
     require_password_change: bool = Field(default=False)
 
 

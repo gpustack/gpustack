@@ -3,6 +3,7 @@ import secrets
 from typing import List, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+import requests
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
     CPUInfo,
@@ -19,6 +20,7 @@ from gpustack.schemas.workers import (
     GPUDevicesInfo,
     GPUNetworkInfo,
 )
+from gpustack.schemas.users import AuthProviderEnum
 from gpustack.utils import platform
 from gpustack.utils.platform import DeviceTypeEnum, device_type_from_vendor
 
@@ -123,6 +125,22 @@ class Config(BaseSettings):
     allow_credentials: bool = False
     allow_methods: Optional[List[str]] = ['GET', 'POST']
     allow_headers: Optional[List[str]] = ['Authorization', 'Content-Type']
+    external_auth_type: Optional[str] = None  # external auth type
+    external_auth_name: Optional[str] = None  # external auth name
+    external_auth_full_name: Optional[str] = None  # external auth full name
+    oidc_client_id: Optional[str] = None  # oidc client id
+    oidc_client_secret: Optional[str] = None  # oidc client secret
+    oidc_redirect_uri: Optional[str] = None  # oidc redirect uri
+    oidc_issuer: Optional[str] = None  # oidc issuer
+    openid_configuration: Optional[dict] = None  # fetched openid configuration
+    saml_sp_entity_id: Optional[str] = None  # saml sp_entity_id
+    saml_sp_acs_url: Optional[str] = None  # saml sp_acs_url
+    saml_sp_x509_cert: Optional[str] = ''  # saml sp_x509_cert
+    saml_sp_private_key: Optional[str] = ''  # saml sp_private_key
+    saml_idp_entity_id: Optional[str] = None  # saml idp_entityId
+    saml_idp_server_url: Optional[str] = None  # saml idp_server_url
+    saml_idp_x509_cert: Optional[str] = ''  # saml idp_x509_cert
+    saml_security: Optional[str] = '{}'  # saml security
 
     # Worker options
     server_url: Optional[str] = None
@@ -143,21 +161,6 @@ class Config(BaseSettings):
     rpc_server_args: Optional[List[str]] = None
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
-    exteranl_auth_type: Optional[str] = None  # exteranl auth type
-    exteranl_auth_name: Optional[str] = None  # exteranl auth name
-    exteranl_auth_fullname: Optional[str] = None  # exteranl auth fullname
-    oidc_client_id: Optional[str] = None  # oidc client id
-    oidc_client_secret: Optional[str] = None  # oidc client secret
-    oidc_redirect_uri: Optional[str] = None  # oidc redirect uri
-    oidc_base_entrypoint: Optional[str] = None  # exteranl auth redirect uri
-    saml_sp_entity_id: Optional[str] = None  # saml sp_entity_id
-    saml_sp_asc_url: Optional[str] = None  # saml sp_asc_url
-    saml_sp_x509cert: Optional[str] = ''  # saml sp_x509cert
-    saml_sp_privateKey: Optional[str] = ''  # saml sp_privateKey
-    saml_idp_entity_id: Optional[str] = None  # saml idp_entityId
-    saml_idp_server_url: Optional[str] = None  # saml idp_server_url
-    saml_idp_x509cert: Optional[str] = ''  # saml idp_x509cert
-    saml_security: Optional[str] = '{}'  # saml security
 
     def __init__(self, **values):
         super().__init__(**values)
@@ -191,6 +194,7 @@ class Config(BaseSettings):
 
         # server options
         self.init_database_url()
+        self.init_auth()
 
         if self.system_reserved is None:
             self.system_reserved = {"ram": 2, "vram": 1}
@@ -518,6 +522,13 @@ class Config(BaseSettings):
                 "Unsupported database scheme. Supported databases are sqlite, postgresql, and mysql."
             )
 
+    def init_auth(self):
+        if self.oidc_issuer:
+            self.external_auth_type = AuthProviderEnum.OIDC
+            self.openid_configuration = get_openid_configuration(self.oidc_issuer)
+        elif self.saml_idp_server_url:
+            self.external_auth_type = AuthProviderEnum.SAML
+
     @staticmethod
     def get_data_dir():
         app_name = "gpustack"
@@ -568,6 +579,19 @@ class Config(BaseSettings):
 
     def _is_server(self):
         return self.server_url is None
+
+
+def get_openid_configuration(issuer: str) -> dict:
+    """Fetch OpenID configuration from the issuer."""
+    url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        raise Exception(
+            f"Failed to get OpenID configuration: {str(e)}. Please check the issuer URL and ensure {url} is accessible."
+        ) from e
 
 
 def get_global_config() -> Config:
