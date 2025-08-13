@@ -11,6 +11,7 @@ repos:
     hooks:
       - id: flake8
         exclude: ".*/migrations"
+        args: [--max-complexity=15]
   - repo: https://github.com/psf/black
     rev: 24.4.2
     hooks:

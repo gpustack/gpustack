@@ -116,6 +116,7 @@ nav:
       - Model File management: user-guide/model-file-management.md
       - API Key Management: user-guide/api-key-management.md
       - User Management: user-guide/user-management.md
+      - Single Sign-On (SSO) Authentication: user-guide/auth.md
       - Inference Backends: user-guide/inference-backends.md
       - Pinned Backend Versions: user-guide/pinned-backend-versions.md
       - Compatibility Check: user-guide/compatibility-check.md

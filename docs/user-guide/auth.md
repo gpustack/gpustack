@@ -1,63 +1,144 @@
-## SSO Authentication
-1. Add config external auth info to environment variable 
-   Examples such as OIDC certification
-``` 
-"GPUSTACK_EXTERANL_AUTH_TYPE": "OIDC"
-"GPUSTACK_EXTERANL_AUTH_NAME": ""  # Mapping of OIDC user information to local username 
-                                      for example "preferred_username"
-"GPUSTACK_EXTERANL_AUTH_FULLNAME": "" # Mapping of OIDC user information to local full_name 
-                                         Multiple elements combined for use + splicing for 
-                                         example "name" or "firstName+lastName"
-"GPUSTACK_OIDC_CLIENT_ID": "your CLIENT ID"
-"GPUSTACK_OIDC_CLIENT_SECRET": "your CLIENT SECRET"
-"GPUSTACK_OIDC_REDIRECT_URL": "{your server url}/auth/oidc/callback"
-"GPUSTACK_OIDC_BASE_ENTRYPOINT": "sso server url"
-```  
-   Examples such as SAML certification
+# Single Sign-On (SSO) Authentication
+
+GPUStack supports Single Sign-On (SSO) authentication methods such as OIDC and SAML. This allows users to log in using their existing credentials from an external identity provider.
+
+## OIDC
+
+Any authentication provider that supports OIDC can be configured. The `email`, `name` and `picture` claims are used if available. The allowed redirect URI should include `<server-url>/auth/oidc/callback`.
+
+The following CLI flags are available for OIDC configuration:
+
+| <div style="width:180px">Flag</div>       | Description                                                                                                                                                                                                                                                                                          |
+|-------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--oidc-issuer`                           | OIDC issuer URL, e.g., `https://accounts.google.com`. OIDC discovery under `<issuer>/.well-known/openid-configuration` will be used to discover the OIDC configuration.                                                                                                                                   |
+| `--oidc-client-id`                        | OIDC client ID.                                                                                                                                                                                                                                                                                     |
+| `--oidc-client-secret`                    | OIDC client secret.                                                                                                                                                                                                                                                                                 |
+| `--oidc-redirect-uri`                     | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                                                                                                                                                                 |
+| `--external-auth-name` (Optional)         | Mapping of OIDC user information to username, e.g., `preferred_username`. By default, the `email` claim is used if available.                                                                                                                                                                                                 |
+| `--external-auth-full-name` (Optional)     | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used.                                                                                                                                                                                                 |
+
+You can also set these options via environment variables instead of CLI flags:
+
+```bash
+GPUSTACK_OIDC_ISSUER="your-oidc-issuer-url"
+GPUSTACK_OIDC_CLIENT_ID="your-client-id"
+GPUSTACK_OIDC_CLIENT_SECRET="your-client-secret"
+GPUSTACK_OIDC_REDIRECT_URI="{your-server-url}/auth/oidc/callback"
+# Optional
+GPUSTACK_EXTERNAL_AUTH_NAME="email"
+GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 ```
-"GPUSTACK_EXTERANL_AUTH_TYPE": "SAML"
-"GPUSTACK_EXTERANL_AUTH_NAME": ""     # Mapping of SAML user information to local username 
-                                         for example "username"
-"GPUSTACK_EXTERANL_AUTH_FULLNAME": "" # Mapping of SAML user information to local full_name 
-                                         Multiple elements combined for use + splicing for example
-                                         "fullName" or "firstName+lastName"
-"GPUSTACK_SAML_SP_ENTITYID": "your sp_entityId" 
-"GPUSTACK_SAML_SP_ASC_URL": "{your server url}/auth/saml/callback"
-"GPUSTACK_SAML_IDP_ENTITYID": "SP Public Key"
-"SAML_SP_PRIVATEKEY": "sp PrivateKey"
-"SAML_IDP_ENTITYID": "your idp_entityId"
-"SAML_IDP_SERVER_URL": "your idp_server_url"
-"SAML_IDP_X509CERT": "IDP Public Key"
-"SAML_SECURITY": {} # Signature configuration
+
+### Example: Integrate with Auth0 OIDC
+
+To configure GPUStack with Auth0 as the OIDC provider:
+
+1. Navigate to [auth0](https://auth0.com) and create a new application.
+
+![create-oidc-app](../assets/sso/create-oidc-app.png)
+
+2. Get the `Domain`, `Client ID`, and `Client Secret` from the application settings.
+
+![auth0-app](../assets/sso/auth0-app.png)
+
+3. Add `<your-server-url>/auth/oidc/callback` in the Allowed Callback URLs. Adapt the URL to match your server's URL.
+
+![auth0-callback](../assets/sso/auth0-callback.png)
+
+Then, run GPUStack with relevant OIDC configuration. The following example uses Docker with CUDA:
+```bash
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --gpus all \
+    --network=host \
+    --ipc=host \
+    -v gpustack-data:/var/lib/gpustack \
+    -e GPUSTACK_OIDC_ISSUER="https://<your-auth0-domain>" \
+    -e GPUSTACK_OIDC_CLIENT_ID="<your-client-id>" \
+    -e GPUSTACK_OIDC_CLIENT_SECRET="<your-client-secret>" \
+    -e GPUSTACK_OIDC_REDIRECT_URI="<your-server-url>/auth/oidc/callback" \
+    gpustack/gpustack
 ```
-2. Add external user configuration using CLI method 
-   Examples such as OIDC certification
-``` 
---exteranl_auth_type OIDC 
---exteranl_auth_name ""  # Mapping of OIDC user information to local username 
-                                      for example "preferred_username"
---exteranl_auth_fullname "", # Mapping of OIDC user information to local full_name 
-                                         Multiple elements combined for use + splicing for 
-                                         example "name" or "firstName+lastName"
---oidc_client_id "your CLIENT ID"
---oidc_client_secret "your CLIENT SECRET"
---oidc_redirect_uri "{your server url}/auth/oidc/callback"
---oidc_base_entrypoint "sso server url"
-```  
-   Examples such as SAML certification
+
+## SAML
+
+GPUStack supports SAML authentication for Single Sign-On (SSO). This allows users to log in using their existing credentials from an external identity provider that supports SAML.
+
+The following CLI flags are available for SAML configuration:
+
+| <div style="width:180px">Flag</div>       | Description                                                                                                                                                                                                                                                                                          |
+|-------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--saml-idp-server-url`                   | SAML IdP server URL.                                                                                                                                                                                                                                                |
+| `--saml-idp-entity-id`                    | SAML IdP entity ID.                                                                                                                                                                                                 |
+| `--saml-idp-x509-cert`                    | SAML IdP X.509 certificate.                                                                                                                                                                                                 |
+| `--saml-sp-entity-id`                     | SAML SP entity ID.                                                                                                                                                                                                 |
+| `--saml-sp-acs-url`                       | SAML SP Assertion Consumer Service URL. It should be set to `<gpustack-server-url>/auth/saml/callback`.                                                                                                                                                                                                 |
+| `--saml-sp-x509-cert`                     | SAML SP X.509 certificate.                                                                                                                                                                                                 |
+| `--saml-sp-private-key`                   | SAML SP private key.                                                                                                                                                                                                 |
+| `--saml-security` (Optional)              | SAML security settings in JSON format.                                                                                                                                                                                                 |
+| `--external-auth-name` (Optional)         | Mapping of SAML user information to username, e.g., `preferred_username`. The `email` claim is used if available.                                                                                                                                                                                                 |
+| `--external-auth-full-name` (Optional)     | Mapping of SAML user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.                                                                                                                                                                                                 |
+
+You can also set these options via environment variables instead of CLI flags:
+```bash
+GPUSTACK_SAML_IDP_SERVER_URL="https://idp.example.com"
+GPUSTACK_SAML_IDP_ENTITY_ID="your-idp-entity-id"
+GPUSTACK_SAML_IDP_X509_CERT="your-idp-x509-cert"
+GPUSTACK_SAML_SP_ENTITY_ID="your-sp-entity-id"
+GPUSTACK_SAML_SP_ACS_URL="{your-server-url}/auth/saml/callback"
+GPUSTACK_SAML_SP_X509_CERT="your-sp-x509-cert"
+GPUSTACK_SAML_SP_PRIVATE_KEY="your-sp-private-key"
+# Optional
+GPUSTACK_SAML_SECURITY="{}"
+GPUSTACK_EXTERNAL_AUTH_NAME="email"
+GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 ```
---exteranl_auth_type OIDC 
---exteranl_auth_name ""  # Mapping of OIDC user information to local username 
-                                      for example "preferred_username"
---exteranl_auth_fullname "", # Mapping of OIDC user information to local full_name 
-                                         Multiple elements combined for use + splicing for 
-                                         example "name" or "firstName+lastName"
---saml_sp_entity_id "your sp_entityId",  
---saml_sp_asc_url "{your server url}/auth/saml/callback", 
---saml_sp_x509cert "SP Public Key",
---saml_sp_privateKey "sp PrivateKey",
---saml_idp_entity_id "your idp_entityId", 
---saml_idp_server_url "your idp_server_url",
---saml_idp_x509cert "IDP Public Key",
---saml_security {} # Signature configuration
+
+### Example: Integrate with Auth0 SAML
+
+To configure GPUStack with Auth0 as the SAML provider:
+
+1. Navigate to [auth0](https://auth0.com) and create a new application with type "Regular Web Applications".
+
+![create-saml-app](../assets/sso/create-saml-app.png)
+
+2. Get the `Domain` from the application settings and add `<your-server-url>/auth/saml/callback` in the Allowed Callback URLs. Adapt the URL to match your server's URL.
+
+![auth0-saml-callback](../assets/sso/auth0-saml-callback.png)
+
+3. In **Advanced Settings → Certificates**, copy the IdP `X.509 Certificate`.
+
+![auth0-saml-cert](../assets/sso/auth0-saml-cert.png)
+
+4. In **Endpoints** tab, find the `SAML Protocol URL`, which is your IdP server URL.
+
+![auth0-saml-url](../assets/sso/auth0-saml-url.png)
+
+5. Generate SP certificate and private key:
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout myservice.key -out myservice.cert -days 365 -nodes -subj "/CN=myservice.example.com"
+```
+
+!!! note
+    myservice.cert and myservice.key will be used for the SP configuration.
+
+6. Run GPUStack with relevant SAML configuration. The following example uses Docker with CUDA:
+```bash
+SP_CERT="$(cat myservice.cert)"
+SP_PRIVATE_KEY="$(cat myservice.key)"
+
+docker run -d --name gpustack \
+    --restart=unless-stopped \
+    --gpus all \
+    --network=host \
+    --ipc=host \
+    -v gpustack-data:/var/lib/gpustack \
+    -e GPUSTACK_SAML_IDP_SERVER_URL="<auth0-saml-protocol-url>" \
+    -e GPUSTACK_SAML_IDP_ENTITY_ID="urn:<auth0-domain>" \
+    -e GPUSTACK_SAML_IDP_X509_CERT="<auth0-x509-cert>" \
+    -e GPUSTACK_SAML_SP_ENTITY_ID="urn:gpustack:sp" \
+    -e GPUSTACK_SAML_SP_ACS_URL="<your-gpustack-server-url>/auth/saml/callback" \
+    -e GPUSTACK_SAML_SP_X509_CERT="$SP_CERT" \
+    -e GPUSTACK_SAML_SP_PRIVATE_KEY="$SP_PRIVATE_KEY" \
+    gpustack/gpustack
 ```
