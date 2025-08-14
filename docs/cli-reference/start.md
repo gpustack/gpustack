@@ -55,6 +55,21 @@ gpustack start [OPTIONS]
 | `--allow-origins` value             | `["*"]`                                | Origins allowed for cross-origin requests. Specify the flag multiple times for multiple origins. Example: `--allow-origins https://example.com --allow-origins https://api.example.com` |
 | `--allow-methods` value             | `["GET", "POST"]`                      | HTTP methods allowed in cross-origin requests. Specify the flag multiple times for multiple methods. Example: `--allow-methods GET --allow-methods POST`                                |
 | `--allow-headers` value             | `["Authorization", "Content-Type"]`    | HTTP request headers allowed in cross-origin requests. Specify the flag multiple times for multiple headers. Example: `--allow-headers Authorization --allow-headers Content-Type`      |
+| `--oidc-issuer` value               | (empty)                                | OpenID Connect issuer URL.                                                                                                               |
+| `--oidc-client-id` value            | (empty)                                | OpenID Connect client ID.                                                                                                                |
+| `--oidc-client-secret` value        | (empty)                                | OpenID Connect client secret.                                                                                                             |
+| `--oidc-redirect-uri` value         | (empty)                                | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                                                                              |
+| `--saml-idp-server-url` value | (empty)                                | SAML Identity Provider server URL.                                                                                                             |
+| `--saml-idp-entity-id` value | (empty)                                | SAML Identity Provider entity ID.                                                                                                             |
+| `--saml-idp-x509-cert` value | (empty)                                | SAML Identity Provider X.509 certificate.                                                                                                     |
+| `--saml-sp-entity-id` value | (empty)                                | SAML Service Provider entity ID.                                                                                                             |
+| `--saml-sp-acs-url` value | (empty)                                | SAML Service Provider Assertion Consumer Service URL. This must be set to `<server-url>/auth/saml/callback`.                                                                                                             |
+| `--saml-sp-x509-cert` value | (empty)                                | SAML Service Provider X.509 certificate.                                                                                                     |
+| `--saml-sp-private-key` value | (empty)                                | SAML Service Provider private key.                                                                                                     |
+| `--saml-security` value | (empty)                                | SAML security settings in JSON format.                                                                                                     |
+| `--external-auth-name` value | (empty)                                | Mapping of external authentication user information to username, e.g., preferred_username.                                                                                 |
+| `--external-auth-full-name` value | (empty)                                | Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.                                                                                                         |
+| `--external-auth-avatar-url` value | (empty)                                | Mapping of external authentication user information to user's avatar URL.                                                                                                         |
 
 ### Worker Options
 
@@ -133,6 +148,21 @@ allow_credentials: false
 allow_origins: ["*"]
 allow_methods: ["GET", "POST"]
 allow_headers: ["Authorization", "Content-Type"]
+oidc_issuer: https://your_oidc_issuer
+oidc_client_id: your_oidc_client_id
+oidc_client_secret: your_oidc_client_secret
+oidc_redirect_uri: http://your_gpustack_server_url/auth/oidc/callback
+saml_idp_server_url: https://your_saml_idp_server_url
+saml_idp_entity_id: your_saml_idp_entity_id
+saml_idp_x509_cert: your_saml_idp_x509_cert_pem
+saml_sp_entity_id: your_saml_sp_entity_id
+saml_sp_acs_url: http://your_gpustack_server_url/auth/saml/callback
+saml_sp_x509_cert: your_saml_sp_x509_cert_pem
+saml_sp_private_key: your_saml_sp_private_key_pem
+saml_security: '{"wantAssertionsSigned": true, "wantMessagesSigned": true}'
+external_auth_name: email
+external_auth_full_name: name
+external_auth_avatar_url: picture
 
 # Worker Options
 server_url: http://your_gpustack_server_url
