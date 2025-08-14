@@ -382,6 +382,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.",
         default=get_gpustack_env("EXTERNAL_AUTH_FULL_NAME"),
     )
+    group.add_argument(
+        "--external-auth-avatar-url",
+        type=str,
+        help="Mapping of external authentication user information to user's avatar URL.",
+        default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
+    )
     # OIDC settings
     group.add_argument(
         "--oidc-issuer",
@@ -583,6 +589,7 @@ def set_server_options(args, config_data: dict):
         "allow_headers",
         "external_auth_name",
         "external_auth_full_name",
+        "external_auth_avatar_url",
         "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",

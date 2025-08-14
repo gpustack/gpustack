@@ -132,6 +132,10 @@ async def saml_callback(request: Request, session: SessionDep):
                     full_name = attributes[key]
                     break
 
+        avatar_url = None
+        if config.external_auth_avatar_url:
+            avatar_url = attributes.get(config.external_auth_avatar_url)
+
         # determine whether the user already exists
         user = await User.first_by_field(
             session=session, field="username", value=username
@@ -141,6 +145,7 @@ async def saml_callback(request: Request, session: SessionDep):
             user_info = User(
                 username=username,
                 full_name=full_name,
+                avatar_url=avatar_url,
                 hashed_password="",
                 is_admin=False,
                 source=AuthProviderEnum.SAML,
@@ -238,6 +243,11 @@ async def oidc_callback(request: Request, session: SessionDep):
                 )
             else:
                 full_name = user_data.get("name", "")
+
+            if config.external_auth_avatar_url:
+                avatar_url = user_data.get(config.external_auth_avatar_url)
+            else:
+                avatar_url = user_data.get("picture", None)
         except Exception as e:
             logger.error(f"Get OIDC user info error: {str(e)}")
             raise UnauthorizedException(message=str(e))
@@ -248,6 +258,7 @@ async def oidc_callback(request: Request, session: SessionDep):
         user_info = User(
             username=username,
             full_name=full_name,
+            avatar_url=avatar_url,
             hashed_password="",
             is_admin=False,
             source=AuthProviderEnum.OIDC,

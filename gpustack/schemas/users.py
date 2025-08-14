@@ -1,10 +1,10 @@
 from datetime import datetime
 import re
 from enum import Enum
-from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import Enum as SQLEnum, Text
 from typing import Optional
 from pydantic import field_validator
-from sqlmodel import Field, SQLModel
+from sqlmodel import Column, Field, SQLModel
 
 from .common import PaginatedList
 from ..mixins import BaseModelMixin
@@ -20,6 +20,9 @@ class UserBase(SQLModel):
     username: str
     is_admin: bool = False
     full_name: Optional[str] = None
+    avatar_url: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     source: Optional[str] = Field(
         default=AuthProviderEnum.Local, sa_type=SQLEnum(AuthProviderEnum)
     )
