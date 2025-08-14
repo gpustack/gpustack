@@ -22,8 +22,8 @@ def register(app: FastAPI):
         return FileResponse(os.path.join(ui_dir, "index.html"))
 
     # Provide configuration interface
-    @app.get("/auth_config")
-    async def get_external_auth_type(request: Request):
+    @app.get("/auth-config")
+    async def get_auth_config(request: Request):
         req_dict = {}
         config: Config = request.app.state.server_config
         auth_type = 'Local'
