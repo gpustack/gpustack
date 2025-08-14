@@ -128,6 +128,7 @@ class Config(BaseSettings):
     external_auth_type: Optional[str] = None  # external auth type
     external_auth_name: Optional[str] = None  # external auth name
     external_auth_full_name: Optional[str] = None  # external auth full name
+    external_auth_avatar_url: Optional[str] = None  # external auth avatar url
     oidc_client_id: Optional[str] = None  # oidc client id
     oidc_client_secret: Optional[str] = None  # oidc client secret
     oidc_redirect_uri: Optional[str] = None  # oidc redirect uri

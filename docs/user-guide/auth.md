@@ -16,6 +16,7 @@ The following CLI flags are available for OIDC configuration:
 | `--oidc-redirect-uri`                     | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                                                                                                                                                                 |
 | `--external-auth-name` (Optional)         | Mapping of OIDC user information to username, e.g., `preferred_username`. By default, the `email` claim is used if available.                                                                                                                                                                                                 |
 | `--external-auth-full-name` (Optional)     | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used.                                                                                                                                                                                                 |
+| `--external-auth-avatar-url` (Optional) | Mapping of OIDC user information to user's avatar URL. By default, the `picture` claim is used if available.                                                                                                                                                                                                 |
 
 You can also set these options via environment variables instead of CLI flags:
 
@@ -27,6 +28,7 @@ GPUSTACK_OIDC_REDIRECT_URI="{your-server-url}/auth/oidc/callback"
 # Optional
 GPUSTACK_EXTERNAL_AUTH_NAME="email"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
+GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
 ```
 
 ### Example: Integrate with Auth0 OIDC
@@ -78,6 +80,8 @@ The following CLI flags are available for SAML configuration:
 | `--saml-security` (Optional)              | SAML security settings in JSON format.                                                                                                                                                                                                 |
 | `--external-auth-name` (Optional)         | Mapping of SAML user information to username, e.g., `preferred_username`. The `email` claim is used if available.                                                                                                                                                                                                 |
 | `--external-auth-full-name` (Optional)     | Mapping of SAML user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.                                                                                                                                                                                                 |
+| `--external-auth-avatar-url` (Optional) | Mapping of SAML user information to user's avatar URL.                                                                                                                               |
+
 
 You can also set these options via environment variables instead of CLI flags:
 ```bash
@@ -92,6 +96,7 @@ GPUSTACK_SAML_SP_PRIVATE_KEY="your-sp-private-key"
 GPUSTACK_SAML_SECURITY="{}"
 GPUSTACK_EXTERNAL_AUTH_NAME="email"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
+GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
 ```
 
 ### Example: Integrate with Auth0 SAML
