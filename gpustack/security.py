@@ -6,10 +6,11 @@ from functools import lru_cache
 import jwt
 from argon2 import PasswordHasher
 
+from gpustack.config.envs import JWT_TOKEN_EXPIRE_MINUTES
+
 ph = PasswordHasher()
 
 API_KEY_PREFIX = "gpustack"
-JWT_TOKEN_EXPIRE_MINUTES = 120
 
 
 @lru_cache(maxsize=2048)
