@@ -418,8 +418,13 @@ torch==${MINDIE_TORCH_VERSION}
 torchvision
 torchaudio
 EOT
-    pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
-        -r /tmp/requirements.txt
+    if [[ "${TARGETARCH}" == "amd64" ]]; then
+        pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
+            -r /tmp/requirements.txt
+    else
+        pip install \
+            -r /tmp/requirements.txt
+    fi
     pip install torch-npu==${MINDIE_TORCH_VERSION}.*
 
     # Install dependencies.
@@ -594,13 +599,20 @@ rouge_score==0.1.2
 pybind11==2.13.6
 pytest==8.4.0
 cloudpickle==3.0.0
-ray[default]==2.43.0
+ray[default]>=2.47.1
+protobuf>3.20.0
 grpcio==1.71.0
 EOT
     pip install -r /tmp/requirements.txt
 
     # Install vLLM
-    pip install vllm==${VLLM_VERSION} --extra-index-url https://download.pytorch.org/whl/cpu
+    if [[ "${TARGETARCH}" == "amd64" ]]; then
+        pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
+            vllm==${VLLM_VERSION}
+    else
+        pip install \
+            vllm==${VLLM_VERSION}
+    fi
     # Fix conflicting packages.
     # - In x86, triton will be installed, triton doesn't work correctly in Ascend, we need to uninstall it.
     pip uninstall -y triton || true
@@ -616,8 +628,13 @@ torch==${VLLM_TORCH_VERSION}
 torchvision
 torchaudio
 EOT
-    pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
-        -r /tmp/requirements.txt
+    if [[ "${TARGETARCH}" == "amd64" ]]; then
+        pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
+            -r /tmp/requirements.txt
+    else
+        pip install \
+            -r /tmp/requirements.txt
+    fi
     pip install torch-npu==${VLLM_TORCH_VERSION}.* --pre --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
 
     # Install vLLM Ascend
