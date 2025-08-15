@@ -117,7 +117,7 @@ debug: false
 data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
 token: your_token
-huggingface-token: your_huggingface_token
+huggingface_token: your_huggingface_token
 enable_ray: false
 ray_args: ["--port=6379", "--verbose"]
 ray_node_manager_port: 40098
