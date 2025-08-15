@@ -689,7 +689,8 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     export PATH="$(pipx environment --value PIPX_BIN_DIR):${PATH}"
     cd /workspace/gpustack \
         && git config --global --add safe.directory /workspace/gpustack \
-        && make build
+        && make build \
+        && cd /
 
     # Pre process
     # - Create virtual environment to place gpustack
