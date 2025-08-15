@@ -704,7 +704,9 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && ln -vsf ${LOCAL_VENVS}/gpustack/bin/gpustack /usr/local/bin/gpustack
 
     # Download tools
+    cd /
     gpustack download-tools --device npu
+    cd -
     tree -hs "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/third_party"
 
     # Active MindIE
