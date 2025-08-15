@@ -298,6 +298,15 @@ class ModelFileDownloadTask:
         # Time control for log updates
         self._last_log_update_time = 0
         self._log_update_interval = 2.0  # 2 seconds interval
+        # Multi-file progress tracking with ANSI cursor control
+        # Counter for generating unique tqdm IDs
+        self._tqdm_counter = 0
+        # Dict[tqdm_id, line_number] - tracks which line each file occupies
+        self._file_line_mapping = {}
+        # Dict[tqdm_id, {'last_update_time': float, 'last_progress': float}]
+        self._file_progress_tracking = {}
+        # Number of header lines in the log file
+        self._log_header_lines = 1
 
     def prerun(self):
         setup_logging(self._config.debug)
@@ -337,6 +346,19 @@ class ModelFileDownloadTask:
             download_log_file_path = (
                 log_dir / f"model_file_{self._model_file.id}.download.log"
             )
+            # Delete existing download log file to avoid reading previous download logs
+            # when redeploying the same model after deleting model_instance but keeping model_file
+            if download_log_file_path.exists():
+                try:
+                    download_log_file_path.unlink()
+                    logger.debug(
+                        f"Deleted existing download log file: {download_log_file_path}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete existing download log file {download_log_file_path}: {e}"
+                    )
+
             self._instance_download_log_file = str(download_log_file_path)
 
             logger.debug(f"Setup shared download log file: {download_log_file_path}")
@@ -420,12 +442,19 @@ class ModelFileDownloadTask:
             return
 
         if use_tqdm_format:
-            # For tqdm-style progress, write with \r control character for single-line updates
-            log_message = f"\r{message}"
+            # For tqdm-style progress with ANSI control sequences
+            if message.startswith('\033[') or message.startswith('\r\033['):
+                # This is an ANSI control message, write it directly without additional formatting
+                log_message = message
+            else:
+                # Regular tqdm message without timestamp
+                log_message = f"{message}\n"
         else:
             timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
             log_level = "ERROR" if is_error else "INFO"
             log_message = f"[{timestamp}] [{log_level}] {message}\n"
+            # Increment header lines counter for non-tqdm messages
+            self._log_header_lines += 1
 
         # Determine file locking mechanism based on platform
         is_windows = platform.system() == 'Windows'
@@ -520,25 +549,43 @@ class ModelFileDownloadTask:
         kwargs["disable"] = False  # enable the progress bar anyway
         original_init(tqdm_instance, *args, **kwargs)
 
+        # Assign unique ID and line number for this tqdm instance
+        tqdm_id = self._tqdm_counter
+        self._tqdm_counter += 1
+        tqdm_instance._gpustack_id = tqdm_id
+
+        # Assign a fixed line number for this file (same as tqdm_id)
+        line_number = tqdm_id
+        self._file_line_mapping[tqdm_id] = line_number
+
+        # Initialize progress tracking for this file
+        self._file_progress_tracking[tqdm_id] = {
+            'last_update_time': 0,
+            'last_progress': 0.0,
+        }
+
         if hasattr(self, '_model_file_size'):
             # Resume downloading
             self._model_downloaded_size += tqdm_instance.n
 
-        # Log download start info to model instance logs
-        if hasattr(tqdm_instance, 'desc') and tqdm_instance.desc:
-            self._write_to_instance_download_logs(
-                f"Starting download: {tqdm_instance.desc}"
-            )
-        else:
-            self._write_to_instance_download_logs(
-                f"Starting model file download: {self._model_file.readable_source}"
-            )
+        # Write initial progress line for this file using ANSI cursor positioning
+        file_desc = getattr(tqdm_instance, 'desc', None) or f"File {tqdm_id}"
+        self._write_progress_with_cursor_positioning(
+            line_number, f"{file_desc}: Initializing...", tqdm_id
+        )
 
     def _handle_tqdm_update(self, tqdm_instance, original_update, n=1):
         original_update(tqdm_instance, n)
 
         if self._cancel_flag.is_set():
             raise asyncio.CancelledError("Download cancelled")
+
+        # Get the tqdm ID and line number for this instance
+        tqdm_id = getattr(tqdm_instance, '_gpustack_id', None)
+        if not tqdm_id or tqdm_id not in self._file_line_mapping:
+            return
+
+        line_number = self._file_line_mapping[tqdm_id]
 
         # Calculate download sizes
         total_size = tqdm_instance.total
@@ -552,29 +599,94 @@ class ModelFileDownloadTask:
                 downloaded_size = self._model_downloaded_size
 
         try:
-            # tqdm_instance is required for progress logging
+            # Update overall progress
             progress = round((downloaded_size / total_size) * 100, 2)
             self._update_progress_func(progress)
 
-            # Control log update frequency to avoid excessive file size
+            # Update individual file progress using ANSI cursor positioning
             current_time = time.time()
-            should_log = (
-                current_time - self._last_log_update_time >= self._log_update_interval
+
+            # Get file-specific progress tracking info
+            file_tracking = self._file_progress_tracking.get(
+                tqdm_id, {'last_update_time': 0, 'last_progress': 0.0}
             )
 
-            # Always log when download is complete (100%) regardless of time interval
-            if should_log or progress >= 100.0:
-                # Use tqdm format for logging
-                self._write_to_instance_download_logs(
-                    str(tqdm_instance), use_tqdm_format=True
+            # Calculate individual file progress percentage
+            if tqdm_instance.total and tqdm_instance.total > 0:
+                file_progress = (tqdm_instance.n / tqdm_instance.total) * 100
+            else:
+                file_progress = 0.0
+
+            # Check if we should log based on time (2 seconds) or progress change (1%)
+            time_elapsed = current_time - file_tracking['last_update_time']
+            progress_change = abs(file_progress - file_tracking['last_progress'])
+
+            should_log = (
+                time_elapsed >= self._log_update_interval  # 2 seconds elapsed
+                or progress_change >= 1.0  # 1% progress change
+                or file_progress >= 100.0  # Always log when complete
+                or (
+                    tqdm_instance.total is not None
+                    and tqdm_instance.n >= tqdm_instance.total
+                )  # Always log when download completes
+            )
+
+            if should_log:
+                # Format progress message using tqdm's string representation
+                progress_str = str(tqdm_instance)
+                self._write_progress_with_cursor_positioning(
+                    line_number, progress_str, tqdm_id
                 )
+
+                # Update file-specific tracking info
+                self._file_progress_tracking[tqdm_id] = {
+                    'last_update_time': current_time,
+                    'last_progress': file_progress,
+                }
+
+                # Keep global update time for backward compatibility
                 self._last_log_update_time = current_time
+
         except Exception as e:
             error_msg = f"Failed to update model file: {e}"
             self._write_to_instance_download_logs(
                 f"Download error: {error_msg}", is_error=True
             )
             raise Exception(error_msg)
+
+    def _write_progress_with_cursor_positioning(
+        self, line_number: int, message: str, tqdm_id: int
+    ):
+        """Write progress message to a specific line using ANSI cursor positioning"""
+        if not self._instance_download_log_file:
+            return
+
+        try:
+            # Calculate the actual line position in the file
+            actual_line = line_number + self._log_header_lines
+
+            # Create ANSI escape sequence to position cursor at specific line, column 1
+            cursor_position = f"\033[{actual_line};1H"
+
+            # Clear the entire line to remove any residual characters
+            clear_line = "\033[2K"
+
+            # Add timestamp and tqdm_id prefix to the message
+            timestamp = time.strftime('%H:%M:%S')
+            formatted_message = (
+                f"[{timestamp}] [{tqdm_id}]" if tqdm_id > 0 else f"[{timestamp}]"
+            )
+            formatted_message = f"{formatted_message} {message}"
+            # Combine cursor positioning, line clearing, and new content
+            ansi_message = f"{cursor_position}{clear_line}{formatted_message}\n"
+
+            # Write to log file using the existing infrastructure
+            self._write_to_instance_download_logs(ansi_message, use_tqdm_format=True)
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to write progress with cursor positioning to line {line_number}: {e}"
+            )
 
     def _ensure_model_file_size_and_paths(self):
         if self._model_file.size is not None:
