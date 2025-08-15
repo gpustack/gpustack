@@ -654,8 +654,18 @@ async def calculate_model_resource_claim(
             resource_claim_estimate=claim.estimate,
             resource_architecture=claim.architecture,
         )
-
+    except KeyError as e:
+        raise Exception(
+            f"Failed to parse the output of {command}, keyError: {e}",
+        )
     except subprocess.CalledProcessError as e:
+        if e.stderr:
+            logger.error(
+                f"Failed to execute {command}, error: {e}, "
+                + f"stderr: {e.stderr.decode()}, "
+                + f"stdout: {e.stdout.decode()}"
+            )
+            raise Exception(e.stderr.decode())
         raise Exception(
             f"Failed to execute {command}, error: {e}, ",
             f"stderr: {e.stderr.decode()}, ",
