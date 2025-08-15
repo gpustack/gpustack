@@ -20,7 +20,8 @@ SELECT
     json_extract(value, '$.network') AS network,
     json_extract(value, '$.temperature') AS temperature,
     json_extract(value, '$.labels') AS labels,
-    json_extract(value, '$.type') AS type
+    json_extract(value, '$.type') AS type,
+    json_extract(value, '$.flavor_name') AS flavor_name
 FROM
     workers w,
     json_each(w.status, '$.gpu_devices')
@@ -50,7 +51,8 @@ SELECT
     JSON_EXTRACT(gpu_device, '$.network') AS network,
     CAST(JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.temperature')) AS DECIMAL(10, 2)) AS temperature,
     JSON_EXTRACT(gpu_device, '$.labels') AS labels,
-    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.type')) AS type
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.type')) AS type,
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.flavor_name')) AS flavor_name
 FROM
     workers w,
     JSON_TABLE(w.status, '$.gpu_devices[*]' COLUMNS(
@@ -82,7 +84,8 @@ SELECT
     (gpu_device::json->>'network')::JSONB AS network,
     (gpu_device::json->>'temperature')::FLOAT AS temperature,
     (gpu_device::json->>'labels')::JSONB AS labels,
-    (gpu_device::json->>'type') AS type
+    (gpu_device::json->>'type') AS type,
+    (gpu_device::json->>'flavor_name') AS flavor_name
 FROM
     workers w,
     LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device

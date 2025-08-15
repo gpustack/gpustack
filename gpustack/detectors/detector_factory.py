@@ -13,7 +13,7 @@ from gpustack.detectors.regredit.regredit import Regredit
 from gpustack.detectors.ixsmi.ixsmi import IXSMI
 from gpustack.detectors.cnmon.cnmon import Cnmon
 from gpustack.utils import platform
-
+from gpustack.utils.gpu import get_gpu_flavor_name
 
 logger = logging.getLogger(__name__)
 
@@ -87,5 +87,6 @@ class DetectorFactory:
                     f"Skipping GPU device {device.name} ({device.device_index}, {device.device_chip_index}) due to invalid memory info"
                 )
                 continue
+            device.flavor_name = get_gpu_flavor_name(device)
             filtered.append(device)
         return filtered

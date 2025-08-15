@@ -51,6 +51,12 @@ class BackendEnum(str, Enum):
 class GPUSelector(BaseModel):
     # format of each element: "worker_name:device:gpu_index", example: "worker1:cuda:0"
     gpu_ids: Optional[List[str]] = None
+    # GPU type to select, e.g., "NVIDIA GeForce RTX 4090", "Huawei 910B1", etc.
+    gpu_type: Optional[str] = None
+    # Number of GPUs to select
+    gpu_count: Optional[int] = None
+    # Enable multi worker to support GPU type selector
+    worker_count: Optional[int] = None
 
 
 class ModelSource(BaseModel):
