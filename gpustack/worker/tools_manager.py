@@ -623,7 +623,7 @@ class ToolsManager:
                 major, minor = map(int, match.groups())
                 if major == 8 and minor >= 2 and version > "v0.0.168":
                     toolkit_version = "8.2"
-                if major == 8 and minor >= 1 and version > "v0.0.144":
+                elif major == 8 and minor >= 1 and version > "v0.0.144":
                     toolkit_version = "8.1"
             # Currently, llama-box only supports release candidate version of CANN 8.1/8.2.
             if toolkit_version in ["8.1", "8.2"]:
