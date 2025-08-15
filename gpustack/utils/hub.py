@@ -293,11 +293,30 @@ def get_pretrained_config(model: Model, **kwargs):
     if model.source == SourceEnum.HUGGING_FACE:
         from transformers import AutoConfig
 
+        huggingface_cache_dir = os.path.join(global_config.cache_dir, "huggingface")
+        object_id = model.huggingface_repo_id.replace("/", "--")
+        repo_cache_dir = os.path.join(huggingface_cache_dir, f"models--{object_id}")
+        repo_cache_main = os.path.join(repo_cache_dir, "refs/main")
+        local_files_only = False
+        pretrained_model_name_or_path = model.huggingface_repo_id
+        if os.path.exists(repo_cache_main):
+            with open(repo_cache_main, "r") as f:
+                main_version = f.read().strip()
+            local_files_only = True
+            pretrained_model_name_or_path = os.path.join(
+                repo_cache_dir, f"snapshots/{main_version}"
+            )
+        else:
+            # Huggingface only cache *.py file when trust_remote_code=True if the repo has py file.
+            # When the cache does not exist, set trust_remote_code=True so that all files will be cached this time.
+            trust_remote_code = True
+
         pretrained_config = AutoConfig.from_pretrained(
-            model.huggingface_repo_id,
+            pretrained_model_name_or_path,
             token=global_config.huggingface_token,
             trust_remote_code=trust_remote_code,
-            cache_dir=os.path.join(global_config.cache_dir, "huggingface"),
+            cache_dir=huggingface_cache_dir,
+            local_files_only=local_files_only,
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
         from modelscope import AutoConfig
