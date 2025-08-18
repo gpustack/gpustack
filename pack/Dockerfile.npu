@@ -605,21 +605,6 @@ grpcio==1.71.0
 EOT
     pip install -r /tmp/requirements.txt
 
-    # Install vLLM
-    if [[ "${TARGETARCH}" == "amd64" ]]; then
-        pip install --extra-index-url https://download.pytorch.org/whl/cpu/ \
-            vllm==${VLLM_VERSION}
-    else
-        pip install \
-            vllm==${VLLM_VERSION}
-    fi
-    # Fix conflicting packages.
-    # - In x86, triton will be installed, triton doesn't work correctly in Ascend, we need to uninstall it.
-    pip uninstall -y triton || true
-    # Fix conflicting packages.
-    # - In Ascend, opencv-python-headless requires numpy>2.0.0, which is conflicting with Ascend, we need to reinstall it.
-    pip uninstall -y numpy || true
-
     # Install Torch, Torch-npu, TorchVision,
     # according to Ascend Extension Installation, have the mapping requirements for the CANN_VERSION,
     # please check https://www.hiascend.com/developer/download/community/result?module=ie%2Bpt%2Bcann for details.
@@ -637,8 +622,27 @@ EOT
     fi
     pip install torch-npu==${VLLM_TORCH_VERSION}.* --pre --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
 
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/Ascend/ascend-toolkit/latest/$(uname -i)-linux/devlib"
+
+    # Install vLLM
+    git -C /tmp clone --recursive --shallow-submodules \
+        --depth 1 --branch v${VLLM_VERSION} --single-branch \
+        https://github.com/vllm-project/vllm.git vllm
+    VLLM_TARGET_DEVICE="empty" pip install -v /tmp/vllm --extra-index-url https://download.pytorch.org/whl/cpu/ \
+        && pip freeze
+    # Fix conflicting packages.
+    # - In x86, triton will be installed, triton doesn't work correctly in Ascend, we need to uninstall it.
+    pip uninstall -y triton || true
+    # Fix conflicting packages.
+    # - In Ascend, opencv-python-headless requires numpy>2.0.0, which is conflicting with Ascend, we need to reinstall it.
+    pip uninstall -y numpy || true
+
     # Install vLLM Ascend
-    pip install vllm-ascend==${VLLM_ASCEND_VERSION} --pre --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+    git -C /tmp clone --recursive --shallow-submodules \
+        --depth 1 --branch v${VLLM_ASCEND_VERSION} --single-branch \
+        https://github.com/vllm-project/vllm-ascend.git vllm-ascend
+    VLLM_TARGET_DEVICE="empty" pip install -v /tmp/vllm-ascend --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi \
+        && pip freeze
     # Fix SoC version.
     if [[ "${CANN_CHIP}" == "310p" ]]; then
         sed -i "s/^__soc_version__.*/__soc_version__ = 'ASCEND310P3'/" ${LOCAL_VENVS}/vllm/lib/python3.11/site-packages/vllm_ascend/_build_info.py
