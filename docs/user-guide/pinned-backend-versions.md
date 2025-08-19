@@ -31,6 +31,13 @@ To simplify deployment, GPUStack supports the automatic installation of pinned b
 
 This automation reduces manual intervention, allowing you to focus on deploying and using your models.
 
+- **Specifying Backend Dependencies**
+
+	For Python-based backends, configure custom dependencies via the `GPUSTACK_BACKEND_DEPS` environment variable at:
+	`Deployment > Advanced > Environment Variables`.This overrides default packages when your model requires specific versions.
+	e.g.:
+	`GPUSTACK_BACKEND_DEPS:transformers==4.53.3,torch>=2.0.0`
+
 ## Manual Installation of Pinned Backend Versions
 
 When automatic installation is not feasible or preferred, GPUStack provides a straightforward way to manually install specific versions of inference backends. Follow these steps:
