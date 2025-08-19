@@ -2,7 +2,7 @@ import json
 import httpx
 import logging
 from gpustack.config.config import Config
-from typing import Annotated
+from typing import Annotated, Dict, Optional
 from fastapi import APIRouter, Form, Request, Response
 from gpustack.api.exceptions import InvalidException, UnauthorizedException
 from gpustack.schemas.users import UpdatePassword
@@ -100,41 +100,44 @@ async def saml_callback(request: Request, session: SessionDep):
 
         if config.external_auth_name:
             # If external_auth_name is set, use it as username.
-            username = attributes.get(config.external_auth_name)
+            username = get_saml_attributes(
+                config, attributes, config.external_auth_name
+            )
         else:
             # Try email or name_id for username if external_auth_name is not set.
-            for key in ["email", "name_id"]:
-                if key in attributes:
-                    username = attributes[key]
+            for key in ["email", "emailaddress", "name_id", "nameidentifier"]:
+                username = get_saml_attributes(config, attributes, key)
+                if username:
                     break
             else:
                 raise Exception(message="No valid username found in saml attributes")
 
         if config.external_auth_full_name and '+' not in config.external_auth_full_name:
             # If external_auth_full_name is set, use it as user's full name.
-            full_name = attributes.get(config.external_auth_full_name)
+            full_name = get_saml_attributes(
+                config, attributes, config.external_auth_full_name
+            )
         elif config.external_auth_full_name:
             # external_auth_full_name is set with concat symbol '+'.
             full_name = ' '.join(
                 [
-                    attributes.get(v.strip())
+                    get_saml_attributes(config, attributes, v.strip())
                     for v in config.external_auth_full_name.split('+')
                 ]
             )
         else:
             full_name = ""
             # Try common claims. These are not guaranteed to be present.
-            for key in [
-                "displayName",
-                "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name",
-            ]:
-                if key in attributes:
-                    full_name = attributes[key]
+            for key in ["displayName", "name"]:
+                full_name = get_saml_attributes(config, attributes, key)
+                if full_name:
                     break
 
         avatar_url = None
         if config.external_auth_avatar_url:
-            avatar_url = attributes.get(config.external_auth_avatar_url)
+            avatar_url = get_saml_attributes(
+                config, attributes, config.external_auth_avatar_url
+            )
 
         # determine whether the user already exists
         user = await User.first_by_field(
@@ -169,6 +172,27 @@ async def saml_callback(request: Request, session: SessionDep):
         raise UnauthorizedException(message=str(e))
 
     return response
+
+
+def get_saml_attributes(
+    config: Config, attributes: Dict[str, str], name: str
+) -> Optional[str]:
+    search_keys = []
+
+    if config.saml_sp_attribute_prefix:
+        search_keys.append(config.saml_sp_attribute_prefix + name)
+
+    search_keys.extend(
+        [
+            f"http://schemas.xmlsoap.org/ws/2005/05/identity/claims/{name}",
+            name,
+        ]
+    )
+
+    for key in search_keys:
+        if key in attributes:
+            return attributes[key]
+    return None
 
 
 # OIDC login and callback endpoints

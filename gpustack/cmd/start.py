@@ -373,19 +373,19 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--external-auth-name",
         type=str,
-        help="Mapping of external authentication user information to username, e.g., preferred_username.",
+        help="Mapping of external authentication user information to username, e.g., 'preferred_username'. For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.",
         default=get_gpustack_env("EXTERNAL_AUTH_NAME"),
     )
     group.add_argument(
         "--external-auth-full-name",
         type=str,
-        help="Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.",
+        help="Mapping of external authentication user information to user's full name. Multiple elements can be combined, e.g., 'name' or 'firstName+lastName'.  For SAML, you must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'.",
         default=get_gpustack_env("EXTERNAL_AUTH_FULL_NAME"),
     )
     group.add_argument(
         "--external-auth-avatar-url",
         type=str,
-        help="Mapping of external authentication user information to user's avatar URL.",
+        help="Mapping of external authentication user information to user's avatar URL. e.g.,'picture'. For SAML, you must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.",
         default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
     )
     # OIDC settings
@@ -455,6 +455,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="SAML SP private key.",
         default=get_gpustack_env("SAML_SP_PRIVATE_KEY"),
+    )
+    group.add_argument(
+        "--saml-sp-attribute-prefix",
+        type=str,
+        help="SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-*. e.g., 'http://schemas.auth0.com/'.",
+        default=get_gpustack_env("SAML_SP_ATTRIBUTE_PREFIX"),
     )
     group.add_argument(
         "--saml-security",
@@ -601,6 +607,7 @@ def set_server_options(args, config_data: dict):
         "saml_sp_acs_url",
         "saml_sp_x509_cert",
         "saml_sp_private_key",
+        "saml_sp_attribute_prefix",
         "saml_security",
     ]
 
