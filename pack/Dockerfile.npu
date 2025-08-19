@@ -599,7 +599,7 @@ rouge_score==0.1.2
 pybind11==2.13.6
 pytest==8.4.0
 cloudpickle==3.0.0
-ray[default]==2.47.1
+ray[default]==2.48.0
 protobuf>3.20.0
 grpcio==1.71.0
 EOT
