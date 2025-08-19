@@ -641,7 +641,7 @@ EOT
     git -C /tmp clone --recursive --shallow-submodules \
         --depth 1 --branch v${VLLM_ASCEND_VERSION} --single-branch \
         https://github.com/vllm-project/vllm-ascend.git vllm-ascend
-    VLLM_TARGET_DEVICE="empty" pip install -v /tmp/vllm-ascend --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi \
+    VLLM_TARGET_DEVICE="empty" pip install -v /tmp/vllm-ascend --extra-index-url https://download.pytorch.org/whl/cpu/ --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi \
         && pip freeze
     # Fix SoC version.
     if [[ "${CANN_CHIP}" == "310p" ]]; then
