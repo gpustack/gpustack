@@ -138,6 +138,7 @@ class Config(BaseSettings):
     saml_sp_acs_url: Optional[str] = None  # saml sp_acs_url
     saml_sp_x509_cert: Optional[str] = ''  # saml sp_x509_cert
     saml_sp_private_key: Optional[str] = ''  # saml sp_private_key
+    saml_sp_attribute_prefix: Optional[str] = None  # saml sp attribute prefix
     saml_idp_entity_id: Optional[str] = None  # saml idp_entityId
     saml_idp_server_url: Optional[str] = None  # saml idp_server_url
     saml_idp_x509_cert: Optional[str] = ''  # saml idp_x509_cert

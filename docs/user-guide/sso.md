@@ -77,10 +77,14 @@ The following CLI flags are available for SAML configuration:
 | `--saml-sp-acs-url`                       | SAML Service Provider Assertion Consumer Service URL. It should be set to `<gpustack-server-url>/auth/saml/callback`.                                                                                                                                                                                                 |
 | `--saml-sp-x509-cert`                     | SAML Service Provider X.509 certificate.                                                                                                                                                                                                 |
 | `--saml-sp-private-key`                   | SAML Service Provider private key.                                                                                                                                                                                                 |
+
+| `--saml-sp-attribute-prefix` (Optional) | SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-*. e.g., 'http://schemas.auth0.com/'.                                                                                                 |
+
 | `--saml-security` (Optional)              | SAML security settings in JSON format.                                                                                                                                                                                                 |
-| `--external-auth-name` (Optional)         | Mapping of SAML user information to username, e.g., `preferred_username`. The `email` claim is used if available.                                                                                                                                                                                                 |
-| `--external-auth-full-name` (Optional)     | Mapping of SAML user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`.                                                                                                                                                                                                 |
-| `--external-auth-avatar-url` (Optional) | Mapping of SAML user information to user's avatar URL.                                                                                                                               |
+
+| `--external-auth-name` (Optional)         | Mapping of SAML user information to username. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.                                                                                                                                                                                                 |
+| `--external-auth-full-name` (Optional)     | Mapping of SAML user information to user's full name. Multiple elements can be combined. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'.                                                                                                                                                                                                 |
+| `--external-auth-avatar-url` (Optional) | Mapping of SAML user information to user's avatar URL. You must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.                                                                                                                               |
 
 
 You can also set these options via environment variables instead of CLI flags:
@@ -93,8 +97,9 @@ GPUSTACK_SAML_SP_ACS_URL="{your-server-url}/auth/saml/callback"
 GPUSTACK_SAML_SP_X509_CERT="your-sp-x509-cert"
 GPUSTACK_SAML_SP_PRIVATE_KEY="your-sp-private-key"
 # Optional
+GPUSTACK_SAML_SP_ATTRIBUTE_PREFIX="http://schemas.auth0.com/"
 GPUSTACK_SAML_SECURITY="{}"
-GPUSTACK_EXTERNAL_AUTH_NAME="email"
+GPUSTACK_EXTERNAL_AUTH_NAME="emailaddress"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
 ```
@@ -131,6 +136,7 @@ openssl req -x509 -newkey rsa:2048 -keyout myservice.key -out myservice.cert -da
 ```bash
 SP_CERT="$(cat myservice.cert)"
 SP_PRIVATE_KEY="$(cat myservice.key)"
+SP_ATTRIBUTE_PREFIX="http://schemas.auth0.com/"
 
 docker run -d --name gpustack \
     --restart=unless-stopped \
@@ -145,5 +151,6 @@ docker run -d --name gpustack \
     -e GPUSTACK_SAML_SP_ACS_URL="<your-gpustack-server-url>/auth/saml/callback" \
     -e GPUSTACK_SAML_SP_X509_CERT="$SP_CERT" \
     -e GPUSTACK_SAML_SP_PRIVATE_KEY="$SP_PRIVATE_KEY" \
+    -e GPUSTACK_SAML_SP_ATTRIBUTE_PREFIX="$SP_ATTRIBUTE_PREFIX" \
     gpustack/gpustack
 ```
