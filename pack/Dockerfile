@@ -40,7 +40,7 @@ ARG CUDA_VERSION=12.4.1
 ARG CUDA_DEVEL_VERSION=12.6.3
 ARG TORCH_VERSION=2.7.1
 ARG TORCH_CUDA_ARCH_LIST=""
-ARG FLASHINFER_VERSION=0.2.8rc1
+ARG FLASHINFER_VERSION=0.2.11
 ARG FLASHINFER_BUILD_MAX_JOBS=""
 ARG PYTHON_VERSION=3.11
 
@@ -560,6 +560,17 @@ RUN <<EOF
         exit 0
     fi
 
+    # Install Dependencies
+    cat <<EOT >/tmp/requirements.txt
+requests==2.32.5
+pynvml
+cuda-python
+einops
+nvidia-nvshmem-cu12
+EOT
+    pip install \
+        -r /tmp/requirements.txt
+
     # Prepare
     IFS="." read -r CUDA_MAJOR CUDA_MINOR CUDA_PATCH <<< "${CUDA_DEVEL_VERSION}"
     IFS="." read -r TORCH_MAJOR TORCH_MINOR TORCH_PATCH <<< "${TORCH_VERSION}"
@@ -628,27 +639,6 @@ ENV CUDA_VERSION=${CUDA_VERSION} \
     CUDA_DEVEL_VERSION=${CUDA_DEVEL_VERSION} \
     TORCH_VERSION=${TORCH_VERSION}
 
-## Install FlashInfer as a Python library for GPUStack if existed
-
-RUN --mount=type=bind,from=flashinfer-build,source=/,target=/flashinfer,rw <<EOF
-    # FlashInfer
-
-    if [[ ! -d /flashinfer/workspace ]]; then
-        echo "Skipping FlashInfer installation for ${TARGETARCH}..."
-        exit 0
-    fi
-
-    # Install
-    pip install /flashinfer/workspace/*.whl
-
-    # Review
-    pip freeze
-
-    # Cleanup
-    rm -rf /var/tmp/* \
-        && rm -rf /tmp/*
-EOF
-
 ## Install GPUStack
 
 RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
@@ -667,7 +657,8 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     else
         WHEEL_PACKAGE="$(ls /workspace/gpustack/dist/*.whl)[audio]";
     fi
-    pip install ${WHEEL_PACKAGE}
+    IFS="." read -r CUDA_MAJOR CUDA_MINOR CUDA_PATCH <<< "${CUDA_DEVEL_VERSION}"
+    pip install ${WHEEL_PACKAGE} --extra-index-url https://download.pytorch.org/whl/cu${CUDA_MAJOR}${CUDA_MINOR}
 
     # Download tools
     gpustack download-tools --device cuda
@@ -684,6 +675,27 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
         && rm -rf /workspace/gpustack/dist
+EOF
+
+## Install FlashInfer as a Python library for GPUStack if existed
+
+RUN --mount=type=bind,from=flashinfer-build,source=/,target=/flashinfer,rw <<EOF
+    # FlashInfer
+
+    if [[ ! -d /flashinfer/workspace ]]; then
+        echo "Skipping FlashInfer installation for ${TARGETARCH}..."
+        exit 0
+    fi
+
+    # Install
+    pip install /flashinfer/workspace/*.whl --force-reinstall --no-dependencies
+
+    # Review
+    pip freeze
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
 EOF
 
 # Directory for built-in backend venvs.
