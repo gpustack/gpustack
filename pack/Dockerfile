@@ -744,6 +744,16 @@ EOT
         && rm -rf /tmp/*
 EOF
 
+## Setup environment
+
+RUN <<EOF
+    # Export pip extra index URL
+    IFS="." read -r CUDA_MAJOR CUDA_MINOR CUDA_PATCH <<< "${CUDA_DEVEL_VERSION}"
+    EXPORT_PIP_EXTRA_INDEX_URL="export PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu${CUDA_MAJOR}${CUDA_MINOR}"
+    echo "${EXPORT_PIP_EXTRA_INDEX_URL}" >> /etc/profile
+    echo "${EXPORT_PIP_EXTRA_INDEX_URL}" >> ~/.bashrc
+EOF
+
 # 1. Remove cuda paths from LD_LIBRARY_PATH
 # 2. Persist pipx venvs in the data directory
 ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
@@ -751,4 +761,4 @@ ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
     PIPX_LOCAL_VENVS=/var/lib/gpustack/pipx/venvs \
     PIPX_BIN_DIR=/var/lib/gpustack/bin
 
-ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
+ENTRYPOINT [ "tini", "--", "/usr/bin/bash", "-c", "source /etc/profile && exec gpustack start \"$@\"", "--" ]
