@@ -438,7 +438,7 @@ class ModelFileDownloadTask:
         Write download log message to all associated model instance download log files
         Skip writing if download is completed to avoid unnecessary logs
         """
-        if not self._instance_download_log_file or self._download_completed:
+        if not self._instance_download_log_file:
             return
 
         if use_tqdm_format:
@@ -646,6 +646,8 @@ class ModelFileDownloadTask:
 
                 # Keep global update time for backward compatibility
                 self._last_log_update_time = current_time
+                if file_progress >= 100.0:
+                    self._recover_cursor_to_end()
 
         except Exception as e:
             error_msg = f"Failed to update model file: {e}"
@@ -687,6 +689,16 @@ class ModelFileDownloadTask:
             logger.warning(
                 f"Failed to write progress with cursor positioning to line {line_number}: {e}"
             )
+
+    def _recover_cursor_to_end(self):
+        """Recover cursor to end of log file"""
+        max_line_number = (
+            max(self._file_line_mapping.values()) if self._file_line_mapping else 0
+        )
+        line_num = max_line_number + self._log_header_lines + 1
+        self._write_to_instance_download_logs(
+            f"\033[{line_num};1H", use_tqdm_format=True  # Move cursor to end of file
+        )
 
     def _ensure_model_file_size_and_paths(self):
         if self._model_file.size is not None:
