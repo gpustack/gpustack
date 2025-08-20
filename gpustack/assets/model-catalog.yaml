@@ -1508,6 +1508,7 @@
     - llm
   capabilities:
     - context/128K
+    - tools
   sizes:
     - 106
     - 355
@@ -1521,12 +1522,31 @@
       huggingface_repo_id: zai-org/GLM-4.5-Air
       replicas: 1
       backend: vllm
+      backend_parameters: &glm45_vllm_parameters
+        - --reasoning-parser=glm45
+        - --tool-call-parser=glm45
+        - --enable-auto-tool-choice
+    - quantizations: ["FP8"]
+      source: huggingface
+      sizes: [106]
+      huggingface_repo_id: zai-org/GLM-4.5-Air-FP8
+      replicas: 1
+      backend: vllm
+      backend_parameters: *glm45_vllm_parameters
     - quantizations: ["BF16"]
       source: huggingface
       sizes: [355]
       huggingface_repo_id: zai-org/GLM-4.5
       replicas: 1
       backend: vllm
+      backend_parameters: *glm45_vllm_parameters
+    - quantizations: ["FP8"]
+      source: huggingface
+      sizes: [355]
+      huggingface_repo_id: zai-org/GLM-4.5-FP8
+      replicas: 1
+      backend: vllm
+      backend_parameters: *glm45_vllm_parameters
 - name: Hunyuan A13B Instruct
   description: Hunyuan-A13B is a large language model based on the Mixture-of-Experts (MoE) architecture, developed by Tencent. Designed for efficiency and scalability, Hunyuan-A13B delivers cutting-edge performance with minimal computational overhead, making it an ideal choice for advanced reasoning and general-purpose applications, especially in resource-constrained environments.
   home: https://huggingface.co/tencent/Hunyuan-A13B-Instruct
@@ -1596,6 +1616,11 @@
         - --ctx-size=32768
       cpu_offloading: true
       distributed_inference_across_workers: true
+    - quantizations: ["MXFP4"]
+      source: huggingface
+      huggingface_repo_id: openai/gpt-oss-{size}b
+      replicas: 1
+      backend: vllm
 # Vision language models
 - name: Qwen2.5 VL
   description: Qwen2.5-VL is a collection of vision-language models of Qwen, excelling in visual understanding, document analysis, and long-video comprehension. It accurately localizes objects, extracts structured data from images, and functions as an interactive visual agent capable of reasoning and tool use. It outperforms previous models and rivals GPT-4o in tasks like document and diagram understanding.
