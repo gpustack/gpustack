@@ -95,6 +95,9 @@ nav:
           - Air-Gapped Installation: installation/iluvatar-corex/air-gapped-installation.md
       - Cambricon MLU:
           - Online Installation: installation/cambricon-mlu/online-installation.md
+      - Insi Mars:
+          - Online Installation: installation/insi-mars/online-installation.md
+          - Air-Gapped Installation: installation/insi-mars/air-gapped-installation.md
       - CPU:
           - Online Installation: installation/cpu/online-installation.md
           - Air-Gapped Installation: installation/cpu/air-gapped-installation.md
