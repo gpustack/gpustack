@@ -61,6 +61,7 @@ vllm_supported_llm_architectures = [
     "GlmForCausalLM",
     "Glm4ForCausalLM",
     "Glm4MoeForCausalLM",
+    "GptOssForCausalLM",
     "GPT2LMHeadModel",
     "GPTBigCodeForCausalLM",
     "GPTJForCausalLM",
