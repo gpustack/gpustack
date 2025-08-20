@@ -170,8 +170,9 @@ def list_repo(
     source: str,
     token: Optional[str] = None,
     cache_expiration: Optional[int] = None,
+    root_dir_only: bool = False,
 ) -> List[Dict[str, any]]:
-    cache_key = f"{source}:{repo_id}"
+    cache_key = f"{source}:{repo_id}:{root_dir_only}"
     cached_result, is_succ = load_cache(
         LIST_REPO_CACHE_DIR, cache_key, cache_expiration
     )
@@ -184,23 +185,31 @@ def list_repo(
         validate_repo_id(repo_id)
         hffs = HfFileSystem(token=token)
         file_info = []
-        for file in hffs.ls(repo_id, recursive=True):
+        for file in hffs.ls(repo_id, recursive=not root_dir_only):
             if not isinstance(file, dict):
+                continue
+            relative_path = Path(file["name"]).relative_to(repo_id).as_posix()
+            # If root_only is True, skip files in subdirectories
+            if root_dir_only and "/" in relative_path:
                 continue
             file_info.append(
                 {
-                    "name": Path(file["name"]).relative_to(repo_id).as_posix(),
+                    "name": relative_path,
                     "size": file["size"],
                 }
             )
     elif source == SourceEnum.MODEL_SCOPE:
         msapi = HubApi()
-        files = msapi.get_model_files(repo_id, recursive=True)
+        files = msapi.get_model_files(repo_id, recursive=not root_dir_only)
         file_info = []
         for file in files:
+            file_path = file["Path"]
+            # If root_only is True, skip files in subdirectories
+            if root_dir_only and "/" in file_path:
+                continue
             file_info.append(
                 {
-                    "name": file["Path"],
+                    "name": file_path,
                     "size": file["Size"],
                 }
             )
@@ -253,7 +262,7 @@ def match_model_scope_file_paths(
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     """
     Get the size of the model weights. This is the sum of all the weight files with extensions
-    .safetensors, .bin, .pt, .pth.
+    .safetensors, .bin, .pt, .pth in the root directory only.
     Args:
         model: Model to get the weight size for
         token: Optional Hugging Face API token
@@ -267,7 +276,7 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
         repo_id = model.model_scope_model_id
     else:
         raise ValueError(f"Unknown source {model.source}")
-    repo_file_infos = list_repo(repo_id, model.source, token=token)
+    repo_file_infos = list_repo(repo_id, model.source, token=token, root_dir_only=True)
     return sum(
         file.get("size", 0)
         for file in repo_file_infos
