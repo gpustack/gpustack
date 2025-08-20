@@ -75,7 +75,13 @@ def raise_if_response_error(response: httpx.Response):  # noqa: C901
         return
 
     try:
-        error = ErrorResponse.model_validate(response.json())
+        response_json = response.json()
+        # Compatible with OpenAI API error format
+        if "error" in response_json and isinstance(response_json["error"], dict):
+            response_json = response_json["error"]
+            if "type" in response_json and isinstance(response_json["type"], str):
+                response_json["reason"] = response_json["type"]
+        error = ErrorResponse.model_validate(response_json)
     except Exception:
         raise HTTPException(response.status_code, "Unknown", response.text)
 
