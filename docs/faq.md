@@ -1349,7 +1349,7 @@ This process is the RPC server used for llama-box’s distributed inference. If 
 
 #### How can I know the purpose of the backend parameters?
 
-- [vLLM](https://docs.vllm.ai/en/latest/configuration/engine_args.html#engineargs)
+- [vLLM](https://docs.vllm.ai/en/stable/cli/serve.html)
 
 - [MindIE](https://github.com/gpustack/gpustack/blob/main/gpustack/worker/backends/ascend_mindie.py#L103-L473)
 
