@@ -1251,6 +1251,20 @@ Then, for different backends:
     --parallel=1
     ```
 
+#### How can I skip unsupported model architecture checks within a higher version of vLLM?
+
+GPUStack provides an easy way to allow users to run the latest SOTA models using a higher version of vLLM. However, the stale Transformers (required by the built-in version of vLLM) will lead to a compatibility verification error.
+
+Take GPUStack v0.7.0 as an example, you can run [openai/gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b) model with v0.10.1 vLLM instead of the built-in version. However, you will encounter messages as below:
+
+```
+Cannot get pretrained config for model openai/gpt-oss-20b: 
+The checkpoint you are trying to load has model type `gpt_oss` but Transformers does not recognize this architecture. 
+This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.
+```
+
+To skip this annoying check, you can avoid checking the given model with the stale Transformer by providing a backend parameter `hf-overrides`, e.g., `--hf-overrides='{"architectures": ["GPTOSSForCausalLM"]}'`.
+
 ---
 
 ### What should I do if the model is stuck in `Scheduled` state?
@@ -1349,7 +1363,7 @@ This process is the RPC server used for llama-box’s distributed inference. If 
 
 #### How can I know the purpose of the backend parameters?
 
-- [vLLM](https://docs.vllm.ai/en/latest/configuration/engine_args.html#engineargs)
+- [vLLM](https://docs.vllm.ai/en/stable/cli/serve.html)
 
 - [MindIE](https://github.com/gpustack/gpustack/blob/main/gpustack/worker/backends/ascend_mindie.py#L103-L473)
 
