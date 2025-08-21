@@ -44,7 +44,7 @@ class HTSMI(GPUDetector):
             device_info = htsmi.htSmlGetDeviceInfo(i)
             memory_info = htsmi.htSmlGetMemoryInfo(i)
             temperature_info = htsmi.htSmlGetTemperatureInfo(
-                i, htsmi.HTSML_TEMPERATURE_SOC
+                i, htsmi.HTSML_TEMPERATURE_HOTSPOT
             )
             utilization_info = htsmi.htSmlGetDeviceIpUsage(i, htsmi.HTSML_USAGE_HTCORE)
             # i ,device_info.deviceName,memory_info.vramTotal,memory_info.vramUse,utilization_info,int(temperature_info / 100),
