@@ -22,7 +22,7 @@ Check if the CPU is supported:
 grep -E -i "neon|asimd" /proc/cpuinfo
 ```
 
-- [NPU Driver and Firmware](https://www.hiascend.com/hardware/firmware-drivers/community) (Must support CANN 8.1.RC1.beta1)
+- [NPU Driver and Firmware](https://www.hiascend.com/hardware/firmware-drivers/community?product=4&model=26&cann=8.2.RC1&driver=Ascend+HDK+25.2.0) (Must support CANN 8.2.RC1)
 
 Check if the NPU driver is installed:
 
@@ -36,7 +36,7 @@ npu-smi info
 
 - [x] llama-box (Only supports FP16 precision)
 - [x] MindIE
-- [x] vLLM (Only supports Ascend 910B series)
+- [x] vLLM
 
 ### Prerequisites
 
@@ -227,15 +227,15 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
 
 ### Prerequites
 
-- [Ascend CANN Toolkit 8.1.RC1.beta1 & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.0.beta1)
+- [Ascend CANN Toolkit 8.2.RC1.beta1 & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.2.RC1)
 
-Check if CANN is installed and verify that its version is 8.1.RC1:
+Check if CANN is installed and verify that its version is 8.2.RC1:
 
 ```bash
 cat /usr/local/Ascend/ascend-toolkit/latest/version.cfg
 ```
 
-Check if CANN kernels are installed and verify that its version is 8.1.RC1:
+Check if CANN kernels are installed and verify that its version is 8.2.RC1:
 
 ```bash
 cat /usr/local/Ascend/ascend-toolkit/latest/version.cfg | grep opp

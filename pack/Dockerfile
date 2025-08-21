@@ -660,6 +660,13 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     IFS="." read -r CUDA_MAJOR CUDA_MINOR CUDA_PATCH <<< "${CUDA_DEVEL_VERSION}"
     pip install ${WHEEL_PACKAGE} --extra-index-url https://download.pytorch.org/whl/cu${CUDA_MAJOR}${CUDA_MINOR}
 
+    if [[ "${TARGETARCH}" == "amd64" ]]; then
+        # vllm v0.10.0+ requires xformers==0.0.31, which lacks support for NVIDIA 5090 GPUs when running VL models.
+        # Apply downgrade as a temporary solution.
+        # See https://github.com/gpustack/gpustack/issues/2769
+        pip install --force-reinstall --no-dependencies xformers==0.0.30
+    fi
+
     # Download tools
     gpustack download-tools --device cuda
     tree -hs "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/third_party"

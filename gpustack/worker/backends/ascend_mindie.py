@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, List
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.utils import envs
+from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 from gpustack.utils.hub import (
     get_hf_text_config,
@@ -1366,7 +1367,7 @@ class AscendMindIEServer(InferenceServer):
             logger.info(f"Starting Ascend MindIE: {service_bin_path}")
             env_view = None
             if logger.isEnabledFor(logging.DEBUG):
-                env_view = env
+                env_view = sanitize_env(env)
             elif self._model.env:
                 # If the model instance has its own environment variables,
                 # display the mutated environment variables.
