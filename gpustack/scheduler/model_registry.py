@@ -1,4 +1,4 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.10.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.10.1/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 vllm_supported_embedding_architectures = [
     "BertModel",
@@ -49,6 +49,7 @@ vllm_supported_llm_architectures = [
     "DeepseekV3ForCausalLM",
     "Dots1ForCausalLM",
     "Ernie4_5_ForCausalLM",
+    "Ernie4_5ForCausalLM",  # Note: New class for "Ernie4_5_ForCausalLM"
     "Ernie4_5_MoeForCausalLM",
     "ExaoneForCausalLM",
     "Exaone4ForCausalLM",
@@ -57,7 +58,7 @@ vllm_supported_llm_architectures = [
     "GemmaForCausalLM",
     "Gemma2ForCausalLM",
     "Gemma3ForCausalLM",
-    "Gemma3nForConditionalGeneration",
+    "Gemma3nForCausalLM",
     "GlmForCausalLM",
     "Glm4ForCausalLM",
     "Glm4MoeForCausalLM",
@@ -74,6 +75,7 @@ vllm_supported_llm_architectures = [
     "Grok1ModelForCausalLM",
     "HunYuanMoEV1ForCausalLM",
     "HunYuanDenseV1ForCausalLM",
+    "HCXVisionForCausalLM",
     "InternLMForCausalLM",
     "InternLM2ForCausalLM",
     "InternLM2VEForCausalLM",
@@ -82,6 +84,7 @@ vllm_supported_llm_architectures = [
     "JambaForCausalLM",
     "LlamaForCausalLM",
     "LLaMAForCausalLM",
+    "Llama4ForCausalLM",
     "MambaForCausalLM",
     "FalconMambaForCausalLM",
     "FalconH1ForCausalLM",
@@ -113,6 +116,8 @@ vllm_supported_llm_architectures = [
     "Qwen3ForCausalLM",
     "Qwen3MoeForCausalLM",
     "RWForCausalLM",
+    "SmolLM3ForCausalLM",  # Note: Bypassing Transformer support models
+    "Step3TextForCausalLM",
     "StableLMEpochForCausalLM",
     "StableLmForCausalLM",
     "Starcoder2ForCausalLM",
@@ -123,19 +128,26 @@ vllm_supported_llm_architectures = [
     "Zamba2ForCausalLM",
     "BartModel",
     "BartForConditionalGeneration",
+    "MBartForConditionalGeneration",
     # Multimodal models
     "AriaForConditionalGeneration",
     "AyaVisionForConditionalGeneration",
     "Blip2ForConditionalGeneration",
     "ChameleonForConditionalGeneration",
+    "Cohere2VisionForConditionalGeneration",
     "DeepseekVLV2ForCausalLM",
+    "Emu3ForConditionalGeneration",  # Note: Bypassing Transformer support models
     "FuyuForCausalLM",
     "Gemma3ForConditionalGeneration",
+    "Gemma3nForConditionalGeneration",
     "GLM4VForCausalLM",
     "Glm4vForConditionalGeneration",
+    "Glm4v_moeForConditionalGeneration",
+    "Glm4vMoeForConditionalGeneration",  # Note: New class for "Glm4v_moeForConditionalGeneration"
     "GraniteSpeechForConditionalGeneration",
     "H2OVLChatModel",
     "InternVLChatModel",
+    "InternS1ForConditionalGeneration",
     "Idefics3ForConditionalGeneration",
     "SmolVLMForConditionalGeneration",
     "KeyeForConditionalGeneration",
@@ -155,6 +167,8 @@ vllm_supported_llm_architectures = [
     "Ovis",
     "PaliGemmaForConditionalGeneration",
     "Phi3VForCausalLM",
+    "Phi4MMForCausalLM",
+    "Phi4MultimodalForCausalLM",
     "PixtralForConditionalGeneration",
     "QwenVLForConditionalGeneration",
     "Qwen2VLForConditionalGeneration",
@@ -163,7 +177,7 @@ vllm_supported_llm_architectures = [
     "Qwen2_5OmniModel",
     "Qwen2_5OmniForConditionalGeneration",
     "UltravoxModel",
-    "Phi4MMForCausalLM",
+    "Step3VLForConditionalGeneration",
     "TarsierForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
     "VoxtralForConditionalGeneration",
