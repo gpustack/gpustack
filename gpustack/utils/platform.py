@@ -139,7 +139,7 @@ def device() -> str:
 
     if is_command_available("cnmon"):
         return DeviceTypeEnum.MLU.value
-    
+
     if is_command_available("ht-smi"):
         return DeviceTypeEnum.MARS.value
 
