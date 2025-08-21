@@ -11,6 +11,7 @@ from gpustack.utils.command import (
     get_versioned_command,
     get_command_path,
 )
+from gpustack.utils.envs import sanitize_env
 from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.hub import (
     get_hf_text_config,
@@ -83,7 +84,7 @@ class VLLMServer(InferenceServer):
             env = self.get_inference_running_env(env)
             env_view = None
             if logger.isEnabledFor(logging.DEBUG):
-                env_view = env
+                env_view = sanitize_env(env)
             elif self._model.env:
                 # If the model instance has its own environment variables,
                 # display the mutated environment variables.

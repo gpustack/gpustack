@@ -1,9 +1,13 @@
 import asyncio
+import json
 from collections import defaultdict
 import logging
 import os
 import re
 from typing import Dict, List, Optional
+
+from transformers import PretrainedConfig
+
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -244,6 +248,24 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             self._pretrained_config = get_pretrained_config(
                 self._model, trust_remote_code=True
             )
+        except ValueError as e:
+            if "architecture" in e.args[0] and self._model.backend_version:
+                # In the AutoConfig.from_pretrained method, the architecture field in config undergoes validation.
+                # For custom backend versions, exceptions caused by unrecognized architectures should be allowed
+                # to prevent startup failures of valid new models with properly customized versions.
+                self._pretrained_config = PretrainedConfig()
+
+                # We can also try to get the architectures from hf-overrides
+                hf_overrides = find_parameter(
+                    self._model.backend_parameters, ["hf-overrides"]
+                )
+                if hf_overrides:
+                    overrides_dict = json.loads(hf_overrides)
+                    self._pretrained_config.architectures = overrides_dict.get(
+                        "architectures", []
+                    )
+            else:
+                raise e
         except Exception as e:
             raise Exception(
                 f"Cannot get pretrained config for model {self._model.readable_source}: {e}"

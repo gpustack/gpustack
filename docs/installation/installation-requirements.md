@@ -77,7 +77,7 @@ To use AMD ROCm as an accelerator, ensure the following components are installed
 For Ascend CANN as an accelerator, ensure the following components are installed:
 
 - [Ascend NPU Driver & Firmware](https://www.hiascend.com/hardware/firmware-drivers/community)
-- [Ascend CANN Toolkit & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.1.RC1.beta1) (Optional, required for non-Docker installations)
+- [Ascend CANN Toolkit & Kernels](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.2.RC1) (Optional, required for non-Docker installations)
 
 ### Hygon DTK
 
@@ -144,7 +144,7 @@ GPUStack uses the following ports for communication:
 The following ports are used on GPUStack server when Ray is enabled for distributed vLLM across workers:
 
 | Ray Port  | Description                                      |
-|-----------|--------------------------------------------------|
+| --------- | ------------------------------------------------ |
 | TCP 40096 | Default port for Ray (GCS server)                |
 | TCP 40097 | Default port for Ray Client Server               |
 | TCP 40098 | Default port for Ray node manager                |

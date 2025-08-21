@@ -139,3 +139,28 @@ def get_gpustack_env_bool(env_var: str) -> Optional[bool]:
 
 def is_docker_env() -> bool:
     return os.path.exists("/.dockerenv")
+
+
+def sanitize_env(env: Dict[str, str]) -> Dict[str, str]:
+    """
+    Sanitize the environment variables by removing any keys that are not valid
+    environment variable names.
+    """
+    prefixes = ("GPUSTACK_",)
+    suffixes = (
+        "_KEY",
+        "_key",
+        "_TOKEN",
+        "_token",
+        "_SECRET",
+        "_secret",
+        "_PASSWORD",
+        "_password",
+        "_PASS",
+        "_pass",
+    )
+    return {
+        k: v
+        for k, v in env.items()
+        if not k.startswith(prefixes) and not k.endswith(suffixes)
+    }

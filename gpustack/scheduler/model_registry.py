@@ -1,31 +1,8 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.10.1/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.10.1.1/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
-vllm_supported_embedding_architectures = [
-    "BertModel",
-    "GteModel",
-    "GteNewModel",
-    "Gemma2Model",
-    "GPT2ForSequenceClassification",
-    "MistralModel",
-    "ModernBertModel",
-    "NomicBertModel",
-    "LlamaModel",
-    "Qwen2Model",
-    "RobertaModel",
-    "RobertaForMaskedLM",
-    "XLMRobertaModel",
-]
 
-vllm_supported_reranker_architectures = [
-    "BertForSequenceClassification",
-    "RobertaForSequenceClassification",
-    "XLMRobertaForSequenceClassification",
-    "ModernBertForSequenceClassification",
-    "JinaVLForRanking",
-]
-
-vllm_supported_llm_architectures = [
-    # Text generation models
+_TEXT_GENERATION_MODELS = [
+    # [Decoder-only]
     "AquilaModel",
     "AquilaForCausalLM",
     "ArceeForCausalLM",
@@ -43,7 +20,6 @@ vllm_supported_llm_architectures = [
     "CohereForCausalLM",
     "Cohere2ForCausalLM",
     "DbrxForCausalLM",
-    "DeciLMForCausalLM",
     "DeepseekForCausalLM",
     "DeepseekV2ForCausalLM",
     "DeepseekV3ForCausalLM",
@@ -98,6 +74,7 @@ vllm_supported_llm_architectures = [
     "MPTForCausalLM",
     "MiMoForCausalLM",
     "NemotronForCausalLM",
+    "NemotronHForCausalLM",
     "OlmoForCausalLM",
     "Olmo2ForCausalLM",
     "OlmoeForCausalLM",
@@ -116,7 +93,6 @@ vllm_supported_llm_architectures = [
     "Qwen3ForCausalLM",
     "Qwen3MoeForCausalLM",
     "RWForCausalLM",
-    "SmolLM3ForCausalLM",  # Note: Bypassing Transformer support models
     "Step3TextForCausalLM",
     "StableLMEpochForCausalLM",
     "StableLmForCausalLM",
@@ -126,17 +102,69 @@ vllm_supported_llm_architectures = [
     "TeleFLMForCausalLM",
     "XverseForCausalLM",
     "Zamba2ForCausalLM",
+    # [Encoder-decoder]
     "BartModel",
     "BartForConditionalGeneration",
     "MBartForConditionalGeneration",
-    # Multimodal models
+]
+
+_EMBEDDING_MODELS = [
+    # [Text-only]
+    "BertModel",
+    "DeciLMForCausalLM",
+    "Gemma2Model",
+    # "GlmForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    "GPT2ForSequenceClassification",
+    # "GritLM",
+    "GteModel",
+    "GteNewModel",
+    "InternLM2ForRewardModel",
+    "JambaForSequenceClassification",
+    "LlamaModel",
+    # "AquilaModel", # Registered in _TEXT_GENERATION_MODELS
+    # "AquilaForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    # "InternLMForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    # "InternLM3ForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    # "LlamaForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    # "LLaMAForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    # "MistralForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    # "XverseForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    "MistralModel",
+    "ModernBertModel",
+    "NomicBertModel",
+    # "Phi3ForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    "Qwen2Model",
+    # "Qwen2ForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    "Qwen2ForRewardModel",
+    "Qwen2ForProcessRewardModel",
+    "RobertaForMaskedLM",
+    "RobertaModel",
+    # "TeleChat2ForCausalLM", # Registered in _TEXT_GENERATION_MODELS
+    "XLMRobertaModel",
+    # [Multimodal]
+    # "LlavaNextForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
+    # "Phi3VForCausalLM",
+    # "Qwen2VLForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
+    "PrithviGeoSpatialMAE",
+]
+
+_CROSS_ENCODER_MODELS = [
+    "BertForSequenceClassification",
+    "RobertaForSequenceClassification",
+    "XLMRobertaForSequenceClassification",
+    "ModernBertForSequenceClassification",
+    # [Auto-converted]
+    "JinaVLForRanking",
+]
+
+_MULTIMODAL_MODELS = [
+    # [Decoder-only]
     "AriaForConditionalGeneration",
     "AyaVisionForConditionalGeneration",
     "Blip2ForConditionalGeneration",
     "ChameleonForConditionalGeneration",
     "Cohere2VisionForConditionalGeneration",
     "DeepseekVLV2ForCausalLM",
-    "Emu3ForConditionalGeneration",  # Note: Bypassing Transformer support models
     "FuyuForCausalLM",
     "Gemma3ForConditionalGeneration",
     "Gemma3nForConditionalGeneration",
@@ -181,9 +209,34 @@ vllm_supported_llm_architectures = [
     "TarsierForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
     "VoxtralForConditionalGeneration",
+    # [Encoder-decoder]
     "Florence2ForConditionalGeneration",
     "MllamaForConditionalGeneration",
     "Llama4ForConditionalGeneration",
     "SkyworkR1VChatModel",
     "WhisperForConditionalGeneration",
 ]
+
+_TRANSFORMERS_SUPPORTED_MODELS = [
+    # Text generation models
+    "SmolLM3ForCausalLM",
+    # Multimodal models
+    "Emu3ForConditionalGeneration",
+]
+
+_TRANSFORMERS_BACKEND_MODELS = [
+    "TransformersModel",
+    "TransformersForCausalLM",
+    "TransformersForMultimodalLM",
+]
+
+vllm_supported_embedding_architectures = _EMBEDDING_MODELS
+
+vllm_supported_reranker_architectures = _CROSS_ENCODER_MODELS
+
+vllm_supported_llm_architectures = (
+    _TEXT_GENERATION_MODELS
+    + _MULTIMODAL_MODELS
+    + _TRANSFORMERS_SUPPORTED_MODELS
+    + _TRANSFORMERS_BACKEND_MODELS
+)
