@@ -1,0 +1,24 @@
+FROM registry.cn-shanghai.aliyuncs.com/insi-tech/vllm:hpcc.ai3.0.0.5-torch2.6-py310-ubuntu22.04-amd64
+
+RUN apt-get update && \
+    apt-get install -y git curl wget tzdata iproute2 tini git-lfs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/opt/conda/bin:$PATH \
+    VLLM_USE_V1=0 \
+    HPCC_SMALL_PAGESIZE_ENABLE=1 \
+    RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+
+RUN pip --version 
+RUN pip install /opt/hpcc/share/htsml/*.whl
+    
+COPY .. /workspace/gpustack
+RUN cd /workspace/gpustack && make build
+RUN pip install /workspace/gpustack/dist/*.whl && \
+    pip cache purge && \
+    rm -rf /workspace/gpustack
+
+RUN gpustack download-tools
+
+ENTRYPOINT [ "tini", "--", "gpustack", "start" ]

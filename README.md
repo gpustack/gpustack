@@ -145,6 +145,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 - [x] Moore Threads MUSA
 - [x] Iluvatar Corex
 - [x] Cambricon MLU
+- [x] Insi Mars
 
 ## Supported Models
 
