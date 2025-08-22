@@ -15,9 +15,6 @@ try:
     import pyhtsml as htsmi
 except ImportError:
     htsmi = None
-    print(
-        "pyhtsml is not installed. Please install it using: pip install /opt/hpcc/share/htsml/*.whl"
-    )
 
 
 class HTSMI(GPUDetector):
@@ -26,6 +23,10 @@ class HTSMI(GPUDetector):
         super().__init__()
         if htsmi:
             htsmi.htSmlInit()
+        else:
+            print(
+                "pyhtsml is not installed. Please install it using: pip install /opt/hpcc/share/htsml/*.whl"
+            )
 
     def is_available(self) -> bool:
         return is_command_available("ht-smi")
