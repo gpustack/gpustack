@@ -11,6 +11,7 @@ from gpustack.utils import platform
 from gpustack.utils.command import is_command_available
 
 # use pyhtsml get gpu info
+# using: pip install /opt/hpcc/share/htsml/*.whl
 try:
     import pyhtsml as htsmi
 except ImportError:
@@ -23,10 +24,6 @@ class HTSMI(GPUDetector):
         super().__init__()
         if htsmi:
             htsmi.htSmlInit()
-        else:
-            print(
-                "pyhtsml is not installed. Please install it using: pip install /opt/hpcc/share/htsml/*.whl"
-            )
 
     def is_available(self) -> bool:
         return is_command_available("ht-smi")
