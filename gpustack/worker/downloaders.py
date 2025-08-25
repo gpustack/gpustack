@@ -30,9 +30,16 @@ from gpustack.utils.hub import (
     match_hugging_face_files,
     match_model_scope_file_paths,
     FileEntry,
+    filter_model_files,
+    FilterPurpose,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_model_for_filtering(model: ModelSource) -> Optional[Model]:
+    """Use unified helper to extract Model instance for intelligent filtering"""
+    return model if isinstance(model, Model) else None
 
 
 def download_model(
@@ -43,6 +50,8 @@ def download_model(
     huggingface_token: Optional[str] = None,
 ) -> List[str]:
     if model.source == SourceEnum.HUGGING_FACE:
+        model_obj = _get_model_for_filtering(model)
+
         return HfDownloader.download(
             repo_id=model.huggingface_repo_id,
             filename=model.huggingface_filename,
@@ -50,6 +59,7 @@ def download_model(
             token=huggingface_token,
             local_dir=local_dir,
             cache_dir=os.path.join(cache_dir, "huggingface"),
+            model=model_obj,
         )
     elif model.source == SourceEnum.OLLAMA_LIBRARY:
         ollama_downloader = OllamaLibraryDownloader(
@@ -61,7 +71,10 @@ def download_model(
             cache_dir=os.path.join(cache_dir, "ollama"),
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
+        model_obj = _get_model_for_filtering(model)
+
         return ModelScopeDownloader.download(
+            model=model_obj,
             model_id=model.model_scope_model_id,
             file_path=model.model_scope_file_path,
             extra_file_path=get_mmproj_filename(model),
@@ -110,11 +123,14 @@ class HfDownloader:
 
     @classmethod
     def get_model_file_info(cls, model: Model, token: Optional[str]) -> List[FileEntry]:
-
         api = HfApi(token=token)
         repo_info = api.repo_info(model.huggingface_repo_id, files_metadata=True)
-        file_list = [FileEntry(f.rfilename, f.size) for f in repo_info.siblings]
-        return file_list
+        file_entries = [FileEntry(f.rfilename, f.size) for f in repo_info.siblings]
+        # Apply intelligent filtering to select optimal files
+        filtered_files = filter_model_files(
+            file_entries, model, purpose=FilterPurpose.DOWNLOAD
+        )
+        return filtered_files
 
     @classmethod
     def download(
@@ -126,23 +142,19 @@ class HfDownloader:
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
         max_workers: int = 8,
+        model: Optional[Model] = None,
     ) -> List[str]:
         """Download a model from the Hugging Face Hub.
 
         Args:
-            repo_id:
-                The model repo id.
-            filename:
-                A filename or glob pattern to match the model file in the repo.
-            token:
-                The Hugging Face API token.
-            local_dir:
-                The local directory to save the model to.
-            local_dir_use_symlinks:
-                Whether to use symlinks when downloading the model.
-            max_workers (`int`, *optional*):
-                Number of concurrent threads to download files (1 thread = 1 file download).
-                Defaults to 8.
+            repo_id: The model repo id.
+            filename: A filename or glob pattern to match the model file in the repo.
+            extra_filename: Optional extra filename pattern.
+            token: The Hugging Face API token.
+            local_dir: The local directory to save the model to.
+            cache_dir: The cache directory to save the model to.
+            max_workers: Number of concurrent threads to download files.
+            model: Model configuration for intelligent file filtering.
 
         Returns:
             The paths to the downloaded model files.
@@ -163,6 +175,8 @@ class HfDownloader:
                     token=token,
                     local_dir=local_dir,
                     extra_filename=extra_filename,
+                    max_workers=max_workers,
+                    model=model,
                 )
 
             snapshot_download(
@@ -181,6 +195,7 @@ class HfDownloader:
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         max_workers: int = 8,
         extra_filename: Optional[str] = None,
+        model: Optional[Model] = None,
     ) -> List[str]:
         """Download a model from the Hugging Face Hub.
         Args:
@@ -188,13 +203,15 @@ class HfDownloader:
             filename: A filename or glob pattern to match the model file in the repo.
             token: The Hugging Face API token.
             local_dir: The local directory to save the model to.
-            local_dir_use_symlinks: Whether to use symlinks when downloading the model.
+            max_workers: Number of concurrent download threads.
+            extra_filename: Optional extra filename pattern.
+            model: Model configuration for intelligent file filtering.
         Returns:
             The path to the downloaded model.
         """
 
         matching_files = match_hugging_face_files(
-            repo_id, filename, extra_filename, token
+            repo_id, filename, extra_filename, token, model
         )
 
         if len(matching_files) == 0:
@@ -543,15 +560,23 @@ class OllamaLibraryDownloader:
 class ModelScopeDownloader:
 
     @classmethod
-    def get_model_file_info(cls, model: Model) -> List[FileEntry]:
+    def get_model_file_info(cls, model: Optional[Model]) -> List[FileEntry]:
+        if model is None:
+            return []
+
         api = HubApi()
         repo_files = api.get_model_files(model.model_scope_model_id, recursive=True)
-        file_list = [FileEntry(f.get("Path"), f.get("Size")) for f in repo_files]
-        return file_list
+        file_entries = [FileEntry(f.get("Path"), f.get("Size", 0)) for f in repo_files]
+        # Apply intelligent filtering to select optimal files
+        filtered_files = filter_model_files(
+            file_entries, model, purpose=FilterPurpose.DOWNLOAD
+        )
+        return filtered_files
 
     @classmethod
     def download(
         cls,
+        model: Optional[Model],
         model_id: str,
         file_path: Optional[str],
         extra_file_path: Optional[str],
@@ -561,10 +586,16 @@ class ModelScopeDownloader:
         """Download a model from Model Scope.
 
         Args:
+            model:
+                The model configuration object for intelligent filtering. None for basic filtering.
             model_id:
                 The model id.
             file_path:
                 A filename or glob pattern to match the model file in the repo.
+            extra_file_path:
+                Optional extra filename pattern.
+            local_dir:
+                The local directory to save the model to.
             cache_dir:
                 The cache directory to save the model to.
 
@@ -582,7 +613,7 @@ class ModelScopeDownloader:
         with SoftFileLock(lock_filename):
             if file_path:
                 matching_files = match_model_scope_file_paths(
-                    model_id, file_path, extra_file_path
+                    model_id, file_path, extra_file_path, model
                 )
                 if len(matching_files) == 0:
                     raise ValueError(

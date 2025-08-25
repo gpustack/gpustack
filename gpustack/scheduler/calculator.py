@@ -761,12 +761,15 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
 
 
 def hf_model_filename(
-    repo_id: str, filename: Optional[str] = None, token: Optional[str] = None
+    repo_id: str,
+    filename: Optional[str] = None,
+    token: Optional[str] = None,
+    model: Model = None,
 ) -> Optional[str]:
     if filename is None:
         return None
     else:
-        matching_files = match_hugging_face_files(repo_id, filename, None, token)
+        matching_files = match_hugging_face_files(repo_id, filename, None, token, model)
         if len(matching_files) == 0:
             raise ValueError(f"File {filename} not found in {repo_id}")
 
@@ -776,7 +779,7 @@ def hf_model_filename(
 def hf_mmproj_filename(model: Model, token: Optional[str] = None) -> Optional[str]:
     mmproj_filename = get_mmproj_filename(model)
     matching_files = match_hugging_face_files(
-        model.huggingface_repo_id, mmproj_filename, None, token
+        model.huggingface_repo_id, mmproj_filename, None, token, model
     )
     if len(matching_files) == 0:
         return None
@@ -786,8 +789,8 @@ def hf_mmproj_filename(model: Model, token: Optional[str] = None) -> Optional[st
     return matching_files[0]
 
 
-def model_scope_file_path(model_id: str, file_path: str) -> str:
-    file_paths = match_model_scope_file_paths(model_id, file_path)
+def model_scope_file_path(model_id: str, file_path: str, model: Model = None) -> str:
+    file_paths = match_model_scope_file_paths(model_id, file_path, model=model)
     if len(file_paths) == 0:
         raise ValueError(f"File {file_path} not found in {model_id}")
     return file_paths[0]
@@ -796,7 +799,7 @@ def model_scope_file_path(model_id: str, file_path: str) -> str:
 def model_scope_mmproj_file_path(model: Model) -> Optional[str]:
     mmproj_filename = get_mmproj_filename(model)
     file_paths = match_model_scope_file_paths(
-        model.model_scope_model_id, mmproj_filename
+        model.model_scope_model_id, mmproj_filename, model=model
     )
     if len(file_paths) == 0:
         return None

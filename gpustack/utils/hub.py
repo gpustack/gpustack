@@ -14,9 +14,33 @@ from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
 
+from enum import Enum
+
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import Model, SourceEnum, get_mmproj_filename
 from gpustack.utils.cache import is_cached, load_cache, save_cache
+
+
+class FileEntry:
+    def __init__(self, rfilename: str, size: Optional[int] = None):
+        self.rfilename = rfilename
+        self.size = size
+
+
+class FilterPurpose(str, Enum):
+    """Enum for model file filtering purpose."""
+
+    EVALUATE = "evaluate"
+    DOWNLOAD = "download"
+
+
+class VersionPref(str, Enum):
+    """Enum for model version preference (single vs split)."""
+
+    SINGLE = "single"
+    SHARDED = "sharded"
+    BOTH = "both"
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +51,181 @@ MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
     '*.py',
 ]
 
+# Default format preference order (priority: first = highest)
+DEFAULT_FORMAT_PREFERENCE = ['safetensors', 'bin', 'pt', 'pth', 'gguf']
+
+
+def filter_model_files(
+    repo_file_infos: List[FileEntry],
+    model: Model,
+    purpose: FilterPurpose = FilterPurpose.EVALUATE,
+) -> List[FileEntry]:
+    """
+    Unified model file filtering function to avoid duplicates and select optimal files.
+
+    Args:
+        repo_file_infos: List of FileEntry objects from repository
+        model: Model configuration object
+        purpose: Purpose of filtering (FilterPurpose.EVALUATE or FilterPurpose.DOWNLOAD)
+
+    Returns:
+        List of filtered file info dictionaries
+    """
+    if not repo_file_infos:
+        return []
+
+    # Get filtering preferences from environment variables or defaults
+    format_preference = _get_format_preference(model)
+    version_preference = _get_version_preference(model)
+
+    # Step 1: Categorize files by format
+    categorized_files = _categorize_files_by_format(repo_file_infos)
+
+    # Step 2: Within each format, select version (consolidated | sharded | both)
+    filtered_by_version = {}
+    for format_name, files in categorized_files.items():
+        if not files:
+            continue
+        filtered_by_version[format_name] = _select_best_version_in_format(
+            files, version_preference
+        )
+
+    # Step 3: Select optimal format based on backend and user preferences
+    final_files = _select_optimal_formats(
+        filtered_by_version, format_preference, purpose
+    )
+
+    if final_files:
+        logger.debug(f"Selected files for {model.name}: {final_files}")
+
+    return final_files
+
+
+def _get_format_preference(model: Model) -> List[str]:
+    """Get format preference from environment variables or use default."""
+    # Check for user-defined preference
+    if model.env and "GPUSTACK_MODEL_FORMAT_PREFERENCE" in model.env:
+        pref_str = model.env["GPUSTACK_MODEL_FORMAT_PREFERENCE"]
+        return [fmt.strip() for fmt in pref_str.split(",")]
+
+    # Use default preference order
+    return DEFAULT_FORMAT_PREFERENCE
+
+
+def _get_version_preference(model: Model) -> VersionPref:
+    """Get version preference from model environment.
+
+    Returns:
+        VersionPref enum value (CONSOLIDATED | SHARDED | BOTH)
+    """
+    if model.env and "GPUSTACK_MODEL_VERSION_PREFERENCE" in model.env:
+        pref_str = model.env["GPUSTACK_MODEL_VERSION_PREFERENCE"].lower()
+        if pref_str == "consolidated":
+            return VersionPref.SINGLE
+        elif pref_str == "sharded":
+            return VersionPref.SHARDED
+        elif pref_str == "both":
+            return VersionPref.BOTH
+
+    return VersionPref.SINGLE  # Default to single
+
+
+def _categorize_files_by_format(files: List[FileEntry]) -> Dict[str, List[FileEntry]]:
+    """Categorize files by their format (safetensors, pytorch, etc.)."""
+    categorized = {}
+
+    for file in files:
+        if not file.rfilename:
+            continue
+
+        # Extract file extension and convert to format name
+        if "." in file.rfilename:
+            extension = file.rfilename.split(".")[-1].lower()
+            if extension in ["safetensors", "bin", "pt", "pth", "gguf"]:
+                if extension not in categorized:
+                    categorized[extension] = []
+                categorized[extension].append(file)
+
+    return categorized
+
+
+def _select_best_version_in_format(
+    files: List[FileEntry], version_preference: VersionPref
+) -> List[FileEntry]:
+    """Select the best version (consolidated vs sharded) within a format."""
+    if not files:
+        return []
+
+    if version_preference == VersionPref.BOTH:
+        return files  # Return all files
+
+    # Categorize by version type
+    consolidated_files = []
+    sharded_files = []
+
+    for file in files:
+        if _is_sharded_file(file.rfilename):
+            sharded_files.append(file)
+        else:
+            consolidated_files.append(file)
+
+    # Apply version preference
+    if version_preference == VersionPref.SHARDED:
+        return sharded_files or consolidated_files
+    else:  # Default to single
+        return consolidated_files or sharded_files
+
+
+def _is_sharded_file(filename: str) -> bool:
+    """Check if a filename indicates a sharded file."""
+    if not filename:
+        return False
+
+    # Look for patterns like "-00001-of-00002", "_00001_of_00002", etc.
+    import re
+
+    sharded_pattern = r'[-_]\d+[-_]of[-_]\d+'
+    return bool(re.search(sharded_pattern, filename))
+
+
+def _select_optimal_formats(
+    categorized_files: Dict[str, List[FileEntry]],
+    format_preference: List[str],
+    purpose: FilterPurpose,
+) -> List[FileEntry]:
+    """Select optimal format(s) based on preferences."""
+    if not categorized_files:
+        return []
+
+    # For evaluate, usually select only one format to avoid redundancy
+    # For download, might select multiple formats if needed
+
+    selected_files = []
+
+    # Try each format in preference order
+    for format_name in format_preference:
+        if format_name in categorized_files and categorized_files[format_name]:
+            selected_files.extend(categorized_files[format_name])
+
+            # For evaluation purpose, usually one format is enough
+            if purpose == FilterPurpose.EVALUATE:
+                break
+
+    # If no preferred format found, take the first available format
+    if not selected_files and categorized_files:
+        # Use default preference order as priority
+        for format_name in DEFAULT_FORMAT_PREFERENCE:
+            if format_name in categorized_files and categorized_files[format_name]:
+                selected_files.extend(categorized_files[format_name])
+                break
+
+    return selected_files
+
 
 @cache
 def get_model_lock(model_id: str) -> Lock:
     """Get or create a lock for the given model_id. The model_id is used as the key to store Lock in cache."""
     return Lock()
-
-
-class FileEntry:
-    def __init__(self, rfilename: str, size: Optional[int] = None):
-        self.rfilename = rfilename
-        self.size = size
 
 
 def get_model_path_and_name(model: Model) -> (str, str):
@@ -127,7 +315,21 @@ def match_hugging_face_files(
     filename: str,
     extra_filename: Optional[str] = None,
     token: Optional[str] = None,
+    model: Optional[Model] = None,
 ) -> List[str]:
+    """
+    Match files in a Hugging Face repository with intelligent filtering.
+
+    Args:
+        repo_id: Repository ID
+        filename: Filename pattern to match
+        extra_filename: Optional extra filename pattern (e.g., for mmproj files)
+        token: Optional Hugging Face token
+        model: Optional model configuration for intelligent filtering
+
+    Returns:
+        List of matched file paths
+    """
     validate_repo_id(repo_id)
 
     hffs = HfFileSystem(token=token)
@@ -143,6 +345,21 @@ def match_hugging_face_files(
         file_list.append(rel_path.as_posix())
 
     matching_files = [file for file in file_list if fnmatch.fnmatch(file, filename)]  # type: ignore
+
+    # Apply intelligent filtering if model is provided and we're dealing with weight files
+    if model and matching_files:
+        # Convert file paths to FileEntry objects for filtering
+        file_entries = []
+        for file_path in matching_files:
+            # We don't have size info here, but that's OK for filtering logic
+            file_entries.append(FileEntry(file_path, 0))
+
+        # Apply filtering to remove duplicates and select optimal versions
+        filtered_infos = filter_model_files(
+            file_entries, model, purpose=FilterPurpose.DOWNLOAD
+        )
+        matching_files = [info.rfilename for info in filtered_infos]
+
     matching_files = sorted(matching_files)
 
     if extra_filename is None:
@@ -170,9 +387,30 @@ def list_repo(
     source: str,
     token: Optional[str] = None,
     cache_expiration: Optional[int] = None,
-    root_dir_only: bool = False,
+    model: Optional[Model] = None,
 ) -> List[Dict[str, any]]:
-    cache_key = f"{source}:{repo_id}:{root_dir_only}"
+    """
+    List repository files with optional subdirectory filtering based on model preferences.
+
+    Args:
+        repo_id: Repository ID
+        source: Source type (HUGGING_FACE or MODEL_SCOPE)
+        token: Optional authentication token
+        cache_expiration: Cache expiration time
+        model: Optional model for subdirectory preference checking
+
+    Returns:
+        List of file information dictionaries
+    """
+    # Check subdirectory preference from model environment variables
+    include_subdirs = False
+    if model and model.env and "GPUSTACK_MODEL_INCLUDE_SUBDIRS" in model.env:
+        include_subdirs = model.env["GPUSTACK_MODEL_INCLUDE_SUBDIRS"].lower() in [
+            "true",
+            "1",
+        ]
+
+    cache_key = f"{source}:{repo_id}:{include_subdirs}"
     cached_result, is_succ = load_cache(
         LIST_REPO_CACHE_DIR, cache_key, cache_expiration
     )
@@ -185,12 +423,11 @@ def list_repo(
         validate_repo_id(repo_id)
         hffs = HfFileSystem(token=token)
         file_info = []
-        for file in hffs.ls(repo_id, recursive=not root_dir_only):
+        for file in hffs.ls(repo_id, recursive=include_subdirs):
             if not isinstance(file, dict):
                 continue
             relative_path = Path(file["name"]).relative_to(repo_id).as_posix()
-            # If root_only is True, skip files in subdirectories
-            if root_dir_only and "/" in relative_path:
+            if not include_subdirs and "/" in relative_path:
                 continue
             file_info.append(
                 {
@@ -200,13 +437,10 @@ def list_repo(
             )
     elif source == SourceEnum.MODEL_SCOPE:
         msapi = HubApi()
-        files = msapi.get_model_files(repo_id, recursive=not root_dir_only)
+        files = msapi.get_model_files(repo_id, recursive=include_subdirs)
         file_info = []
         for file in files:
             file_path = file["Path"]
-            # If root_only is True, skip files in subdirectories
-            if root_dir_only and "/" in file_path:
-                continue
             file_info.append(
                 {
                     "name": file_path,
@@ -230,8 +464,23 @@ def filter_filename(file_path: str, file_paths: List[str]):
 
 
 def match_model_scope_file_paths(
-    model_id: str, file_path: str, extra_file_path: Optional[str] = None
+    model_id: str,
+    file_path: str,
+    extra_file_path: Optional[str] = None,
+    model: Optional[Model] = None,
 ) -> List[str]:
+    """
+    Match files in a ModelScope repository with intelligent filtering.
+
+    Args:
+        model_id: Repository ID
+        file_path: Filename pattern to match
+        extra_file_path: Optional extra filename pattern (e.g., for mmproj files)
+        model: Optional model configuration for intelligent filtering
+
+    Returns:
+        List of matched file paths
+    """
     if '/' in file_path:
         root, _ = file_path.rsplit('/', 1)
     else:
@@ -242,6 +491,25 @@ def match_model_scope_file_paths(
 
     file_paths = [file["Path"] for file in files]
     matching_paths = [p for p in file_paths if fnmatch.fnmatch(p, file_path)]
+
+    # Apply intelligent filtering if model is provided and we're dealing with weight files
+    if model and matching_paths:
+        # Convert file paths to file info format for filtering
+        file_infos = []
+        for file_path_item in matching_paths:
+            # Find the corresponding file info with size
+            file_info = next((f for f in files if f["Path"] == file_path_item), None)
+            if file_info:
+                file_infos.append(FileEntry(file_path_item, file_info.get("Size", 0)))
+            else:
+                file_infos.append(FileEntry(file_path_item, 0))
+
+        # Apply filtering to remove duplicates and select optimal versions
+        filtered_infos = filter_model_files(
+            file_infos, model, purpose=FilterPurpose.EVALUATE
+        )
+        matching_paths = [info.rfilename for info in filtered_infos]
+
     matching_paths = sorted(matching_paths)
 
     if extra_file_path is None:
@@ -250,38 +518,48 @@ def match_model_scope_file_paths(
     extra_matching_paths = [
         p for p in file_paths if fnmatch.fnmatch(p, extra_file_path)
     ]
-    extra_matching_paths = sorted(extra_matching_paths, reverse=True)
-    if extra_matching_paths:
-        # Add the first element of the extra matching paths to the matching paths
-        # For example, when matches f16 and f32 mmproj files, prefer f32 over f16
-        matching_paths.append(extra_matching_paths[0])
+    extra_file = select_most_suitable_extra_file(extra_matching_paths)
+    if extra_file:
+        matching_paths.append(extra_file)
 
     return matching_paths
 
 
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     """
-    Get the size of the model weights. This is the sum of all the weight files with extensions
-    .safetensors, .bin, .pt, .pth in the root directory only.
+    Get the size of the model weights using intelligent file filtering to avoid duplicates.
     Args:
         model: Model to get the weight size for
         token: Optional Hugging Face API token
     Returns:
-        int: The size of the model weights
+        int: The size of the model weights in bytes
     """
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
     if model.source == SourceEnum.HUGGING_FACE:
         repo_id = model.huggingface_repo_id
     elif model.source == SourceEnum.MODEL_SCOPE:
         repo_id = model.model_scope_model_id
     else:
         raise ValueError(f"Unknown source {model.source}")
-    repo_file_infos = list_repo(repo_id, model.source, token=token, root_dir_only=True)
-    return sum(
-        file.get("size", 0)
-        for file in repo_file_infos
-        if file.get("name", "").endswith(weight_file_extensions)
+
+    # Get all repository files with subdirectory filtering based on model preferences
+    repo_file_dicts = list_repo(repo_id, model.source, token=token, model=model)
+
+    repo_file_infos = [FileEntry(f["name"], f["size"]) for f in repo_file_dicts]
+
+    # Apply intelligent filtering to select optimal files
+    filtered_files = filter_model_files(
+        repo_file_infos, model, purpose=FilterPurpose.EVALUATE
     )
+
+    total_size = sum(file.size for file in filtered_files)
+
+    if filtered_files:
+        logger.debug(
+            f"Weight calculation for {model.readable_source}: "
+            f"{len(filtered_files)} files, {total_size / (1024**3):.2f} GB"
+        )
+
+    return total_size
 
 
 def get_pretrained_config(model: Model, **kwargs):
