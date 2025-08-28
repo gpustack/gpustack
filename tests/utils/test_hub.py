@@ -532,6 +532,7 @@ def test_model_file_filter_utility_functions():
     assert len(categorized['safetensors']) == 1
     assert len(categorized['bin']) == 1
 
-    consolidated = filter_instance._get_consolidated_files(test_files, 'safetensors')
+    filter_instance.format_preference = ['safetensors']
+    consolidated = filter_instance._select_files_with_index_detection(categorized)
     assert len(consolidated) == 1
     assert consolidated[0].rfilename == "model.safetensors"

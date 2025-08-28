@@ -131,6 +131,14 @@ class ModelFileFilter:
                 categorized[extension].append(file)
             elif file.rfilename in index_file_set.keys():
                 categorized[index_file_set[file.rfilename]].append(file)
+            elif file.rfilename.endswith(".index.json"):
+                # Try to match the format based on the prefix before .index.json
+                prefix = file.rfilename[: -len(".index.json")]
+                if "." in prefix:
+                    format_ext = prefix.split(".")[-1]
+                    if format_ext in self.format_preference:
+                        categorized[format_ext].append(file)
+
         return categorized
 
     def _get_format_preference(self) -> List[str]:
@@ -203,10 +211,13 @@ class ModelFileFilter:
         selected_files = []
 
         # Try each format in preference order
-        for format_ext, format_files in categorized_files.items():
+        for format_ext in self.format_preference:
+            format_files = categorized_files[format_ext]
+            if not format_files:
+                continue
+
             # Check if this format has an index file (indicating sharding)
-            index_filename = self._get_index_filename(format_ext)
-            has_index = any(f.rfilename == index_filename for f in format_files)
+            has_index = any(f.rfilename.endswith(".index.json") for f in format_files)
 
             if has_index:
                 # Model is sharded, get files from index
@@ -215,62 +226,14 @@ class ModelFileFilter:
                 )
                 selected_files.extend(shard_files)
             else:
-                # Model is not sharded, look for consolidated files
-                consolidated_files = self._get_consolidated_files(
-                    format_files, format_ext
-                )
-                selected_files.extend(consolidated_files)
+                # Model is not sharded, select all files in format
+                selected_files.extend(format_files)
 
             # For evaluation, usually one format is enough to avoid redundancy
             if self.purpose == FilterPurpose.EVALUATE and selected_files:
                 break
 
         return selected_files
-
-    def _get_consolidated_files(
-        self, files: List[FileEntry], format_ext: str
-    ) -> List[FileEntry]:
-        """Get consolidated (single) model files for a format."""
-        consolidated_files = []
-
-        # Define standard consolidated filenames for different formats
-        # reference: https://github.com/huggingface/transformers/blob/main/src/transformers/utils/__init__.py#L291-L307
-        standard_filenames = []
-        if format_ext == 'safetensors':
-            standard_filenames = ['model.safetensors']
-        elif format_ext in ['bin', 'pt', 'pth']:
-            standard_filenames = [f'pytorch_model.{format_ext}', f'model.{format_ext}']
-
-        # Look for standard consolidated files in order of preference
-        for f in files:
-            if f.rfilename in standard_filenames:
-                consolidated_files.append(f)
-                break
-
-        # If no standard consolidated file found, apply different strategies based on purpose
-        if not consolidated_files:
-            non_index_files = [
-                f
-                for f in files
-                if f.rfilename.endswith(f'.{format_ext}')
-                and not f.rfilename.endswith('.index.json')
-            ]
-
-            if self.purpose == FilterPurpose.DOWNLOAD:
-                # For download, be more permissive - include all non-index files
-                # This ensures we download potentially valuable model files even if they don't follow standard naming
-                consolidated_files = non_index_files
-            else:
-                # For evaluation, be more conservative - only include the largest file
-                # This helps ensure we get the main model file for inference
-                if non_index_files:
-                    # Sort by size (descending) and take the largest file
-                    sorted_files = sorted(
-                        non_index_files, key=lambda f: f.size or 0, reverse=True
-                    )
-                    consolidated_files = [sorted_files[0]]
-
-        return consolidated_files
 
     def _get_sharded_files_from_index(
         self, files: List[FileEntry], format_ext: str
@@ -291,13 +254,11 @@ class ModelFileFilter:
         """
         # Find the index file
         index_filename = self._get_index_filename(format_ext)
-        index_file = None
-
-        for file_entry in files:
-            if file_entry.rfilename == index_filename:
-                index_file = file_entry
-                break
-
+        index_file = next((f for f in files if f.rfilename == index_filename), None)
+        if not index_file:
+            index_file = next(
+                (f for f in files if f.rfilename.endswith(".index.json")), None
+            )
         if not index_file:
             # Fallback: return regex-matched files
             return [f for f in files if self._is_sharded_file_name(f.rfilename)]
@@ -305,7 +266,7 @@ class ModelFileFilter:
         # Try to get and parse the index file content if repo info is available
         if self.repo_id and self.source:
             index_content = self._get_index_file_content(
-                self.repo_id, index_filename, self.source
+                self.repo_id, index_file.rfilename, self.source
             )
             if index_content:
                 # Parse the index file to get exact shard filenames
