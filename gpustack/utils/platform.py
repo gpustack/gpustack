@@ -138,7 +138,7 @@ def device() -> str:
 
     if is_command_available("cnmon"):
         return DeviceTypeEnum.MLU.value
-    
+
     if is_command_available("mx-smi"):
         return DeviceTypeEnum.MACA.value
 
