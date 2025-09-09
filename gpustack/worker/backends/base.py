@@ -608,3 +608,25 @@ def is_ascend(devices: GPUDevicesInfo) -> bool:
     """
 
     return all(gpu.vendor == ManufacturerEnum.ASCEND.value for gpu in devices)
+
+
+def cal_distributed_parallelism_arguments(
+    model_instance: ModelInstance,
+) -> tuple[int, int]:
+    pp = len(model_instance.distributed_servers.subordinate_workers) + 1
+    tp = len(model_instance.gpu_indexes) if model_instance.gpu_indexes else 1
+    uneven_pp = tp
+    uneven = False
+    for subordinate_worker in model_instance.distributed_servers.subordinate_workers:
+        num_gpus = len(subordinate_worker.gpu_indexes)
+        uneven_pp += num_gpus
+        if num_gpus != tp:
+            uneven = True
+
+    if uneven:
+        tp = 1
+        pp = uneven_pp
+        logger.warning(
+            f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
+        )
+    return tp, pp
