@@ -154,3 +154,7 @@ nav:
       - Chat: cli-reference/chat.md
       - Draw: cli-reference/draw.md
       - Download Tools: cli-reference/download-tools.md
+  - Contributing:
+      - Contributing Guide: contributing.md
+      - Development: development.md
+  - Code of Conduct: code-of-conduct.md
