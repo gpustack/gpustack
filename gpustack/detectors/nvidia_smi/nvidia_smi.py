@@ -480,6 +480,7 @@ class NvidiaSMI(GPUDetector):
                 ),
                 temperature=temperature_gpu,
                 type=platform.DeviceTypeEnum.CUDA.value,
+                runtime_framework="cuda",
             )
             devices.append(device)
         return devices

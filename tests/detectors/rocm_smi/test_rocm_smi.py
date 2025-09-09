@@ -109,4 +109,5 @@ def gpu_device(
         temperature=temp,
         type=device_type,
         labels={"llvm": llvm},
+        runtime_framework="rocm",
     )

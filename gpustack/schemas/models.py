@@ -49,9 +49,10 @@ class PlacementStrategyEnum(str, Enum):
 
 class BackendEnum(str, Enum):
     LLAMA_BOX = "llama-box"
-    VLLM = "vllm"
+    VLLM = "vLLM"
     VOX_BOX = "vox-box"
-    ASCEND_MINDIE = "ascend-mindie"
+    ASCEND_MINDIE = "MindIE"
+    CUSTOM = "Custom"
 
 
 class GPUSelector(BaseModel):
@@ -182,6 +183,8 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend: Optional[str] = None
     backend_version: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
+    image_name: Optional[str] = None
+    run_command: Optional[str] = None
 
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True

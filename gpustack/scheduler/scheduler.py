@@ -21,7 +21,13 @@ from gpustack.policies.candidate_selectors import (
     VLLMResourceFitSelector,
     VoxBoxResourceFitSelector,
 )
+from gpustack.policies.candidate_selectors.custom_backend_resource_fit_selector import (
+    CustomBackendResourceFitSelector,
+)
 from gpustack.policies.utils import ListMessageBuilder
+from gpustack.policies.worker_filters.backend_framework_filter import (
+    BackendFrameworkFilter,
+)
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
 from gpustack.scheduler.model_registry import (
@@ -360,6 +366,7 @@ async def find_candidate(
         GPUMatchingFilter(model),
         LabelMatchingFilter(model),
         StatusFilter(model),
+        BackendFrameworkFilter(model),
     ]
 
     worker_filter_chain = WorkerFilterChain(filters)
@@ -377,6 +384,8 @@ async def find_candidate(
             )
         elif model.backend == BackendEnum.ASCEND_MINDIE:
             candidates_selector = AscendMindIEResourceFitSelector(config, model)
+        elif model.backend == BackendEnum.CUSTOM:
+            candidates_selector = CustomBackendResourceFitSelector(config, model)
         else:
             candidates_selector = VLLMResourceFitSelector(config, model)
     except Exception as e:

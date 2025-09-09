@@ -14,6 +14,12 @@ from gpustack.schemas.clusters import (
     WorkerPoolPublic,
     WorkerPoolsPublic,
 )
+from gpustack.schemas.inference_backend import (
+    InferenceBackendPublic,
+    InferenceBackendsPublic,
+    InferenceBackendCreate,
+    InferenceBackendUpdate,
+)
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -115,4 +121,8 @@ __all__ = [
     "WorkerPoolUpdate",
     "WorkerPoolPublic",
     "WorkerPoolsPublic",
+    "InferenceBackendPublic",
+    "InferenceBackendsPublic",
+    "InferenceBackendCreate",
+    "InferenceBackendUpdate",
 ]

@@ -100,6 +100,7 @@ async def get_serving_logs(  # noqa: C901
     model_instance_log_url = (
         f"http://{worker.ip}:{worker.port}/serveLogs"
         f"/{model_instance.id}?{log_options.url_encode()}"
+        f"&model_instance_name={model_instance.name}"
     )
     if (
         model_instance.state != ModelInstanceStateEnum.RUNNING

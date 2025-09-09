@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import List, Optional
 from gpustack.policies.base import (
     Allocatable,
@@ -161,3 +162,26 @@ def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
         logger.warning(f"Cannot get num_attention_heads: {e}")
 
     return num_attention_heads
+
+
+def get_local_model_weight_size(local_path: str) -> int:
+    """
+    Get the local model weight size in bytes. Estimate by the total size of files in the top-level (depth 1) of the directory.
+    """
+    total_size = 0
+
+    try:
+        with os.scandir(local_path) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    total_size += entry.stat().st_size
+    except FileNotFoundError:
+        raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
+    except NotADirectoryError:
+        raise NotADirectoryError(
+            f"The specified path '{local_path}' is not a directory."
+        )
+    except PermissionError:
+        raise PermissionError(f"Permission denied when accessing '{local_path}'.")
+
+    return total_size

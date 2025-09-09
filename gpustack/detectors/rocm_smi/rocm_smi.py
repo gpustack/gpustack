@@ -197,6 +197,7 @@ class RocmSMI(GPUDetector):
                 ),
                 temperature=temperature_gpu,
                 type=device_type,
+                runtime_framework="rocm",
             )
             devices.append(device)
         return devices
