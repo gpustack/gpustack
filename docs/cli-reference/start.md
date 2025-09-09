@@ -90,6 +90,7 @@ gpustack start [OPTIONS]
 | `--system-reserved` value           | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases.                                                                 |
 | `--tools-download-base-url` value   |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                                                                                                       |
 | `--enable-hf-transfer`              | `False`                                | Enable faster downloads from the Hugging Face Hub using hf_transfer. https://huggingface.co/docs/huggingface_hub/v0.29.3/package_reference/environment_variables#hfhubenablehftransfer                                                                                                                                           |
+| `--enable-hf-xet`                   | `False`                                | Enable downloading model files using Hugging Face Xet.                                                                                                                                                           |
 
 ### Available Environment Variables
 
@@ -182,4 +183,5 @@ system_reserved:
   vram: 1
 tools_download_base_url: https://mirror.your_company.com
 enable_hf_transfer: false
+enable_hf_xet: false
 ```
