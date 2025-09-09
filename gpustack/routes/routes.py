@@ -6,6 +6,7 @@ from gpustack.routes import (
     dashboard,
     debug,
     gpu_devices,
+    inference_backend,
     metrics,
     model_evaluations,
     model_files,
@@ -104,6 +105,9 @@ worker_client_router.add_api_route(
     endpoint=workers.create_worker_status,
     methods=["POST"],
     include_in_schema=False,
+)
+worker_client_router.include_router(
+    inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
 
 admin_routers = model_routers + [

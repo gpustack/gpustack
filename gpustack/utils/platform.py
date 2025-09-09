@@ -12,6 +12,10 @@ from gpustack.schemas.workers import VendorEnum
 logger = logging.getLogger(__name__)
 
 
+def get_runner_platform() -> str:
+    return f"{system()}/{arch()}"
+
+
 def system() -> str:
     return platform.uname().system.lower()
 
