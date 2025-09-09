@@ -4,12 +4,20 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
+
+from gpustack_runner import list_service_runners
+from gpustack_runtime.detector import (
+    manufacturer_to_backend,
+    detect_devices,
+    ManufacturerEnum,
+)
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config, get_global_config
 from gpustack.logging import setup_logging
+from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -20,10 +28,10 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import all_gpu_match
-from gpustack.utils.platform import get_cann_chip
+from gpustack.utils.platform import get_cann_chip, get_runner_platform
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform, envs
-from gpustack.worker.tools_manager import ToolsManager
+from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
@@ -42,6 +50,32 @@ class ModelInstanceStateError(Exception):
     pass
 
 
+def version_compare(lower_version: str, higher_version: str) -> bool:
+    """
+    Compare if lower_version is less than or equal to higher_version, returning true if so, else false.
+
+    Args:
+        lower_version: (e.g., "12.6")
+        higher_version: (e.g., "12.8")
+
+    Returns:
+        True if lower_version <= higher_version, False otherwise
+    """
+    if not lower_version or not higher_version:
+        return False
+
+    # Split version strings and convert to comparable tuples
+    lower_parts = [int(x) for x in lower_version.split('.')]
+    higher_parts = [int(x) for x in higher_version.split('.')]
+
+    # Pad shorter version with zeros for comparison
+    max_len = max(len(lower_parts), len(higher_parts))
+    lower_parts.extend([0] * (max_len - len(lower_parts)))
+    higher_parts.extend([0] * (max_len - len(higher_parts)))
+
+    return tuple(lower_parts) <= tuple(higher_parts)
+
+
 class InferenceServer(ABC):
     @time_decorator
     def __init__(
@@ -50,8 +84,10 @@ class InferenceServer(ABC):
         mi: ModelInstance,
         cfg: Config,
         worker_id: int,
+        inference_backend: InferenceBackend,
     ):
         setup_logging(debug=cfg.debug)
+        setup_runtime_logging()
         set_global_config(cfg)
 
         try:
@@ -59,22 +95,17 @@ class InferenceServer(ABC):
             self._model_instance = mi
             self._config = cfg
             self._worker = self._clientset.workers.get(worker_id)
+            self.inference_backend = inference_backend
 
             self.get_model()
 
-            if self._model.backend_version:
-                tools_manager = ToolsManager(
-                    tools_download_base_url=cfg.tools_download_base_url,
-                    data_dir=cfg.data_dir,
-                    bin_dir=cfg.bin_dir,
-                    pipx_path=cfg.pipx_path,
-                )
-                backend = get_backend(self._model)
-                tools_manager.init_dependency_manager(
-                    backend, self._model.backend_version, self._model.env
-                )
-                tools_manager.prepare_versioned_backend(
-                    backend, self._model.backend_version
+            if (
+                self._model_instance.model
+                and not self._model_instance.model.backend_version
+                and self.inference_backend.default_version
+            ):
+                self._model_instance.model.backend_version = (
+                    self.inference_backend.default_version
                 )
 
             logger.info("Preparing model files...")
@@ -180,6 +211,95 @@ class InferenceServer(ABC):
         env.update(self._model.env or {})
 
         return env
+
+    def _get_backend_image_name(self, backend_type: Optional[str] = None) -> str:
+        """
+        Get supported backend images from gpustack-runner.
+
+        Args:
+            backend_type: Optional backend type override (e.g., "cann" for MindIE)
+                         If not provided, will be derived from GPU vendor
+
+        Returns:
+            Docker image name for the backend
+        """
+        # Get GPU vendor from the first GPU assigned to this model instance
+        vendor = None
+        if (
+            self._model_instance.gpu_indexes
+            and self._worker
+            and self._worker.status.gpu_devices
+        ):
+            gpu_devices = self._worker.status.gpu_devices
+            first_index = self._model_instance.gpu_indexes[0]
+            gpu_device = next((d for d in gpu_devices if d.index == first_index), None)
+            if gpu_device:
+                vendor = gpu_device.vendor.lower()
+
+        if vendor == "Huawei":
+            vendor = ManufacturerEnum.ASCEND
+        # Determine backend_type if not provided
+        if backend_type is None:
+            backend_type = manufacturer_to_backend(vendor) if vendor else None
+
+        # Get supported images from gpustack-runner
+        runtime_version = ""
+        try:
+            devices = detect_devices()
+            runtime_version = next(
+                (
+                    device.runtime_version
+                    for device in devices
+                    if device.manufacturer == vendor
+                ),
+                "",
+            )
+            logger.debug(f"runtime_version: {runtime_version}")
+        except Exception as e:
+            logger.error(f"Failed to detect devices: {e}")
+        runner_param = {
+            "backend": backend_type,
+            "service": self._model.backend,
+            "platform": get_runner_platform(),
+        }
+        if self._model.backend_version:
+            runner_param["service_version"] = self._model.backend_version
+
+        # TODO: get backend version from runtime
+        # TODO: this logic may move to runtime to deal
+
+        service_list = list_service_runners(**runner_param)
+
+        docker_images = ""
+        if self._model.image_name:
+            docker_images = self._model.image_name
+        elif service_list and len(service_list) > 0:
+            service = service_list[0]
+            logger.debug(f"Get {len(service.versions)} service runners")
+            docker_images = next(
+                (
+                    p.docker_image
+                    for v in service.versions
+                    for b in v.backends
+                    for b_ver in b.versions
+                    if version_compare(b_ver.version, runtime_version)
+                    for b_var in b_ver.variants
+                    for p in b_var.platforms
+                    if p.docker_image
+                ),
+                "",
+            )
+        if not docker_images:
+            docker_images = self.inference_backend.get_image_name(
+                self._model.backend_version
+            )
+
+        if not docker_images and self._model.backend_version:
+            docker_images = f"gpustack/runner:{backend_type}{runtime_version}-{self._model.backend}{self._model.backend_version}"
+
+        logger.info(f"{self._model.backend} image name: {docker_images}")
+
+        return docker_images
 
 
 def real_model_path(model_paths: List[str]) -> str:

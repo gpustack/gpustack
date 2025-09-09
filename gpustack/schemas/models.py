@@ -45,7 +45,8 @@ class BackendEnum(str, Enum):
     LLAMA_BOX = "llama-box"
     VLLM = "vllm"
     VOX_BOX = "vox-box"
-    ASCEND_MINDIE = "ascend-mindie"
+    ASCEND_MINDIE = "mindie"
+    CUSTOM = "custom"
 
 
 class GPUSelector(BaseModel):
@@ -178,6 +179,8 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend_parameters: Optional[List[str]] = Field(
         sa_column=Column(JSON), default=None
     )
+    image_name: Optional[str] = None
+    run_command: Optional[str] = None
 
     env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default=None)
     restart_on_error: Optional[bool] = True

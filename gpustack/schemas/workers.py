@@ -78,6 +78,8 @@ class GPUDeviceInfo(BaseModel):
     temperature: Optional[float] = Field(default=None)  # in celsius
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
     type: Optional[str] = Field(default="")
+    # Detected call to function 'manufacturer_to_backend()' from gpustack-runtime.
+    runtime_framework: Optional[str] = Field(default="")
 
 
 GPUDevicesInfo = List[GPUDeviceInfo]
@@ -87,7 +89,7 @@ class VendorEnum(str, Enum):
     NVIDIA = "NVIDIA"
     MTHREADS = "Moore Threads"
     Apple = "Apple"
-    Huawei = "Huawei"
+    Huawei = "Ascend"
     AMD = "AMD"
     Hygon = "Hygon"
     Iluvatar = "Iluvatar"

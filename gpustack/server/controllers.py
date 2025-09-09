@@ -3,6 +3,7 @@ import random
 import string
 from typing import Any, Dict, List, Tuple, Optional
 import httpx
+from gpustack_runtime.deployer import get_workload, WorkloadStatusStateEnum
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
@@ -13,6 +14,7 @@ from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
+from gpustack.schemas.inference_backend import InferenceBackend, get_build_in_backend
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import (
     BackendEnum,
@@ -480,8 +482,12 @@ class WorkerController:
                 worker.state == WorkerStateEnum.NOT_READY
                 or event.type == EventType.DELETED
             ):
-                instance_names = [instance.name for instance in instances]
                 for instance in instances:
+                    workload = get_workload(instance.name)
+                    if workload and workload.state == WorkloadStatusStateEnum.RUNNING:
+                        # container is still running, need not delete
+                        continue
+                    instance_names.append(instance.name)
                     await ModelInstanceService(session).delete(instance)
 
                 if instance_names:
@@ -576,6 +582,25 @@ class WorkerController:
                         data=copied_cluster,
                     ),
                 )
+
+
+class InferenceBackendController:
+    def __init__(self):
+        self._engine = get_engine()
+
+    async def start(self):
+        async with AsyncSession(self._engine) as session:
+            for build_in_backend in get_build_in_backend():
+                if build_in_backend.backend_name == BackendEnum.CUSTOM:
+                    continue
+                backend = await InferenceBackend.one_by_field(
+                    session, "backend_name", build_in_backend.backend_name
+                )
+                if not backend:
+                    await InferenceBackend.create(session, build_in_backend)
+                    logger.info(
+                        f"Init build-in backend {build_in_backend.backend_name} in database"
+                    )
 
 
 class ModelFileController:

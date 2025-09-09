@@ -117,6 +117,7 @@ async def _gather_gpu_info() -> GPUDevicesInfo:
                 memory=dev_memory,
                 network=dev_network,
                 temperature=dev_temperature,
+                runtime_framework="cann",
             )
         )
 

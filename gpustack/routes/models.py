@@ -19,7 +19,6 @@ from gpustack.schemas.common import Pagination
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
-    get_backend,
     is_audio_model,
     BackendEnum,
 )
@@ -214,7 +213,8 @@ async def validate_gpu_ids(  # noqa: C901
             message="Audio models are restricted to execution on a single NVIDIA GPU."
         )
 
-    model_backend = get_backend(model_in)
+    cfg = get_global_config()
+    model_backend = model_in.backend
 
     worker_name_set = set()
     for gpu_id in model_in.gpu_selector.gpu_ids:
@@ -255,7 +255,6 @@ async def validate_gpu_ids(  # noqa: C901
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
     if model_backend == BackendEnum.VLLM:
-        cfg = get_global_config()
         if len(worker_name_set) > 1 and not cfg.enable_ray:
             # REVIEW BEFORE RELEASE: Check if the documentation link needs to be updated.
             raise BadRequestException(
