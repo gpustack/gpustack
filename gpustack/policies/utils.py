@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from typing import List, Optional
@@ -7,12 +8,29 @@ from gpustack.policies.base import (
 )
 from gpustack.schemas.models import (
     ModelInstance,
+    Model,
+    CategoryEnum,
+    SourceEnum,
 )
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, GPUDevicesInfo, GPUDeviceInfo
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import AsyncEngine
+from pydantic import BaseModel
+
+from gpustack.utils.hub import get_model_weight_size
 
 logger = logging.getLogger(__name__)
+
+
+class WorkerGPUInfo(BaseModel):
+    """
+    Data structure to represent a GPU device with its associated worker information.
+    """
+
+    worker_id: int
+    worker_name: str
+    gpu_device: GPUDeviceInfo
+    allocatable_vram: int  # in bytes
 
 
 async def get_worker_allocatable_resource(  # noqa: C901
@@ -95,6 +113,132 @@ async def get_worker_allocatable_resource(  # noqa: C901
         f"allocatable gpu memory: {allocatable.vram}"
     )
     return allocatable
+
+
+def group_gpu_devices_by_memory(gpu_devices: GPUDevicesInfo) -> List[GPUDevicesInfo]:
+    """
+    Group GPU devices by allocatable memory size with the constraint that the minimum
+    allocatable GPU memory in each group should not be less than 0.9 times the
+    allocatable memory of other GPUs in the same group.
+
+    Args:
+        gpu_devices: List of GPU device information
+
+    Returns:
+        List of GPU device groups, where each group is a list of GPU devices
+
+    Example:
+        If we have GPUs with allocatable memory [8GB, 8.5GB, 16GB, 16.5GB, 32GB],
+        they might be grouped as:
+        - Group 1: [8GB, 8.5GB] (8GB >= 8.5GB * 0.9 = 7.65GB)
+        - Group 2: [16GB, 16.5GB] (16GB >= 16.5GB * 0.9 = 14.85GB)
+        - Group 3: [32GB]
+    """
+    if not gpu_devices:
+        return []
+
+    def get_allocatable_memory(gpu: GPUDeviceInfo) -> Optional[int]:
+        """Calculate allocatable memory (total - allocated)"""
+        if not gpu.memory or gpu.memory.total is None:
+            return None
+        allocated = gpu.memory.allocated or 0
+        return gpu.memory.total - allocated
+
+    # Filter out GPUs without valid memory information
+    valid_gpus = []
+    for gpu in gpu_devices:
+        allocatable_memory = get_allocatable_memory(gpu)
+        if allocatable_memory is not None and allocatable_memory > 0:
+            valid_gpus.append(gpu)
+
+    if not valid_gpus:
+        return []
+
+    # Sort GPUs by allocatable memory size (ascending order)
+    sorted_gpus = sorted(valid_gpus, key=lambda gpu: get_allocatable_memory(gpu))
+
+    groups = []
+    current_group = []
+
+    for gpu in sorted_gpus:
+        if not current_group:
+            # Start a new group
+            current_group = [gpu]
+        else:
+            # Check if this GPU can be added to the current group
+            min_allocatable_memory = get_allocatable_memory(
+                current_group[0]
+            )  # First GPU has minimum allocatable memory
+            current_gpu_allocatable_memory = get_allocatable_memory(gpu)
+
+            # Check if min_allocatable_memory >= current_gpu_allocatable_memory * 0.9
+            # This ensures the minimum allocatable memory is not less than 0.9 times any other allocatable memory in the group
+            if min_allocatable_memory >= current_gpu_allocatable_memory * 0.9:
+                current_group.append(gpu)
+            else:
+                # Cannot add to current group, start a new group
+                groups.append(current_group)
+                current_group = [gpu]
+
+    # Add the last group
+    if current_group:
+        groups.append(current_group)
+
+    return groups
+
+
+async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
+    """
+    Estimate the vram requirement in bytes heuristically.
+    This is the minimum requirement to help us decide how many GPUs are needed for the model.
+    If users explicitly set parameters like tp & pp, this estimation is not needed.
+
+    Formula:
+
+        VRAM = WEIGHT * 1.2 + RESERVERD_FOOTPRINT
+
+    Reference for the 20% overhead: https://blog.eleuther.ai/transformer-math/#total-inference-memory
+
+    For example, using bfloat16,
+    - 0.5B requires 3.1 GiB
+    - 3B requires 8.9 GiB
+    - 7B requires 19.0 GiB
+    - 72B requires 164.5 GiB
+
+    """
+    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
+        # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
+        return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
+
+    # CUDA graphs can take additional 1~3 GiB memory
+    # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
+    # For non-LLM models like embedding, set a smaller overhead
+    framework_overhead = (
+        2 * 1024**3
+        if not model.categories or CategoryEnum.LLM in model.categories
+        else 512 * 1024**2
+    )
+    weight_size = 0
+    timeout_in_seconds = 15
+
+    try:
+        if (
+            model.source == SourceEnum.HUGGING_FACE
+            or model.source == SourceEnum.MODEL_SCOPE
+        ):
+            weight_size = await asyncio.wait_for(
+                asyncio.to_thread(get_model_weight_size, model, token),
+                timeout=timeout_in_seconds,
+            )
+        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
+            weight_size = get_local_model_weight_size(model.local_path)
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout when getting weight size for model {model.name}")
+    except Exception as e:
+        logger.warning(f"Cannot get weight size for model {model.name}: {e}")
+
+    # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
+    return weight_size * 1.2 + framework_overhead
 
 
 async def get_worker_model_instances(
@@ -185,3 +329,95 @@ def get_local_model_weight_size(local_path: str) -> int:
         raise PermissionError(f"Permission denied when accessing '{local_path}'.")
 
     return total_size
+
+
+async def group_worker_gpu_by_memory(
+    engine: AsyncEngine, workers: List[Worker]
+) -> List[List[WorkerGPUInfo]]:
+    """
+    Group GPU devices from multiple workers by allocatable memory size with the constraint
+    that the minimum allocatable GPU memory in each group should not be less than 0.9 times
+    the allocatable memory of other GPUs in the same group.
+
+    Args:
+        engine: Database engine for calculating allocatable resources
+        workers: List of workers containing GPU devices
+
+    Returns:
+        List of GPU device groups, where each group is a list of WorkerGPUInfo objects
+        containing worker information and GPU device details
+
+    Example:
+        If we have GPUs from different workers with allocatable memory [8GB, 8.5GB, 16GB, 16.5GB, 32GB],
+        they might be grouped as:
+        - Group 1: [WorkerGPUInfo(worker1, gpu1, 8GB), WorkerGPUInfo(worker2, gpu2, 8.5GB)]
+        - Group 2: [WorkerGPUInfo(worker1, gpu3, 16GB), WorkerGPUInfo(worker3, gpu1, 16.5GB)]
+        - Group 3: [WorkerGPUInfo(worker2, gpu4, 32GB)]
+    """
+    if not workers:
+        return []
+
+    # Collect all GPU devices with their worker information and allocatable VRAM
+    worker_gpu_infos = []
+
+    for worker in workers:
+        if not worker.status or not worker.status.gpu_devices:
+            continue
+
+        # Get allocatable resources for this worker
+        allocatable = await get_worker_allocatable_resource(engine, worker)
+
+        for gpu_device in worker.status.gpu_devices:
+            if gpu_device.index is None:
+                continue
+
+            # Get allocatable VRAM for this specific GPU
+            gpu_index = gpu_device.index
+            allocatable_vram = allocatable.vram.get(gpu_index, 0)
+
+            # Only include GPUs with positive allocatable VRAM
+            if allocatable_vram > 0:
+                worker_gpu_info = WorkerGPUInfo(
+                    worker_id=worker.id,
+                    worker_name=worker.name,
+                    gpu_device=gpu_device,
+                    allocatable_vram=allocatable_vram,
+                )
+                worker_gpu_infos.append(worker_gpu_info)
+
+    if not worker_gpu_infos:
+        return []
+
+    # Sort GPUs by allocatable VRAM size (ascending order)
+    sorted_worker_gpu_infos = sorted(
+        worker_gpu_infos, key=lambda info: info.allocatable_vram
+    )
+
+    groups = []
+    current_group = []
+
+    for worker_gpu_info in sorted_worker_gpu_infos:
+        if not current_group:
+            # Start a new group
+            current_group = [worker_gpu_info]
+        else:
+            # Check if this GPU can be added to the current group
+            min_allocatable_vram = current_group[
+                0
+            ].allocatable_vram  # First GPU has minimum allocatable VRAM
+            current_allocatable_vram = worker_gpu_info.allocatable_vram
+
+            # Check if min_allocatable_vram >= current_allocatable_vram * 0.9
+            # This ensures the minimum allocatable VRAM is not less than 0.9 times any other allocatable VRAM in the group
+            if min_allocatable_vram >= current_allocatable_vram * 0.9:
+                current_group.append(worker_gpu_info)
+            else:
+                # Cannot add to current group, start a new group
+                groups.append(current_group)
+                current_group = [worker_gpu_info]
+
+    # Add the last group
+    if current_group:
+        groups.append(current_group)
+
+    return groups

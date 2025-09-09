@@ -1,10 +1,8 @@
-import asyncio
 import json
 from collections import defaultdict
 import logging
-import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from transformers import PretrainedConfig
 
@@ -19,14 +17,13 @@ from gpustack.policies.utils import (
     get_worker_model_instances,
     ListMessageBuilder,
     get_model_num_attention_heads,
-    get_local_model_weight_size,
+    estimate_model_vram,
 )
 from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
-    SourceEnum,
 )
 from gpustack.schemas.workers import GPUDevicesInfo, Worker
 from gpustack.config import Config
@@ -34,7 +31,7 @@ from gpustack.server.db import get_engine
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
-from gpustack.utils.hub import get_model_weight_size, get_pretrained_config
+from gpustack.utils.hub import get_pretrained_config
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
@@ -46,60 +43,6 @@ EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
     "auto_single_worker_multi_gpu_scheduling_msg"
 )
 EVENT_ACTION_AUTO_SINGLE_GPU = "auto_single_gpu_scheduling_msg"
-
-
-async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
-    """
-    Estimate the vram requirement in bytes heuristically.
-    This is the minimum requirement to help us decide how many GPUs are needed for the model.
-    If users explicitly set parameters like tp & pp, this estimation is not needed.
-
-    Formula:
-
-        VRAM = WEIGHT * 1.2 + RESERVERD_FOOTPRINT
-
-    Reference for the 20% overhead: https://blog.eleuther.ai/transformer-math/#total-inference-memory
-
-    For example, using bfloat16,
-    - 0.5B requires 3.1 GiB
-    - 3B requires 8.9 GiB
-    - 7B requires 19.0 GiB
-    - 72B requires 164.5 GiB
-
-    """
-    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
-        # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
-        return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
-
-    # CUDA graphs can take additional 1~3 GiB memory
-    # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
-    # For non-LLM models like embedding, set a smaller overhead
-    framework_overhead = (
-        2 * 1024**3
-        if not model.categories or CategoryEnum.LLM in model.categories
-        else 512 * 1024**2
-    )
-    weight_size = 0
-    timeout_in_seconds = 15
-
-    try:
-        if (
-            model.source == SourceEnum.HUGGING_FACE
-            or model.source == SourceEnum.MODEL_SCOPE
-        ):
-            weight_size = await asyncio.wait_for(
-                asyncio.to_thread(get_model_weight_size, model, token),
-                timeout=timeout_in_seconds,
-            )
-        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
-            weight_size = get_local_model_weight_size(model.local_path)
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout when getting weight size for model {model.name}")
-    except Exception as e:
-        logger.warning(f"Cannot get weight size for model {model.name}: {e}")
-
-    # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
-    return weight_size * 1.2 + framework_overhead
 
 
 def get_model_ram(model: Model) -> int:

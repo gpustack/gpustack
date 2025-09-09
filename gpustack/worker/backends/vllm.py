@@ -21,7 +21,12 @@ from gpustack.utils.hub import (
     get_max_model_len,
     get_pretrained_config,
 )
-from gpustack.worker.backends.base import InferenceServer, is_ascend_310p, is_ascend
+from gpustack.worker.backends.base import (
+    InferenceServer,
+    is_ascend_310p,
+    is_ascend,
+    cal_distributed_parallelism_arguments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -398,24 +403,7 @@ def get_auto_parallelism_arguments(
 
     if is_distributed:
         # distributed across multiple workers
-        pp = len(model_instance.distributed_servers.subordinate_workers) + 1
-        tp = len(model_instance.gpu_indexes) if model_instance.gpu_indexes else 1
-        uneven_pp = tp
-        uneven = False
-        for (
-            subordinate_worker
-        ) in model_instance.distributed_servers.subordinate_workers:
-            num_gpus = len(subordinate_worker.gpu_indexes)
-            uneven_pp += num_gpus
-            if num_gpus != tp:
-                uneven = True
-
-        if uneven:
-            tp = 1
-            pp = uneven_pp
-            logger.warning(
-                f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
-            )
+        (tp, pp) = cal_distributed_parallelism_arguments(model_instance)
         return [
             "--tensor-parallel-size",
             str(tp),
