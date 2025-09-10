@@ -486,7 +486,9 @@ async def test_auto_schedule_embedding_models(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 1588014354,
+                    0: 1062417526,
+                    # The BAAI/bge-base-en-v1.5 repository contains both .bin and .safetensors formats
+                    # select only one format to prevent inflated weight evaluation metrics.
                 },
             },
         ]
