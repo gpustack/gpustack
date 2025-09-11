@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 import os
 import logging
 import socket
-import uuid
 from typing import Optional
 
 import aiohttp
@@ -17,7 +16,6 @@ from gpustack.config import Config
 from gpustack.config.envs import TCP_CONNECTOR_LIMIT
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
-from gpustack.schemas.workers import SystemReserved, WorkerUpdate
 from gpustack.server import catalog
 from gpustack.ray.manager import RayManager
 from gpustack.utils import platform
@@ -32,71 +30,56 @@ from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
+from gpustack.worker.collector import WorkerStatusCollector
 
 logger = logging.getLogger(__name__)
 
 
 class Worker:
+    _clientset: ClientSet
+    _register_clientset: ClientSet
+    _status_collector: WorkerStatusCollector
+    _worker_manager: WorkerManager
+    _config: Config
+    _worker_ip: Optional[str] = None
+    _worker_id: Optional[int] = None
+
+    def worker_ip(self) -> str:
+        return self._config.worker_ip if self._config.worker_ip else self._worker_ip
+
+    def worker_id(self) -> int:
+        return self._worker_id
+
     def __init__(self, cfg: Config, is_embedded: bool = False):
         self._config = cfg
         self._is_embedded = is_embedded
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
-        self._port = cfg.worker_port
         self._exporter_enabled = not cfg.disable_metrics
-        self._enable_worker_ip_monitor = False
-        self._system_reserved = SystemReserved(ram=0, vram=0)
         self._async_tasks = []
-
-        if cfg.system_reserved is not None:
-            # GB to Bytes
-            self._system_reserved.ram = (
-                (cfg.system_reserved.get("ram") or cfg.system_reserved.get("memory", 2))
-                * 1024
-                * 1024
-                * 1024
-            )
-            self._system_reserved.vram = (
-                (
-                    cfg.system_reserved.get("vram")
-                    or cfg.system_reserved.get("gpu_memory", 1)
-                )
-                * 1024
-                * 1024
-                * 1024
-            )
-
-        self._worker_ip = cfg.worker_ip
-        if self._worker_ip is None:
-            self._worker_ip = get_first_non_loopback_ip()
-            self._config.worker_ip = self._worker_ip
-            self._enable_worker_ip_monitor = True
-
-        self._worker_uuid = self._get_worker_uuid()
+        self._worker_ip = get_first_non_loopback_ip()
 
         self._worker_name = cfg.worker_name
         if self._worker_name is None:
             self._worker_name = self._get_worker_name()
 
-        self._clientset = ClientSet(
-            base_url=cfg.server_url,
-            username=f"system/worker/{self._worker_ip}",
-            password=cfg.token,
+        self._status_collector = WorkerStatusCollector(
+            cfg=cfg,
+            worker_ip_getter=self.worker_ip,
+            worker_id_getter=self.worker_id,
         )
+
         self._worker_manager = WorkerManager(
-            worker_ip=self._worker_ip,
-            worker_name=self._worker_name,
-            system_reserved=self._system_reserved,
-            clientset=self._clientset,
             cfg=cfg,
-            worker_uuid=self._worker_uuid,
+            is_embedded=is_embedded,
+            collector=self._status_collector,
+            worker_name=self._worker_name,
         )
+
         self._exporter = MetricExporter(
-            worker_ip=self._worker_ip,
-            worker_name=self._worker_name,
-            port=cfg.metrics_port,
-            clientset=self._clientset,
             cfg=cfg,
+            collector=self._status_collector,
+            worker_ip_getter=self.worker_ip,
         )
         self._ray_manager = RayManager(cfg=cfg)
 
@@ -115,18 +98,6 @@ class Worker:
 
         return worker_name
 
-    def _get_worker_uuid(self):
-        worker_uuid_path = os.path.join(self._config.data_dir, "worker_uuid")
-        if os.path.exists(worker_uuid_path):
-            with open(worker_uuid_path, "r") as file:
-                worker_uuid = file.read().strip()
-        else:
-            worker_uuid = str(uuid.uuid4())
-            with open(worker_uuid_path, "w") as file:
-                file.write(worker_uuid)
-
-        return worker_uuid
-
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(5),
         wait=tenacity.wait_fixed(2),
@@ -135,19 +106,15 @@ class Worker:
             f"Retrying to get worker ID (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
         ),
     )
-    def _get_current_worker_id(self):
-        self._worker_manager.register_with_server()
+    def _register(self):
+        self._clientset = self._worker_manager.register_with_server()
         # Worker ID is available after the worker registration.
-        workers = self._clientset.workers.list()
-
-        if workers and workers.items:
-            for worker in workers.items:
-                if worker.name == self._worker_name:
-                    self._worker_id = worker.id
-                    logger.debug(f"Successfully found worker ID: {worker.id}")
-                    return
-
-        raise Exception(f"Worker {self._worker_name} not found.")
+        worker_list = self._clientset.workers.list(
+            params={"me": 'true'},
+        )
+        if len(worker_list.items) != 1:
+            raise Exception(f"Worker {self._worker_name} not registered.")
+        self._worker_id = worker_list.items[0].id
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -195,12 +162,13 @@ class Worker:
 
         add_signal_handlers_in_loop()
 
-        self._get_current_worker_id()
+        self._register()
         if self._exporter_enabled:
             # Start the metric exporter with retry.
             run_periodically_in_thread(self._exporter.start, 15)
 
-        if self._enable_worker_ip_monitor:
+        # if not a fixed ip
+        if not self._config.worker_ip:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
 
@@ -271,7 +239,7 @@ class Worker:
         config = uvicorn.Config(
             app,
             host=self._address,
-            port=self._port,
+            port=self._config.worker_port,
             access_log=False,
             log_level="error",
         )
@@ -288,32 +256,15 @@ class Worker:
         instances so they can be recreated with the new worker IP.
         """
 
-        worker = None
-        workers = self._clientset.workers.list(params={"name": self._worker_name})
-        if workers is not None and len(workers.items) != 0:
-            worker = workers.items[0]
-
         current_ip = get_first_non_loopback_ip()
-        if current_ip != self._worker_ip:
-            logger.info(f"Worker IP changed from {self._worker_ip} to {current_ip}")
-            if worker is None:
-                raise Exception(f"Worker {self._worker_name} not found")
-
-            self.update_worker_ip(worker, current_ip)
-        elif worker and current_ip != worker.ip:
-            logger.info(f"Worker IP changed from {worker.ip} to {current_ip}")
-            self.update_worker_ip(worker, current_ip)
-
-    def update_worker_ip(self, worker, current_ip: str):
+        old_ip = self.worker_ip()
+        if current_ip == old_ip:
+            return
+        logger.info(f"Worker IP changed from {old_ip} to {current_ip}")
         self._worker_ip = current_ip
-        self._worker_manager._worker_ip = current_ip
-        self._exporter._worker_ip = current_ip
-
-        worker_update: WorkerUpdate = WorkerUpdate.model_validate(worker)
-        worker_update.ip = current_ip
-        self._clientset.workers.update(worker.id, worker_update)
+        self._worker_manager.sync_worker_status()
 
         for instance in self._clientset.model_instances.list(
-            params={"worker_id": worker.id}
+            params={"worker_id": str(self._worker_id)}
         ).items:
             self._clientset.model_instances.delete(instance.id)

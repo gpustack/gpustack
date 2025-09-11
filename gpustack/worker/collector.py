@@ -1,5 +1,7 @@
+import socket
 import logging
-from typing import Optional
+from typing import Optional, Callable, Dict
+from gpustack.config.config import Config
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.detectors.base import GPUDetectExepction
 from gpustack.detectors.custom.custom import Custom
@@ -7,70 +9,96 @@ from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.policies.base import Allocated
 from gpustack.schemas.models import ComputedResourceClaim
 from gpustack.schemas.workers import (
-    RPCServer,
     MountPoint,
-    WorkerStateEnum,
+    WorkerStatusPublic,
+    WorkerStatus,
+    SystemReserved,
+    GPUDevicesInfo,
+    SystemInfo,
 )
-import socket
-from gpustack.schemas.workers import WorkerStatus, Worker
+from gpustack.utils.uuid import get_system_uuid, get_machine_id, get_legacy_uuid
+
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerStatusCollector:
+    _cfg: Config
+    _worker_id_getter: Callable[[], int]
+    _worker_ip_getter: Callable[[], str]
+    _system_uuid: str
+    _machine_id: str
+    _system_reserved: SystemReserved
+    _gpu_devices: GPUDevicesInfo
+    _system_info: SystemInfo
+
+    @property
+    def gpu_devices(self) -> GPUDevicesInfo:
+        return self._gpu_devices
+
+    @property
+    def system_info(self) -> SystemInfo:
+        return self._system_info
 
     def __init__(
         self,
-        worker_ip: str,
-        worker_name: str,
-        worker_port: int,
-        clientset: ClientSet = None,
-        worker_manager=None,
-        gpu_devices=None,
-        system_info=None,
+        cfg: Config,
+        worker_ip_getter: Callable[[], str],
+        worker_id_getter: Callable[[], int],
     ):
-        self._worker_name = worker_name
-        self._hostname = socket.gethostname()
-        self._worker_ip = worker_ip
-        self._worker_port = worker_port
-        self._clientset = clientset
-        self._worker_manager = worker_manager
-        if self._worker_manager:
-            self._worker_uuid = self._worker_manager.get_worker_uuid()
+        self._cfg = cfg
+        self._worker_ip_getter = worker_ip_getter
+        self._worker_id_getter = worker_id_getter
+        self._system_uuid = get_legacy_uuid(cfg.data_dir) or get_system_uuid(
+            cfg.data_dir
+        )
+        self._machine_id = get_machine_id()
+        reserved_config: Dict[str, int] = {**(cfg.system_reserved or {})}
+        reserved_config["ram"] = reserved_config.get(
+            "ram", reserved_config.pop("memory", 2)
+        )
+        reserved_config["vram"] = reserved_config.get(
+            "vram", reserved_config.pop("gpu_memory", 1)
+        )
+        # GB to Bytes
+        self._system_reserved = SystemReserved(
+            ram=reserved_config["ram"] << 30,
+            vram=reserved_config["vram"] << 30,
+        )
 
-        if gpu_devices and system_info:
+        self._gpu_devices = cfg.get_gpu_devices()
+        self._system_info = cfg.get_system_info()
+        if self._gpu_devices and self._system_info:
             self._detector_factory = DetectorFactory(
                 device="custom",
-                gpu_detectors={"custom": [Custom(gpu_devices=gpu_devices)]},
-                system_info_detector=Custom(system_info=system_info),
+                gpu_detectors={"custom": [Custom(gpu_devices=self._gpu_devices)]},
+                system_info_detector=Custom(system_info=self._system_info),
             )
-        elif gpu_devices:
+        elif self._gpu_devices:
             self._detector_factory = DetectorFactory(
                 device="custom",
-                gpu_detectors={"custom": [Custom(gpu_devices=gpu_devices)]},
+                gpu_detectors={"custom": [Custom(gpu_devices=self._gpu_devices)]},
             )
-        elif system_info:
+        elif self._system_info:
             self._detector_factory = DetectorFactory(
-                system_info_detector=Custom(system_info=system_info)
+                system_info_detector=Custom(system_info=self._system_info)
             )
         else:
             self._detector_factory = DetectorFactory()
 
     """A class for collecting worker status information."""
 
-    def collect(self, initial: bool = False) -> Worker:  # noqa: C901
+    def collect(
+        self, clientset: ClientSet = None, initial: bool = False
+    ) -> WorkerStatusPublic:  # noqa: C901
         """Collect worker status information."""
+        self._detector_factory.validate_detectors()
+
         status = WorkerStatus()
         state_message = None
         try:
             system_info = self._detector_factory.detect_system_info()
-            status.cpu = system_info.cpu
-            status.memory = system_info.memory
-            status.swap = system_info.swap
-            status.filesystem = system_info.filesystem
-            status.os = system_info.os
-            status.kernel = system_info.kernel
-            status.uptime = system_info.uptime
+            status = WorkerStatus.model_validate({**system_info.model_dump()})
         except Exception as e:
             logger.error(f"Failed to detect system info: {e}")
 
@@ -84,32 +112,17 @@ class WorkerStatusCollector:
                 logger.error(f"Failed to detect GPU devices: {e}")
         self._inject_unified_memory(status)
         self._inject_computed_filesystem_usage(status)
-        self._inject_allocated_resource(status)
+        self._inject_allocated_resource(clientset, status)
 
-        if self._worker_manager is not None:
-            server_processes = self._worker_manager.get_rpc_servers()
-            rps_server = {}
-            for gpu_index, process in server_processes.items():
-                rps_server[gpu_index] = RPCServer(
-                    pid=process.process.pid, port=process.port, gpu_index=gpu_index
-                )
-            status.rpc_servers = rps_server
-
-        state = (
-            WorkerStateEnum.NOT_READY
-            if initial or state_message
-            else WorkerStateEnum.READY
-        )
-
-        return Worker(
-            name=self._worker_name,
-            hostname=self._hostname,
-            ip=self._worker_ip,
-            port=self._worker_port,
-            state=state,
-            status=status,
+        return WorkerStatusPublic(
+            hostname=socket.gethostname(),
+            ip=self._worker_ip_getter(),
+            port=self._cfg.worker_port,
+            system_reserved=self._system_reserved,
             state_message=state_message,
-            worker_uuid=self._worker_uuid if self._worker_manager else None,
+            status=status,
+            worker_uuid=self._system_uuid,
+            machine_id=self._machine_id,
         )
 
     def _inject_unified_memory(self, status: WorkerStatus):
@@ -149,11 +162,16 @@ class WorkerStatusCollector:
             logger.error(f"Failed to inject filesystem usage: {e}")
 
     def _inject_allocated_resource(  # noqa: C901
-        self, status: WorkerStatus
-    ) -> Allocated:
+        self, clientset: ClientSet, status: WorkerStatus
+    ):
+        if clientset is None:
+            return
+        worker_id = self._worker_id_getter()
         allocated = Allocated(ram=0, vram={})
         try:
-            model_instances = self._clientset.model_instances.list()
+            # TODO avoid listing model_instances with clientset.
+            # The calculation might not be needed here.
+            model_instances = clientset.model_instances.list()
             for model_instance in model_instances.items:
                 if (
                     model_instance.distributed_servers
@@ -162,14 +180,14 @@ class WorkerStatusCollector:
                     for (
                         subworker
                     ) in model_instance.distributed_servers.subordinate_workers:
-                        if subworker.worker_name != self._worker_name:
+                        if subworker.worker_id != worker_id:
                             continue
 
                         aggregate_computed_resource_claim_allocated(
                             allocated, subworker.computed_resource_claim
                         )
 
-                if model_instance.worker_name != self._worker_name:
+                if model_instance.worker_id != worker_id:
                     continue
 
                 aggregate_computed_resource_claim_allocated(

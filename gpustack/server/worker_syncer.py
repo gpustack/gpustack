@@ -40,7 +40,9 @@ class WorkerSyncer:
                 return
 
             tasks = [
-                self._check_worker_connectivity(worker, session) for worker in workers
+                self._check_worker_connectivity(worker, session)
+                for worker in workers
+                if not worker.state.is_provisioning
             ]
             results = await asyncio.gather(*tasks)
 
