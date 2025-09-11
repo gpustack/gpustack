@@ -1,9 +1,11 @@
 import logging
 import random
 import string
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple, Optional
 import httpx
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
 from gpustack.config.config import Config
@@ -21,13 +23,38 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_backend,
 )
-from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.bus import Event, EventType
+from gpustack.schemas.workers import (
+    Worker,
+    WorkerStateEnum,
+    WorkerStatus,
+)
+from gpustack.schemas.clusters import (
+    Cluster,
+    WorkerPool,
+    CloudCredential,
+    Credential,
+    CredentialType,
+    ClusterState,
+    SSHKeyOptions,
+)
+from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.db import get_engine
 from gpustack.server.services import (
     ModelFileService,
     ModelInstanceService,
     ModelService,
+    WorkerService,
+)
+from gpustack.cloud_providers.common import (
+    get_client_from_provider,
+    construct_cloud_instance,
+    construct_user_data,
+    generate_ssh_key_pair,
+)
+from gpustack.cloud_providers.abstract import (
+    ProviderClientBase,
+    CloudInstance,
+    InstanceState,
 )
 
 logger = logging.getLogger(__name__)
@@ -213,6 +240,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 model_scope_file_path=model.model_scope_file_path,
                 local_path=model.local_path,
                 state=ModelInstanceStateEnum.PENDING,
+                cluster_id=model.cluster_id,
             )
 
             await ModelInstanceService(session).create(instance)
@@ -399,8 +427,9 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
 
 
 class WorkerController:
-    def __init__(self):
+    def __init__(self, cfg: Config):
         self._engine = get_engine()
+        self._provisioning = WorkerProvisioningController(cfg)
         pass
 
     async def start(self):
@@ -409,18 +438,23 @@ class WorkerController:
         """
 
         async for event in Worker.subscribe(self._engine):
-            if event.type in (EventType.UPDATED, EventType.DELETED):
-                try:
-                    await self._reconcile(event)
-                except Exception as e:
-                    logger.error(f"Failed to reconcile worker: {e}")
+            try:
+                await self._reconcile(event)
+                await self._provisioning._reconcile(event)
+                await self._notify_parents(event)
+            except Exception as e:
+                logger.error(f"Failed to reconcile worker: {e}")
 
     async def _reconcile(self, event):
         """
         Delete instances base on the worker state and event type.
         """
+        if event.type not in (EventType.UPDATED, EventType.DELETED):
+            return
         worker: Worker = event.data
-        if not worker:
+        # Skip reconciliation for provisioning and deleting workers.
+        # There is a dedicated controller to handle provisioning.
+        if not worker or worker.state.is_provisioning:
             return
 
         async with AsyncSession(self._engine) as session:
@@ -494,6 +528,54 @@ class WorkerController:
                 f"Marked instance {', '.join(instance_names)} {new_state} "
                 f"since {log_update_reason}"
             )
+
+    async def _notify_parents(self, event: Event):
+        if event.type not in (EventType.UPDATED, EventType.DELETED):
+            return
+        worker: Worker = event.data
+        changed_fields = event.changed_fields
+        if not worker or not changed_fields:
+            return
+        state_changed: Optional[Tuple[Any, Any]] = changed_fields.get("state", None)
+        if state_changed is None:
+            return
+        async with AsyncSession(self._engine) as session:
+            worker = await Worker.one_by_id(session, worker.id)
+            if not worker:
+                return
+            if worker.worker_pool is not None:
+                result = await session.exec(
+                    select(WorkerPool)
+                    .options(selectinload(WorkerPool.pool_workers))
+                    .where(WorkerPool.id == worker.worker_pool_id)
+                )
+                worker_pool = result.one()
+                copied_pool = WorkerPool(**worker_pool.model_dump())
+                await event_bus.publish(
+                    copied_pool.__class__.__name__.lower(),
+                    Event(
+                        type=EventType.UPDATED,
+                        data=copied_pool,
+                    ),
+                )
+            if worker.cluster is not None:
+                result = await session.exec(
+                    select(Cluster)
+                    .options(
+                        selectinload(Cluster.cluster_workers),
+                        selectinload(Cluster.cluster_models),
+                    )
+                    .where(Cluster.id == worker.cluster_id)
+                )
+                cluster = result.one()
+                copied_cluster = Cluster(**cluster.model_dump())
+                await event_bus.publish(
+                    copied_cluster.__class__.__name__.lower(),
+                    Event(
+                        type=EventType.UPDATED,
+                        data=copied_cluster,
+                    ),
+                )
 
 
 class ModelFileController:
@@ -687,3 +769,362 @@ def _get_worker_ids_for_file_download(
         ]
 
     return worker_ids
+
+
+async def new_workers_from_pool(
+    session: AsyncSession, pool: WorkerPool
+) -> List[Worker]:
+    fields = {"deleted_at": None, "worker_pool_id": pool.id}
+    current_workers = await Worker.all_by_fields(session, fields=fields)
+    current_workers = [
+        worker
+        for worker in current_workers
+        if worker.state not in [WorkerStateEnum.DELETING]
+    ]
+    # if has enough workers, no need to create more
+    if len(current_workers) >= pool.replicas:
+        return []
+    delta = pool.replicas - len(current_workers)
+    if pool.batch_size is not None and delta > pool.batch_size:
+        delta = pool.batch_size
+    provisioning_workers = [
+        worker
+        for worker in current_workers
+        if worker.state in [WorkerStateEnum.PROVISIONING]
+    ]
+    # if has enough provisioning workers, no need to create more
+    if pool.batch_size <= len(provisioning_workers):
+        return []
+    new_workers = []
+    for _ in range(delta):
+        new_worker = Worker(
+            hostname="",
+            ip="",
+            port=0,
+            worker_uuid="",
+            cluster=pool.cluster,
+            worker_pool=pool,
+            provider=pool.cluster.provider,
+            name=f"pool-{pool.id}-"
+            + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8)),
+            labels={
+                "provider": pool.cluster.provider.value,
+                "instance_type": pool.instance_type or "unknown",
+            },
+            state=WorkerStateEnum.PENDING,
+            status=WorkerStatus.get_default_status(),
+        )
+        new_workers.append(new_worker)
+    return new_workers
+
+
+class WorkerPoolController:
+    def __init__(self):
+        self._engine = get_engine()
+        pass
+
+    async def start(self):
+        async for event in WorkerPool.subscribe(self._engine):
+            if event.type == EventType.HEARTBEAT:
+                continue
+            try:
+                await self._reconcile(event)
+            except Exception as e:
+                logger.error(f"Failed to reconcile worker pool: {e}")
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the worker pool state with the current event.
+        """
+        logger.info(f"Reconcile worker pool {event.data.id} with event {event.type}")
+        async with AsyncSession(self._engine) as session:
+            pool = await WorkerPool.one_by_id(session, event.data.id)
+            if pool is None or pool.deleted_at is not None:
+                return
+            # mark the data to avoid read after commit
+            cluster_name = pool.cluster.name
+            pool_id = pool.id
+            workers = await new_workers_from_pool(session, pool)
+            if len(workers) == 0:
+                return
+            ids = []
+            for worker in workers:
+                created_worker: Worker = await Worker.create(
+                    session=session, source=worker, auto_commit=False
+                )
+                ids.append(created_worker.id)
+            await session.commit()
+            logger.info(
+                f"Created {len(ids)} new workers {ids} for cluster {cluster_name} worker pool {pool_id}"
+            )
+
+
+class WorkerProvisioningController:
+    def __init__(self, cfg: Config):
+        self._engine = get_engine()
+        self._cfg = cfg
+
+    @classmethod
+    async def _create_ssh_key(
+        cls,
+        session: AsyncSession,
+        client: ProviderClientBase,
+        worker: Worker,
+    ) -> int:
+        """
+        Generate a new ssh key pair,
+        And Create ssh_key in cloud provider.
+        Create SSHKey record without commit and returns it.
+        """
+        logger.info(f"Creating ssh key for worker {worker.name}")
+        private_key, public_key = generate_ssh_key_pair()
+        ssh_key = Credential(
+            credential_type=CredentialType.SSH,
+            public_key=public_key,
+            encoded_private_key=private_key,
+            ssh_key_options=SSHKeyOptions(
+                algorithm="ED25519",
+                length=0,
+            ),
+        )
+        ssh_key_id = await client.create_ssh_key(worker.name, public_key)
+        ssh_key.external_id = str(ssh_key_id)
+        ssh_key_rtn = await Credential.create(session, ssh_key, auto_commit=False)
+        return ssh_key_rtn.id
+
+    @classmethod
+    async def _create_instances(
+        cls,
+        session: AsyncSession,
+        client: ProviderClientBase,
+        worker: Worker,
+        cfg: Config,
+    ) -> str:
+        user_data = construct_user_data(
+            config=cfg,
+            worker=worker,
+        )
+        ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
+        if ssh_key is None:
+            raise ValueError(f"SSH key {worker.ssh_key_id} not found")
+        to_create = construct_cloud_instance(worker, ssh_key, user_data)
+        logger.info(f"Creating cloud instance for worker {worker.name}")
+        logger.debug(f"Cloud instance configuration: {to_create}")
+        return await client.create_instance(to_create)
+
+    @classmethod
+    async def _provisioning_started(
+        cls,
+        session: AsyncSession,
+        client: ProviderClientBase,
+        worker: Worker,
+        instance: CloudInstance,
+    ) -> bool:
+        changed = True
+        provider_config = worker.provider_config or {}
+        volumes = list(
+            (getattr(worker.worker_pool.cloud_options, "volumes", None) or [])
+        )
+        volume_ids = provider_config.get("volume_ids", [])
+        if worker.ip is None or worker.ip == "":
+            try:
+                instance = await client.wait_for_public_ip(worker.external_id)
+                worker.ip = instance.ip_address if instance.ip_address else ""
+                worker.state_message = "Waiting for volumes to attach"
+            except Exception as e:
+                logger.warning(
+                    f"Failed to wait for instance {worker.external_id} to get public ip: {e}"
+                )
+        elif len(volumes) != len(volume_ids) and len(volumes) > 0:
+            volume_ids = await client.create_volumes_and_attach(
+                worker.external_id, worker.cluster.region, *volumes
+            )
+            provider_config["volume_ids"] = volume_ids
+            worker.provider_config = provider_config
+        elif (
+            len(volumes) == len(volume_ids)
+            and worker.state == WorkerStateEnum.PROVISIONING
+        ):
+            if not hasattr(provider_config, "volume_ids"):
+                provider_config["volume_ids"] = []
+            worker.provider_config = provider_config
+            worker.state = WorkerStateEnum.PROVISIONED
+            if (
+                worker.cluster.state & ClusterState.PROVISIONED
+            ) != ClusterState.PROVISIONED:
+                worker.cluster.state |= ClusterState.PROVISIONED
+                await worker.cluster.update(session=session, auto_commit=False)
+            worker.state_message = (
+                "Instance provisioned, waiting for worker to register"
+            )
+        else:
+            changed = False
+        return changed
+
+    @classmethod
+    async def _provisioning_before_started(
+        cls,
+        session: AsyncSession,
+        client: ProviderClientBase,
+        worker: Worker,
+        cfg: Config,
+    ) -> Tuple[Optional[CloudInstance], bool]:
+        """
+        return started and changed
+        """
+        instance = None
+        changed = False
+        if worker.external_id is not None:
+            instance = await client.get_instance(worker.external_id)
+            # TODO should handle instance not exist problem
+            if instance is None or instance.status == InstanceState.RUNNING:
+                return instance, changed
+        changed = True
+        if worker.state == WorkerStateEnum.PENDING:
+            worker.state = WorkerStateEnum.PROVISIONING
+            worker.state_message = "Creating SSH key"
+        elif worker.ssh_key_id is None:
+            worker.ssh_key_id = await cls._create_ssh_key(session, client, worker)
+            worker.state_message = "Creating cloud instance"
+        elif worker.external_id is None:
+            worker.external_id = await cls._create_instances(
+                session, client, worker, cfg
+            )
+            worker.state_message = "Waiting for cloud instance started"
+        elif worker.external_id is not None:
+            try:
+                # depress the timeout exception
+                instance = await client.wait_for_started(worker.external_id)
+                worker.state_message = "Waiting for instance's public ip"
+            except Exception as e:
+                logger.warning(
+                    f"Failed to wait for instance {worker.external_id} to start: {e}"
+                )
+        return instance, changed
+
+    @classmethod
+    async def _provisioning_instance(
+        cls,
+        session: AsyncSession,
+        client: ProviderClientBase,
+        worker: Worker,
+        cfg: Config,
+    ):
+        # provider_config = worker.provider_config or {}
+        # Phase I is to ensure instance running.
+        instance, changed = await cls._provisioning_before_started(
+            session, client, worker, cfg
+        )
+        if (
+            not changed
+            and instance is not None
+            and instance.status == InstanceState.RUNNING
+        ):
+            # Phase II is to wait for instance infomation and attach volume.
+            changed = await cls._provisioning_started(session, client, worker, instance)
+        if changed:
+            await WorkerService(session).update(
+                worker=worker, source=None, auto_commit=False
+            )
+
+    @classmethod
+    async def _deleting_instance(
+        cls,
+        session: AsyncSession,
+        client: ProviderClientBase,
+        worker: Worker,
+    ):
+        if worker.external_id is None:
+            return
+        ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
+        try:
+            await client.delete_instance(worker.external_id)
+            if ssh_key and ssh_key.external_id:
+                await client.delete_ssh_key(ssh_key.external_id)
+        except Exception as e:
+            logger.error(f"Failed to delete instance {worker.external_id}: {e}")
+        # if using soft delete here, skip deletion and remove external_id
+        if ssh_key:
+            await ssh_key.delete(session, auto_commit=False)
+        if worker.deleted_at is not None:
+            await WorkerService(session).delete(worker, auto_commit=False)
+
+    async def _reconcile(self, event: Event):
+        """
+        When provisioning a worker, the state will transition from following steps:
+        - PENDING - initial state for worker created by pool, the next state is PROVISIONING
+        - PROVISIONING - begin provisioning with related info updated in worker object, the next state is PROVISIONED
+        - PROVISIONED - done provisioning and waiting for worker to register
+        - DELETING - worker is being deleted
+        - ERROR - an error occurred during provisioning
+        """
+        worker: Worker = event.data
+        if not worker:
+            return
+        if worker.state not in [
+            WorkerStateEnum.PENDING,
+            WorkerStateEnum.PROVISIONING,
+            WorkerStateEnum.DELETING,
+        ]:
+            return
+        logger.info(
+            f"Reconcile provisioning worker {event.data.name} with event {event.type}"
+        )
+        async with AsyncSession(self._engine) as session:
+            # Fetch the worker from the database
+            worker: Worker = await Worker.one_by_id(session, worker.id)
+            if not worker:
+                return
+            credential: CloudCredential = await CloudCredential.one_by_id(
+                session, worker.cluster.credential_id
+            )
+            client = get_client_from_provider(
+                worker.cluster.provider,
+                credential=credential,
+            )
+            try:
+                if worker.state in [
+                    WorkerStateEnum.PENDING,
+                    WorkerStateEnum.PROVISIONING,
+                ]:
+                    await self._provisioning_instance(
+                        session, client, worker, self._cfg
+                    )
+                if worker.state == WorkerStateEnum.DELETING:
+                    await self._deleting_instance(session, client, worker)
+                await session.commit()
+            except Exception as e:
+                message = f"Failed to provision or delete worker {worker.name}: {e}"
+                logger.error(message)
+                await session.rollback()
+                await session.refresh(worker)
+                worker.state = WorkerStateEnum.ERROR
+                worker.state_message = message
+                await WorkerService(session).update(
+                    worker=worker, source=None, auto_commit=True
+                )
+
+
+class ClusterController:
+    def __init__(self):
+        self._engine = get_engine()
+        pass
+
+    async def start(self):
+        """
+        Start the controller.
+        """
+
+        async for event in Cluster.subscribe(self._engine):
+            if event.type == EventType.HEARTBEAT:
+                continue
+            try:
+                await self._reconcile(event)
+            except Exception as e:
+                logger.error(f"Failed to reconcile cluster: {e}")
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the cluster state with the current event.
+        """
+        logger.info(f"Reconcile cluster {event.data.name} with event {event.type}")
