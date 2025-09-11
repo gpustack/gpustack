@@ -13,6 +13,7 @@ class GPUDeviceBase(GPUDeviceInfo, BaseModel):
     worker_id: int
     worker_name: str
     worker_ip: str
+    cluster_id: int
 
 
 class GPUDevice(GPUDeviceBase, SQLModel, BaseModelMixin, table=True):

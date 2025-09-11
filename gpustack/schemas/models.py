@@ -14,7 +14,7 @@ from gpustack.utils.command import find_parameter
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
-
+    from gpustack.schemas.clusters import Cluster
 
 # Models
 
@@ -218,6 +218,8 @@ class ModelBase(ModelSpecBase):
                 raise ValueError("CPU offloading is only supported for GGUF models")
         return self
 
+    cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+
 
 class Model(ModelBase, BaseModelMixin, table=True):
     __tablename__ = 'models'
@@ -227,6 +229,8 @@ class Model(ModelBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
         back_populates="model",
     )
+
+    cluster: "Cluster" = Relationship(back_populates="cluster_models")
 
 
 class ModelCreate(ModelBase):
@@ -360,6 +364,8 @@ class ModelInstanceBase(SQLModel, ModelSource):
     # Disable it given that it's not a real issue for this particular field.
     model_config = ConfigDict(protected_namespaces=())
 
+    cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
     __tablename__ = 'model_instances'
@@ -375,6 +381,8 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         link_model=ModelInstanceModelFileLink,
         sa_relationship_kwargs={"lazy": "selectin"},
     )
+
+    cluster: "Cluster" = Relationship(back_populates="cluster_model_instances")
 
     # overwrite the hash to use in uniquequeue
     def __hash__(self):

@@ -1,13 +1,23 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from pydantic import ConfigDict, BaseModel
-from sqlmodel import Field, SQLModel, JSON, Column, Text
-
+from sqlmodel import (
+    Field,
+    SQLModel,
+    JSON,
+    Column,
+    Text,
+    Relationship,
+    Integer,
+    ForeignKey,
+)
+from sqlalchemy import String
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
 from typing import List
 from sqlalchemy.orm import declarative_base
+from .clusters import ClusterProvider, Cluster, WorkerPool
 
 Base = declarative_base()
 
@@ -129,6 +139,21 @@ class WorkerStateEnum(str, Enum):
     NOT_READY = "not_ready"
     READY = "ready"
     UNREACHABLE = "unreachable"
+    PENDING = "pending"
+    PROVISIONING = "provisioning"
+    PROVISIONED = "provisioned"
+    DELETING = "deleting"
+    ERROR = "error"
+
+    @property
+    def is_provisioning(self) -> bool:
+        return self in [
+            WorkerStateEnum.PENDING,
+            WorkerStateEnum.PROVISIONING,
+            WorkerStateEnum.PROVISIONED,
+            WorkerStateEnum.DELETING,
+            WorkerStateEnum.ERROR,
+        ]
 
 
 class SystemInfo(BaseModel):
@@ -142,6 +167,10 @@ class SystemInfo(BaseModel):
 
 
 class WorkerStatus(SystemInfo):
+    """
+    rpc_servers: Deprecated
+    """
+
     gpu_devices: Optional[GPUDevicesInfo] = Field(sa_column=Column(JSON), default=None)
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
@@ -149,31 +178,70 @@ class WorkerStatus(SystemInfo):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @classmethod
+    def get_default_status(cls) -> 'WorkerStatus':
+        return WorkerStatus(
+            cpu=CPUInfo(total=0),
+            memory=MemoryInfo(total=0, is_unified_memory=False),
+            swap=SwapInfo(total=0),
+            filesystem=[],
+            os=OperatingSystemInfo(name="", version=""),
+            kernel=KernelInfo(name="", release="", version="", architecture=""),
+            uptime=UptimeInfo(uptime=0, boot_time=""),
+            gpu_devices=[],
+        )
 
-class WorkerBase(SQLModel):
-    name: str = Field(index=True, unique=True)
+
+class WorkerStatusPublic(BaseModel):
     hostname: str
     ip: str
     port: int
-    labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
     system_reserved: Optional[SystemReserved] = Field(
         sa_column=Column(pydantic_column_type(SystemReserved))
     )
-    state: WorkerStateEnum = WorkerStateEnum.NOT_READY
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
     status: Optional[WorkerStatus] = Field(
         sa_column=Column(pydantic_column_type(WorkerStatus))
     )
-    unreachable: bool = False
+
+    worker_uuid: str = Field(sa_column=Column(String(255), nullable=False))
+    machine_id: Optional[str] = Field(
+        default=None
+    )  # The machine ID of the worker, used for identifying the worker in the cluster
+
+
+class WorkerUpdate(SQLModel):
+    """
+    WorkerUpdate: updatable fields for Worker
+    """
+
+    name: str = Field(index=True, unique=True)
+    labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
+
+
+class WorkerCreate(WorkerStatusPublic, WorkerUpdate):
+    cluster_id: Optional[int] = Field(
+        sa_column=Column(Integer, ForeignKey("clusters.id"), nullable=False),
+        default=None,
+    )
+    external_id: Optional[str] = Field(
+        default=None, sa_column=Column(String(255), nullable=True)
+    )
+
+
+class WorkerBase(WorkerCreate):
+    state: WorkerStateEnum = WorkerStateEnum.NOT_READY
     heartbeat_time: Optional[datetime] = Field(
         sa_column=Column(UTCDateTime), default=None
     )
-    worker_uuid: str
+    unreachable: bool = False
 
     def compute_state(self, worker_offline_timeout=60):
+        if self.state.is_provisioning:
+            return
         if self.state == WorkerStateEnum.NOT_READY and self.state_message is not None:
             return
         now = int(datetime.now(timezone.utc).timestamp())
@@ -204,10 +272,64 @@ class WorkerBase(SQLModel):
         self.state = WorkerStateEnum.READY
         self.state_message = None
 
+    provider: ClusterProvider = Field(default=ClusterProvider.Custom)
+    worker_pool_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("worker_pools.id"), nullable=True),
+    )  # The worker pool this worker belongs to
+
+    # Not setting foreign key to manage lifecycle
+    ssh_key_id: Optional[int] = Field(
+        default=None, sa_column=Column(Integer, nullable=True)
+    )
+    provider_config: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
+
 
 class Worker(WorkerBase, BaseModelMixin, table=True):
     __tablename__ = 'workers'
     id: Optional[int] = Field(default=None, primary_key=True)
+
+    cluster: Cluster = Relationship(
+        back_populates="cluster_workers", sa_relationship_kwargs={"lazy": "selectin"}
+    )
+    worker_pool: Optional[WorkerPool] = Relationship(
+        back_populates="pool_workers", sa_relationship_kwargs={"lazy": "selectin"}
+    )
+
+    # This field should be replaced by x509 credential if mTLS is supported.
+    token: Optional[str] = Field(default=None, nullable=True)
+
+    @property
+    def provision_progress(self) -> Optional[str]:
+        """
+        The provisioning progress should have following steps:
+        1. create_ssh_key
+        2. create_instance with created ssh_key
+        3. wait_for_started
+        4. wait_for_public_ip
+        5. [optional] create_volumes_and_attach
+        """
+        if self.state == WorkerStateEnum.PROVISIONED:
+            return "5/5"
+        if (
+            self.state != WorkerStateEnum.PROVISIONING
+            and self.state != WorkerStateEnum.PENDING
+        ):
+            return None
+        format = "{}/{}"
+        total = 5
+        current = sum(
+            [
+                self.state == WorkerStateEnum.PROVISIONING,
+                self.ssh_key_id is not None,
+                self.external_id is not None,
+                self.ip is not None and self.ip != "",
+                "volume_ids" in (self.provider_config or {}),
+            ]
+        )
+        return format.format(current, total)
 
     def __hash__(self):
         return hash(self.id)
@@ -218,20 +340,21 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
         return False
 
 
-class WorkerCreate(WorkerBase):
-    pass
-
-
-class WorkerUpdate(WorkerBase):
-    pass
-
-
 class WorkerPublic(
     WorkerBase,
 ):
     id: int
     created_at: datetime
     updated_at: datetime
+    me: Optional[bool] = None  # Indicates if the worker is the current worker
+    provision_progress: Optional[str] = None  # Indicates the provisioning progress
+
+    worker_uuid: Optional[str] = Field(default=None, exclude=True)
+    machine_id: Optional[str] = Field(default=None, exclude=True)
+
+
+class WorkerRegistrationPublic(WorkerPublic):
+    token: str
 
 
 WorkersPublic = PaginatedList[WorkerPublic]

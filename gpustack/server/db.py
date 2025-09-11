@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import re
+from urllib.parse import urlparse, parse_qs, urlunparse
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     create_async_engine,
@@ -17,6 +18,12 @@ from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.schemas.workers import Worker
+from gpustack.schemas.clusters import (
+    Cluster,
+    CloudCredential,
+    WorkerPool,
+    Credential,
+)
 from gpustack.schemas.stmt import (
     worker_after_create_view_stmt_sqlite,
     worker_after_drop_view_stmt_sqlite,
@@ -52,6 +59,20 @@ async def init_db(db_url: str):
             db_url = re.sub(r'^sqlite://', 'sqlite+aiosqlite://', db_url)
         elif db_url.startswith("postgresql://"):
             db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+            parsed = urlparse(db_url)
+            # rewrite the parameters to use asyncpg with custom database schema
+            query_params = parse_qs(parsed.query)
+            qoptions = query_params.pop('options', None)
+            schema_name = None
+            if qoptions is not None and len(qoptions) > 0:
+                option = qoptions[0]
+                if option.startswith('-csearch_path='):
+                    schema_name = option[len('-csearch_path=') :]
+            if schema_name:
+                connect_args['server_settings'] = {'search_path': schema_name}
+            new_parsed = parsed._replace(query={})
+            db_url = urlunparse(new_parsed)
+
         elif db_url.startswith("mysql://"):
             db_url = re.sub(r'^mysql://', 'mysql+asyncmy://', db_url)
         else:
@@ -81,6 +102,10 @@ async def create_db_and_tables(engine: AsyncEngine):
                 SystemLoad.__table__,
                 User.__table__,
                 Worker.__table__,
+                Cluster.__table__,
+                CloudCredential.__table__,
+                WorkerPool.__table__,
+                Credential.__table__,
             ],
         )
 
