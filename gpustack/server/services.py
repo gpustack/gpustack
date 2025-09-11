@@ -4,8 +4,9 @@ import logging
 import functools
 from typing import Any, Callable, Dict, List, Optional, Union
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel, bindparam, cast, col
+from sqlmodel import SQLModel, bindparam, cast, col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.dialects.postgresql import JSONB
 
 from gpustack.schemas.api_keys import ApiKey
@@ -88,12 +89,28 @@ class UserService:
         self.session = session
 
     @locked_cached(ttl=60)
-    async def get_by_id(self, user_id: int) -> Optional[User]:
-        result = await User.one_by_id(self.session, user_id)
-        if result is None:
+    async def get_by_id(
+        self, user_id: int, worker_uuid: Optional[str] = None
+    ) -> Optional[User]:
+        result = await self.session.exec(
+            select(User).options(selectinload(User.worker)).where(User.id == user_id)
+        )
+        user = result.one_or_none()
+        if user is None:
             return None
-        self.session.expunge(result)
-        return result
+        if user.worker is None and worker_uuid is not None:
+            user.worker = await Worker.one_by_fields(
+                self.session,
+                {
+                    "worker_uuid": worker_uuid,
+                    "cluster_id": user.cluster_id,
+                    "deleted_at": None,
+                },
+            )
+            if user.worker is not None:
+                self.session.expunge(user.worker)
+        self.session.expunge(user)
+        return user
 
     @locked_cached(ttl=60)
     async def get_by_username(self, username: str) -> Optional[User]:
@@ -170,16 +187,20 @@ class WorkerService:
         self.session.expunge(result)
         return result
 
-    async def update(self, worker: Worker, source: Union[dict, SQLModel, None] = None):
-        result = await worker.update(self.session, source)
+    async def update(
+        self, worker: Worker, source: Union[dict, SQLModel, None] = None, **kwargs
+    ):
+        result = await worker.update(self.session, source, **kwargs)
         await delete_cache_by_key(self.get_by_id, worker.id)
         await delete_cache_by_key(self.get_by_name, worker.name)
         return result
 
-    async def delete(self, worker: Worker):
-        result = await worker.delete(self.session)
-        await delete_cache_by_key(self.get_by_id, worker.id)
-        await delete_cache_by_key(self.get_by_name, worker.name)
+    async def delete(self, worker: Worker, **kwargs):
+        worker_id = worker.id
+        worker_name = worker.name
+        result = await worker.delete(self.session, **kwargs)
+        await delete_cache_by_key(self.get_by_id, worker_id)
+        await delete_cache_by_key(self.get_by_name, worker_name)
         return result
 
 
