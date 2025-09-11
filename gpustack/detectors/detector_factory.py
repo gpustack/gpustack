@@ -31,8 +31,6 @@ class DetectorFactory:
             all_gpu_detectors = gpu_detectors or self._get_builtin_gpu_detectors()
             self.gpu_detectors = all_gpu_detectors.get(self.device)
 
-        self._validate_detectors()
-
     def _get_builtin_gpu_detectors(self) -> Dict[str, List[GPUDetector]]:
         fastfetch = Fastfetch()
         return {
@@ -46,7 +44,7 @@ class DetectorFactory:
             platform.DeviceTypeEnum.MLU.value: [Cnmon()],
         }
 
-    def _validate_detectors(self):
+    def validate_detectors(self):
         if not self.system_info_detector.is_available():
             raise Exception(
                 f"System info detector {self.system_info_detector.__class__.__name__} is not available"

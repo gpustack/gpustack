@@ -1,7 +1,7 @@
+from typing import Callable
 from prometheus_client.registry import Collector
 from prometheus_client import make_asgi_app, REGISTRY
 from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
-from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.worker.collector import WorkerStatusCollector
@@ -14,22 +14,18 @@ logger = logging.getLogger(__name__)
 
 class MetricExporter(Collector):
     _provider = "gpustack"
+    _worker_ip_getter: Callable[[], str]
+    _collector: WorkerStatusCollector
 
     def __init__(
         self,
-        worker_ip: str,
-        worker_name: str,
-        port: int,
-        clientset: ClientSet,
         cfg: Config,
+        collector: WorkerStatusCollector,
+        worker_ip_getter: Callable[[], str],
     ):
-        self._worker_ip = worker_ip
-        self._worker_name = worker_name
-        self._worker_port = cfg.worker_port
-        self._port = port
-        self._clientset = clientset
-        self._gpu_devices = cfg.get_gpu_devices()
-        self._system_info = cfg.get_system_info()
+        self._collector = collector
+        self._worker_ip_getter = worker_ip_getter
+        self._port = cfg.metrics_port
 
     def collect(self):  # noqa: C901
         labels = ["instance", "provider"]
@@ -115,17 +111,9 @@ class MetricExporter(Collector):
             "Rate of filesystem utilization on the worker node",
             labels=filesystem_labels,
         )
-
+        worker_ip = self._worker_ip_getter()
         try:
-            collector = WorkerStatusCollector(
-                self._worker_ip,
-                self._worker_name,
-                self._worker_port,
-                self._clientset,
-                gpu_devices=self._gpu_devices,
-                system_info=self._system_info,
-            )
-            worker = collector.collect()
+            worker = self._collector.collect()
             status = worker.status
             if status is None:
                 logger.error("Empty worker node status from collector.")
@@ -139,7 +127,7 @@ class MetricExporter(Collector):
             os_info.add_metric(
                 ["instance", "provider", "name", "version"],
                 {
-                    "instance": self._worker_ip,
+                    "instance": worker_ip,
                     "provider": self._provider,
                     "name": status.os.name,
                     "version": status.os.version,
@@ -151,7 +139,7 @@ class MetricExporter(Collector):
             kernel_info.add_metric(
                 ["instance", "provider", "name", "version"],
                 {
-                    "instance": self._worker_ip,
+                    "instance": worker_ip,
                     "provider": self._provider,
                     "name": status.kernel.name,
                     "release": status.kernel.release,
@@ -162,27 +150,23 @@ class MetricExporter(Collector):
 
         # uptime
         if status.uptime is not None:
-            uptime.add_metric([self._worker_ip, self._provider], status.uptime.uptime)
+            uptime.add_metric([worker_ip, self._provider], status.uptime.uptime)
 
         # cpu
         if status.cpu is not None:
-            cpu_cores.add_metric([self._worker_ip, self._provider], status.cpu.total)
+            cpu_cores.add_metric([worker_ip, self._provider], status.cpu.total)
             cpu_utilization_rate.add_metric(
-                [self._worker_ip, self._provider], status.cpu.utilization_rate
+                [worker_ip, self._provider], status.cpu.utilization_rate
             )
 
         # memory
         if status.memory is not None:
-            memory_total.add_metric(
-                [self._worker_ip, self._provider], status.memory.total
-            )
-            memory_used.add_metric(
-                [self._worker_ip, self._provider], status.memory.used
-            )
+            memory_total.add_metric([worker_ip, self._provider], status.memory.total)
+            memory_used.add_metric([worker_ip, self._provider], status.memory.used)
 
             if status.memory.total != 0 and status.memory.used is not None:
                 memory_utilization_rate.add_metric(
-                    [self._worker_ip, self._provider],
+                    [worker_ip, self._provider],
                     _rate(status.memory.used, status.memory.total),
                 )
 
@@ -192,7 +176,7 @@ class MetricExporter(Collector):
                 gpu_info.add_metric(
                     ["instance", "provider", "index", "name"],
                     {
-                        "instance": self._worker_ip,
+                        "instance": worker_ip,
                         "provider": self._provider,
                         "index": str(i),
                         "name": d.name,
@@ -200,29 +184,29 @@ class MetricExporter(Collector):
                 )
                 if d.core is not None:
                     gpu_cores.add_metric(
-                        [self._worker_ip, self._provider, str(i)], d.core.total
+                        [worker_ip, self._provider, str(i)], d.core.total
                     )
                     gpu_utilization_rate.add_metric(
-                        [self._worker_ip, self._provider, str(i)],
+                        [worker_ip, self._provider, str(i)],
                         d.core.utilization_rate,
                     )
 
                 if d.temperature is not None:
                     gpu_temperature.add_metric(
-                        [self._worker_ip, self._provider, str(i)], d.temperature
+                        [worker_ip, self._provider, str(i)], d.temperature
                     )
 
                 if d.memory is not None:
                     gram_total.add_metric(
-                        [self._worker_ip, self._provider, str(i)], d.memory.total
+                        [worker_ip, self._provider, str(i)], d.memory.total
                     )
                     gram_used.add_metric(
-                        [self._worker_ip, self._provider, str(i)], d.memory.used
+                        [worker_ip, self._provider, str(i)], d.memory.used
                     )
 
                     if d.memory.total != 0 and d.memory.used is not None:
                         gram_utilization_rate.add_metric(
-                            [self._worker_ip, self._provider, str(i)],
+                            [worker_ip, self._provider, str(i)],
                             _rate(d.memory.used, d.memory.total),
                         )
 
@@ -230,15 +214,15 @@ class MetricExporter(Collector):
         if status.filesystem is not None:
             for _, d in enumerate(status.filesystem):
                 filesystem_total.add_metric(
-                    [self._worker_ip, self._provider, d.mount_point], d.total
+                    [worker_ip, self._provider, d.mount_point], d.total
                 )
                 filesystem_used.add_metric(
-                    [self._worker_ip, self._provider, d.mount_point], d.used
+                    [worker_ip, self._provider, d.mount_point], d.used
                 )
 
                 if d.total != 0 and d.used is not None:
                     filesystem_utilization_rate.add_metric(
-                        [self._worker_ip, self._provider, d.mount_point],
+                        [worker_ip, self._provider, d.mount_point],
                         _rate(d.used, d.total),
                     )
 
