@@ -2,12 +2,29 @@ from datetime import datetime
 import re
 from enum import Enum
 from sqlalchemy import Enum as SQLEnum, Text
-from typing import Optional
-from pydantic import field_validator
-from sqlmodel import Column, Field, SQLModel
 
+from typing import List, Optional, TYPE_CHECKING
+from pydantic import field_validator
+from sqlmodel import (
+    Field,
+    Relationship,
+    Column,
+    SQLModel,
+    Integer,
+    ForeignKey,
+)
 from .common import PaginatedList
 from ..mixins import BaseModelMixin
+from .clusters import Cluster
+from .workers import Worker
+
+if TYPE_CHECKING:
+    from .api_keys import ApiKey
+
+
+class UserRole(Enum):
+    Worker = "Worker"
+    Cluster = "Cluster"
 
 
 class AuthProviderEnum(str, Enum):
@@ -27,6 +44,17 @@ class UserBase(SQLModel):
         default=AuthProviderEnum.Local, sa_type=SQLEnum(AuthProviderEnum)
     )
     require_password_change: bool = Field(default=False)
+
+    is_system: bool = False
+    role: Optional[UserRole] = Field(
+        default=None, description="Role of the user, e.g., worker or cluster"
+    )
+    cluster_id: Optional[int] = Field(
+        sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE"))
+    )
+    worker_id: Optional[int] = Field(
+        sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE"))
+    )
 
 
 class UserCreate(UserBase):
@@ -70,6 +98,16 @@ class User(UserBase, BaseModelMixin, table=True):
     __tablename__ = 'users'
     id: Optional[int] = Field(default=None, primary_key=True)
     hashed_password: str
+
+    cluster: Optional[Cluster] = Relationship(
+        back_populates="cluster_users", sa_relationship_kwargs={"lazy": "selectin"}
+    )
+    worker: Optional[Worker] = Relationship(sa_relationship_kwargs={"lazy": "selectin"})
+
+    api_keys: List["ApiKey"] = Relationship(
+        back_populates='user',
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+    )
 
 
 class UserPublic(UserBase):

@@ -67,6 +67,7 @@ class ResourceCounts(BaseModel):
 
 
 class SystemSummary(BaseModel):
+    cluster_id: Optional[int] = None
     resource_counts: ResourceCounts
     system_load: SystemLoadSummary
     model_usage: ModelUsageSummary
