@@ -118,6 +118,8 @@ def downgrade() -> None:
 
 def migrate_legacy_hf_cache():
     config = get_global_config()
+    if config is None:
+        return
     hf_cache_base = os.path.join(config.cache_dir, "huggingface")
     model_dirs = glob.glob(os.path.join(hf_cache_base, "models--*--*"))
 
@@ -165,6 +167,8 @@ def migrate_legacy_hf_cache():
 
 def remove_legacy_ms_cache_locks():
     config = get_global_config()
+    if config is None:
+        return
     model_scope_dir = os.path.join(config.cache_dir, "model_scope")
 
     if not os.path.isdir(model_scope_dir):
@@ -187,6 +191,8 @@ def remove_legacy_ms_cache_locks():
 
 def remove_legacy_ollama_model_locks():
     config = get_global_config()
+    if config is None:
+        return
     ollama_dir = os.path.join(config.cache_dir, "ollama")
 
     if not os.path.isdir(ollama_dir):
