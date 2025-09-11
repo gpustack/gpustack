@@ -23,6 +23,7 @@ from gpustack.schemas.workers import (
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.utils import platform
 from gpustack.utils.platform import DeviceTypeEnum, device_type_from_vendor
+from gpustack import __version__
 
 _config = None
 
@@ -84,6 +85,11 @@ class Config(BaseSettings):
         allow_credentials: Indicate that cookies should be supported for cross-origin requests.
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
+        server_external_url: Specified external URL for the server.
+        registration_token: Cluster token for worker registration.
+        system_default_container_registry: Default registry for container images.
+        image_name_override: Force override of the image name.
+        image_repo: Repository for the container images.
     """
 
     # Common options
@@ -100,6 +106,9 @@ class Config(BaseSettings):
     ray_dashboard_agent_grpc_port: int = 40101
     ray_dashboard_agent_listen_port: int = 52365
     ray_metrics_export_port: int = 40103
+    system_default_container_registry: Optional[str] = None
+    image_name_override: Optional[str] = None
+    image_repo: str = "gpustack/gpustack"
 
     # Server options
     host: Optional[str] = "0.0.0.0"
@@ -143,9 +152,11 @@ class Config(BaseSettings):
     saml_idp_server_url: Optional[str] = None  # saml idp_server_url
     saml_idp_x509_cert: Optional[str] = ''  # saml idp_x509_cert
     saml_security: Optional[str] = '{}'  # saml security
+    server_external_url: Optional[str] = None
 
     # Worker options
     server_url: Optional[str] = None
+    registration_token: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
     disable_metrics: bool = False
@@ -188,10 +199,16 @@ class Config(BaseSettings):
         else:
             self.log_dir = os.path.abspath(self.log_dir)
 
-        if not self._is_server() and not self.token:
-            raise Exception("Token is required when running as a worker")
+        self.token = self.read_token()
+        if (
+            not self._is_server()
+            and self.token is None
+            and self.registration_token is None
+        ):
+            raise Exception(
+                "Token or registration token is required when running as worker"
+            )
 
-        self.prepare_token()
         self.prepare_jwt_secret_key()
 
         # server options
@@ -547,21 +564,15 @@ class Config(BaseSettings):
         env_prefix = "GPU_STACK_"
         protected_namespaces = ('settings_',)
 
-    def prepare_token(self):
+    def read_token(self) -> Optional[str]:
         if self.token is not None:
-            return
+            return self.token
 
         token_path = os.path.join(self.data_dir, "token")
         if os.path.exists(token_path):
             with open(token_path, "r") as file:
-                token = file.read().strip()
-        else:
-            token = secrets.token_hex(16)
-            os.makedirs(self.data_dir, exist_ok=True)
-            with open(token_path, "w") as file:
-                file.write(token + "\n")
-
-        self.token = token
+                return file.read().strip()
+        return None
 
     def prepare_jwt_secret_key(self):
         if self.jwt_secret_key is not None:
@@ -581,6 +592,19 @@ class Config(BaseSettings):
 
     def _is_server(self):
         return self.server_url is None
+
+    def get_image_name(self) -> str:
+        if self.image_name_override:
+            return self.image_name_override
+        version = f"v{__version__}"
+        if version == "v0.0.0":
+            version = "main"
+        prefix = (
+            f"{self.system_default_container_registry}/"
+            if self.system_default_container_registry
+            else ""
+        )
+        return f"{prefix}{self.image_repo}:{version}"
 
 
 def get_openid_configuration(issuer: str) -> dict:

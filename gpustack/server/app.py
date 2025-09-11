@@ -12,6 +12,7 @@ from gpustack.config.envs import (
 )
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
+from gpustack.utils.forwarded import ForwardedHostPortMiddleware
 
 
 def create_app(cfg: Config) -> FastAPI:
@@ -37,6 +38,7 @@ def create_app(cfg: Config) -> FastAPI:
         openapi_url=None if (cfg and cfg.disable_openapi_docs) else "/openapi.json",
     )
     patch_docs(app, Path(__file__).parents[1] / "ui" / "static")
+    app.add_middleware(ForwardedHostPortMiddleware)
     app.add_middleware(middlewares.RequestTimeMiddleware)
     app.add_middleware(middlewares.ModelUsageMiddleware)
     app.add_middleware(middlewares.RefreshTokenMiddleware)

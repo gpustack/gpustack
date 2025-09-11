@@ -138,6 +138,24 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Port for Ray metrics export. Used when Ray is enabled. The default is 40103.",
         default=get_gpustack_env("RAY_METRICS_EXPORT_PORT"),
     )
+    group.add_argument(
+        "--system-default-container-registry",
+        type=str,
+        help="Default container registry for GPUStack to pull system images. The default is 'docker.io'.",
+        default=get_gpustack_env("SYSTEM_DEFAULT_CONTAINER_REGISTRY"),
+    )
+    group.add_argument(
+        "--image-name-override",
+        type=str,
+        help="Override the default image name for the GPUStack container.",
+        default=get_gpustack_env("IMAGE_NAME_OVERRIDE"),
+    )
+    group.add_argument(
+        "--image-repo",
+        type=str,
+        help="Override the default image repository gpustack/gpustack for the GPUStack container.",
+        default=get_gpustack_env("IMAGE_REPO"),
+    )
 
     group = parser_server.add_argument_group("Server settings")
     group.add_argument(
@@ -236,6 +254,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=int,
         help="Port of Ray dashboard. Used when Ray is enabled. The default is 8265.",
         default=get_gpustack_env("RAY_DASHBOARD_PORT"),
+    )
+    group.add_argument(
+        "--server-external-url",
+        type=str,
+        help="External URL of the server. Should be set if the server is behind a reverse proxy.",
+        default=get_gpustack_env("SERVER_EXTERNAL_URL"),
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -468,6 +492,13 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="SAML security settings in JSON.",
         default=get_gpustack_env("SAML_SECURITY"),
     )
+    group.add_argument(
+        "--registration-token",
+        type=str,
+        help="Registration token for the cluster. Used to register the worker with the cluster.",
+        default=get_gpustack_env("REGISTRATION_TOKEN"),
+    )
+
     parser_server.set_defaults(func=run)
 
 
@@ -565,6 +596,9 @@ def set_common_options(args, config_data: dict):
         "ray_args",
         "ray_node_manager_port",
         "ray_object_manager_port",
+        "system_default_container_registry",
+        "image_name_override",
+        "image_repo",
     ]
 
     for option in options:
@@ -609,6 +643,7 @@ def set_server_options(args, config_data: dict):
         "saml_sp_private_key",
         "saml_sp_attribute_prefix",
         "saml_security",
+        "server_external_url",
     ]
 
     for option in options:
@@ -634,6 +669,7 @@ def set_worker_options(args, config_data: dict):
         "ray_worker_port_range",
         "enable_hf_transfer",
         "enable_hf_xet",
+        "registration_token",
     ]
 
     for option in options:
