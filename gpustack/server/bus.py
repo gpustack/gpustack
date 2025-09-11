@@ -1,6 +1,6 @@
 import asyncio
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Tuple
 from enum import Enum
 import copy
 
@@ -17,6 +17,7 @@ class EventType(Enum):
 class Event:
     type: EventType
     data: Any
+    changed_fields: Dict[str, Tuple[Any, Any]] = field(default_factory=dict)
 
     def __post_init__(self):
         if isinstance(self.type, int):

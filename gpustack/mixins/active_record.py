@@ -7,10 +7,11 @@ import math
 from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func
+from sqlalchemy import func, event as sa_event, inspect
 from sqlmodel import SQLModel, and_, asc, col, desc, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.common import PaginatedList, Pagination
@@ -18,6 +19,65 @@ from gpustack.server.bus import Event, EventType, event_bus
 
 
 logger = logging.getLogger(__name__)
+
+
+class CommitEvent:
+    name: str
+    event: Event
+
+    def __init__(self, name: str, type: EventType, data: Any):
+        self.name = name
+        self.event = Event(type=type, data=data)
+
+
+@sa_event.listens_for(Session, "before_flush")
+def find_history(session: AsyncSession, flush_context, instances):
+    events: List[CommitEvent] = session.info.get("pending_events", [])
+    if len(events) == 0:
+        return
+    dirty_objs = [obj for obj in session.dirty if instances is None or obj in instances]
+    for event in events:
+        if event.event.data not in dirty_objs:
+            continue
+        obj = event.event.data
+        state = inspect(obj)
+        for attr in state.attrs:
+            hist = attr.history
+            if hist.has_changes():
+                event.event.changed_fields[attr.key] = (hist.deleted, hist.added)
+
+
+@sa_event.listens_for(Session, "before_commit")
+def refresh_objects_before_commit(session: AsyncSession):
+    events: List[CommitEvent] = session.info.get("pending_events", [])
+    for event in events:
+        bus_event = event.event
+        # refresh the object before commit to ensure the data is up-to-date
+        if (
+            isinstance(bus_event.data, SQLModel)
+            and bus_event.data not in session.deleted
+        ):
+            try:
+                session.refresh(bus_event.data)
+            except Exception as e:
+                logger.error(f"Failed to refresh object {bus_event.data}: {e}")
+
+
+# commit hook to send events after a database commit
+@sa_event.listens_for(Session, "after_commit")
+def send_post_commit_events(session: AsyncSession):
+    events: List[CommitEvent] = session.info.pop("pending_events", [])
+    for event in events:
+        # copy before submit to avoid mutation
+        id = getattr(event.event.data, "id", None)
+        logger.debug(f"Sending event {event.name} of type {event.event.type}, id {id}")
+        bus_event = event.event
+        copied_dict = bus_event.data.model_dump()
+        bus_event.data = type(bus_event.data).model_validate(copied_dict)
+        try:
+            asyncio.create_task(event_bus.publish(event.name, bus_event))
+        except Exception as e:
+            logger.error(f"Failed to publish events: {e}")
 
 
 class ActiveRecordMixin:
@@ -221,6 +281,7 @@ class ActiveRecordMixin:
         session: AsyncSession,
         source: Union[dict, SQLModel],
         update: Optional[dict] = None,
+        auto_commit: bool = True,
     ) -> Optional[SQLModel]:
         """Create and save a new record for the model."""
 
@@ -228,8 +289,8 @@ class ActiveRecordMixin:
         if obj is None:
             return None
 
-        await obj.save(session)
-        await cls._publish_event(EventType.CREATED, obj)
+        cls._publish_event_after_commit(session, EventType.CREATED, obj)
+        await obj.save(session, auto_commit=auto_commit)
         return obj
 
     @classmethod
@@ -238,6 +299,7 @@ class ActiveRecordMixin:
         session: AsyncSession,
         source: Union[dict, SQLModel],
         update: Optional[dict] = None,
+        auto_commit: bool = True,
     ) -> Optional[SQLModel]:
         """Create or update a record for the model."""
 
@@ -250,10 +312,10 @@ class ActiveRecordMixin:
             if existing is None:
                 return None
             else:
-                await existing.update(session, obj)
+                await existing.update(session, obj, auto_commit=auto_commit)
                 return existing
         else:
-            return await cls.create(session, obj)
+            return await cls.create(session, obj, auto_commit=auto_commit)
 
     @classmethod
     async def count(cls, session: AsyncSession) -> int:
@@ -266,19 +328,30 @@ class ActiveRecordMixin:
 
         await session.refresh(self)
 
-    async def save(self, session: AsyncSession):
+    async def save(self, session: AsyncSession, auto_commit=True):
         """Save the object to the database. Raise exception if failed."""
 
         session.add(self)
+        await session.flush()
+
+        if not auto_commit:
+            return
+
         try:
             await session.commit()
             await session.refresh(self)
         except (IntegrityError, OperationalError, FlushError) as e:
             await session.rollback()
             raise e
+        except Exception as e:
+            await session.rollback()
+            raise e
 
     async def update(
-        self, session: AsyncSession, source: Union[dict, SQLModel, None] = None
+        self,
+        session: AsyncSession,
+        source: Union[dict, SQLModel, None] = None,
+        auto_commit=True,
     ):
         """Update the object with the source and save to the database."""
 
@@ -289,24 +362,30 @@ class ActiveRecordMixin:
 
         for key, value in source.items():
             setattr(self, key, value)
-        await self.save(session)
-        await self._publish_event(EventType.UPDATED, self)
+        self._publish_event_after_commit(session, EventType.UPDATED, self)
+        await self.save(session, auto_commit=auto_commit)
 
-    async def delete(self, session: AsyncSession):
+    async def delete(self, session: AsyncSession, soft=False, auto_commit=True):
         """Delete the object from the database."""
+        self._publish_event_after_commit(session, EventType.DELETED, self)
 
-        if self._has_cascade_delete():
+        if soft or self._has_cascade_delete():
             if hasattr(self, "deleted_at"):
                 # timestamp is stored without timezone in db
                 self.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                await self.save(session)
-            await self._handle_cascade_delete(session)
-
-        await session.delete(self)
+                await self.save(session, auto_commit=auto_commit)
+            await self._handle_cascade_delete(
+                session, soft=soft, auto_commit=auto_commit
+            )
+        if not soft:
+            await session.delete(self)
+        if not auto_commit:
+            return
         await session.commit()
-        await self._publish_event(EventType.DELETED, self)
 
-    async def _handle_cascade_delete(self, session: AsyncSession):
+    async def _handle_cascade_delete(
+        self, session: AsyncSession, soft=False, auto_commit=True
+    ):
         """Handle cascading deletes for all defined relationships."""
         for rel in self.__mapper__.relationships:
             if rel.cascade.delete:
@@ -317,9 +396,13 @@ class ActiveRecordMixin:
                 # Delete each related object
                 if isinstance(related_objects, list):
                     for related_object in related_objects:
-                        await related_object.delete(session)
+                        await related_object.delete(
+                            session, soft=soft, auto_commit=auto_commit
+                        )
                 elif related_objects:
-                    await related_objects.delete(session)
+                    await related_objects.delete(
+                        session, soft=soft, auto_commit=auto_commit
+                    )
 
     def _has_cascade_delete(self):
         """Check if the model has cascade delete relationships."""
@@ -333,30 +416,38 @@ class ActiveRecordMixin:
         return result.all()
 
     @classmethod
-    async def delete_all(cls, session: AsyncSession):
+    async def delete_all(cls, session: AsyncSession, soft=False):
         """Delete all objects of the model."""
 
         for obj in await cls.all(session):
-            await obj.delete(session)
-            await cls._publish_event(EventType.DELETED, obj)
+            cls._publish_event_after_commit(session, EventType.DELETED, obj)
+            await obj.delete(session, soft=soft, auto_commit=False)
+        try:
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to delete all objects of {cls.__name__}: {e}")
 
     @classmethod
-    async def _publish_event(cls, event_type: str, data: Any):
-        try:
-            await event_bus.publish(
-                cls.__name__.lower(), Event(type=event_type, data=data)
+    def _publish_event_after_commit(
+        cls, session: AsyncSession, event_type: str, data: Any
+    ):
+        session.info.setdefault("pending_events", []).append(
+            CommitEvent(
+                name=cls.__name__.lower(),
+                type=event_type,
+                data=data,
             )
-        except Exception as e:
-            logger.error(f"Failed to publish event: {e}")
+        )
 
     @classmethod
     async def subscribe(cls, engine: AsyncEngine) -> AsyncGenerator[Event, None]:
+        subscriber = event_bus.subscribe(cls.__name__.lower())
         async with AsyncSession(engine) as session:
             items = await cls.all(session)
             for item in items:
                 yield Event(type=EventType.CREATED, data=item)
 
-        subscriber = event_bus.subscribe(cls.__name__.lower())
         heartbeat_interval = timedelta(seconds=15)
         last_event_time = datetime.now(timezone.utc)
 

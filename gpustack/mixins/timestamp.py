@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import Field
+from sqlmodel import Field
 import sqlalchemy as sa
 
 from gpustack.schemas.common import UTCDateTime
@@ -17,21 +17,33 @@ class TimestampsMixin:
     __deleted_at_name__ = "deleted_at"
     __datetime_func__ = sa.func.now()
 
-    created_at = sa.Column(
-        __created_at_name__,
-        UTCDateTime,
-        default=__datetime_func__,
-        nullable=False,
+    created_at: Optional[datetime] = Field(
+        sa_type=UTCDateTime,
+        sa_column_kwargs={
+            "name": __created_at_name__,
+            "default": __datetime_func__,
+            "nullable": False,
+        },
+        default=None,
     )
 
-    updated_at = sa.Column(
-        __updated_at_name__,
-        UTCDateTime,
-        default=__datetime_func__,
-        onupdate=__datetime_func__,
-        nullable=False,
+    updated_at: Optional[datetime] = Field(
+        sa_type=UTCDateTime,
+        sa_column_kwargs={
+            "name": __updated_at_name__,
+            "default": __datetime_func__,
+            "onupdate": __datetime_func__,
+            "nullable": False,
+        },
+        default=None,
     )
 
     deleted_at: Optional[datetime] = Field(
-        sa_column=sa.Column(UTCDateTime), default=None
+        sa_type=UTCDateTime,
+        sa_column_kwargs={
+            "name": __deleted_at_name__,
+            "default": None,
+            "nullable": True,
+        },
+        default=None,
     )
