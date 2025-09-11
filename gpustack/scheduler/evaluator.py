@@ -3,14 +3,15 @@ import hashlib
 import json
 import logging
 import os
-from typing import List, Tuple
+from collections import defaultdict
+from typing import List, Tuple, Optional, Dict
 from sqlmodel.ext.asyncio.session import AsyncSession
 from cachetools import TTLCache
 from aiolimiter import AsyncLimiter
 
 from gpustack.api.exceptions import HTTPException
 from gpustack.config.config import Config, VendorEnum
-from gpustack.policies.base import ModelInstanceScheduleCandidate, Worker
+from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
 from gpustack.server.catalog import model_set_specs_by_key
@@ -19,7 +20,6 @@ from gpustack.schemas.model_evaluations import (
     ModelSpec,
     ResourceClaim,
 )
-
 from gpustack.schemas.models import (
     BackendEnum,
     CategoryEnum,
@@ -28,6 +28,8 @@ from gpustack.schemas.models import (
     is_audio_model,
     is_gguf_model,
 )
+from gpustack.schemas.workers import Worker, WorkerStateEnum
+
 from gpustack.utils.gpu import any_gpu_match
 from gpustack.utils.hub import (
     auth_check,
@@ -53,12 +55,33 @@ evaluate_model_limiter = AsyncLimiter(50, 10)
 
 @time_decorator
 async def evaluate_models(
-    config: Config, session: AsyncSession, model_specs: List[ModelSpec]
+    config: Config,
+    session: AsyncSession,
+    model_specs: List[ModelSpec],
+    cluster_id: Optional[int] = None,
 ) -> List[ModelEvaluationResult]:
     """
     Evaluate the compatibility of a list of model specs with the available workers.
     """
-    workers = await Worker.all(session)
+    fields = {
+        "deleted_at": None,
+    }
+    if cluster_id is not None:
+        fields["cluster_id"] = cluster_id
+    extra_conditions = [
+        ~(
+            Worker.state.in_(
+                [
+                    WorkerStateEnum.PROVISIONING,
+                    WorkerStateEnum.DELETING,
+                    WorkerStateEnum.ERROR,
+                ]
+            )
+        )
+    ]
+    workers = await Worker.all_by_fields(
+        session, fields=fields, extra_conditions=extra_conditions
+    )
 
     async def evaluate(model: ModelSpec):
         return await evaluate_model_with_cache(config, session, model, workers)
@@ -159,24 +182,36 @@ async def evaluate_model(
             result.compatibility_messages = messages
             return result
 
-    candidate, schedule_messages = await scheduler.find_candidate(
-        config, model, workers
-    )
-    if not candidate:
+    workers_by_cluster: Dict[int, List[Worker]] = defaultdict(list)
+    for worker in workers:
+        workers_by_cluster[worker.cluster_id].append(worker)
+
+    overcommit_clusters = []
+    result.resource_claim_by_cluster_id = {}
+
+    for cluster_id, cluster_workers in workers_by_cluster.items():
+        candidate, schedule_messages = await scheduler.find_candidate(
+            config, model, cluster_workers
+        )
+        if not candidate:
+            result.scheduling_messages.extend(schedule_messages)
+            continue
+        if candidate.overcommit:
+            overcommit_clusters.append(cluster_id)
+            result.scheduling_messages.extend(schedule_messages)
+            continue
+        result.resource_claim_by_cluster_id[cluster_id] = (
+            summarize_candidate_resource_claim(candidate)
+        )
+
+    if result.resource_claim_by_cluster_id:
+        result.resource_claim = next(iter(result.resource_claim_by_cluster_id.values()))
+    else:
+        result.resource_claim = None
         result.compatible = False
         result.compatibility_messages.append(
             "Unable to find a schedulable worker for the model."
         )
-        result.scheduling_messages = schedule_messages
-    elif candidate.overcommit:
-        result.compatible = False
-        result.compatibility_messages.append(
-            "Selected GPUs may not have enough resources to run the model."
-        )
-        result.scheduling_messages = schedule_messages
-    else:
-        result.resource_claim = summarize_candidate_resource_claim(candidate)
-
     return result
 
 
