@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
 from gpustack.security import API_KEY_PREFIX, get_secret_hash
 from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic, ApiKeysPublic
+from gpustack.schemas.users import User
 from gpustack.server.services import APIKeyService
 
 router = APIRouter()
@@ -53,7 +54,9 @@ async def create_api_key(
     existing = await ApiKey.one_by_fields(session, fields)
     if existing:
         raise AlreadyExistsException(message=f"Api key {key_in.name} already exists")
-
+    selected_user = await User.one_by_id(session, user.id)
+    if not selected_user:
+        raise NotFoundException(message="User not found")
     try:
         access_key = secrets.token_hex(8)
         secret_key = secrets.token_hex(16)
@@ -66,7 +69,8 @@ async def create_api_key(
         api_key = ApiKey(
             name=key_in.name,
             description=key_in.description,
-            user_id=user.id,
+            user=selected_user,
+            user_id=selected_user.id,
             access_key=access_key,
             hashed_secret_key=get_secret_hash(secret_key),
             expires_at=expires_at,

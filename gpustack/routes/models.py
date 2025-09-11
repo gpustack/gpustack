@@ -47,10 +47,15 @@ async def get_models(
     params: ListParamsDep,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
+    cluster_id: int = None,
 ):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
+
+    fields = {}
+    if cluster_id:
+        fields["cluster_id"] = cluster_id
 
     if params.watch:
         return StreamingResponse(
@@ -73,6 +78,7 @@ async def get_models(
         extra_conditions=extra_conditions,
         page=params.page,
         per_page=params.perPage,
+        fields=fields,
     )
 
 

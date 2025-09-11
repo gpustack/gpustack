@@ -64,7 +64,10 @@ async def get_model_instances(
 
 
 @router.get("/{id}", response_model=ModelInstancePublic)
-async def get_model_instance(session: SessionDep, id: int):
+async def get_model_instance(
+    session: SessionDep,
+    id: int,
+):
     model_instance = await ModelInstance.one_by_id(session, id)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")

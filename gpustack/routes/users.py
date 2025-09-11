@@ -33,6 +33,10 @@ async def get_users(
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        fields={
+            "deleted_at": None,
+            "is_system": False,
+        },
     )
 
 
