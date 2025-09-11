@@ -25,6 +25,7 @@ async def create_model_evaluation(
 
     try:
         results = await evaluate_models(
+            cluster_id=model_evaluation_in.cluster_id,
             config=config,
             session=session,
             model_specs=model_specs,

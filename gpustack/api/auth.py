@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 import logging
 from fastapi import Depends, Request
@@ -17,7 +18,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     UnauthorizedException,
 )
-from gpustack.schemas.users import User
+from gpustack.schemas.users import User, UserRole
 from gpustack.security import (
     API_KEY_PREFIX,
     JWTManager,
@@ -84,6 +85,30 @@ async def get_admin_user(
     return current_user
 
 
+async def get_cluster_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if (
+        current_user.is_system
+        and current_user.role == UserRole.Cluster
+        and current_user.cluster_id is not None
+    ):
+        return current_user
+    return await get_admin_user(current_user)
+
+
+async def get_worker_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if (
+        current_user.is_system
+        and current_user.role == UserRole.Worker
+        and current_user.worker is not None
+    ):
+        return current_user
+    return await get_admin_user(current_user)
+
+
 def is_system_user(username: str) -> bool:
     return username.startswith(SYSTEM_USER_PREFIX)
 
@@ -147,6 +172,14 @@ async def get_user_from_jwt_token(
     return user
 
 
+def parse_uuid(value: str) -> Optional[str]:
+    try:
+        uuid.UUID(value)
+        return value
+    except ValueError:
+        return None
+
+
 async def get_user_from_bearer_token(
     session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
 ) -> Optional[User]:
@@ -155,6 +188,10 @@ async def get_user_from_bearer_token(
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
+            worker_uuid = parse_uuid(access_key)
+            if worker_uuid is not None:
+                access_key = ""
+
             api_key = await APIKeyService(session).get_by_access_key(access_key)
             if (
                 api_key is not None
@@ -164,7 +201,10 @@ async def get_user_from_bearer_token(
                     or api_key.expires_at > datetime.now(timezone.utc)
                 )
             ):
-                user = await UserService(session).get_by_id(api_key.user_id)
+                user: Optional[User] = await UserService(session).get_by_id(
+                    user_id=api_key.user_id,
+                    worker_uuid=worker_uuid,
+                )
                 if user is not None:
                     return user
     except Exception as e:

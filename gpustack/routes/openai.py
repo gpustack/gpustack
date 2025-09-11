@@ -179,7 +179,7 @@ async def proxy_request_by_model(request: Request, endpoint: str):
             )
 
     url = f"http://{instance.worker_ip}:{worker.port}/proxy/v1/{endpoint}"
-    token = request.app.state.server_config.token
+    token = worker.token
     extra_headers = {
         "X-Target-Port": str(instance.port),
         "Authorization": f"Bearer {token}",
