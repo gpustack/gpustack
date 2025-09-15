@@ -768,4 +768,7 @@ ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
     PIPX_LOCAL_VENVS=/var/lib/gpustack/pipx/venvs \
     PIPX_BIN_DIR=/var/lib/gpustack/bin
 
+ENV NVIDIA_DISABLE_REQUIRE="true" \
+    NVIDIA_VISIBLE_DEVICES="all"
+
 ENTRYPOINT [ "tini", "--", "/usr/bin/bash", "-c", "source /etc/profile && exec gpustack start \"$@\"", "--" ]

@@ -1,6 +1,5 @@
-import jinja2
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
 from enum import Enum
 from gpustack.schemas.clusters import Volume
@@ -33,25 +32,6 @@ class CloudInstance(CloudInstanceCreate):
     ip_address: Optional[str] = None
     ssh_key_id: Optional[str] = None
     volume_ids: Optional[List[str]] = None
-
-
-default_cloudinit_template = """#cloud-config
-package_update: true
-packages:
-- docker.io  # For Debian/Ubuntu
-- docker-engine # For CentOS/RHEL (adjust as needed for specific distributions)
-runcmd:
-- systemctl enable docker
-- systemctl start docker
-- |
-    docker run -d --name gpustack-worker \
-    --restart=unless-stopped --net=host --ipc=host \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -v /var/lib/gpustack:/var/lib/gpustack \
-    {{ image_name }} \
-    --server-url {{ server_url }} \
-    --registration-token {{ registration_token }}
-"""
 
 
 class ProviderClientBase(ABC):
@@ -108,15 +88,17 @@ class ProviderClientBase(ABC):
         """
         pass
 
+    @abstractmethod
+    async def determine_linux_distribution(self, image_id: str) -> Optional[str]:
+        """
+        Determine the linux distribution of the instance.
+        Return values can be: "ubuntu", "debian", "centos", "rocky", "almalinux", "unknown"
+        """
+        pass
+
     @classmethod
-    def generate_user_data(
-        cls, image_name: str, registration_token: str, server_url: str
-    ) -> str:
-        return jinja2.Template(default_cloudinit_template).render(
-            image_name=image_name,
-            registration_token=registration_token,
-            server_url=server_url,
-        )
+    def modify_cloud_init(cls, user_data: Dict[str, Any]):
+        pass
 
     @classmethod
     def get_api_endpoint(cls) -> str:
