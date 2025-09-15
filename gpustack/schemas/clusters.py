@@ -120,14 +120,14 @@ WorkerPoolsPublic = PaginatedList[WorkerPoolPublic]
 
 
 class ClusterProvider(Enum):
-    Custom = "Custom"
+    Docker = "Docker"
     Kubernetes = "Kubernetes"
     DigitalOcean = "DigitalOcean"
 
 
 class CloudCredentialBase(SQLModel):
     """
-    Supports providers other than Kubernetes and Custom.
+    Supports providers other than Kubernetes and Docker.
     """
 
     name: str
@@ -201,7 +201,7 @@ class ClusterUpdate(SQLModel):
 
 
 class ClusterCreateBase(ClusterUpdate):
-    provider: ClusterProvider = Field(default=ClusterProvider.Custom)
+    provider: ClusterProvider = Field(default=ClusterProvider.Docker)
     credential_id: Optional[int] = Field(
         default=None, foreign_key="cloud_credentials.id"
     )

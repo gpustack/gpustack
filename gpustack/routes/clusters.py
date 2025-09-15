@@ -92,7 +92,7 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
     if existing:
         raise AlreadyExistsException(message=f"cluster {input.name} already exists")
     if (
-        input.provider not in [ClusterProvider.Kubernetes, ClusterProvider.Custom]
+        input.provider not in [ClusterProvider.Kubernetes, ClusterProvider.Docker]
         and input.credential_id is None
     ):
         raise InvalidException(
@@ -101,7 +101,7 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
     target_state = ClusterState.NONE.value
-    if input.provider in [ClusterProvider.Kubernetes, ClusterProvider.Custom]:
+    if input.provider in [ClusterProvider.Kubernetes, ClusterProvider.Docker]:
         target_state = ClusterState.READY.value | ClusterState.PROVISIONED.value
     pools = input.worker_pools or []
     to_create_cluster = Cluster.model_validate(
@@ -191,7 +191,7 @@ async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCrea
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
-    if cluster.provider in [ClusterProvider.Custom, ClusterProvider.Kubernetes]:
+    if cluster.provider in [ClusterProvider.Docker, ClusterProvider.Kubernetes]:
         raise InvalidException(
             message=f"Cannot create worker pool for cluster {id} with provider {cluster.provider}"
         )

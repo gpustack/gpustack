@@ -123,7 +123,7 @@ async def proxy_cluster_provider_api(
     credential = await CloudCredential.one_by_id(session=session, id=id)
     if not credential:
         raise NotFoundException(message=f"Credential {id} not found")
-    if credential.provider in [ClusterProvider.Custom, ClusterProvider.Kubernetes]:
+    if credential.provider in [ClusterProvider.Docker, ClusterProvider.Kubernetes]:
         raise NotFoundException(message=f"Provider {credential.provider} not supported")
     provider = factory.get(credential.provider, None)
     if provider is None:
