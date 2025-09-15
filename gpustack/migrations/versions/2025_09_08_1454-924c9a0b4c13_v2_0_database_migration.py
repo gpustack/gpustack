@@ -35,7 +35,7 @@ WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'PROVISIONED', 'DEL
 
 def upgrade() -> None:
     cluster_provider_enum = sa.Enum(
-        'Custom',
+        'Docker',
         'Kubernetes',
         'DigitalOcean',
         name='clusterprovider',
@@ -60,7 +60,7 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('provider', cluster_provider_enum, nullable=False, default='Custom'),
+        sa.Column('provider', cluster_provider_enum, nullable=False, default='Docker'),
         sa.Column('credential_id', sa.Integer(), sa.ForeignKey('cloud_credentials.id'), nullable=True),
         sa.Column('region', sa.String(length=255), nullable=True),
         sa.Column('state', sa.Integer(), nullable=False, default=0),
@@ -76,7 +76,7 @@ def upgrade() -> None:
     # stat == 3 means PROVISIONED and READY
     op.execute(f"""
         INSERT INTO clusters (name, description, provider, state, hashed_suffix, registration_token, created_at, updated_at)
-        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Custom', 3, '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func}, {now_sql_func})
+        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 3, '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func}, {now_sql_func})
     """)
 
     op.create_table(
@@ -130,7 +130,7 @@ def upgrade() -> None:
     op.execute("""
         UPDATE workers
         SET cluster_id = (SELECT max(id) FROM clusters), 
-            provider = 'Custom', 
+            provider = 'Docker', 
             worker_pool_id = NULL, 
             machine_id = NULL
         WHERE cluster_id IS NULL
@@ -295,7 +295,7 @@ def downgrade() -> None:
     op.drop_table('worker_pools')
     op.drop_table('clusters')
     op.drop_table('cloud_credentials')
-    cluster_provider_enum = sa.Enum('Custom', 'Kubernetes', 'DigitalOcean', name='clusterprovider')
+    cluster_provider_enum = sa.Enum('Docker', 'Kubernetes', 'DigitalOcean', name='clusterprovider')
     cluster_provider_enum.drop(op.get_bind(), checkfirst=True)
 
     conn = op.get_bind()

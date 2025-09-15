@@ -272,7 +272,7 @@ class WorkerBase(WorkerCreate):
         self.state = WorkerStateEnum.READY
         self.state_message = None
 
-    provider: ClusterProvider = Field(default=ClusterProvider.Custom)
+    provider: ClusterProvider = Field(default=ClusterProvider.Docker)
     worker_pool_id: Optional[int] = Field(
         default=None,
         sa_column=Column(Integer, ForeignKey("worker_pools.id"), nullable=True),
