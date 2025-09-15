@@ -1,5 +1,6 @@
 import base64
-from typing import Dict, Tuple, Type, Callable
+import yaml
+from typing import Dict, Tuple, Type, Callable, Optional
 from .abstract import ProviderClientBase, CloudInstanceCreate
 from .digital_ocean import DigitalOceanClient
 from gpustack.schemas.clusters import ClusterProvider, CloudCredential, Credential
@@ -7,6 +8,7 @@ from gpustack.schemas.workers import Worker
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
 from gpustack.config.config import Config
+from gpustack.cloud_providers.user_data import user_data_distribution
 
 
 factory: Dict[
@@ -53,7 +55,26 @@ def construct_cloud_instance(
     )
 
 
-def construct_user_data(config: Config, worker: Worker) -> str:
+def construct_docker_run_script(
+    image_name: str, registration_token: str, server_url: str
+) -> str:
+    return f"""#!/bin/bash
+set -e
+echo "$(date): trying to bring up gpustack worker container..." >> /var/log/post-reboot.log
+
+docker run -d --name gpustack-worker \
+--restart=unless-stopped \
+--privileged --net=host \
+-v /var/lib/gpustack:/var/lib/gpustack \
+{image_name} --server-url {server_url} --registration-token {registration_token}
+
+echo "$(date): gpustack worker container started" >> /var/log/post-reboot.log
+"""
+
+
+def construct_user_data(
+    config: Config, worker: Worker, distribution: Optional[str]
+) -> str:
     """
     Construct the cloud_init data for the worker.
     """
@@ -66,11 +87,26 @@ def construct_user_data(config: Config, worker: Worker) -> str:
     server_url = config.server_external_url
     if server_url is None:
         raise ValueError("server_external_url is not set in the config")
-    return t.generate_user_data(
+    script = construct_docker_run_script(
         image_name=image_name,
         registration_token=worker.cluster.registration_token,
         server_url=server_url,
     )
+    user_data = user_data_distribution(distribution=distribution)
+    to_write_files: list[dict] = user_data.setdefault('write_files', [])
+    to_write_files.insert(
+        0,
+        {
+            "content": script,
+            "path": "/opt/gpustack-run-worker.sh",
+            "permissions": "0755",
+        },
+    )
+    user_data['write_files'] = to_write_files
+    t.modify_cloud_init(user_data)
+    data = yaml.safe_dump(user_data)
+    data = "#cloud-config\n" + data
+    return data
 
 
 def generate_ssh_key_pair(
