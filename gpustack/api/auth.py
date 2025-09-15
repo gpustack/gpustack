@@ -235,6 +235,5 @@ async def worker_auth(
     if not bearer_token:
         raise UnauthorizedException(message="Invalid authentication credentials")
 
-    config: Config = request.app.state.config
-    if bearer_token.credentials != config.token:
+    if bearer_token.credentials != request.app.state.token:
         raise UnauthorizedException(message="Invalid authentication credentials")

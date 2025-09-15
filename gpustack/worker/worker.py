@@ -229,6 +229,7 @@ class Worker:
             lifespan=lifespan,
         )
         app.state.config = self._config
+        app.state.token = self._config.read_token()
 
         app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)
