@@ -15,6 +15,10 @@
 - [x] llama-box
 - [x] vox-box (CPU backend)
 
+## Desktop Installer
+
+👉 [Go to detailed steps](desktop-installer.md#desktop-installer)
+
 ## pip Installation
 
 ### Prerequisites
