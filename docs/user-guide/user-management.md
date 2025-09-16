@@ -1,6 +1,6 @@
 # User Management
 
-GPUStack supports users of two roles: `Admin` and `User`. Admins can monitor system status, manage models, users, and system settings. Users can manage their own API keys and use the completion API.
+GPUStack supports users of two roles: `Admin` and `User`. Admins can monitor system status, manage models, users, and system settings. Users can manage their own API keys and use the model API.
 
 ## Default Admin
 

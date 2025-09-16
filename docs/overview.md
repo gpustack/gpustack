@@ -25,8 +25,6 @@
   <a class="github-button" href="https://github.com/gpustack/gpustack/fork" data-show-count="true" data-icon="octicon-repo-forked" data-size="large" aria-label="Fork">Fork</a>
 </p>
 
-![demo](assets/gpustack-demo.gif)
-
 GPUStack is an open-source GPU cluster manager for running AI models.
 
 ### Key Features

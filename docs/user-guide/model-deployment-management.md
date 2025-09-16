@@ -182,7 +182,7 @@ After enabling CPU offloading, GPUStack prioritizes loading as many layers as po
 
 !!! note
 
-    Available for llama-box and vLLM backends.
+    Available for llama-box, vLLM and MindIE backends.
 
 Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more other workers, offloading computation tasks to them.
 
