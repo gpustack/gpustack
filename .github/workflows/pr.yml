@@ -6,6 +6,7 @@ on:
       - main
       - "v*-dev"
     paths-ignore:
+      - ".github/ISSUE_TEMPLATE/**"
       - "mkdocs.yml"
       - "docs/**"
       - "**.md"
