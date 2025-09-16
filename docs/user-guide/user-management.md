@@ -1,10 +1,13 @@
 # User Management
 
-GPUStack supports users of two roles: `Admin` and `User`. Admins can monitor system status, manage models, users, and system settings. Users can manage their own API keys and use the completion API.
+GPUStack supports users of two roles: `Admin` and `User`. Admins can monitor system status, manage models, users, 
+and system settings. Users can manage their own API keys and use the model API.
 
 ## Default Admin
 
-On bootstrap, GPUStack creates a default admin user. The initial password for the default admin is stored in `<data-dir>/initial_admin_password`. In the default setup, it should be `/var/lib/gpustack/initial_admin_password`. You can customize the default admin password by setting the `--bootstrap-password` parameter when starting `gpustack`.
+On bootstrap, GPUStack creates a default admin user. The initial password for the default admin is stored in 
+`<data-dir>/initial_admin_password`. In the default setup, it should be `/var/lib/gpustack/initial_admin_password`. 
+You can customize the default admin password by setting the `--bootstrap-password` parameter when starting `gpustack`.
 
 ## Create User
 
