@@ -1,13 +1,13 @@
 from typing import Callable
 from prometheus_client.registry import Collector
-from prometheus_client import make_asgi_app, REGISTRY
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 from prometheus_client.core import GaugeMetricFamily, InfoMetricFamily
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.worker.collector import WorkerStatusCollector
 import uvicorn
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 logger = logging.getLogger(__name__)
 
@@ -251,10 +251,12 @@ class MetricExporter(Collector):
             REGISTRY.register(self)
 
             # Start FastAPI server
-            metrics_app = make_asgi_app()
-
             app = FastAPI(title="GPUStack Worker", response_model_exclude_unset=True)
-            app.mount("/metrics", metrics_app)
+
+            @app.get("/metrics")
+            def metrics():
+                data = generate_latest(REGISTRY)
+                return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
             config = uvicorn.Config(
                 app,
