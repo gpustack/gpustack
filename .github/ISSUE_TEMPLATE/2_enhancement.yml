@@ -1,0 +1,50 @@
+name: 💡 Enhancement Request
+description: Suggest an improvement or enhancement to existing functionality
+title: "[Enhancement]: "
+labels: [ "enhancement" ]
+assignees: [ ]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        🙏 Thanks for suggesting an enhancement!  
+        Please provide details below to help us understand your idea better 🚀
+
+  - type: textarea
+    id: related-problem
+    attributes:
+      label: ❓ Is your enhancement related to a problem?
+      description: |
+        A clear and concise description of the problem.  
+        Example: "I'm always frustrated when [...]"
+      placeholder: Describe the problem your idea is solving...
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 💡 Describe the solution you'd like
+      description: A clear and concise description of what you want to happen.
+      placeholder: Explain your proposed solution...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 🔄 Alternatives you've considered
+      description: A clear and concise description of any alternative solutions or features you've considered.
+      placeholder: List possible alternatives...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 📎 Additional context
+      description: Add any other context or screenshots about the enhancement request here.
+      placeholder: Provide extra details, links, or screenshots...
+    validations:
+      required: false
