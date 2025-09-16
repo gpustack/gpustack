@@ -17,7 +17,7 @@
 
 ## Desktop Installer
 
-👉 [Go to detailed steps](desktop-installer.md#desktop-installer)
+Please refer to the desktop installer [documentation](desktop-installer.md#desktop-installer)
 
 ## pip Installation
 
