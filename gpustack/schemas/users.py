@@ -50,10 +50,12 @@ class UserBase(SQLModel):
         default=None, description="Role of the user, e.g., worker or cluster"
     )
     cluster_id: Optional[int] = Field(
-        sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE"))
+        default=None,
+        sa_column=Column(Integer, ForeignKey("clusters.id", ondelete="CASCADE")),
     )
     worker_id: Optional[int] = Field(
-        sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE"))
+        default=None,
+        sa_column=Column(Integer, ForeignKey("workers.id", ondelete="CASCADE")),
     )
 
 
