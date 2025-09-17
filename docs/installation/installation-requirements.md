@@ -53,6 +53,7 @@ GPUStack supports the following accelerators:
 - [x] Moore Threads MUSA
 - [x] Iluvatar Corex
 - [x] Cambricon MLU
+- [x] Insi Mars
 
 Ensure all necessary drivers and libraries are installed on the system prior to installing GPUStack.
 
@@ -104,6 +105,12 @@ To use Iluvatar Corex as an accelerator, ensure the following components are ins
 To use Cambricon MLU as an accelerator, ensure the following components are installed:
 
 - Cambricon Driver
+
+### Insi Mars
+
+To use Insi Mars as an accelerator, ensure the following components are installed:
+
+- Insi Mars Driver
 
 ## Networking Requirements
 
