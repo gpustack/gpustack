@@ -1,7 +1,6 @@
 name: ⚡ Other
 description: Anything else not covered by other issue types
 title: "[Other]: "
-labels: [ "other" ]
 assignees: [ ]
 
 body:

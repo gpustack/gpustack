@@ -1,7 +1,7 @@
 name: 📚 Documentation Update
 description: Request an update or improvement to GPUStack documentation
 title: "[Doc]: "
-labels: [ "documentation" ]
+type: "Documentation"
 assignees: [ ]
 
 body:

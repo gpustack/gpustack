@@ -1,7 +1,7 @@
 name: 💡 Enhancement Request
 description: Suggest an improvement or enhancement to existing functionality
 title: "[Enhancement]: "
-labels: [ "enhancement" ]
+type: "Enhancement"
 assignees: [ ]
 
 body:

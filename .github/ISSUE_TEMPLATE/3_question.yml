@@ -1,7 +1,7 @@
 name: ❓ Question
 description: Ask a question about GPUStack
 title: "[Question]: "
-labels: [ "question" ]
+type: "Question"
 assignees: [ ]
 
 body:

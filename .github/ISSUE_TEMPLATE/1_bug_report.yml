@@ -1,7 +1,7 @@
 name: 🐞 Bug Report
 description: Report a problem to help us improve
 title: "[Bug]: "
-labels: [ "bug" ]
+type: "Bug"
 assignees: [ ]
 
 body:
