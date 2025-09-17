@@ -1,0 +1,29 @@
+name: 📚 Documentation Update
+description: Request an update or improvement to GPUStack documentation
+title: "[Doc]: "
+type: "Documentation"
+assignees: [ ]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        📝 Need a documentation update? Please provide details below so we can improve the docs.
+
+  - type: textarea
+    id: related-problem
+    attributes:
+      label: ❓ Related Problem or Issue
+      description: Describe the problem or add the related issue ID if applicable.
+      placeholder: Optional, e.g., "Related to issue #123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: update-description
+    attributes:
+      label: 💡 Description of Update
+      description: A clear and concise description of the documentation update you'd like.
+      placeholder: Explain what you want to change in the docs...
+    validations:
+      required: true

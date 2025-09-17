@@ -1,0 +1,29 @@
+name: ❓ Question
+description: Ask a question about GPUStack
+title: "[Question]: "
+type: "Question"
+assignees: [ ]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        🙋‍♂️ Have a question about GPUStack? Please fill in the details below so we can help you quickly.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 📝 Your Question
+      description: Provide a clear and concise description of your question.
+      placeholder: Type your question here...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 🔍 Additional Context
+      description: Add any relevant details, examples, or screenshots to help us understand your question.
+      placeholder: Optional context...
+    validations:
+      required: false
