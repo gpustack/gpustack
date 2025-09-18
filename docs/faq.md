@@ -1391,7 +1391,7 @@ This process is the RPC server used for llama-box’s distributed inference. If 
 
 #### How can I resolve the error At most 1 image(s) may be provided in one request?
 
-This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` parameter in `Edit Model - Advanced - Backend Parameters` as needed. For example, `--limit-mm-per-prompt=image=4` means that it supports up to 4 images per inference request, see the details [here](https://docs.vllm.ai/en/latest/configuration/engine_args.html#-limit-mm-per-prompt).
+This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` parameter in `Edit Model - Advanced - Backend Parameters` as needed. For example, `--limit-mm-per-prompt={"image": 4}` means that it supports up to 4 images per inference request, see the details [here](https://docs.vllm.ai/en/latest/configuration/engine_args.html#-limit-mm-per-prompt).
 
 ---
 
