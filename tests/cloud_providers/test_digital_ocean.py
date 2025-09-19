@@ -4,25 +4,6 @@ from gpustack.cloud_providers.abstract import CloudInstanceCreate, InstanceState
 from gpustack.cloud_providers.abstract import Volume
 
 
-@pytest.mark.asyncio
-async def test_generate_user_data(do_client):
-    image_name = 'gpustack/worker:latest'
-    registration_token = 'test-token'
-    server_url = 'http://localhost:8080'
-    user_data = do_client.generate_user_data(
-        image_name=image_name,
-        registration_token=registration_token,
-        server_url=server_url,
-    )
-    assert user_data.startswith('#cloud-config')
-    assert 'docker run' in user_data
-    assert registration_token in user_data
-    assert server_url in user_data
-    import yaml
-
-    yaml.safe_load(user_data)  # Ensure it's valid YAML
-
-
 class DummyClient:
     def __init__(self, *args, **kwargs):
         pass

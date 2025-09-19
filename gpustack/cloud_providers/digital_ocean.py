@@ -1,6 +1,5 @@
 import logging
 import random
-import yaml
 import string
 import asyncio
 from functools import partial
@@ -200,25 +199,28 @@ class DigitalOceanClient(ProviderClientBase):
                 )
         return volume_ids
 
-    @classmethod
-    def generate_user_data(
-        cls, image_name: str, registration_token: str, server_url: str
-    ) -> str:
-        default_data = super().generate_user_data(
-            image_name=image_name,
-            registration_token=registration_token,
-            server_url=server_url,
+    async def determine_linux_distribution(self, image_id: str) -> Optional[str]:
+        image: Dict[str, Any] = await self._run_in_executor(
+            self.client.images.get, image_id
         )
-        # cloud-init must be parsed into a dict
-        yaml_data: Dict[str, Any] = yaml.safe_load(default_data)
-        command_list: List[str] = yaml_data.get('runcmd', [])
+        if image is None or 'image' not in image:
+            return None
+        # if image is not public, we cannot determine the distribution
+        if image['image'].get('public', False) is False:
+            return None
+        distribution: Optional[str] = image['image'].get('distribution', None)
+        if distribution is not None:
+            return distribution.lower()
+        return None
+
+    @classmethod
+    def modify_cloud_init(cls, user_data: Dict[str, Any]):
+        command_list: List[str] = user_data.get('runcmd', [])
         command_list.insert(
             0,
             "mkdir -p /var/lib/gpustack && curl -s http://169.254.169.254/metadata/v1/id > /var/lib/gpustack/external_id",
         )
-        data = yaml.safe_dump(yaml_data)
-        data = "#cloud-config\n" + data
-        return data
+        user_data['runcmd'] = command_list
 
     @classmethod
     def get_api_endpoint(cls) -> str:
