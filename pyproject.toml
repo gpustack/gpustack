@@ -69,6 +69,7 @@ python3-saml="1.16.0"
 lxml="5.2.1"
 xmlsec="1.3.14"
 pydo = "^0.15.0"
+jinja2 = "^3.1.6"
 [tool.poetry.group.dev.dependencies]
 installer = "0.7.0"
 coverage = {extras = ["toml"], version = "^7.5.1"}
