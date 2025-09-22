@@ -4589,6 +4589,23 @@ files = [
 ]
 
 [[package]]
+name = "mkdocs-static-i18n"
+version = "1.3.0"
+description = "MkDocs i18n plugin using static translation markdown files"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "mkdocs_static_i18n-1.3.0-py3-none-any.whl", hash = "sha256:7905d52fff71d2c108b6c344fd223e848ca7e39ddf319b70864dfa47dba85d6b"},
+    {file = "mkdocs_static_i18n-1.3.0.tar.gz", hash = "sha256:65731e1e4ec6d719693e24fee9340f5516460b2b7244d2a89bed4ce3cfa6a173"},
+]
+
+[package.dependencies]
+mkdocs = ">=1.5.2"
+
+[package.extras]
+material = ["mkdocs-material (>=9.2.5)"]
+
+[[package]]
 name = "mlx"
 version = "0.26.3"
 description = "A framework for machine learning on Apple silicon."
