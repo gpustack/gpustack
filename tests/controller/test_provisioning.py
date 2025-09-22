@@ -6,7 +6,7 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudCredential,
     ClusterProvider,
-    ClusterState,
+    ClusterStateEnum,
     CloudOptions,
 )
 from gpustack.server.controllers import WorkerProvisioningController
@@ -21,7 +21,7 @@ async def test_provisioning_flow(monkeypatch):
     cluster = Cluster(
         id=1, provider=ClusterProvider.DigitalOcean, region="nyc3", credential_id=1
     )
-    cluster.state = ClusterState.PROVISIONED | ClusterState.READY
+    cluster.state = ClusterStateEnum.READY
     pool = WorkerPool(
         id=1,
         cluster=cluster,

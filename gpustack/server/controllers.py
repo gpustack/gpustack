@@ -34,7 +34,7 @@ from gpustack.schemas.clusters import (
     CloudCredential,
     Credential,
     CredentialType,
-    ClusterState,
+    ClusterStateEnum,
     SSHKeyOptions,
 )
 from gpustack.server.bus import Event, EventType, event_bus
@@ -953,10 +953,8 @@ class WorkerProvisioningController:
                 provider_config["volume_ids"] = []
             worker.provider_config = provider_config
             worker.state = WorkerStateEnum.INITIALIZING
-            if (
-                worker.cluster.state & ClusterState.PROVISIONED
-            ) != ClusterState.PROVISIONED:
-                worker.cluster.state |= ClusterState.PROVISIONED
+            if worker.cluster.state != ClusterStateEnum.PROVISIONED:
+                worker.cluster.state = ClusterStateEnum.PROVISIONED
                 await worker.cluster.update(session=session, auto_commit=False)
             worker.state_message = "Initializing: installing required drivers and software. The worker will start automatically after setup."
         else:

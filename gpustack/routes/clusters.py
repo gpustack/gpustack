@@ -16,7 +16,7 @@ from gpustack.schemas.clusters import (
     ClusterPublic,
     ClustersPublic,
     Cluster,
-    ClusterState,
+    ClusterStateEnum,
     ClusterProvider,
     ClusterRegistrationTokenPublic,
     WorkerPoolCreate,
@@ -100,9 +100,9 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
         )
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
-    target_state = ClusterState.NONE.value
+    target_state = ClusterStateEnum.PROVISIONING
     if input.provider in [ClusterProvider.Kubernetes, ClusterProvider.Docker]:
-        target_state = ClusterState.READY.value | ClusterState.PROVISIONED.value
+        target_state = ClusterStateEnum.READY
     pools = input.worker_pools or []
     to_create_cluster = Cluster.model_validate(
         {
