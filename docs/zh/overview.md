@@ -1,3 +1,7 @@
+---
+title: 概览
+---
+
 <br>
 
 <p align="center">
@@ -20,9 +24,9 @@
 
 <p align="center">
   <script async defer src="https://buttons.github.io/buttons.js"></script>
-  <a class="github-button" href="https://github.com/gpustack/gpustack" data-show-count="true" data-size="large" aria-label="标星">标星</a>
-  <a class="github-button" href="https://github.com/gpustack/gpustack/subscription" data-icon="octicon-eye" data-size="large" aria-label="关注">关注</a>
-  <a class="github-button" href="https://github.com/gpustack/gpustack/fork" data-show-count="true" data-icon="octicon-repo-forked" data-size="large" aria-label="派生">派生</a>
+  <a class="github-button" href="https://github.com/gpustack/gpustack" data-show-count="true" data-size="large" aria-label="Star">Star</a>
+  <a class="github-button" href="https://github.com/gpustack/gpustack/subscription" data-icon="octicon-eye" data-size="large" aria-label="Watch">Watch</a>
+  <a class="github-button" href="https://github.com/gpustack/gpustack/fork" data-show-count="true" data-icon="octicon-repo-forked" data-size="large" aria-label="Fork">Fork</a>
 </p>
 
 GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。

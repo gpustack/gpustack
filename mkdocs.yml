@@ -49,7 +49,7 @@ plugins:
           name: 简体中文
           build: true
           nav:
-            - 概览: overview.md
+            - 概览: index.md
             - 快速入门: quickstart.md
             - 安装:
                 - 安装要求: installation/installation-requirements.md
