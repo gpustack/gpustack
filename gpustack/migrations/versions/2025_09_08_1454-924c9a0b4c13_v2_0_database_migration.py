@@ -31,7 +31,7 @@ sqlite_now = "datetime('now')"
 now_func = sa.func.now() if op.get_bind().dialect.name != 'sqlite' else sa.text(sqlite_now)
 now_sql_func = "NOW()" if op.get_bind().dialect.name != 'sqlite' else sqlite_now
 
-WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'PROVISIONED', 'DELETING', "ERROR"]
+WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'INITIALIZING', 'DELETING', "ERROR"]
 
 def upgrade() -> None:
     cluster_provider_enum = sa.Enum(
