@@ -1,6 +1,6 @@
 import secrets
 from datetime import datetime
-from enum import Flag, auto, Enum
+from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, computed_field
 from sqlmodel import (
@@ -15,7 +15,6 @@ from sqlmodel import (
     String,
 )
 import sqlalchemy as sa
-import sqlalchemy.types as types
 from typing import TYPE_CHECKING
 
 from gpustack.mixins import BaseModelMixin
@@ -187,29 +186,10 @@ class CloudCredentialPublic(CloudCredentialBase, PublicFields):
 CloudCredentialsPublic = PaginatedList[CloudCredentialPublic]
 
 
-class ClusterState(Flag):
-    NONE = 0
-    PROVISIONED = auto()
-    READY = auto()
-
-
-class ClusterStateType(types.TypeDecorator):
-    impl = types.Integer
-
-    def process_bind_param(self, value, dialect):
-        if isinstance(value, ClusterState):
-            return value.value
-        elif isinstance(value, int):
-            return value
-        elif value is None:
-            return 0
-        else:
-            raise ValueError("Invalid value for ClusterState")
-
-    def process_result_value(self, value, dialect):
-        if value is not None:
-            return ClusterState(value)
-        return ClusterState.NONE
+class ClusterStateEnum(str, Enum):
+    PROVISIONING = 'provisioning'
+    PROVISIONED = 'provisioned'
+    READY = 'ready'
 
 
 class ClusterUpdate(SQLModel):
@@ -230,11 +210,7 @@ class ClusterCreate(ClusterCreateBase):
 
 
 class ClusterBase(ClusterCreateBase):
-    state: ClusterState = Field(
-        sa_column=Column(
-            ClusterStateType(), default=ClusterState.NONE.value, nullable=False
-        )
-    )
+    state: ClusterStateEnum = ClusterStateEnum.PROVISIONING
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
