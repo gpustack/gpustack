@@ -91,6 +91,7 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         back_populates="worker_pool",
     )
     _workers: Optional[int] = None
+    _ready_workers: Optional[int] = None
 
     @computed_field()
     @property
@@ -98,6 +99,15 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         if not is_in_session(self):
             return 0 if not self._workers else self._workers
         return len(self.pool_workers) if self.pool_workers else 0
+
+    @computed_field()
+    @property
+    def ready_workers(self) -> int:
+        if not is_in_session(self):
+            return 0 if not self._workers else self._workers
+        if self.pool_workers is None or len(self.pool_workers) == 0:
+            return 0
+        return len([w for w in self.pool_workers if w.state.value == 'ready'])
 
     def __hash__(self):
         return hash(self.id)
@@ -107,13 +117,20 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
             return self.id == other.id
         return False
 
-    def __init__(self, workers: Optional[int] = None, **kwargs):
+    def __init__(
+        self,
+        workers: Optional[int] = None,
+        ready_workers: Optional[int] = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._workers = workers
+        self._ready_workers = ready_workers
 
 
 class WorkerPoolPublic(WorkerPoolBase, PublicFields):
     workers: int = Field(default=0)
+    ready_workers: int = Field(default=0)
 
 
 WorkerPoolsPublic = PaginatedList[WorkerPoolPublic]
