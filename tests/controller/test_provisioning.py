@@ -130,7 +130,7 @@ async def test_provisioning_flow(monkeypatch):
     await WorkerProvisioningController._provisioning_instance(
         session, client, worker, cfg
     )
-    assert worker.state == WorkerStateEnum.PROVISIONED
+    assert worker.state == WorkerStateEnum.INITIALIZING
 
 
 @pytest.mark.asyncio

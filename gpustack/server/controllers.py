@@ -952,15 +952,13 @@ class WorkerProvisioningController:
             if not hasattr(provider_config, "volume_ids"):
                 provider_config["volume_ids"] = []
             worker.provider_config = provider_config
-            worker.state = WorkerStateEnum.PROVISIONED
+            worker.state = WorkerStateEnum.INITIALIZING
             if (
                 worker.cluster.state & ClusterState.PROVISIONED
             ) != ClusterState.PROVISIONED:
                 worker.cluster.state |= ClusterState.PROVISIONED
                 await worker.cluster.update(session=session, auto_commit=False)
-            worker.state_message = (
-                "Instance provisioned, waiting for worker to register"
-            )
+            worker.state_message = "Initializing: installing required drivers and software. The worker will start automatically after setup."
         else:
             changed = False
         return changed
