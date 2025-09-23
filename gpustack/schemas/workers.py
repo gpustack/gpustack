@@ -196,6 +196,7 @@ class WorkerStatusPublic(BaseModel):
     hostname: str
     ip: str
     port: int
+    metrics_port: Optional[int] = None
 
     system_reserved: Optional[SystemReserved] = Field(
         sa_column=Column(pydantic_column_type(SystemReserved))
