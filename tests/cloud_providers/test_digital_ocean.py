@@ -116,6 +116,6 @@ async def test_delete_ssh_key(do_client):
 @pytest.mark.asyncio
 async def test_create_volumes_and_attach(do_client):
     volume_ids = await do_client.create_volumes_and_attach(
-        '12345', 'nyc3', Volume(size_gb=10, format='ext4')
+        12, '12345', 'nyc3', Volume(size_gb=10, format='ext4')
     )
     assert volume_ids == ['vol-1']
