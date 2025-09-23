@@ -171,7 +171,7 @@ worker_name: your_worker_name
 worker_ip: 192.168.1.101
 disable_metrics: false
 disable_rpc_servers: false
-metrics_port: 10151
+worker_metrics_port: 10151
 worker_port: 10150
 service_port_range: 40000-40063
 rpc_server_port_range: 40064-40095

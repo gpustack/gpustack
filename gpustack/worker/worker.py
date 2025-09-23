@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from contextlib import asynccontextmanager
 import os
 import logging
@@ -26,6 +27,7 @@ from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.model_file_manager import ModelFileManager
+from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
@@ -55,13 +57,14 @@ class Worker:
         self._is_embedded = is_embedded
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
-        self._exporter_enabled = not cfg.disable_metrics
+        self._exporter_enabled = not cfg.disable_worker_metrics
         self._async_tasks = []
         self._worker_ip = get_first_non_loopback_ip()
 
         self._worker_name = cfg.worker_name
         if self._worker_name is None:
             self._worker_name = self._get_worker_name()
+        self._runtime_metrics_cache = defaultdict()
 
         self._status_collector = WorkerStatusCollector(
             cfg=cfg,
@@ -78,9 +81,13 @@ class Worker:
 
         self._exporter = MetricExporter(
             cfg=cfg,
+            worker_name=self._worker_name,
             collector=self._status_collector,
             worker_ip_getter=self.worker_ip,
+            worker_id_getter=self.worker_id,
+            cache=self._runtime_metrics_cache,
         )
+
         self._ray_manager = RayManager(cfg=cfg)
 
     def _get_worker_name(self):
@@ -164,6 +171,14 @@ class Worker:
 
         self._register()
         if self._exporter_enabled:
+            # Start the runtime metrics cacher.
+            _runtime_metrics_aggregator = RuntimeMetricsAggregator(
+                cache=self._runtime_metrics_cache,
+                worker_id_getter=self.worker_id,
+                clientset=self._clientset,
+            )
+            run_periodically_in_thread(_runtime_metrics_aggregator.aggregate, 3, 30)
+
             # Start the metric exporter with retry.
             run_periodically_in_thread(self._exporter.start, 15)
 

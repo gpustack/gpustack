@@ -36,8 +36,9 @@ from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.process import add_signal_handlers_in_loop
+from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.registration import write_registration_token
-
+from gpustack.exporter.exporter import MetricExporter
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class Server:
         self._start_update_checker()
         self._start_model_usage_flusher()
         self._start_ray()
+        self._start_metrics_exporter()
 
         port = 80
         if self._config.port:
@@ -225,6 +227,16 @@ class Server:
     def _start_sub_processes(self):
         for process in self._sub_processes:
             process.start()
+
+    def _start_metrics_exporter(self):
+        if self._config.disable_metrics:
+            return
+
+        exporter = MetricExporter(cfg=self._config)
+        self._create_async_task(exporter.generate_metrics_cache())
+
+        # Start the metric exporter with retry.
+        run_periodically_in_thread(exporter.start, 15, 5)
 
     @staticmethod
     def _setup_data_dir(data_dir: str):
