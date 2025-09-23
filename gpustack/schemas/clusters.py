@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, field_validator
 from sqlmodel import (
     Field,
     Relationship,
@@ -48,6 +48,22 @@ class Volume(BaseModel):
     format: Optional[str] = None
     size_gb: Optional[int] = None
     name: Optional[str] = None
+
+    @field_validator("name")
+    def validate_name(cls, v):
+        if not v:
+            return v
+        # the worker id will be appended to the name to ensure uniqueness
+        # so the max length is 60 characters to leave room for the worker id
+        if len(v) > 60:
+            raise ValueError("Volume name too long, max 60 characters")
+        # allow alphanumeric characters, dashes, and periods
+        allowed_chars = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
+        )
+        if not all(c in allowed_chars for c in v):
+            raise ValueError("Volume name contains invalid characters")
+        return v
 
 
 class CloudOptions(BaseModel):
