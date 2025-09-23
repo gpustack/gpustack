@@ -171,6 +171,10 @@ class InferenceServer(ABC):
             if get_backend(self._model) == BackendEnum.VLLM:
                 set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
             elif get_backend(self._model) == BackendEnum.ASCEND_MINDIE:
+                # Enable service monitor mode for Ascend MindIE
+                # https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0316.html
+                env["MIES_SERVICE_MONITOR_MODE"] = "1"
+
                 set_ascend_mindie_env(env, vendor, gpu_indexes, gpu_devices, version)
 
         env.update(self._model.env or {})

@@ -1,0 +1,118 @@
+# -----------------------------
+# GPUSStack Full Metrics Definition
+# All metrics include full hierarchy labels
+# -----------------------------
+gpustack_metrics:
+  gpustack:num_requests_running:
+    type: Gauge
+    description: "Number of requests currently being processed."
+
+  gpustack:num_requests_waiting:
+    type: Gauge
+    description: "Number of requests waiting in the queue."
+
+  gpustack:num_requests_swapped:
+    type: Gauge
+    description: "Number of requests swapped out to CPU."
+
+  gpustack:prefix_cache_hit_rate:
+    type: Gauge
+    description: "Prefix cache hit rate"
+
+  gpustack:kv_cache_usage_ratio:
+    type: Gauge
+    description: "KV-cache usage ratio. 1.0 means fully used (100%)."
+
+  gpustack:prefix_cache_queries:
+    type: Counter
+    description: "Number of prefix cache queries, measured by the total queried tokens."
+
+  gpustack:prefix_cache_hits:
+    type: Counter
+    description: "Number of prefix cache hits, measured by the total hit tokens."
+
+  gpustack:prompt_tokens:
+    type: Counter
+    description: "Total number of prefill tokens processed."
+
+  gpustack:generation_tokens:
+    type: Counter
+    description: "Total number of generated tokens."
+
+  gpustack:request_prompt_tokens:
+    type: Histogram
+    description: "Number of prefill tokens processed."
+
+  gpustack:request_generation_tokens:
+    type: Histogram
+    description: "Number of generation tokens processed."
+
+  gpustack:time_to_first_token_seconds:
+    type: Histogram
+    description: "Time to generate first token."
+
+  gpustack:time_per_output_token_seconds:
+    type: Histogram
+    description: "Time per generated token."
+
+  gpustack:e2e_request_latency_seconds:
+    type: Histogram
+    description: "End-to-end request latency."
+
+  gpustack:request_success:
+    type: Counter
+    description: "Total number of successful requests."
+
+
+# -----------------------------
+# Runtime Metrics Mapping (user-configurable)
+# -----------------------------
+runtime_mapping:
+  vllm:
+    "*": # 0.10.2
+      vllm:num_requests_running: gpustack:num_requests_running
+      vllm:num_requests_waiting: gpustack:num_requests_waiting
+      vllm:num_requests_swapped: gpustack:num_requests_swapped
+      vllm:prefix_cache_hits: gpustack:prefix_cache_hit_rate
+      vllm:kv_cache_usage_perc: gpustack:kv_cache_usage_ratio
+      vllm:prompt_tokens: gpustack:prompt_tokens
+      vllm:generation_tokens: gpustack:generation_tokens
+      vllm:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
+      vllm:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
+      vllm:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
+      vllm:request_success: gpustack:request_success
+      vllm:request_prompt_tokens: gpustack:request_prompt_tokens
+      vllm:request_generation_tokens: gpustack:request_generation_tokens
+    ">=0.10.2":
+      vllm:inter_token_latency_seconds: gpustack:time_per_output_token_seconds # TODO(michelia): update to tpot after vllm updated
+    "<0.9.2":
+       vllm:gpu_prefix_cache_hits: gpustack:prefix_cache_hit_rate
+       vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
+
+  sglang:
+    "*":
+      sglang:num_running_reqs: gpustack:num_requests_running
+      sglang:num_queue_reqs: gpustack:num_requests_waiting
+      sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
+      sglang:token_usage: gpustack:gpu_cache_usage_perc
+      sglang:prompt_tokens_total: gpustack:prompt_tokens_total
+      sglang:generation_tokens_total: gpustack:generation_tokens_total
+      sglang:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
+      sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
+      sglang:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
+
+  ascend-mindie:
+    "*":
+      num_requests_running: gpustack:num_requests_running
+      num_requests_waiting: gpustack:num_requests_waiting
+      num_requests_swapped: gpustack:num_requests_swapped
+      npu_prefix_cache_hit_rate: gpustack:prefix_cache_hit_rate
+      npu_cache_usage_perc: gpustack:kv_cache_usage_ratio
+      prompt_tokens: gpustack:prompt_tokens
+      generation_tokens: gpustack:generation_tokens
+      time_to_first_token_seconds: gpustack:time_to_first_token_seconds
+      time_per_output_token_seconds: gpustack:time_per_output_token_seconds
+      e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
+      request_success: gpustack:request_success
+      request_prompt_tokens: gpustack:request_prompt_tokens
+      request_generation_tokens: gpustack:request_generation_tokens
