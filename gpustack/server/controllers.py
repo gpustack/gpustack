@@ -941,7 +941,7 @@ class WorkerProvisioningController:
                 )
         elif len(volumes) != len(volume_ids) and len(volumes) > 0:
             volume_ids = await client.create_volumes_and_attach(
-                worker.external_id, worker.cluster.region, *volumes
+                worker.id, worker.external_id, worker.cluster.region, *volumes
             )
             provider_config["volume_ids"] = volume_ids
             worker.provider_config = provider_config

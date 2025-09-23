@@ -80,7 +80,7 @@ class ProviderClientBase(ABC):
 
     @abstractmethod
     async def create_volumes_and_attach(
-        self, external_id: str, region: str, *volumes: Volume
+        self, worker_id: int, external_id: str, region: str, *volumes: Volume
     ) -> List[str]:
         """
         Create volumes and attach them to the instance.
