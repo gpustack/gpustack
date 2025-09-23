@@ -3,7 +3,7 @@ import random
 import string
 import asyncio
 from functools import partial
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from .abstract import (
     ProviderClientBase,
     CloudInstance,
@@ -201,19 +201,22 @@ class DigitalOceanClient(ProviderClientBase):
                 )
         return volume_ids
 
-    async def determine_linux_distribution(self, image_id: str) -> Optional[str]:
+    async def determine_linux_distribution(
+        self, image_id: str
+    ) -> Tuple[Optional[str], bool]:
         image: Dict[str, Any] = await self._run_in_executor(
             self.client.images.get, image_id
         )
         if image is None or 'image' not in image:
-            return None
+            return None, True
         # if image is not public, we cannot determine the distribution
         if image['image'].get('public', False) is False:
-            return None
+            return None, True
         distribution: Optional[str] = image['image'].get('distribution', None)
+        is_public: bool = image['image'].get('public', True)
         if distribution is not None:
-            return distribution.lower()
-        return None
+            return distribution.lower(), is_public
+        return None, is_public
 
     @classmethod
     def modify_cloud_init(cls, user_data: Dict[str, Any]):

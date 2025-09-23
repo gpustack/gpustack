@@ -79,6 +79,7 @@ async def test_provisioning_flow(monkeypatch):
     client.wait_for_public_ip = AsyncMock(
         return_value={"id": "instance-id", "ip_address": "1.2.3.4"}
     )
+    client.determine_linux_distribution = AsyncMock(return_value=("ubuntu", True))
     client.create_volumes_and_attach = AsyncMock(return_value=["vol-1", "vol-2"])
 
     # First call, should enter the SSH key creation process

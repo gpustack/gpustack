@@ -900,13 +900,14 @@ class WorkerProvisioningController:
         worker: Worker,
         cfg: Config,
     ) -> str:
-        distrubution = await client.determine_linux_distribution(
+        distrubution, public = await client.determine_linux_distribution(
             worker.worker_pool.os_image
         )
         user_data = construct_user_data(
             config=cfg,
             worker=worker,
             distribution=distrubution,
+            public=public,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
