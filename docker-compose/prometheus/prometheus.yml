@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+scrape_configs:
+- job_name: prometheus
+  honor_timestamps: true
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  metrics_path: /metrics
+  scheme: http
+  static_configs:
+  - targets:
+    - prometheus:9090
+- job_name: gpustack-workers
+  scrape_interval: 5s
+  http_sd_configs:
+  - url: 'http://gpustack:80/metrics/targets'
+    refresh_interval: 1m
+- job_name: gpustack-server
+  scrape_interval: 10s
+  static_configs:
+  - targets: ['gpustack:80']
