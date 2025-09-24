@@ -129,10 +129,12 @@ GPUStack uses the following ports for communication:
 
 #### Server Ports
 
-| Port    | Description                                                              |
-| ------- | ------------------------------------------------------------------------ |
-| TCP 80  | Default port for the GPUStack UI and API endpoints                       |
-| TCP 443 | Default port for the GPUStack UI and API endpoints (when TLS is enabled) |
+| Port      | Description                                                              |
+| --------- | ------------------------------------------------------------------------ |
+| TCP 80    | Default port for the GPUStack UI and API endpoints                       |
+| TCP 443   | Default port for the GPUStack UI and API endpoints (when TLS is enabled) |
+| TCP 10161 | Default port for exposing GPUStack server metrics                        |
+
 
 The following ports are used on GPUStack server when Ray is enabled for distributed vLLM across workers:
 
