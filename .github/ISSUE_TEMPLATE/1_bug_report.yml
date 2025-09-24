@@ -54,7 +54,7 @@ body:
   - type: input
     id: gpustack-version
     attributes:
-      label: 📦 GPUStack version
+      label: GPUStack version
       placeholder: e.g. v0.7.1
     validations:
       required: true
@@ -62,7 +62,7 @@ body:
   - type: input
     id: os
     attributes:
-      label: 💻 Operating System
+      label: Operating System
       placeholder: e.g. Ubuntu 22.04
     validations:
       required: true
