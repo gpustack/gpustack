@@ -111,6 +111,14 @@ jobs:
             platforms: "linux/amd64"
             tag_suffix: "-corex"
             build_args: []
+                    #
+          # Metax MACA
+          #
+          - device: maca
+            dockerfile: "Dockerfile.maca"
+            platforms: "linux/amd64"
+            tag_suffix: "-maca"
+            build_args: []
 
     steps:
       - name: Checkout
