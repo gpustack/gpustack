@@ -34,6 +34,14 @@
 #   default is empty, which means it will be set automatically based on the CUDA version.
 # - FLASHINFER_VERSION is the version of FlashInfer,
 #   which is used to build the FlashInfer wheel.
+# - FLASHINFER_BUILD_MAX_JOBS is the maximum number of jobs to use when building FlashInfer,
+#   which is used to limit the number of parallel jobs when building FlashInfer,
+#   default is empty, which means it will be set to the number of CPU cores.
+# - XFORMERS_VERSION is the version of xFormers,
+#   which is used to build the xFormers wheel.
+# - XFORMERS_BUILD_MAX_JOBS is the maximum number of jobs to use when building xFormers,
+#   which is used to limit the number of parallel jobs when building xFormers,
+#   default is empty, which means it will be set to the number of CPU cores.
 # - PYTHON_VERSION is the version of Python,
 #   which should be properly set, it must be 3.x.
 ARG CUDA_VERSION=12.4.1
@@ -42,6 +50,8 @@ ARG TORCH_VERSION=2.7.1
 ARG TORCH_CUDA_ARCH_LIST=""
 ARG FLASHINFER_VERSION=0.2.11
 ARG FLASHINFER_BUILD_MAX_JOBS=""
+ARG XFORMERS_VERSION=0.0.31
+ARG XFORMERS_BUILD_MAX_JOBS=""
 ARG PYTHON_VERSION=3.11
 
 # Stage Base
@@ -618,6 +628,79 @@ EOT
 EOF
 
 #
+# Stage xFormers Build (linux/amd64 only)
+#
+# Example build command:
+#   docker build --platform=linux/amd64 --tag=gpustack/gpustack:cuda-xformers-build --file=pack/Dockerfile --target=xformers-build --progress=plain .
+#
+
+FROM base-build AS xformers-build
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+ARG TORCH_CUDA_ARCH_LIST
+ARG XFORMERS_VERSION
+ARG XFORMERS_BUILD_MAX_JOBS
+
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
+    XFORMERS_VERSION=${XFORMERS_VERSION} \
+    XFORMERS_BUILD_MAX_JOBS=${XFORMERS_BUILD_MAX_JOBS}
+
+## Build xFormers
+
+RUN <<EOF
+    # xFormers
+
+    if [[ "${TARGETARCH}" == "arm64" ]]; then
+        echo "Skipping xFormers build for ${TARGETARCH}..."
+        exit 0
+    fi
+
+    # Prepare
+    IFS="." read -r CUDA_MAJOR CUDA_MINOR CUDA_PATCH <<< "${CUDA_DEVEL_VERSION}"
+    IFS="." read -r TORCH_MAJOR TORCH_MINOR TORCH_PATCH <<< "${TORCH_VERSION}"
+    echo "Building xFormers ${FLASHINFER_VERSION} wheel for CUDA ${CUDA_MAJOR}.${CUDA_MINOR} and PyTorch ${TORCH_MAJOR}.${TORCH_MINOR}..."
+
+    # Download
+    git clone --depth 1 --recursive --shallow-submodules \
+        --branch v${XFORMERS_VERSION} \
+        https://github.com/facebookresearch/xformers.git /tmp/xformers
+
+    # Build
+    export MAX_JOBS="${FLASHINFER_BUILD_MAX_JOBS}"
+    if [[ -z "${MAX_JOBS}" ]]; then
+        export MAX_JOBS="$(nproc)"
+    fi
+    if (( $(echo "${MAX_JOBS} > 4" | bc -l) )); then
+        export MAX_JOBS="4"
+    fi
+    export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
+    if [[ -z "${TORCH_CUDA_ARCH_LIST}" ]]; then
+        if (( $(echo "${CUDA_MAJOR} < 12" | bc -l) )); then
+            export TORCH_CUDA_ARCH_LIST="7.5 8.0+PTX 8.9"
+        elif (( $(echo "${CUDA_MAJOR}.${CUDA_MINOR} < 12.8" | bc -l) )); then
+            export TORCH_CUDA_ARCH_LIST="7.5 8.0+PTX 8.9 9.0+PTX"
+        else
+            export TORCH_CUDA_ARCH_LIST="7.5 8.0+PTX 8.9 9.0+PTX 10.0+PTX 12.0"
+        fi
+    fi
+    echo "Building xFormers with the following environment variables:"
+    echo "  MAX_JOBS: ${MAX_JOBS}"
+    echo "  TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST}"
+    pushd /tmp/xformers \
+      && python -v -m build --no-isolation --wheel \
+      && tree -hs /tmp/xformers/dist \
+      && mv /tmp/xformers/dist /workspace
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+#
 # Stage GPUStack
 #
 # Example build command:
@@ -660,13 +743,6 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
     IFS="." read -r CUDA_MAJOR CUDA_MINOR CUDA_PATCH <<< "${CUDA_DEVEL_VERSION}"
     pip install ${WHEEL_PACKAGE} --extra-index-url https://download.pytorch.org/whl/cu${CUDA_MAJOR}${CUDA_MINOR}
 
-    if [[ "${TARGETARCH}" == "amd64" ]]; then
-        # vllm v0.10.0+ requires xformers==0.0.31, which lacks support for NVIDIA 5090 GPUs when running VL models.
-        # Apply downgrade as a temporary solution.
-        # See https://github.com/gpustack/gpustack/issues/2769
-        pip install --force-reinstall --no-dependencies xformers==0.0.30
-    fi
-
     # Download tools
     gpustack download-tools --device cuda
     tree -hs "$(pip show gpustack | grep Location: | head -n 1 | cut -d" " -f 2)/gpustack/third_party"
@@ -684,7 +760,7 @@ RUN --mount=type=bind,target=/workspace/gpustack,rw <<EOF
         && rm -rf /workspace/gpustack/dist
 EOF
 
-## Install FlashInfer as a Python library for GPUStack if existed
+## Reinstall FlashInfer as a Python library for GPUStack if existed
 
 RUN --mount=type=bind,from=flashinfer-build,source=/,target=/flashinfer,rw <<EOF
     # FlashInfer
@@ -696,6 +772,27 @@ RUN --mount=type=bind,from=flashinfer-build,source=/,target=/flashinfer,rw <<EOF
 
     # Install
     pip install /flashinfer/workspace/*.whl --force-reinstall --no-dependencies
+
+    # Review
+    pip freeze
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Reinstall xFormers as a Python library for GPUStack if existed
+
+RUN --mount=type=bind,from=xformers-build,source=/,target=/xformers,rw <<EOF
+    # FlashInfer
+
+    if [[ ! -d /xformers/workspace ]]; then
+        echo "Skipping xFormers installation for ${TARGETARCH}..."
+        exit 0
+    fi
+
+    # Install
+    pip install /xformers/workspace/*.whl --force-reinstall --no-dependencies
 
     # Review
     pip freeze
