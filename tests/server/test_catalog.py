@@ -95,6 +95,8 @@ def test_model_catalog_modelscope():
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
 def match_model_scope_file_paths_with_retry(
-    model_scope_model_id, model_scope_file_path
+    model_scope_model_id, model_scope_file_path, model=None
 ):
-    return match_model_scope_file_paths(model_scope_model_id, model_scope_file_path)
+    return match_model_scope_file_paths(
+        model_scope_model_id, model_scope_file_path, model=model
+    )
