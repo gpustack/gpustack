@@ -111,6 +111,14 @@ jobs:
             platforms: "linux/amd64"
             tag_suffix: "-corex"
             build_args: []
+          #
+          # Insi Mars
+          #
+          - device: mars
+            dockerfile: "Dockerfile.mars"
+            platforms: "linux/amd64"
+            tag_suffix: "-mars"
+            build_args: []
 
     steps:
       - name: Checkout
