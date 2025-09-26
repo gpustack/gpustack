@@ -31,9 +31,15 @@ sqlite_now = "datetime('now')"
 now_func = sa.func.now() if op.get_bind().dialect.name != 'sqlite' else sa.text(sqlite_now)
 now_sql_func = "NOW()" if op.get_bind().dialect.name != 'sqlite' else sqlite_now
 
-WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'PROVISIONED', 'DELETING', "ERROR"]
+WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'INITIALIZING', 'DELETING', "ERROR"]
 
 def upgrade() -> None:
+    cluster_state_enum = sa.Enum(
+        'PROVISIONING',
+        'PROVISIONED',
+        'READY',
+        name='clusterstateenum',
+    )
     cluster_provider_enum = sa.Enum(
         'Docker',
         'Kubernetes',
@@ -63,7 +69,7 @@ def upgrade() -> None:
         sa.Column('provider', cluster_provider_enum, nullable=False, default='Docker'),
         sa.Column('credential_id', sa.Integer(), sa.ForeignKey('cloud_credentials.id'), nullable=True),
         sa.Column('region', sa.String(length=255), nullable=True),
-        sa.Column('state', sa.Integer(), nullable=False, default=0),
+        sa.Column('state', cluster_state_enum, nullable=False, default='PROVISIONING'),
         sa.Column('state_message', sa.Text(), nullable=True),
         sa.Column('hashed_suffix', sa.String(length=12), nullable=False),
         sa.Column('registration_token', sa.String(length=58), nullable=False),
@@ -76,7 +82,7 @@ def upgrade() -> None:
     # stat == 3 means PROVISIONED and READY
     op.execute(f"""
         INSERT INTO clusters (name, description, provider, state, hashed_suffix, registration_token, created_at, updated_at)
-        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 3, '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func}, {now_sql_func})
+        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func}, {now_sql_func})
     """)
 
     op.create_table(
@@ -297,6 +303,13 @@ def downgrade() -> None:
     op.drop_table('cloud_credentials')
     cluster_provider_enum = sa.Enum('Docker', 'Kubernetes', 'DigitalOcean', name='clusterprovider')
     cluster_provider_enum.drop(op.get_bind(), checkfirst=True)
+    cluster_state_enum = sa.Enum(
+        'PROVISIONING',
+        'PROVISIONED',
+        'READY',
+        name='clusterstateenum',
+    )
+    cluster_state_enum.drop(op.get_bind(), checkfirst=True)
 
     conn = op.get_bind()
     if conn.dialect.name == "postgresql":

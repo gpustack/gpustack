@@ -141,7 +141,7 @@ class WorkerStateEnum(str, Enum):
     UNREACHABLE = "unreachable"
     PENDING = "pending"
     PROVISIONING = "provisioning"
-    PROVISIONED = "provisioned"
+    INITIALIZING = "initializing"
     DELETING = "deleting"
     ERROR = "error"
 
@@ -150,7 +150,7 @@ class WorkerStateEnum(str, Enum):
         return self in [
             WorkerStateEnum.PENDING,
             WorkerStateEnum.PROVISIONING,
-            WorkerStateEnum.PROVISIONED,
+            WorkerStateEnum.INITIALIZING,
             WorkerStateEnum.DELETING,
             WorkerStateEnum.ERROR,
         ]
@@ -311,7 +311,7 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
         4. wait_for_public_ip
         5. [optional] create_volumes_and_attach
         """
-        if self.state == WorkerStateEnum.PROVISIONED:
+        if self.state == WorkerStateEnum.INITIALIZING:
             return "5/5"
         if (
             self.state != WorkerStateEnum.PROVISIONING

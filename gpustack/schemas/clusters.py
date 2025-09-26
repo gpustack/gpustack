@@ -1,8 +1,8 @@
 import secrets
 from datetime import datetime
-from enum import Flag, auto, Enum
+from enum import Enum
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, field_validator
 from sqlmodel import (
     Field,
     Relationship,
@@ -15,7 +15,6 @@ from sqlmodel import (
     String,
 )
 import sqlalchemy as sa
-import sqlalchemy.types as types
 from typing import TYPE_CHECKING
 
 from gpustack.mixins import BaseModelMixin
@@ -49,6 +48,22 @@ class Volume(BaseModel):
     format: Optional[str] = None
     size_gb: Optional[int] = None
     name: Optional[str] = None
+
+    @field_validator("name")
+    def validate_name(cls, v):
+        if not v:
+            return v
+        # the worker id will be appended to the name to ensure uniqueness
+        # so the max length is 60 characters to leave room for the worker id
+        if len(v) > 60:
+            raise ValueError("Volume name too long, max 60 characters")
+        # allow alphanumeric characters, dashes, and periods
+        allowed_chars = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
+        )
+        if not all(c in allowed_chars for c in v):
+            raise ValueError("Volume name contains invalid characters")
+        return v
 
 
 class CloudOptions(BaseModel):
@@ -91,6 +106,7 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         back_populates="worker_pool",
     )
     _workers: Optional[int] = None
+    _ready_workers: Optional[int] = None
 
     @computed_field()
     @property
@@ -98,6 +114,15 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         if not is_in_session(self):
             return 0 if not self._workers else self._workers
         return len(self.pool_workers) if self.pool_workers else 0
+
+    @computed_field()
+    @property
+    def ready_workers(self) -> int:
+        if not is_in_session(self):
+            return 0 if not self._workers else self._workers
+        if self.pool_workers is None or len(self.pool_workers) == 0:
+            return 0
+        return len([w for w in self.pool_workers if w.state.value == 'ready'])
 
     def __hash__(self):
         return hash(self.id)
@@ -107,13 +132,20 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
             return self.id == other.id
         return False
 
-    def __init__(self, workers: Optional[int] = None, **kwargs):
+    def __init__(
+        self,
+        workers: Optional[int] = None,
+        ready_workers: Optional[int] = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._workers = workers
+        self._ready_workers = ready_workers
 
 
 class WorkerPoolPublic(WorkerPoolBase, PublicFields):
     workers: int = Field(default=0)
+    ready_workers: int = Field(default=0)
 
 
 WorkerPoolsPublic = PaginatedList[WorkerPoolPublic]
@@ -170,29 +202,10 @@ class CloudCredentialPublic(CloudCredentialBase, PublicFields):
 CloudCredentialsPublic = PaginatedList[CloudCredentialPublic]
 
 
-class ClusterState(Flag):
-    NONE = 0
-    PROVISIONED = auto()
-    READY = auto()
-
-
-class ClusterStateType(types.TypeDecorator):
-    impl = types.Integer
-
-    def process_bind_param(self, value, dialect):
-        if isinstance(value, ClusterState):
-            return value.value
-        elif isinstance(value, int):
-            return value
-        elif value is None:
-            return 0
-        else:
-            raise ValueError("Invalid value for ClusterState")
-
-    def process_result_value(self, value, dialect):
-        if value is not None:
-            return ClusterState(value)
-        return ClusterState.NONE
+class ClusterStateEnum(str, Enum):
+    PROVISIONING = 'provisioning'
+    PROVISIONED = 'provisioned'
+    READY = 'ready'
 
 
 class ClusterUpdate(SQLModel):
@@ -213,11 +226,7 @@ class ClusterCreate(ClusterCreateBase):
 
 
 class ClusterBase(ClusterCreateBase):
-    state: ClusterState = Field(
-        sa_column=Column(
-            ClusterStateType(), default=ClusterState.NONE.value, nullable=False
-        )
-    )
+    state: ClusterStateEnum = ClusterStateEnum.PROVISIONING
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )

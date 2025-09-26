@@ -73,7 +73,7 @@ echo "$(date): gpustack worker container started" >> /var/log/post-reboot.log
 
 
 def construct_user_data(
-    config: Config, worker: Worker, distribution: Optional[str]
+    config: Config, worker: Worker, distribution: Optional[str], public: bool
 ) -> str:
     """
     Construct the cloud_init data for the worker.
@@ -92,7 +92,7 @@ def construct_user_data(
         registration_token=worker.cluster.registration_token,
         server_url=server_url,
     )
-    user_data = user_data_distribution(distribution=distribution)
+    user_data = user_data_distribution(public=public, distribution=distribution)
     to_write_files: list[dict] = user_data.setdefault('write_files', [])
     to_write_files.insert(
         0,

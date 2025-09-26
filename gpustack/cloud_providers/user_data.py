@@ -93,8 +93,8 @@ power_state:
 debian_driver_map = {"debian": "nvidia-open", "ubuntu": "nvidia-driver-570"}
 
 
-def user_data_distribution(distribution: Optional[str]) -> Dict[str, Any]:
-    if distribution in ["ubuntu", "debian"]:
+def user_data_distribution(distribution: Optional[str], public: bool) -> Dict[str, Any]:
+    if public and distribution in ["ubuntu", "debian"]:
         return yaml.safe_load(
             debian_user_data.format(driver_name=debian_driver_map[distribution])
         )

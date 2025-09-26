@@ -6,7 +6,7 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudCredential,
     ClusterProvider,
-    ClusterState,
+    ClusterStateEnum,
     CloudOptions,
 )
 from gpustack.server.controllers import WorkerProvisioningController
@@ -21,7 +21,7 @@ async def test_provisioning_flow(monkeypatch):
     cluster = Cluster(
         id=1, provider=ClusterProvider.DigitalOcean, region="nyc3", credential_id=1
     )
-    cluster.state = ClusterState.PROVISIONED | ClusterState.READY
+    cluster.state = ClusterStateEnum.READY
     pool = WorkerPool(
         id=1,
         cluster=cluster,
@@ -79,6 +79,7 @@ async def test_provisioning_flow(monkeypatch):
     client.wait_for_public_ip = AsyncMock(
         return_value={"id": "instance-id", "ip_address": "1.2.3.4"}
     )
+    client.determine_linux_distribution = AsyncMock(return_value=("ubuntu", True))
     client.create_volumes_and_attach = AsyncMock(return_value=["vol-1", "vol-2"])
 
     # First call, should enter the SSH key creation process
@@ -130,7 +131,7 @@ async def test_provisioning_flow(monkeypatch):
     await WorkerProvisioningController._provisioning_instance(
         session, client, worker, cfg
     )
-    assert worker.state == WorkerStateEnum.PROVISIONED
+    assert worker.state == WorkerStateEnum.INITIALIZING
 
 
 @pytest.mark.asyncio

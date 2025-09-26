@@ -22,7 +22,7 @@ from gpustack.schemas.workers import (
     WorkerStatusPublic,
     WorkerStateEnum,
 )
-from gpustack.schemas.clusters import Cluster, Credential, ClusterState
+from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
@@ -199,8 +199,8 @@ async def create_worker(
         to_create_apikey.user_id = created_user.id
         to_create_apikey.user = created_user
         await ApiKey.create(session=session, source=to_create_apikey, auto_commit=False)
-        if (cluster.state & ClusterState.READY) != ClusterState.READY:
-            cluster.state |= ClusterState.READY
+        if cluster.state != ClusterStateEnum.READY:
+            cluster.state = ClusterStateEnum.READY
             await cluster.update(session=session, auto_commit=False)
         await session.commit()
         await session.refresh(worker)

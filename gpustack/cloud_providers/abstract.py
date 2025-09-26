@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from abc import ABC, abstractmethod
 from enum import Enum
 from gpustack.schemas.clusters import Volume
@@ -80,7 +80,7 @@ class ProviderClientBase(ABC):
 
     @abstractmethod
     async def create_volumes_and_attach(
-        self, external_id: str, region: str, *volumes: Volume
+        self, worker_id: int, external_id: str, region: str, *volumes: Volume
     ) -> List[str]:
         """
         Create volumes and attach them to the instance.
@@ -89,7 +89,9 @@ class ProviderClientBase(ABC):
         pass
 
     @abstractmethod
-    async def determine_linux_distribution(self, image_id: str) -> Optional[str]:
+    async def determine_linux_distribution(
+        self, image_id: str
+    ) -> Tuple[Optional[str], bool]:
         """
         Determine the linux distribution of the instance.
         Return values can be: "ubuntu", "debian", "centos", "rocky", "almalinux", "unknown"

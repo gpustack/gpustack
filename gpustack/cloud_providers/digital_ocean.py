@@ -3,7 +3,7 @@ import random
 import string
 import asyncio
 from functools import partial
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from .abstract import (
     ProviderClientBase,
     CloudInstance,
@@ -142,7 +142,7 @@ class DigitalOceanClient(ProviderClientBase):
         await self._run_in_executor(self.client.ssh_keys.delete, id)
 
     async def create_volumes_and_attach(
-        self, external_id: str, region: str, *volumes: Volume
+        self, worker_id: int, external_id: str, region: str, *volumes: Volume
     ) -> List[str]:
         # validate volumes
         volume_ids = []
@@ -150,12 +150,12 @@ class DigitalOceanClient(ProviderClientBase):
             return volume_ids
         for idx, volume in enumerate(volumes):
             size_gb = volume.size_gb
-            if size_gb is None or not isinstance(size_gb, int) or size_gb <= 0:
+            if size_gb is None or size_gb <= 0:
                 raise ValueError(
                     f"Volume #{idx} missing or invalid 'size_gb': {volume}"
                 )
             format = volume.format
-            if format is None or not isinstance(format, str):
+            if format is None or format not in ['ext4', 'xfs']:
                 raise ValueError(f"Volume #{idx} missing or invalid 'format': {volume}")
             if len(format) > (16 - 2 - 2 - 2):
                 # 16 is max label length, 2 for underscores, 2 for index digits and 2 for hashed prefix
@@ -166,7 +166,9 @@ class DigitalOceanClient(ProviderClientBase):
             label = f"{random_prefix}_{volume.format}_{index}"
             if len(label) > 16:
                 label = label[-16:]
-            name = volume.name if volume.name else label.replace('_', '-')
+            name = (
+                f'{volume.name}-{worker_id}' if volume.name else label.replace('_', '-')
+            )
             logger.info(
                 f"Creating volume {name} of size {volume.size_gb}GB in region {region}"
             )
@@ -199,19 +201,22 @@ class DigitalOceanClient(ProviderClientBase):
                 )
         return volume_ids
 
-    async def determine_linux_distribution(self, image_id: str) -> Optional[str]:
+    async def determine_linux_distribution(
+        self, image_id: str
+    ) -> Tuple[Optional[str], bool]:
         image: Dict[str, Any] = await self._run_in_executor(
             self.client.images.get, image_id
         )
         if image is None or 'image' not in image:
-            return None
+            return None, True
         # if image is not public, we cannot determine the distribution
         if image['image'].get('public', False) is False:
-            return None
+            return None, True
         distribution: Optional[str] = image['image'].get('distribution', None)
+        is_public: bool = image['image'].get('public', True)
         if distribution is not None:
-            return distribution.lower()
-        return None
+            return distribution.lower(), is_public
+        return None, is_public
 
     @classmethod
     def modify_cloud_init(cls, user_data: Dict[str, Any]):
