@@ -70,7 +70,7 @@ def get_docs_to_translate():
             if en_doc.suffix != ".md":
                 print(f"Skipping {i}, not a markdown file", flush=True)
                 continue
-            if not en_doc.exists():
+            if not en_doc.is_file():
                 print(f"Skipping {i}, file not exists", flush=True)
                 continue
             zh_doc = base_dir / "docs/zh" / i
