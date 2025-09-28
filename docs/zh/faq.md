@@ -4,8 +4,7 @@
 
 ### 混合集群支持
 
-GPUStack 支持混合的 Linux、Windows 与 macOS 节点，以及 x86_64 与 arm64 架构。此外，还支持多种 GPU/加速器，包括 NVIDIA、Apple
-Metal、AMD、Ascend、Hygon、Moore Threads、Iluvatar 和 Cambricon。
+GPUStack 支持混合的 Linux、Windows 与 macOS 节点，以及 x86_64 与 arm64 架构。此外，还支持多种 GPU/加速器，包括 NVIDIA、Apple Metal、AMD、Ascend、Hygon、Moore Threads、Iluvatar 和 Cambricon。
 
 ### 分布式推理支持
 
@@ -26,14 +25,15 @@ Metal、AMD、Ascend、Hygon、Moore Threads、Iluvatar 和 Cambricon。
 
 - [x] llama-box
 
-> 相关文档：
->
-> **vLLM**：[分布式推理与服务](https://docs.vllm.ai/en/latest/serving/distributed_serving.html)
->
-> **MindIE**：[多节点推理](https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html)
->
-> **llama-box**：[使用 llama.cpp 进行分布式 LLM 推理](https://github.com/ggml-org/llama.cpp/tree/master/examples/rpc)
->
+!!! tip
+
+    相关文档：
+
+    **vLLM**：[分布式推理与服务](https://docs.vllm.ai/en/latest/serving/distributed_serving.html)
+
+    **MindIE**：[多节点推理](https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html)
+
+    **llama-box**：[使用 llama.cpp 进行分布式 LLM 推理](https://github.com/ggml-org/llama.cpp/tree/master/examples/rpc)
 
 ## 安装
 
@@ -41,96 +41,96 @@ Metal、AMD、Ascend、Hygon、Moore Threads、Iluvatar 和 Cambricon。
 
 默认情况下，GPUStack 服务使用 80 端口。你可以通过以下方式修改：
 
-#### Docker
+=== "Docker"
 
-在 `docker run` 命令末尾添加 `--port` 参数，例如：
+    在 `docker run` 命令末尾添加 `--port` 参数，例如：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --port 9090
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --port 9090
+    ```
 
-#### Installer
+=== "Installer"
 
-点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Quick Config`，修改端口后重启服务生效。
+    点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Quick Config`，修改端口后重启服务生效。
 
-![Quick Config](../assets/faq/quick-config.png)
+    ![Quick Config](./assets/faq/quick-config.png)
 
-#### pip
+=== "pip"
 
-在 `gpustack start` 命令末尾添加 `--port` 参数：
+    在 `gpustack start` 命令末尾添加 `--port` 参数：
 
-```bash
-gpustack start --port 9090
-```
+    ```bash
+    gpustack start --port 9090
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-添加 `--port` 参数：
+    添加 `--port` 参数：
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --port 9090
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --port 9090
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-添加 `--port` 参数：
+    添加 `--port` 参数：
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--port</string>
-    <string>9090</string>
-  </array>
-```
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--port</string>
+        <string>9090</string>
+      </array>
+    ```
 
-保存并启动 GPUStack：
+    保存并启动 GPUStack：
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-nssm edit GPUStack
-```
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-在 `start` 后添加参数：
+    在 `start` 后添加参数：
 
-```
-start --port 9090
-```
+    ```
+    start --port 9090
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
@@ -138,112 +138,112 @@ Restart-Service -Name "GPUStack"
 
 运行 GPUStack 时可通过 `--worker-name` 参数设置为自定义名称：
 
-#### Docker
+=== "Docker"
 
-在 `docker run` 命令末尾添加 `--worker-name` 参数，例如：
+    在 `docker run` 命令末尾添加 `--worker-name` 参数，例如：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --worker-name New-Name
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --worker-name New-Name
+    ```
 
-#### Installer
+=== "Installer"
 
-- macOS
+    - macOS
 
-点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `worker_name` 参数：
+    点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `worker_name` 参数：
 
-```yaml
-worker_name: New-Name
-```
+    ```yaml
+    worker_name: New-Name
+    ```
 
-保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-- Windows
+    - Windows
 
-右键系统托盘中的 `GPUStack 图标`，选择 `Config Directory` 打开资源管理器。编辑 `config.yaml` 文件，添加 `worker_name` 参数：
+    右键系统托盘中的 `GPUStack 图标`，选择 `Config Directory` 打开资源管理器。编辑 `config.yaml` 文件，添加 `worker_name` 参数：
 
-```yaml
-worker_name: New-Name
-```
+    ```yaml
+    worker_name: New-Name
+    ```
 
-保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-#### pip
+=== "pip"
 
-在 `gpustack start` 命令末尾添加 `--worker-name` 参数：
+    在 `gpustack start` 命令末尾添加 `--worker-name` 参数：
 
-```bash
-gpustack start --worker-name New-Name
-```
+    ```bash
+    gpustack start --worker-name New-Name
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-添加 `--worker-name` 参数：
+    添加 `--worker-name` 参数：
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --worker-name New-Name
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --worker-name New-Name
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-添加 `--worker-name` 参数：
+    添加 `--worker-name` 参数：
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--worker-name</string>
-    <string>New-Name</string>
-  </array>
-```
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--worker-name</string>
+        <string>New-Name</string>
+      </array>
+    ```
 
-保存并启动 GPUStack：
+    保存并启动 GPUStack：
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-nssm edit GPUStack
-```
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-在 `start` 后添加参数：
+    在 `start` 后添加参数：
 
-```
-start --worker-name New-Name
-```
+    ```
+    start --worker-name New-Name
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
@@ -251,446 +251,444 @@ Restart-Service -Name "GPUStack"
 
 运行 GPUStack 时可通过 `--worker-ip` 参数设置为自定义 IP：
 
-#### Docker
+=== "Docker"
 
-在 `docker run` 命令末尾添加 `--worker-ip` 参数，例如：
+    在 `docker run` 命令末尾添加 `--worker-ip` 参数，例如：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --worker-ip xx.xx.xx.xx
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --worker-ip xx.xx.xx.xx
+    ```
 
-#### Installer
+=== "Installer"
 
-- macOS
+    - macOS
 
-点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `worker_ip` 参数：
+    点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `worker_ip` 参数：
 
-```yaml
-worker_ip: xx.xx.xx.xx
-```
+    ```yaml
+    worker_ip: xx.xx.xx.xx
+    ```
 
-保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-- Windows
+    - Windows
 
-右键系统托盘中的 `GPUStack 图标`，选择 `Config Directory` 打开资源管理器。编辑 `config.yaml` 文件，添加 `worker_ip` 参数：
+    右键系统托盘中的 `GPUStack 图标`，选择 `Config Directory` 打开资源管理器。编辑 `config.yaml` 文件，添加 `worker_ip` 参数：
 
-```yaml
-worker_ip: xx.xx.xx.xx
-```
+    ```yaml
+    worker_ip: xx.xx.xx.xx
+    ```
 
-保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-#### pip
+=== "pip"
 
-在 `gpustack start` 命令末尾添加 `--worker-ip` 参数：
+    在 `gpustack start` 命令末尾添加 `--worker-ip` 参数：
 
-```bash
-gpustack start --worker-ip xx.xx.xx.xx
-```
+    ```bash
+    gpustack start --worker-ip xx.xx.xx.xx
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-添加 `--worker-ip` 参数：
+    添加 `--worker-ip` 参数：
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --worker-ip xx.xx.xx.xx
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --worker-ip xx.xx.xx.xx
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-添加 `--worker-ip` 参数：
+    添加 `--worker-ip` 参数：
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--worker-ip</string>
-    <string>xx.xx.xx.xx</string>
-  </array>
-```
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--worker-ip</string>
+        <string>xx.xx.xx.xx</string>
+      </array>
+    ```
 
-保存并启动 GPUStack：
+    保存并启动 GPUStack：
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-nssm edit GPUStack
-```
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-在 `start` 后添加参数：
+    在 `start` 后添加参数：
 
-```
-start --worker-ip xx.xx.xx.xx
-```
+    ```
+    start --worker-ip xx.xx.xx.xx
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
 ### GPUStack 的数据存储在哪里？
 
-#### Docker
+=== "Docker"
 
-运行 GPUStack 容器时，通过 `-v` 参数挂载 Docker 卷。默认数据路径位于 Docker 数据目录下的 volumes 子目录中，默认路径为：
+    运行 GPUStack 容器时，通过 `-v` 参数挂载 Docker 卷。默认数据路径位于 Docker 数据目录下的 volumes 子目录中，默认路径为：
 
-```bash
-/var/lib/docker/volumes/gpustack-data/_data
-```
+    ```bash
+    /var/lib/docker/volumes/gpustack-data/_data
+    ```
 
-你可以通过以下方式查看：
+    你可以通过以下方式查看：
 
-```bash
-docker volume ls
-docker volume inspect gpustack-data
-```
+    ```bash
+    docker volume ls
+    docker volume inspect gpustack-data
+    ```
 
-如需改为自定义路径，请在运行容器时修改挂载配置。例如，将主机目录 `/data/gpustack` 进行挂载：
+    如需改为自定义路径，请在运行容器时修改挂载配置。例如，将主机目录 `/data/gpustack` 进行挂载：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v /data/gpustack:/var/lib/gpustack  \
-    gpustack/gpustack
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v /data/gpustack:/var/lib/gpustack  \
+        gpustack/gpustack
+    ```
 
-#### Installer
+=== "Installer"
 
-默认路径如下：
+    默认路径如下：
 
-- macOS
+    - macOS
 
-```bash
-/Library/Application Support/GPUStack
-```
+    ```bash
+    /Library/Application Support/GPUStack
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-C:\ProgramData\GPUStack
-```
+    ```powershell
+    C:\ProgramData\GPUStack
+    ```
 
-使用安装包时不允许修改数据目录。
+    使用安装包时不允许修改数据目录。
 
-#### pip
+=== "pip"
 
-默认路径如下：
+    默认路径如下：
 
-- Linux & macOS
+    - Linux & macOS
 
-```bash
-/var/lib/gpustack
-```
+    ```bash
+    /var/lib/gpustack
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-"$env:APPDATA\gpustack"
-```
+    ```powershell
+    "$env:APPDATA\gpustack"
+    ```
 
-运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
 
-```bash
-gpustack start --data-dir /data/gpustack-data
-```
+    ```bash
+    gpustack start --data-dir /data/gpustack-data
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-默认路径如下：
+    默认路径如下：
 
-```bash
-/var/lib/gpustack
-```
+    ```bash
+    /var/lib/gpustack
+    ```
 
-运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-添加 `--data-dir` 参数：
+    添加 `--data-dir` 参数：
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --data-dir /data/gpustack-data
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --data-dir /data/gpustack-data
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-默认路径如下：
+    默认路径如下：
 
-```bash
-/var/lib/gpustack
-```
+    ```bash
+    /var/lib/gpustack
+    ```
 
-运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--data-dir</string>
-    <string>/Users/gpustack/data/gpustack-data</string>
-  </array>
-```
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--data-dir</string>
+        <string>/Users/gpustack/data/gpustack-data</string>
+      </array>
+    ```
 
-保存并启动 GPUStack：
+    保存并启动 GPUStack：
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-默认路径如下：
+    默认路径如下：
 
-```powershell
-"$env:APPDATA\gpustack"
-```
+    ```powershell
+    "$env:APPDATA\gpustack"
+    ```
 
-运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--data-dir` 参数设置为自定义路径：
 
-```powershell
-nssm edit GPUStack
-```
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-在 `start` 后添加参数：
+    在 `start` 后添加参数：
 
-```
-start --data-dir D:\gpustack-data
-```
+    ```
+    start --data-dir D:\gpustack-data
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
 ### 模型文件存储在哪里？
 
-#### Docker
+=== "Docker"
 
-运行 GPUStack 容器时，通过 `-v` 参数挂载 Docker 卷。默认缓存路径位于 Docker 数据目录下的 volumes 子目录中，默认路径为：
+    运行 GPUStack 容器时，通过 `-v` 参数挂载 Docker 卷。默认缓存路径位于 Docker 数据目录下的 volumes 子目录中，默认路径为：
 
-```bash
-/var/lib/docker/volumes/gpustack-data/_data/cache
-```
+    ```bash
+    /var/lib/docker/volumes/gpustack-data/_data/cache
+    ```
 
-你可以通过以下方式查看：
+    你可以通过以下方式查看：
 
-```bash
-docker volume ls
-docker volume inspect gpustack-data
-```
+    ```bash
+    docker volume ls
+    docker volume inspect gpustack-data
+    ```
 
-如需改为自定义路径，请在运行容器时修改挂载配置。
+    如需改为自定义路径，请在运行容器时修改挂载配置。
 
-> **注意**：如果已挂载数据目录，缓存目录不应挂载在该数据目录内。需要使用 `--cache-dir` 参数指定不同的路径。
+    > **注意**：如果已挂载数据目录，缓存目录不应挂载在该数据目录内。需要使用 `--cache-dir` 参数指定不同的路径。
 
-例如，将主机目录 `/data/model-cache` 进行挂载：
+    例如，将主机目录 `/data/model-cache` 进行挂载：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v /data/gpustack:/var/lib/gpustack  \
-    -v /data/model-cache:/data/model-cache \
-    gpustack/gpustack \
-    --cache-dir /data/model-cache
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v /data/gpustack:/var/lib/gpustack  \
+        -v /data/model-cache:/data/model-cache \
+        gpustack/gpustack \
+        --cache-dir /data/model-cache
+    ```
 
-#### Installer
+=== "Installer"
 
-- macOS
+    - macOS
 
-默认路径如下：
+    默认路径如下：
 
-```bash
-/Library/Application Support/GPUStack/cache
-```
+    ```bash
+    /Library/Application Support/GPUStack/cache
+    ```
 
-如需改为自定义路径，点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加
-`cache_dir` 参数：
+    如需改为自定义路径，点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `cache_dir` 参数：
 
-```yaml
-cache_dir: /Users/gpustack/data/model-cache
-```
+    ```yaml
+    cache_dir: /Users/gpustack/data/model-cache
+    ```
 
-保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-- Windows
+    - Windows
 
-默认路径如下：
+    默认路径如下：
 
-```powershell
-C:\ProgramData\GPUStack\cache
-```
+    ```powershell
+    C:\ProgramData\GPUStack\cache
+    ```
 
-如需改为自定义路径，点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加
-`cache_dir` 参数：
+    如需改为自定义路径，点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `cache_dir` 参数：
 
-```yaml
-cache_dir: D:\model-cache
-```
+    ```yaml
+    cache_dir: D:\model-cache
+    ```
 
-保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-#### pip
+=== "pip"
 
-默认路径如下：
+    默认路径如下：
 
-- Linux & macOS
+    - Linux & macOS
 
-```bash
-/var/lib/gpustack/cache
-```
+    ```bash
+    /var/lib/gpustack/cache
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-"$env:APPDATA\gpustack\cache"
-```
+    ```powershell
+    "$env:APPDATA\gpustack\cache"
+    ```
 
-运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
 
-```bash
-gpustack start --cache-dir /data/model-cache
-```
+    ```bash
+    gpustack start --cache-dir /data/model-cache
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-默认路径如下：
+    默认路径如下：
 
-```bash
-/var/lib/gpustack/cache
-```
+    ```bash
+    /var/lib/gpustack/cache
+    ```
 
-运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-添加 `--cache-dir` 参数：
+    添加 `--cache-dir` 参数：
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --cache-dir /data/model-cache
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --cache-dir /data/model-cache
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-默认路径如下：
+    默认路径如下：
 
-```bash
-/var/lib/gpustack/cache
-```
+    ```bash
+    /var/lib/gpustack/cache
+    ```
 
-运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--cache-dir</string>
-    <string>/Users/gpustack/data/model-cache</string>
-  </array>
-```
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--cache-dir</string>
+        <string>/Users/gpustack/data/model-cache</string>
+      </array>
+    ```
 
-保存并启动 GPUStack：
+    保存并启动 GPUStack：
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-默认路径如下：
+    默认路径如下：
 
-```powershell
-"$env:APPDATA\gpustack\cache"
-```
+    ```powershell
+    "$env:APPDATA\gpustack\cache"
+    ```
 
-运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
+    运行 GPUStack 时可通过 `--cache-dir` 参数设置为自定义路径：
 
-```powershell
-nssm edit GPUStack
-```
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-在 `start` 后添加参数：
+    在 `start` 后添加参数：
 
-```
-start --cache-dir D:\model-cache
-```
+    ```
+    start --cache-dir D:\model-cache
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
@@ -704,11 +702,9 @@ Restart-Service -Name "GPUStack"
 
 ### 如何升级内置的 vLLM？
 
-GPUStack 支持多个版本的推理后端。部署模型时，可在 `Edit Model` → `Advanced` → `Backend Version`
-中指定后端版本，以使用[新发布的 vLLM 版本](https://github.com/vllm-project/vllm/releases)。GPUStack 将通过 pipx
-自动创建虚拟环境并安装：
+GPUStack 支持多个版本的推理后端。部署模型时，可在 `Edit Model` → `Advanced` → `Backend Version` 中指定后端版本，以使用[新发布的 vLLM 版本](https://github.com/vllm-project/vllm/releases)。GPUStack 将通过 pipx 自动创建虚拟环境并安装：
 
-![pin-vllm-backend-version](../assets/faq/pin-vllm-backend-version.png)
+![pin-vllm-backend-version](assets/faq/pin-vllm-backend-version.png)
 
 也可以手动安装自定义版本（包括使用自定义 PyPI 源），然后将可执行文件链接到 `/var/lib/gpustack/bin/`，之后按上述方式配置使用。
 
@@ -773,10 +769,9 @@ pipx runpip gpustack install -U transformers
 
 ### 如何升级内置的 llama-box？
 
-GPUStack 支持多个版本的推理后端。部署模型时，可在 `Edit Model` → `Advanced` → `Backend Version`
-中指定后端版本，以使用[新发布的 llama-box 版本](https://github.com/gpustack/llama-box/releases)。GPUStack 会自动下载并配置：
+GPUStack 支持多个版本的推理后端。部署模型时，可在 `Edit Model` → `Advanced` → `Backend Version` 中指定后端版本，以使用[新发布的 llama-box 版本](https://github.com/gpustack/llama-box/releases)。GPUStack 会自动下载并配置：
 
-![pin-llama-box-backend-version](../assets/faq/pin-llama-box-backend-version.png)
+![pin-llama-box-backend-version](assets/faq/pin-llama-box-backend-version.png)
 
 如果使用分布式推理，应按以下方式在所有 worker 节点升级 llama-box：
 
@@ -803,116 +798,115 @@ ps -ef | grep llama-box
 
 ### 如何查看 GPUStack 日志？
 
-GPUStack 日志会包含启动状态、模型资源需求计算等信息。查看 GPUStack
-日志的方法见：[故障排查](troubleshooting.md#view-gpustack-logs)。
+GPUStack 日志会包含启动状态、模型资源需求计算等信息。查看 GPUStack 日志的方法见：[故障排查](troubleshooting.md#view-gpustack-logs)。
 
 ---
 
 ### 如何开启 GPUStack 的调试模式？
 
-你可以在不中断 GPUStack 服务的情况下临时开启调试模式。请参考：[故障排查](troubleshooting.md#configure-log-level)。
+你可以在不中断 GPUStack 服务的情况下临时开启调试模式。请参考：[故障排查](./troubleshooting.md#configure-log-level)。
 
 如果希望持久开启调试模式，server 与 worker 在运行 GPUStack 时都可添加 `--debug` 参数：
 
-#### Docker
+=== "Docker"
 
-在 `docker run` 命令末尾添加 `--debug` 参数，例如：
+    在 `docker run` 命令末尾添加 `--debug` 参数，例如：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack \
-    --debug
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack \
+        --debug
+    ```
 
-#### Installer
+=== "Installer"
 
-- macOS
+    - macOS
 
-点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `debug` 参数：
+    点击菜单栏中的 `GPUStack 图标`，选择 `Config Directory` 打开 Finder。编辑 `config.yaml` 文件，添加 `debug` 参数：
 
-```yaml
-debug: true
-```
+    ```yaml
+    debug: true
+    ```
 
-保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次点击 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-- Windows
+    - Windows
 
-右键系统托盘中的 `GPUStack 图标`，选择 `Config Directory` 打开资源管理器。编辑 `config.yaml` 文件，添加 `debug` 参数：
+    右键系统托盘中的 `GPUStack 图标`，选择 `Config Directory` 打开资源管理器。编辑 `config.yaml` 文件，添加 `debug` 参数：
 
-```yaml
-debug: true
-```
+    ```yaml
+    debug: true
+    ```
 
-保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
+    保存后再次右键 `GPUStack 图标`，进入 `Status - Restart` 以应用配置。
 
-#### pip
+=== "pip"
 
-在 `gpustack start` 命令末尾添加 `--debug` 参数：
+    在 `gpustack start` 命令末尾添加 `--debug` 参数：
 
-```bash
-gpustack start --debug
-```
+    ```bash
+    gpustack start --debug
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-```bash
-sudo vim /etc/systemd/system/gpustack.service
-```
+    ```bash
+    sudo vim /etc/systemd/system/gpustack.service
+    ```
 
-```bash
-ExecStart=/root/.local/bin/gpustack start --debug
-```
+    ```bash
+    ExecStart=/root/.local/bin/gpustack start --debug
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl daemon-reload && sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo vim /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo vim /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-```bash
-  <array>
-    <string>/Users/gpustack/.local/bin/gpustack</string>
-    <string>start</string>
-    <string>--debug</string>
-  </array>
-```
+    ```bash
+      <array>
+        <string>/Users/gpustack/.local/bin/gpustack</string>
+        <string>start</string>
+        <string>--debug</string>
+      </array>
+    ```
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-```powershell
-nssm edit GPUStack
-```
+    ```powershell
+    nssm edit GPUStack
+    ```
 
-在 `start` 后添加参数：
+    在 `start` 后添加参数：
 
-```
-start --debug
-```
+    ```
+    start --debug
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
@@ -920,78 +914,77 @@ Restart-Service -Name "GPUStack"
 
 RPC Server 用于 GGUF 模型的分布式推理。如果模型启动异常或分布式推理出现问题，可在对应节点查看 RPC Server 日志：
 
-#### Docker
+=== "Docker"
 
-默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
+    默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
 
-```bash
-docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
-```
+    ```bash
+    docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
+    ```
 
-每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
+    每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
 
-```bash
-docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
-```
+    ```bash
+    docker exec -it gpustack tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
+    ```
 
-#### Installer
+=== "Installer"
 
-- macOS
+    - macOS
 
-默认路径如下。如果设置了 `--log-dir` 参数，请替换为你实际配置的路径：
+    默认路径如下。如果设置了 `--log-dir` 参数，请替换为你实际配置的路径：
 
-```bash
-tail -200f /Library/Application\ Support/GPUStack/log/rpc_server/gpu-0.log
-```
+    ```bash
+    tail -200f /Library/Application\ Support/GPUStack/log/rpc_server/gpu-0.log
+    ```
 
-- Windows
+    - Windows
 
-默认路径如下。如果设置了 `--log-dir` 参数，请替换为你实际配置的路径：
+    默认路径如下。如果设置了 `--log-dir` 参数，请替换为你实际配置的路径：
 
-```powershell
-Get-Content "C:\ProgramData\GPUStack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
-```
+    ```powershell
+    Get-Content "C:\ProgramData\GPUStack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
+    ```
 
-每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
+    每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
 
-```powershell
-Get-Content "C:\ProgramData\GPUStack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
-```
+    ```powershell
+    Get-Content "C:\ProgramData\GPUStack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
+    ```
 
-#### "pip & Script (Legacy)"
+=== "pip & Script (Legacy)"
 
-- Linux & macOS
+    - Linux & macOS
 
-默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
+    默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
 
-```bash
-tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
-```
+    ```bash
+    tail -200f /var/lib/gpustack/log/rpc_server/gpu-0.log
+    ```
 
-每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
+    每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
 
-```bash
-tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
-```
+    ```bash
+    tail -200f /var/lib/gpustack/log/rpc_server/gpu-n.log
+    ```
 
-- Windows
+    - Windows
 
-默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
+    默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
 
-```powershell
-Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
-```
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-0.log" -Tail 200 -Wait
+    ```
 
-每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
+    每块 GPU 对应一个 RPC Server。其他 GPU 索引请按实际修改：
 
-```powershell
-Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
-```
+    ```powershell
+    Get-Content "$env:APPDATA\gpustack\log\rpc_server\gpu-n.log" -Tail 200 -Wait
+    ```
 
 ### 如何查看 Ray 日志？
 
-Ray 用于 vLLM 的分布式推理。如果模型启动异常或分布式推理出现问题，可以在服务端与对应的 worker 上查看 Ray
-日志。若通过容器安装，以下路径指的是容器内目录。
+Ray 用于 vLLM 的分布式推理。如果模型启动异常或分布式推理出现问题，可以在服务端与对应的 worker 上查看 Ray 日志。若通过容器安装，以下路径指的是容器内目录。
 
 默认路径如下。如果设置了 `--data-dir` 或 `--log-dir` 参数，请替换为你实际配置的路径：
 
@@ -1015,38 +1008,35 @@ Ray 组件日志：
 
 ### 模型日志存放在哪里？
 
-#### Docker
+=== "Docker"
 
-模型实例日志存放在对应 worker 容器的 `/var/lib/gpustack/log/serve/` 目录下，日志文件名为 `id.log`，其中 id 为模型实例
-ID。若设置了 `--data-dir` 或 `--log-dir` 参数，则按参数指定的实际路径存放。
+    模型实例日志存放在对应 worker 容器的 `/var/lib/gpustack/log/serve/` 目录下，日志文件名为 `id.log`，其中 id 为模型实例 ID。若设置了 `--data-dir` 或 `--log-dir` 参数，则按参数指定的实际路径存放。
 
-#### "pip & Script (Legacy)"
+=== "pip & Script (Legacy)"
 
-- Linux & macOS
+    - Linux & macOS
 
-模型实例日志存放在对应 worker 节点的 `/var/lib/gpustack/log/serve/` 目录下，日志文件名为 `id.log`，其中 id 为模型实例
-ID。若设置了 `--data-dir` 或 `--log-dir` 参数，则按参数指定的实际路径存放。
+    模型实例日志存放在对应 worker 节点的 `/var/lib/gpustack/log/serve/` 目录下，日志文件名为 `id.log`，其中 id 为模型实例 ID。若设置了 `--data-dir` 或 `--log-dir` 参数，则按参数指定的实际路径存放。
 
-- Windows
+    - Windows
 
-模型实例日志存放在对应 worker 节点的 `$env:APPDATA\gpustack\log\serve\` 目录下，日志文件名为 `id.log`，其中 id 为模型实例
-ID。若设置了 `--data-dir` 或 `--log-dir` 参数，则按参数指定的实际路径存放。
+    模型实例日志存放在对应 worker 节点的 `$env:APPDATA\gpustack\log\serve\` 目录下，日志文件名为 `id.log`，其中 id 为模型实例 ID。若设置了 `--data-dir` 或 `--log-dir` 参数，则按参数指定的实际路径存放。
 
 ---
 
 ### 如何开启后端调试模式？
 
-#### "vLLM"
+=== "vLLM"
 
-在 `Edit Model` → `Advanced` → `Environment Variables` 中添加 `VLLM_LOGGING_LEVEL=DEBUG` 环境变量，并重新创建模型实例：
+    在 `Edit Model` → `Advanced` → `Environment Variables` 中添加 `VLLM_LOGGING_LEVEL=DEBUG` 环境变量，并重新创建模型实例：
 
-![enable-vllm-debug-mode](../assets/faq/enable-vllm-debug-mode.png)
+    ![enable-vllm-debug-mode](assets/faq/enable-vllm-debug-mode.png)
 
-#### "llama-box"
+=== "llama-box"
 
-在 `Edit Model` → `Advanced` → `Backend Parameters` 中添加 `--verbose` 参数，并重新创建模型实例：
+    在 `Edit Model` → `Advanced` → `Backend Parameters` 中添加 `--verbose` 参数，并重新创建模型实例：
 
-![enable-llama-box-debug-mode](../assets/faq/enable-llama-box-debug-mode.png)
+    ![enable-llama-box-debug-mode](assets/faq/enable-llama-box-debug-mode.png)
 
 ---
 
@@ -1095,13 +1085,13 @@ if [ $(docker ps | wc -l) -gt 1 ]; then docker ps | grep -v CONT | awk '{print $
 
 ```bash
 docker run -d --name gpustack \
---restart=unless-stopped \
---device /dev/davinci4 \
---device /dev/davinci5 \
---device /dev/davinci6 \
---device /dev/davinci7 \
-... \
-gpustack/gpustack:latest-npu
+    --restart=unless-stopped \
+    --device /dev/davinci4 \
+    --device /dev/davinci5 \
+    --device /dev/davinci6 \
+    --device /dev/davinci7 \
+    ... \
+    gpustack/gpustack:latest-npu
 ```
 
 ---
@@ -1116,89 +1106,86 @@ gpustack/gpustack:latest-npu
 
 例如，配置 `hf-mirror.com` 镜像：
 
-#### Docker
+=== "Docker"
 
-运行容器时添加 `HF_ENDPOINT` 环境变量，如下所示：
+    运行容器时添加 `HF_ENDPOINT` 环境变量，如下所示：
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    -e HF_ENDPOINT=https://hf-mirror.com \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack
-```
+    ```bash
+    docker run -d --name gpustack \
+        --restart=unless-stopped \
+        --gpus all \
+        -e HF_ENDPOINT=https://hf-mirror.com \
+        --network=host \
+        --ipc=host \
+        -v gpustack-data:/var/lib/gpustack \
+        gpustack/gpustack
+    ```
 
-#### Installer
+=== "Installer"
 
-点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Quick Config - Environments`，添加环境变量
-`HF_ENDPOINT=https://hf-mirror.com`，并重启服务生效。
+    点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Quick Config - Environments`，添加环境变量 `HF_ENDPOINT=https://hf-mirror.com`，并重启服务生效。
 
-#### pip
+=== "pip"
 
-```bash
-HF_ENDPOINT=https://hf-mirror.com gpustack start
-```
+    ```bash
+    HF_ENDPOINT=https://hf-mirror.com gpustack start
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-在**所有节点**创建或编辑 `/etc/default/gpustack`，添加 `HF_ENDPOINT` 环境变量以使用 `https://hf-mirror.com` 作为 Hugging
-Face 镜像：
+    在**所有节点**创建或编辑 `/etc/default/gpustack`，添加 `HF_ENDPOINT` 环境变量以使用 `https://hf-mirror.com` 作为 Hugging Face 镜像：
 
-```bash
-vim /etc/default/gpustack
-```
+    ```bash
+    vim /etc/default/gpustack
+    ```
 
-```bash
-HF_ENDPOINT=https://hf-mirror.com
-```
+    ```bash
+    HF_ENDPOINT=https://hf-mirror.com
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-systemctl restart gpustack
-```
+    ```bash
+    systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-在**所有节点**创建或编辑 `/etc/default/gpustack`，添加 `HF_ENDPOINT` 环境变量以使用 `https://hf-mirror.com` 作为 Hugging
-Face 镜像：
+    在**所有节点**创建或编辑 `/etc/default/gpustack`，添加 `HF_ENDPOINT` 环境变量以使用 `https://hf-mirror.com` 作为 Hugging Face 镜像：
 
-```bash
-vim /etc/default/gpustack
-```
+    ```bash
+    vim /etc/default/gpustack
+    ```
 
-```bash
-HF_ENDPOINT=https://hf-mirror.com
-```
+    ```bash
+    HF_ENDPOINT=https://hf-mirror.com
+    ```
 
-然后使用最初相同的配置选项重新运行安装脚本：
+    然后使用最初相同的配置选项重新运行安装脚本：
 
-```bash
-curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
-```
+    ```bash
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
 
-- Windows
+    - Windows
 
-创建或编辑 `$env:APPDATA\gpustack\gpustack.env` 并添加如下配置：
+    创建或编辑 `$env:APPDATA\gpustack\gpustack.env` 并添加如下配置：
 
-```powershell
-notepad $env:APPDATA\gpustack\gpustack.env
-```
+    ```powershell
+    notepad $env:APPDATA\gpustack\gpustack.env
+    ```
 
-```powershell
-HF_ENDPOINT=https://hf-mirror.com
-```
+    ```powershell
+    HF_ENDPOINT=https://hf-mirror.com
+    ```
 
-然后使用最初相同的配置选项重新运行安装脚本：
+    然后使用最初相同的配置选项重新运行安装脚本：
 
-```powershell
-curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
-```
+    ```powershell
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
 
 ---
 
@@ -1206,13 +1193,11 @@ curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPU
 
 从本地路径部署模型时，建议将模型文件上传到每个节点，并保持相同的绝对路径。否则应通过手动调度或标签选择，将模型实例调度到已存在该模型文件的节点。也可以挂载跨节点共享存储。
 
-从本地路径部署 GGUF 模型时，路径必须指向 `.gguf` 文件的绝对路径；对于分片模型文件，使用第一个 `.gguf`
-文件（00001）的绝对路径。若使用容器安装，必须将模型文件挂载进容器，路径应指向容器内路径，而非宿主机路径。
+从本地路径部署 GGUF 模型时，路径必须指向 `.gguf` 文件的绝对路径；对于分片模型文件，使用第一个 `.gguf` 文件（00001）的绝对路径。若使用容器安装，必须将模型文件挂载进容器，路径应指向容器内路径，而非宿主机路径。
 
-从本地路径部署 Safetensors 模型时，路径必须指向包含 `*.safetensors`、`config.json`
-等文件的模型目录的绝对路径。若使用容器安装，必须将模型文件挂载进容器，路径应指向容器内路径，而非宿主机路径。
+从本地路径部署 Safetensors 模型时，路径必须指向包含 `*.safetensors`、`config.json` 等文件的模型目录的绝对路径。若使用容器安装，必须将模型文件挂载进容器，路径应指向容器内路径，而非宿主机路径。
 
-![deploy-model-from-local-path](../assets/faq/deploy-model-from-local-path.png)
+![deploy-model-from-local-path](./assets/faq/deploy-model-from-local-path.png)
 
 ---
 
@@ -1224,64 +1209,53 @@ curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPU
 
 然后针对不同后端：
 
-#### "vLLM"
+=== "vLLM"
 
-vLLM 默认要求所有 GPU 的可用显存大于 90%（由 `--gpu-memory-utilization` 参数控制）。需确保可分配的 GPU 显存超过
-90%。注意，即使其他模型处于 `Error` 或 `Downloading` 状态，显存也已被占用。
+    vLLM 默认要求所有 GPU 的可用显存大于 90%（由 `--gpu-memory-utilization` 参数控制）。需确保可分配的 GPU 显存超过 90%。注意，即使其他模型处于 `Error` 或 `Downloading` 状态，显存也已被占用。
 
-若所有 GPU 可用显存均大于 90% 但仍显示 `Pending`，说明显存仍不足。对于 BF16 格式的 `safetensors` 模型，可按如下估算所需 GPU
-显存（GB）：
+    若所有 GPU 可用显存均大于 90% 但仍显示 `Pending`，说明显存仍不足。对于 BF16 格式的 `safetensors` 模型，可按如下估算所需 GPU 显存（GB）：
 
-```
-GPU 显存（GB） = 模型权重大小（GB） * 1.2 + 2
-```
+    ```
+    GPU 显存（GB） = 模型权重大小（GB） * 1.2 + 2
+    ```
 
-若可分配显存不足 90%，但你确定模型在更低的分配比例也能运行，可调整 `--gpu-memory-utilization` 参数。例如，在 `Edit Model` →
-`Advanced` → `Backend Parameters` 中添加 `--gpu-memory-utilization=0.5`，以分配 50% GPU 显存。
+    若可分配显存不足 90%，但你确定模型在更低的分配比例也能运行，可调整 `--gpu-memory-utilization` 参数。例如，在 `Edit Model` → `Advanced` → `Backend Parameters` 中添加 `--gpu-memory-utilization=0.5`，以分配 50% GPU 显存。
 
-注意：如果模型运行后报错 `CUDA: out of memory`，则说明分配的显存不足，需要进一步调低 `--gpu-memory-utilization`
-、增加资源或部署更小的模型。
+    注意：如果模型运行后报错 `CUDA: out of memory`，则说明分配的显存不足，需要进一步调低 `--gpu-memory-utilization`、增加资源或部署更小的模型。
 
-模型的上下文长度也会影响所需显存。你可以通过 `--max-model-len` 参数设置更小的上下文。在 GPUStack 中，若未显式设置，该参数默认值为
-8192；若在后端参数中指定，则以实际设置为准。
+    模型的上下文长度也会影响所需显存。你可以通过 `--max-model-len` 参数设置更小的上下文。在 GPUStack 中，若未显式设置，该参数默认值为 8192；若在后端参数中指定，则以实际设置为准。
 
-可根据需要调小上下文，例如 `--max-model-len=2048`。但要注意，每次推理请求的最大 token 数不能超过 `--max-model-len`
-，设置过小可能导致推理被截断。
+    可根据需要调小上下文，例如 `--max-model-len=2048`。但要注意，每次推理请求的最大 token 数不能超过 `--max-model-len`，设置过小可能导致推理被截断。
 
-`--enforce-eager` 参数也有助于降低显存占用。但它会强制 vLLM 以 eager 模式执行，即操作调用后立即执行，而不是进行图优化的延迟执行，这可能更易调试但会降低性能。
+    `--enforce-eager` 参数也有助于降低显存占用。但它会强制 vLLM 以 eager 模式执行，即操作调用后立即执行，而不是进行图优化的延迟执行，这可能更易调试但会降低性能。
 
-#### "llama-box"
+=== "llama-box"
 
-llama-box 使用 [GGUF Parser](https://github.com/gpustack/gguf-parser-go) 计算模型的内存需求。需确保可分配显存大于解析得出的需求。注意，即使其他模型处于
-`Error` 或 `Downloading`
-状态，显存也已被占用。如果不确定模型所需显存，可使用 [GGUF Parser](https://github.com/gpustack/gguf-parser-go) 进行计算。
+    llama-box 使用 [GGUF Parser](https://github.com/gpustack/gguf-parser-go) 计算模型的内存需求。需确保可分配显存大于解析得出的需求。注意，即使其他模型处于 `Error` 或 `Downloading` 状态，显存也已被占用。如果不确定模型所需显存，可使用 [GGUF Parser](https://github.com/gpustack/gguf-parser-go) 进行计算。
 
-模型的上下文长度也会影响所需显存。你可以通过 `--ctx-size` 参数设置更小的上下文。在 GPUStack 中，若未显式设置，该参数默认值为
-`8192`；若在后端参数中指定，则以实际设置为准。
+    模型的上下文长度也会影响所需显存。你可以通过 `--ctx-size` 参数设置更小的上下文。在 GPUStack 中，若未显式设置，该参数默认值为 `8192`；若在后端参数中指定，则以实际设置为准。
 
-可在 `Edit Model` → `Advanced` → `Backend Parameters` 中按需调小，例如 `--ctx-size=2048`。但需注意，单次推理请求的最大
-tokens 同时受 `--ctx-size` 与 `--parallel` 影响：
-`最大 tokens = 上下文长度 / parallel`
+    可在 `Edit Model` → `Advanced` → `Backend Parameters` 中按需调小，例如 `--ctx-size=2048`。但需注意，单次推理请求的最大 tokens 同时受 `--ctx-size` 与 `--parallel` 影响：
+    `最大 tokens = 上下文长度 / parallel`
 
-`--parallel` 的默认值为 `4`，此时最大 tokens 为 `512`。若 token 数超过最大值，输出会被截断。
+    `--parallel` 的默认值为 `4`，此时最大 tokens 为 `512`。若 token 数超过最大值，输出会被截断。
 
-另一方面，`--parallel` 表示解码的并行序列数，可粗略理解为模型的并发请求能力。
+    另一方面，`--parallel` 表示解码的并行序列数，可粗略理解为模型的并发请求能力。
 
-因此，需要合理设置 `--ctx-size` 与 `--parallel`，既保证单次请求的最大 tokens 在限制内，又确保可用显存能支撑设定的上下文长度。
+    因此，需要合理设置 `--ctx-size` 与 `--parallel`，既保证单次请求的最大 tokens 在限制内，又确保可用显存能支撑设定的上下文长度。
 
-若显存不足，可尝试以更低配置启动：
+    若显存不足，可尝试以更低配置启动：
 
-```
---ctx-size=2048
---parallel=1
-```
+    ```
+    --ctx-size=2048
+    --parallel=1
+    ```
 
 ---
 
 ### 模型一直处于 `Scheduled` 状态怎么办？
 
-尝试在调度到的节点上[重启 GPUStack 服务](faq.md#how-can-i-manage-the-gpustack-service)。若问题仍存，在对应 worker
-的日志中排查原因：[这里](troubleshooting.md#view-gpustack-logs)。
+尝试在调度到的节点上[重启 GPUStack 服务](faq.md#how-can-i-manage-the-gpustack-service)。若问题仍存，在对应 worker 的日志中排查原因：[这里](troubleshooting.md#view-gpustack-logs)。
 
 ---
 
@@ -1299,12 +1273,11 @@ tokens 同时受 `--ctx-size` 与 `--parallel` 影响：
 llama-box: error while loading shared libraries: libcudart.so.12: cannot open shared object file: No such file or directory
 ```
 
-原因是 GPUStack 未识别 `LD_LIBRARY_PATH` 环境变量，可能是环境变量缺失或安装 GPUStack 时未正确配置相关工具包（如 CUDA、CANN
-等）。
+原因是 GPUStack 未识别 `LD_LIBRARY_PATH` 环境变量，可能是环境变量缺失或安装 GPUStack 时未正确配置相关工具包（如 CUDA、CANN 等）。
 
 !!! note
 
-该问题仅发生在非容器化环境。安装脚本已被弃用，强烈建议使用 Docker 方式安装。
+    该问题仅发生在非容器化环境。安装脚本已被弃用，强烈建议使用 Docker 方式安装。
 
 检查环境变量是否已设置：
 
@@ -1356,7 +1329,7 @@ systemctl restart gpustack
 
 若使用 Docker 安装，必须将模型文件挂载到容器内，且提供的路径应为容器内路径，而非宿主机路径。
 
-![deploy-model-from-local-path](../assets/faq/deploy-model-from-local-path.png)
+![deploy-model-from-local-path](./assets/faq/deploy-model-from-local-path.png)
 
 ---
 
@@ -1368,8 +1341,7 @@ systemctl restart gpustack
 
 ### 为什么默认每块 GPU 都有一个 llama-box 进程？
 
-该进程是 llama-box 进行分布式推理所使用的 RPC Server。如果确定不需要 llama-box 的分布式推理，可在运行 GPUStack 时添加
-`--disable-rpc-servers` 参数以禁用该服务。
+该进程是 llama-box 进行分布式推理所使用的 RPC Server。如果确定不需要 llama-box 的分布式推理，可在运行 GPUStack 时添加 `--disable-rpc-servers` 参数以禁用该服务。
 
 ---
 
@@ -1387,29 +1359,29 @@ systemctl restart gpustack
 
 #### 如何设置模型的上下文长度？
 
-#### "vLLM"
+=== "vLLM"
 
-GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--max-model-len` 参数自定义上下文长度，但不能超过模型的最大上下文长度：
+    GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--max-model-len` 参数自定义上下文长度，但不能超过模型的最大上下文长度：
 
-![set-the-model-context-length-for-vllm](../assets/faq/set-the-model-context-length-for-vllm.png)
+    ![set-the-model-context-length-for-vllm](./assets/faq/set-the-model-context-length-for-vllm.png)
 
-编辑后保存，并重新创建模型实例生效。
+     编辑后保存，并重新创建模型实例生效。
 
-#### "MindIE"
+=== "MindIE"
 
-GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--max-seq-len` 参数自定义上下文长度，但不能超过模型的最大上下文长度：
+    GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--max-seq-len` 参数自定义上下文长度，但不能超过模型的最大上下文长度：
 
-![set-the-model-context-length-for-mindie](../assets/faq/set-the-model-context-length-for-mindie.png)
+    ![set-the-model-context-length-for-mindie](./assets/faq/set-the-model-context-length-for-mindie.png)
 
-编辑后保存，并重新创建模型实例生效。
+    编辑后保存，并重新创建模型实例生效。
 
-#### "llama-box"
+=== "llama-box"
 
-GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--ctx-size` 参数自定义上下文长度，但不能超过模型的最大上下文长度：
+    GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--ctx-size` 参数自定义上下文长度，但不能超过模型的最大上下文长度：
 
-![set-the-model-context-length-for-llama-box](../assets/faq/set-the-model-context-length-for-llama-box.png)
+    ![set-the-model-context-length-for-llama-box](./assets/faq/set-the-model-context-length-for-llama-box.png)
 
-编辑后保存，并重新创建模型实例生效。
+    编辑后保存，并重新创建模型实例生效。
 
 ---
 
@@ -1419,9 +1391,7 @@ GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--ctx-siz
 
 #### 如何解决 “At most 1 image(s) may be provided in one request” 错误？
 
-这是 vLLM 的限制。你可以在 `Edit Model - Advanced - Backend Parameters` 中按需调整 `--limit-mm-per-prompt` 参数。例如，
-`--limit-mm-per-prompt=image=4` 表示每次推理请求最多支持 4
-张图片，详见[此处](https://docs.vllm.ai/en/latest/configuration/engine_args.html#-limit-mm-per-prompt)。
+这是 vLLM 的限制。你可以在 `Edit Model - Advanced - Backend Parameters` 中按需调整 `--limit-mm-per-prompt` 参数。例如，`--limit-mm-per-prompt=image=4` 表示每次推理请求最多支持 4 张图片，详见[此处](https://docs.vllm.ai/en/latest/configuration/engine_args.html#-limit-mm-per-prompt)。
 
 ---
 
@@ -1431,202 +1401,202 @@ GPUStack 将模型默认上下文长度设置为 8K。你可以使用 `--ctx-siz
 
 ### 如何管理 GPUStack 服务？
 
-#### Docker
+=== "Docker"
 
-重启 GPUStack 容器：
+    重启 GPUStack 容器：
 
-```bash
-docker restart gpustack
-```
+    ```bash
+    docker restart gpustack
+    ```
 
-#### Installer
+=== "Installer"
 
-点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Status - Start/Stop/Restart` 控制服务。
+    点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Status - Start/Stop/Restart` 控制服务。
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-停止 GPUStack：
+    停止 GPUStack：
 
-```bash
-sudo systemctl stop gpustack
-```
+    ```bash
+    sudo systemctl stop gpustack
+    ```
 
-启动 GPUStack：
+    启动 GPUStack：
 
-```bash
-sudo systemctl start gpustack
-```
+    ```bash
+    sudo systemctl start gpustack
+    ```
 
-重启 GPUStack：
+    重启 GPUStack：
 
-```bash
-sudo systemctl restart gpustack
-```
+    ```bash
+    sudo systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-停止 GPUStack：
+    停止 GPUStack：
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-启动 GPUStack：
+    启动 GPUStack：
 
-```bash
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-重启 GPUStack：
+    重启 GPUStack：
 
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
-```
+    ```bash
+    sudo launchctl bootout system /Library/LaunchDaemons/ai.gpustack.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/ai.gpustack.plist
+    ```
 
-- Windows
+    - Windows
 
-可以通过右键系统托盘中的 GPUStack 图标控制服务状态，或使用 PowerShell 命令。
+    可以通过右键系统托盘中的 GPUStack 图标控制服务状态，或使用 PowerShell 命令。
 
-以管理员身份运行 PowerShell（不要使用 PowerShell ISE）。
+    以管理员身份运行 PowerShell（不要使用 PowerShell ISE）。
 
-停止 GPUStack：
+    停止 GPUStack：
 
-```powershell
-Stop-Service -Name "GPUStack"
-```
+    ```powershell
+    Stop-Service -Name "GPUStack"
+    ```
 
-启动 GPUStack：
+    启动 GPUStack：
 
-```powershell
-Start-Service -Name "GPUStack"
-```
+    ```powershell
+    Start-Service -Name "GPUStack"
+    ```
 
-重启 GPUStack：
+    重启 GPUStack：
 
-```powershell
-Restart-Service -Name "GPUStack"
-```
+    ```powershell
+    Restart-Service -Name "GPUStack"
+    ```
 
 ---
 
 ### 如何在代理环境下使用 GPUStack？
 
-#### Docker
+=== "Docker"
 
-运行 GPUStack 时传入环境变量：
+    运行 GPUStack 时传入环境变量：
 
-```bash
-docker run -e HTTP_PROXY="http://username:password@proxy-server:port" \
-           -e HTTPS_PROXY="http://username:password@proxy-server:port" \
-           -e ALL_PROXY="socks5://username:password@proxy-server:port" \
-           -e NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8" \
-           ...
-```
+    ```bash
+    docker run -e HTTP_PROXY="http://username:password@proxy-server:port" \
+               -e HTTPS_PROXY="http://username:password@proxy-server:port" \
+               -e ALL_PROXY="socks5://username:password@proxy-server:port" \
+               -e NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8" \
+               ...
+    ```
 
-#### Installer
+=== "Installer"
 
-点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Quick Config - Environments`，添加所需环境变量，重启服务生效。
+    点击（macOS 菜单栏或 Windows 系统托盘中的）`GPUStack 图标`，选择 `Quick Config - Environments`，添加所需环境变量，重启服务生效。
 
-#### pip
+=== "pip"
 
-- Linux & macOS
+    - Linux & macOS
 
-设置代理环境变量：
+    设置代理环境变量：
 
-```bash
-export HTTP_PROXY="http://username:password@proxy-server:port"
-export HTTPS_PROXY="http://username:password@proxy-server:port"
-export ALL_PROXY="socks5://username:password@proxy-server:port"
-export NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
-```
+    ```bash
+    export HTTP_PROXY="http://username:password@proxy-server:port"
+    export HTTPS_PROXY="http://username:password@proxy-server:port"
+    export ALL_PROXY="socks5://username:password@proxy-server:port"
+    export NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
 
-然后启动 GPUStack：
+    然后启动 GPUStack：
 
-```bash
-gpustack start
-```
+    ```bash
+    gpustack start
+    ```
 
-- Windows
+    - Windows
 
-设置代理环境变量：
+    设置代理环境变量：
 
-```powershell
-$env:HTTP_PROXY = "http://username:password@proxy-server:port"
-$env:HTTPS_PROXY = "http://username:password@proxy-server:port"
-$env:ALL_PROXY = "socks5://username:password@proxy-server:port"
-$env:NO_PROXY = "localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
-```
+    ```powershell
+    $env:HTTP_PROXY = "http://username:password@proxy-server:port"
+    $env:HTTPS_PROXY = "http://username:password@proxy-server:port"
+    $env:ALL_PROXY = "socks5://username:password@proxy-server:port"
+    $env:NO_PROXY = "localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
 
-然后启动 GPUStack：
+    然后启动 GPUStack：
 
-```powershell
-gpustack start
-```
+    ```powershell
+    gpustack start
+    ```
 
-#### Script (Legacy)
+=== "Script (Legacy)"
 
-- Linux
+    - Linux
 
-创建或编辑 `/etc/default/gpustack`，添加代理配置：
+    创建或编辑 `/etc/default/gpustack`，添加代理配置：
 
-```bash
-vim /etc/default/gpustack
-```
+    ```bash
+    vim /etc/default/gpustack
+    ```
 
-```bash
-HTTP_PROXY="http://username:password@proxy-server:port"
-HTTPS_PROXY="http://username:password@proxy-server:port"
-ALL_PROXY="socks5://username:password@proxy-server:port"
-NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
-```
+    ```bash
+    HTTP_PROXY="http://username:password@proxy-server:port"
+    HTTPS_PROXY="http://username:password@proxy-server:port"
+    ALL_PROXY="socks5://username:password@proxy-server:port"
+    NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
 
-保存并重启 GPUStack：
+    保存并重启 GPUStack：
 
-```bash
-systemctl restart gpustack
-```
+    ```bash
+    systemctl restart gpustack
+    ```
 
-- macOS
+    - macOS
 
-创建或编辑 `/etc/default/gpustack`，添加代理配置：
+    创建或编辑 `/etc/default/gpustack`，添加代理配置：
 
-```bash
-vim /etc/default/gpustack
-```
+    ```bash
+    vim /etc/default/gpustack
+    ```
 
-```bash
-HTTP_PROXY="http://username:password@proxy-server:port"
-HTTPS_PROXY="http://username:password@proxy-server:port"
-ALL_PROXY="socks5://username:password@proxy-server:port"
-NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
-```
+    ```bash
+    HTTP_PROXY="http://username:password@proxy-server:port"
+    HTTPS_PROXY="http://username:password@proxy-server:port"
+    ALL_PROXY="socks5://username:password@proxy-server:port"
+    NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
 
-然后使用最初相同的配置选项重新运行安装脚本：
+    然后使用最初相同的配置选项重新运行安装脚本：
 
-```bash
-curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
-```
+    ```bash
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
 
-- Windows
+    - Windows
 
-创建或编辑 `$env:APPDATA\gpustack\gpustack.env`，添加代理配置：
+    创建或编辑 `$env:APPDATA\gpustack\gpustack.env`，添加代理配置：
 
-```powershell
-notepad $env:APPDATA\gpustack\gpustack.env
-```
+    ```powershell
+    notepad $env:APPDATA\gpustack\gpustack.env
+    ```
 
-```powershell
-HTTP_PROXY="http://username:password@proxy-server:port"
-HTTPS_PROXY="http://username:password@proxy-server:port"
-ALL_PROXY="socks5://username:password@proxy-server:port"
-NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
-```
+    ```powershell
+    HTTP_PROXY="http://username:password@proxy-server:port"
+    HTTPS_PROXY="http://username:password@proxy-server:port"
+    ALL_PROXY="socks5://username:password@proxy-server:port"
+    NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8"
+    ```
 
-然后使用最初相同的配置选项重新运行安装脚本：
+    然后使用最初相同的配置选项重新运行安装脚本：
 
-```powershell
-curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
-```
+    ```powershell
+    curl -sfL https://get.gpustack.ai | <EXISTING_INSTALL_ENV> sh -s - <EXISTING_GPUSTACK_ARGS>
+    ```
