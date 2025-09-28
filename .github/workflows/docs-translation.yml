@@ -2,6 +2,14 @@ name: Documentation Translation
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: |
+          auto (default) → only updated files, 
+          all → all files, 
+          custom → paths under docs/en, comma-separated
+        required: true
+        default: "auto"
 
 jobs:
   translate-docs:
@@ -10,6 +18,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set Up Python
         uses: actions/setup-python@v6
@@ -23,7 +33,8 @@ jobs:
       - name: Run Translation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python translate.py
+          TARGET: ${{ github.event.inputs.target }}
+        run: python hack/translate.py
 
       - name: Check for Changes in `docs/zh`
         run: |
@@ -41,6 +52,14 @@ jobs:
           branch: ci/docs-translation-${{ github.run_number }}
           commit-message: "docs: update translated documentation"
           title: "docs: update translated documentation"
-          body: "This pull request updates the translated documentation."
+          body: |
+            This pull request updates the translated documentation.
+            
+            Trigger mode:
+            - **auto** (default) → only updated files,
+            - **all** → all files, 
+            - **custom** → paths under docs/en, comma-separated
+            
+            Input received: **`${{ github.event.inputs.target }}`**
           labels: documentation
           delete-branch: true
