@@ -30,21 +30,3 @@ body:
       placeholder: Explain your proposed solution...
     validations:
       required: true
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: 🔄 Alternatives you've considered
-      description: A clear and concise description of any alternative solutions or features you've considered.
-      placeholder: List possible alternatives...
-    validations:
-      required: false
-
-  - type: textarea
-    id: additional
-    attributes:
-      label: 📎 Additional context
-      description: Add any other context or screenshots about the enhancement request here.
-      placeholder: Provide extra details, links, or screenshots...
-    validations:
-      required: false
