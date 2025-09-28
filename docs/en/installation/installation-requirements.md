@@ -34,6 +34,8 @@ GPUStack has been tested and verified to work on the following operating systems
     ldd --version
     ```
 
+<a id="supported-architectures"></a>
+
 ### Supported Architectures
 
 GPUStack supports both **AMD64** and **ARM64** architectures, with the following notes:

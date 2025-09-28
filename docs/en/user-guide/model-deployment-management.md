@@ -113,6 +113,8 @@ Starting a model deployment is equivalent to scaling up the model to one replica
 3. Find the model instance you want to check.
 4. Click the `View Logs` button for the model instance in the `Operations` column.
 
+<a id="advanced-model-configuration"></a>
+
 ## Advanced Model Configuration
 
 GPUStack supports tailored configurations for model deployment.

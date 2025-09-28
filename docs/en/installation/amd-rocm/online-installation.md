@@ -28,6 +28,8 @@
 
     Windows users need to manually verify support for the above instructions.
 
+<a id="docker-installation"></a>
+
 ## Docker Installation
 
 ### Supported Devices
@@ -179,6 +181,8 @@ docker run -d --name gpustack \
     For configuration details, please refer to the [CLI Reference](../../cli-reference/start.md).
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
+
+<a id="installation-script-deprecated"></a>
 
 ## Installation Script (Deprecated)
 

@@ -1397,6 +1397,8 @@ This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` paramet
 
 ## Managing GPUStack
 
+<a id="how-can-i-manage-the-gpustack-service"></a>
+
 ### How can I manage the GPUStack service?
 
 === "Docker"

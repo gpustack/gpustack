@@ -1,4 +1,8 @@
+<a id="desktop-installer"></a>
+
 # Desktop Installer
+
+<a id="download-installer"></a>
 
 ## Download Installer
 

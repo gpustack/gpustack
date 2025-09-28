@@ -19,6 +19,8 @@
 
 Please refer to the desktop installer [documentation](desktop-installer.md#desktop-installer)
 
+<a id="pip-installation"></a>
+
 ## pip Installation
 
 ### Prerequisites
@@ -144,6 +146,8 @@ And ensure that the GPUStack startup logs are normal:
 ```bash
 tail -200f /var/log/gpustack.log
 ```
+
+<a id="install-scripts"></a>
 
 ## Installation Script (Deprecated)
 

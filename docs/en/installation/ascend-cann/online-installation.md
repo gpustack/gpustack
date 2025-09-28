@@ -30,6 +30,8 @@ Check if the NPU driver is installed:
 npu-smi info
 ```
 
+<a id="docker-installation"></a>
+
 ## Docker Installation
 
 ### Supported backends
@@ -214,6 +216,8 @@ To start GPUStack as a worker, and **register it with the GPUStack server** (Set
     For configuration details, please refer to the [CLI Reference](../../cli-reference/start.md).
 
     3. You can either use the `--ipc=host` flag or `--shm-size` flag to allow the container to access the host’s shared memory. It is used by vLLM and pyTorch to share data between processes under the hood, particularly for tensor parallel inference.
+
+<a id="install-scripts"></a>
 
 ## Installation Script (Deprecated)
 

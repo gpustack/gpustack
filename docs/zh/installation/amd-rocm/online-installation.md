@@ -29,7 +29,8 @@
     Windows 用户需要手动验证是否符合上述要求。
 
 <a id="docker-installation"></a>
-## Docker 安装 {#docker-installation}
+
+## Docker 安装
 
 ### 支持的设备
 
@@ -181,7 +182,8 @@ docker run -d --name gpustack \
     3. 可以使用 `--ipc=host` 或 `--shm-size` 使容器访问宿主机的共享内存。共享内存在底层被 vLLM 和 pyTorch 用于进程间共享数据，特别是在张量并行推理时。
 
 <a id="installation-script-deprecated"></a>
-## 安装脚本（已弃用） {#installation-script-deprecated}
+
+## 安装脚本（已弃用）
 
 !!! warning
 

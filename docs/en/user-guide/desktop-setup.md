@@ -21,6 +21,8 @@ GPUStackHelper provides the following functions to configure and manage GPUStack
 - **Show Log** - Opens a console or notepad window to view GPUStack logs.
 - **About** - Shows version information.
 
+<a id="configuration"></a>
+
 ## Configuration
 
 GPUStack can be configured through GPUStackHelper in several ways. It is **recommended** to use the config file instead of command-line arguments or environment variables. Certain GPUStack arguments are fixed and managed by the helper and should not be modified manually.
@@ -62,6 +64,8 @@ For example, in the GPUStack `launchd` configuration on macOS (`/Library/LaunchD
 
 - **ProgramArguments** specifies the fixed arguments for GPUStack, such as `--config-file` and `--data-dir`. On Windows, similar fixed configurations exist in the NSSM service. You can inspect them using `nssm dump gpustack` after GPUStack is installed and started on Windows.
 - The `HOME` variable in **EnvironmentVariables** is set to avoid using the root user's home directory as the default cache path. This setting applies to macOS only.
+
+<a id="quick-config-dialog"></a>
 
 ### Quick Config Dialog
 

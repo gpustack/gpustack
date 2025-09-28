@@ -35,6 +35,7 @@
     Windows 用户需要手动验证上述指令的支持情况。
 
 <a id="docker-installation"></a>
+
 ## Docker 安装
 
 ### 先决条件
@@ -61,6 +62,7 @@ docker pull --platform linux/amd64 gpustack/gpustack:latest-cpu
 3. 参考[Docker 安装](online-installation.md#docker-installation)指南使用 Docker 运行 GPUStack。
 
 <a id="pip-installation"></a>
+
 ## pip 安装
 
 ### 先决条件

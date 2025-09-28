@@ -5,7 +5,7 @@ You can install GPUStack in an air-gapped environment. An air-gapped environment
 The following methods are available for installing GPUStack in an air-gapped environment:
 
 | OS      | Arch           | Supported methods                                                                                  |
-| ------- | -------------- | -------------------------------------------------------------------------------------------------- |
+|---------|----------------|----------------------------------------------------------------------------------------------------|
 | Linux   | AMD64<br>ARM64 | [Docker Installation](#docker-installation) (Recommended)<br>[pip Installation](#pip-installation) |
 | Windows | AMD64<br>ARM64 | [pip Installation](#pip-installation)                                                              |
 
@@ -34,6 +34,8 @@ The following methods are available for installing GPUStack in an air-gapped env
 
     Windows users need to manually verify support for the above instructions.
 
+<a id="docker-installation"></a>
+
 ## Docker Installation
 
 ### Prerequisites
@@ -46,18 +48,20 @@ When running GPUStack with Docker, it works out of the box in an air-gapped envi
 
 1. Pull GPUStack docker image in an online environment:
 
-```bash
-docker pull gpustack/gpustack:latest-cpu
-```
+    ```bash
+    docker pull gpustack/gpustack:latest-cpu
+    ```
 
-If your online environment differs from the air-gapped environment in terms of OS or arch, specify the OS and arch of the air-gapped environment when pulling the image:
+   If your online environment differs from the air-gapped environment in terms of OS or arch, specify the OS and arch of the air-gapped environment when pulling the image:
 
-```bash
-docker pull --platform linux/amd64 gpustack/gpustack:latest-cpu
-```
+    ```bash
+    docker pull --platform linux/amd64 gpustack/gpustack:latest-cpu
+    ```
 
 2. Publish docker image to a private registry or load it directly in the air-gapped environment.
 3. Refer to the [Docker Installation](./online-installation.md#docker-installation) guide to run GPUStack using Docker.
+
+<a id="pip-installation"></a>
 
 ## pip Installation
 
@@ -75,7 +79,8 @@ python -V
 
 For manually pip installation, you need to prepare the required packages and tools in an online environment and then transfer them to the air-gapped environment.
 
-Set up an online environment identical to the air-gapped environment, including **OS**, **architecture**, and **Python version**.
+Set up an online environment identical to the air-gapped environment, including **OS**, **architecture**, and **Python
+version**.
 
 #### Step 1: Download the Required Packages
 
@@ -127,7 +132,8 @@ Download dependency tools and save them as an archive:
 gpustack download-tools --save-archive gpustack_offline_tools.tar.gz
 ```
 
-If your online environment differs from the air-gapped environment, specify the **OS**, **architecture**, and **device** explicitly:
+If your online environment differs from the air-gapped environment, specify the **OS**, **architecture**, and **device
+** explicitly:
 
 ```bash
 gpustack download-tools --save-archive gpustack_offline_tools.tar.gz --system linux --arch amd64 --device cpu

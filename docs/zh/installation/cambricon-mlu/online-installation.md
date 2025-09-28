@@ -28,8 +28,9 @@ cnmon
 
 请联系寒武纪工程师获取寒武纪 Pytorch Docker 镜像。
 
-## pip 安装
 <a id="pip-installation"></a>
+
+## pip 安装
 
 使用寒武纪 Pytorch Docker 镜像，并激活 `pytorch_infer` 虚拟环境：
 

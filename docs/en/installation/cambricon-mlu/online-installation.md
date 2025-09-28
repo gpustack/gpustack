@@ -28,6 +28,8 @@ cnmon
 
 Please contact Cambricon engineers to get the Cambricon Pytorch docker image.
 
+<a id="pip-installation"></a>
+
 ## pip Installation
 
 Use Cambricon Pytorch docker image and Activate the `pytorch_infer` virtual environment:

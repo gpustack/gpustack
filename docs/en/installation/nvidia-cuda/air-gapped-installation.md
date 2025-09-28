@@ -62,6 +62,8 @@ And ensure the driver supports CUDA 12.4 or higher:
     nvidia-smi | findstr "CUDA Version"
     ```
 
+<a id="docker-installation"></a>
+
 ## Docker Installation
 
 ### Prerequisites
@@ -112,25 +114,27 @@ systemctl daemon-reload && systemctl restart docker
 When running GPUStack with Docker, it works out of the box in an air-gapped environment as long as the Docker images are available. To do this, follow these steps:
 
 1. Pull GPUStack docker image in an online environment:
-
-```bash
-docker pull gpustack/gpustack
-```
-
-If you’re using the **Blackwell** series or the **GeForce RTX 50** series, or if your NVIDIA driver supports **CUDA 12.8** (you can verify this with `nvidia-smi | grep "CUDA Version"`), we strongly recommend using the `latest-cuda12.8` image:
-
-```bash
-docker pull gpustack/gpustack:latest-cuda12.8
-```
-
-If your online environment differs from the air-gapped environment in terms of OS or arch, specify the OS and arch of the air-gapped environment when pulling the image:
-
-```bash
-docker pull --platform linux/amd64 gpustack/gpustack
-```
+    
+    ```bash
+    docker pull gpustack/gpustack
+    ```
+    
+    If you’re using the **Blackwell** series or the **GeForce RTX 50** series, or if your NVIDIA driver supports **CUDA 12.8** (you can verify this with `nvidia-smi | grep "CUDA Version"`), we strongly recommend using the `latest-cuda12.8` image:
+    
+    ```bash
+    docker pull gpustack/gpustack:latest-cuda12.8
+    ```
+    
+    If your online environment differs from the air-gapped environment in terms of OS or arch, specify the OS and arch of the air-gapped environment when pulling the image:
+    
+    ```bash
+    docker pull --platform linux/amd64 gpustack/gpustack
+    ```
 
 2. Publish docker image to a private registry or load it directly in the air-gapped environment.
 3. Refer to the [Docker Installation](./online-installation.md#docker-installation) guide to run GPUStack using Docker.
+
+<a id="pip-installation"></a>
 
 ## pip Installation
 

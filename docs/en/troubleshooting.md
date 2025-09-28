@@ -1,5 +1,7 @@
 # Troubleshooting
 
+<a id="view-gpustack-logs"></a>
+
 ## View GPUStack Logs
 
 If you installed GPUStack using Docker or the desktop installer, you can view GPUStack logs with the following commands for the default setup:
@@ -21,6 +23,8 @@ If you installed GPUStack using Docker or the desktop installer, you can view GP
     ```powershell
     Get-Content "C:\ProgramData\GPUStack\log\gpustack.log" -Tail 200 -Wait
     ```
+
+<a id="configure-log-level"></a>
 
 ## Configure Log Level
 
