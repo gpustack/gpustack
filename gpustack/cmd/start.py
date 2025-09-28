@@ -171,6 +171,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("PORT"),
     )
     group.add_argument(
+        "--metrics-port",
+        type=int,
+        help="Port to expose server metrics.",
+        default=get_gpustack_env("METRICS_PORT"),
+    )
+    group.add_argument(
         "--database-url",
         type=str,
         help="URL of the database. Example: postgresql://user:password@hostname:port/db_name.",
@@ -181,6 +187,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         action=OptionalBoolAction,
         help="Disable embedded worker.",
         default=get_gpustack_env_bool("DISABLE_WORKER"),
+    )
+    group.add_argument(
+        "--disable-metrics",
+        action=OptionalBoolAction,
+        help="Disable server metrics.",
+        default=get_gpustack_env_bool(
+            "DISABLE_METRICS",
+        ),
     )
     group.add_argument(
         "--bootstrap-password",
@@ -307,11 +321,11 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("RAY_WORKER_PORT_RANGE"),
     )
     group.add_argument(
-        "--disable-metrics",
+        "--disable-worker-metrics",
         action=OptionalBoolAction,
-        help="Disable metrics.",
+        help="Disable worker metrics.",
         default=get_gpustack_env_bool(
-            "DISABLE_METRICS",
+            "DISABLE_WORKER_METRICS",
         ),
     )
     group.add_argument(
@@ -319,14 +333,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         action=OptionalBoolAction,
         help="Disable RPC servers.",
         default=get_gpustack_env_bool(
-            "DISABLE_METRICS",
+            "DISABLE_WORKER_METRICS",
         ),
     )
     group.add_argument(
-        "--metrics-port",
+        "--worker-metrics-port",
         type=int,
-        help="Port to expose metrics.",
-        default=get_gpustack_env("METRICS_PORT"),
+        help="Port to expose worker metrics.",
+        default=get_gpustack_env("WORKER_METRICS_PORT"),
     )
     group.add_argument(
         "--log-dir",
@@ -609,6 +623,8 @@ def set_server_options(args, config_data: dict):
     options = [
         "host",
         "port",
+        "metrics_port",
+        "disable_metrics",
         "database_url",
         "disable_worker",
         "bootstrap_password",
@@ -656,9 +672,9 @@ def set_worker_options(args, config_data: dict):
         "worker_ip",
         "worker_name",
         "worker_port",
-        "disable_metrics",
+        "disable_worker_metrics",
         "disable_rpc_servers",
-        "metrics_port",
+        "worker_metrics_port",
         "service_port_range",
         "rpc_server_port_range",
         "log_dir",

@@ -1,0 +1,82 @@
+name: 🐞 Bug Report
+description: Report a problem to help us improve
+title: "[Bug]: "
+type: "Bug"
+assignees: [ ]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        🙏 Thanks for taking the time to report a bug!  
+        Please fill out the details below so we can help you faster ⚡
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 📝 Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what went wrong...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: ▶️ Steps to reproduce
+      description: How can we reproduce the behavior?
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: ❌ Actual result
+      description: What happened?
+      placeholder: The actual behavior you observed
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: ✅ Expected behavior
+      description: What did you expect to happen?
+      placeholder: The expected outcome
+    validations:
+      required: true
+
+  - type: input
+    id: gpustack-version
+    attributes:
+      label: GPUStack version
+      placeholder: e.g. v0.7.1
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: e.g. Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      placeholder: e.g. NVIDIA A100 40GB
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 💡 Additional context
+      description: Add any other context about the problem here (logs, screenshots, etc).

@@ -41,6 +41,8 @@ class Config(BaseSettings):
 
         host: Host to bind the server to.
         port: Port to bind the server to.
+        metrics_port: Port to expose metrics on.
+        disable_metrics: Disable server metrics.
         ssl_keyfile: Path to the SSL key file.
         ssl_certfile: Path to the SSL certificate file.
         database_url: URL of the database.
@@ -60,9 +62,9 @@ class Config(BaseSettings):
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
-        disable_metrics: Disable metrics.
+        disable_worker_metrics: Disable worker metrics.
         disable_rpc_servers: Disable RPC servers.
-        metrics_port: Port to expose metrics on.
+        worker_metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
         service_port_range: Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40000-40063'.
         rpc_server_port_range: Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40064-40095'.
@@ -122,6 +124,8 @@ class Config(BaseSettings):
     ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
     ollama_library_base_url: Optional[str] = "https://registry.ollama.ai"
+    metrics_port: int = 10161
+    disable_metrics: bool = False
     disable_update_check: bool = False
     disable_openapi_docs: bool = False
     update_check_url: Optional[str] = None
@@ -159,10 +163,10 @@ class Config(BaseSettings):
     registration_token: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
-    disable_metrics: bool = False
+    disable_worker_metrics: bool = False
     disable_rpc_servers: bool = False
     worker_port: int = 10150
-    metrics_port: int = 10151
+    worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
     rpc_server_port_range: Optional[str] = "40064-40095"
     ray_worker_port_range: Optional[str] = "40200-40999"

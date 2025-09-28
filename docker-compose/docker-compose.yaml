@@ -1,0 +1,49 @@
+version: "3.8"
+name: gpustack-observability-stack
+
+services:
+  gpustack:
+    image: gpustack/gpustack
+    restart: always
+    ipc: host
+    volumes:
+      - gpustack-data:/var/lib/gpustack
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    network_mode: host
+  prometheus:
+    image: prom/prometheus
+    container_name: gpustack-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prom_data:/prometheus
+
+  grafana:
+    image: grafana/grafana
+    container_name: gpustack-grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana
+      - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
+    volumes:
+      - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/grafana_dashboards:/etc/dashboards:ro
+
+
+
+volumes:
+  prom_data: {}
+  gpustack-data: {}

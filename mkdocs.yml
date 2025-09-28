@@ -219,6 +219,7 @@ nav:
       - Image Generation APIs: user-guide/image-generation-apis.md
       - Rerank API: user-guide/rerank-api.md
       - Desktop Setup: user-guide/desktop-setup.md
+      - Observability: user-guide/observability.md
   - Using Models:
       - Using Large Language Models: using-models/using-large-language-models.md
       - Using Vision Language Models: using-models/using-vision-language-models.md

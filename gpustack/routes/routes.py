@@ -6,6 +6,7 @@ from gpustack.routes import (
     dashboard,
     debug,
     gpu_devices,
+    metrics,
     model_evaluations,
     model_files,
     model_instances,
@@ -42,6 +43,9 @@ api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 v1_base_router = APIRouter(dependencies=[Depends(get_current_user)])
 v1_base_router.include_router(users.me_router, prefix="/users", tags=["Users"])
 v1_base_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
+v1_base_router.include_router(
+    metrics.router, prefix="/metrics", include_in_schema=False
+)
 
 cluster_client_router = APIRouter()
 cluster_client_router.add_api_route(

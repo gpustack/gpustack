@@ -1,0 +1,19 @@
+name: ⚡ Other
+description: Anything else not covered by other issue types
+title: "[Other]: "
+assignees: [ ]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        🤔 Have something else to report or discuss? Please provide details below.
+
+  - type: textarea
+    id: details
+    attributes:
+      label: 📝 Details
+      description: Provide a clear description of the issue or topic.
+      placeholder: Describe your issue, idea, or question...
+    validations:
+      required: true

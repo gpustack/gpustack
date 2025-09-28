@@ -11,3 +11,7 @@
 .md-typeset .center-table :is(td,th):not([align]) {
   text-align: initial; /* Reset alignment for table cells */
 }
+
+.md-footer {
+  display: none;
+}

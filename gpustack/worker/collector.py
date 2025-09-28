@@ -114,10 +114,16 @@ class WorkerStatusCollector:
         self._inject_computed_filesystem_usage(status)
         self._inject_allocated_resource(clientset, status)
 
+        # If disable_worker_metrics is set, set metrics_port to -1
+        metrics_port = self._cfg.worker_metrics_port
+        if self._cfg.disable_worker_metrics:
+            metrics_port = -1
+
         return WorkerStatusPublic(
             hostname=socket.gethostname(),
             ip=self._worker_ip_getter(),
             port=self._cfg.worker_port,
+            metrics_port=metrics_port,
             system_reserved=self._system_reserved,
             state_message=state_message,
             status=status,
