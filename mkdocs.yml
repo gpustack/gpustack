@@ -38,6 +38,102 @@ theme:
 plugins:
   - glightbox
   - search
+  - i18n:
+      docs_structure: folder
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: zh
+          name: 简体中文
+          build: true
+          nav:
+            - 概览: index.md
+            - 快速入门: quickstart.md
+            - 安装:
+                - 安装要求: installation/installation-requirements.md
+                - NVIDIA CUDA:
+                    - 在线安装: installation/nvidia-cuda/online-installation.md
+                    - 离线安装: installation/nvidia-cuda/air-gapped-installation.md
+                - AMD ROCm:
+                    - 在线安装: installation/amd-rocm/online-installation.md
+                    - 离线安装: installation/amd-rocm/air-gapped-installation.md
+                - Apple Metal（苹果芯片）: installation/apple-metal-installation.md
+                - Ascend CANN（华为昇腾）:
+                    - 在线安装: installation/ascend-cann/online-installation.md
+                    - 离线安装: installation/ascend-cann/air-gapped-installation.md
+                - Hygon DTK（海光）:
+                    - 在线安装: installation/hygon-dtk/online-installation.md
+                    - 离线安装: installation/hygon-dtk/air-gapped-installation.md
+                - Moore Threads MUSA（摩尔线程）:
+                    - 在线安装: installation/moorethreads-musa/online-installation.md
+                    - 离线安装: installation/moorethreads-musa/air-gapped-installation.md
+                - Iluvatar Corex（天数智芯）:
+                    - 在线安装: installation/iluvatar-corex/online-installation.md
+                    - 离线安装: installation/iluvatar-corex/air-gapped-installation.md
+                - Cambricon MLU（寒武纪）:
+                    - 在线安装: installation/cambricon-mlu/online-installation.md
+                - CPU:
+                    - 在线安装: installation/cpu/online-installation.md
+                    - 离线安装: installation/cpu/air-gapped-installation.md
+                - 桌面安装程序: installation/desktop-installer.md
+                - 安装脚本: installation/installation-script.md
+                - 卸载: installation/uninstallation.md
+            - 升级: upgrade.md
+            - 迁移: migration.md
+            - 用户指南:
+                - Playground:
+                    - Playground: user-guide/playground/index.md
+                    - 聊天: user-guide/playground/chat.md
+                    - 图像: user-guide/playground/image.md
+                    - 音频: user-guide/playground/audio.md
+                    - 嵌入: user-guide/playground/embedding.md
+                    - 重排序: user-guide/playground/rerank.md
+                - 模型部署管理: user-guide/model-deployment-management.md
+                - 模型目录: user-guide/model-catalog.md
+                - 模型文件管理: user-guide/model-file-management.md
+                - API Key 管理: user-guide/api-key-management.md
+                - 用户管理: user-guide/user-management.md
+                - 单点登录 (SSO) 认证: user-guide/sso.md
+                - 推理后端: user-guide/inference-backends.md
+                - 固定后端版本: user-guide/pinned-backend-versions.md
+                - 兼容性检查: user-guide/compatibility-check.md
+                - OpenAI 兼容 API: user-guide/openai-compatible-apis.md
+                - 图像生成 API: user-guide/image-generation-apis.md
+                - 重排序 API: user-guide/rerank-api.md
+                - 桌面端设置: user-guide/desktop-setup.md
+                - 可观测性: user-guide/observability.md
+            - 使用模型:
+                - 使用大语言模型: using-models/using-large-language-models.md
+                - 使用多模态模型: using-models/using-vision-language-models.md
+                - 使用嵌入模型: using-models/using-embedding-models.md
+                - 使用重排序模型: using-models/using-reranker-models.md
+                - 使用图像生成模型: using-models/using-image-generation-models.md
+                - 图像生成模型推荐参数: using-models/recommended-parameters-for-image-generation-models.md
+                - 图像编辑: using-models/editing-images.md
+                - 使用音频模型: using-models/using-audio-models.md
+            - 教程:
+                - 使用分布式 vLLM 运行 DeepSeek R1 671B: tutorials/running-deepseek-r1-671b-with-distributed-vllm.md
+                - 使用分布式 Ascend MindIE 运行 DeepSeek R1 671B: tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie.md
+                - 跨工作节点执行分布式推理 (llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
+                - CPU 推理: tutorials/inference-on-cpus.md
+                - 使用工具调用进行推理: tutorials/inference-with-tool-calling.md
+                - 在搭载 Snapdragon X 的 Copilot+ PC 上运行: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
+            - 集成:
+                - OpenAI 兼容 API: integrations/openai-compatible-apis.md
+                - 与 Dify 集成: integrations/integrate-with-dify.md
+                - 与 RAGFlow 集成: integrations/integrate-with-ragflow.md
+            - 架构: architecture.md
+            - 调度器: scheduler.md
+            - 故障排除: troubleshooting.md
+            - 常见问题: faq.md
+            - API 参考: api-reference.md
+            - CLI 参考:
+                - Start: cli-reference/start.md
+                - Chat: cli-reference/chat.md
+                - Draw: cli-reference/draw.md
+                - Download Tools: cli-reference/download-tools.md
 extra:
   generator: false
   version:
