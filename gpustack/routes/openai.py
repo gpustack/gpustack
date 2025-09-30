@@ -18,6 +18,7 @@ from gpustack.api.exceptions import (
     OpenAIAPIErrorResponse,
     ServiceUnavailableException,
     GatewayTimeoutException,
+    ForbiddenException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack.config.envs import PROXY_TIMEOUT
@@ -27,9 +28,10 @@ from gpustack.schemas.models import (
     BackendEnum,
     CategoryEnum,
     Model,
+    MyModel,
 )
 from gpustack.server.db import get_engine
-from gpustack.server.deps import SessionDep
+from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.server.services import ModelInstanceService, ModelService, WorkerService
 
 
@@ -82,6 +84,7 @@ router.include_router(aliasable_router)
 
 @router.get("/models")
 async def list_models(
+    user: CurrentUserDep,
     session: SessionDep,
     embedding_only: Optional[bool] = Query(
         None,
@@ -129,11 +132,14 @@ async def list_models(
     if text_to_speech:
         all_categories.add(CategoryEnum.TEXT_TO_SPEECH.value)
     all_categories = list(all_categories)
-
-    statement = select(Model).where(Model.ready_replicas > 0)
+    target_class = Model if user.is_admin else MyModel
+    statement = select(target_class).where(target_class.ready_replicas > 0)
 
     if all_categories:
         conditions = build_category_conditions(session, all_categories)
+        if target_class == MyModel:
+            # Non-admin users should only see their own private models when filtering by categories.
+            conditions.append(target_class.user_id == user.id)
         statement = statement.where(or_(*conditions))
 
     models = (await session.exec(statement)).all()
@@ -156,8 +162,15 @@ async def proxy_request_by_model(request: Request, endpoint: str):
     Proxy the request to the model instance that is running the model specified in the
     request body.
     """
+    allowed_model_names = getattr(request.state, "user_allow_model_names", set())
+    model_name, stream, body_json, form_data = await parse_request_body(request)
+    if model_name not in allowed_model_names:
+        raise ForbiddenException(
+            message="Model not found",
+            is_openai_exception=True,
+        )
     async with AsyncSession(get_engine()) as session:
-        model, stream, body_json, form_data = await parse_request_body(request, session)
+        model = await ModelService(session).get_by_name(model_name)
 
         if not model:
             raise NotFoundException(
@@ -220,7 +233,7 @@ async def proxy_request_by_model(request: Request, endpoint: str):
         )
 
 
-async def parse_request_body(request: Request, session: SessionDep):
+async def parse_request_body(request: Request):
     model_name = None
     stream = False
     body_json = None
@@ -240,8 +253,7 @@ async def parse_request_body(request: Request, session: SessionDep):
             is_openai_exception=True,
         )
 
-    model = await ModelService(session).get_by_name(model_name)
-    return model, stream, body_json, form_data
+    return model_name, stream, body_json, form_data
 
 
 async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool]:

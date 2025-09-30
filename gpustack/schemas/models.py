@@ -7,14 +7,20 @@ from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticFi
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel, Text
 
-from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
+from gpustack.schemas.common import (
+    PaginatedList,
+    UTCDateTime,
+    pydantic_column_type,
+    ItemList,
+)
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.links import ModelInstanceModelFileLink
+from gpustack.schemas.links import ModelInstanceModelFileLink, ModelUserLink
 from gpustack.utils.command import find_parameter
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
     from gpustack.schemas.clusters import Cluster
+    from gpustack.schemas.users import User
 
 # Models
 
@@ -136,13 +142,15 @@ class ModelSource(BaseModel):
 class ModelSpecBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     description: Optional[str] = Field(
-        default=None, sa_column=Column(Text, nullable=True)
+        sa_type=Text,
+        nullable=True,
+        default=None,
     )
-    meta: Optional[Dict[str, Any]] = Field(sa_column=Column(JSON), default={})
+    meta: Optional[Dict[str, Any]] = Field(sa_type=JSON, default={})
 
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
-    categories: List[str] = Field(sa_column=Column(JSON), default=[])
+    categories: List[str] = Field(sa_type=JSON, default=[])
     embedding_only: Annotated[
         bool,
         PydanticField(default=False, deprecated="Deprecated, use categories instead"),
@@ -166,20 +174,16 @@ class ModelSpecBase(SQLModel, ModelSource):
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: Optional[bool] = None
     distributed_inference_across_workers: Optional[bool] = None
-    worker_selector: Optional[Dict[str, str]] = Field(
-        sa_column=Column(JSON), default={}
-    )
+    worker_selector: Optional[Dict[str, str]] = Field(sa_type=JSON, default={})
     gpu_selector: Optional[GPUSelector] = Field(
-        sa_column=Column(pydantic_column_type(GPUSelector)), default=None
+        sa_type=pydantic_column_type(GPUSelector), default=None
     )
 
     backend: Optional[str] = None
     backend_version: Optional[str] = None
-    backend_parameters: Optional[List[str]] = Field(
-        sa_column=Column(JSON), default=None
-    )
+    backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
 
-    env: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default=None)
+    env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
     distributable: Optional[bool] = False
 
@@ -219,6 +223,7 @@ class ModelBase(ModelSpecBase):
         return self
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    public: bool = Field(default=True)
 
 
 class Model(ModelBase, BaseModelMixin, table=True):
@@ -228,6 +233,11 @@ class Model(ModelBase, BaseModelMixin, table=True):
     instances: list["ModelInstance"] = Relationship(
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
         back_populates="model",
+    )
+    users: List["User"] = Relationship(
+        back_populates="models",
+        link_model=ModelUserLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
     )
 
     cluster: "Cluster" = Relationship(back_populates="cluster_models")
@@ -506,3 +516,35 @@ def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
             return mmproj
 
     return "*mmproj*.gguf"
+
+
+class ModelUserAccess(BaseModel):
+    id: int
+    # More custom fields can be added here, e.g., quota, rate_limit, etc.
+
+
+class ModelAccessUpdate(BaseModel):
+    set_public: Optional[bool] = None
+    users: List[ModelUserAccess]
+
+
+class ModelUserAccessExtended(ModelUserAccess):
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    # More user fields can be added here. e.g. quota, rate_limit, etc.
+
+
+ModelAccessList = ItemList[ModelUserAccessExtended]
+
+
+class MyModel(ModelBase, SQLModel, BaseModelMixin, table=True):
+    __tablename__ = 'non_admin_user_models'
+    __mapper_args__ = {'primary_key': ["pid"]}
+    pid: str
+    id: int
+    user_id: int = Field(default=0)
+
+
+class MyModelPublic(ModelPublic):
+    pass
