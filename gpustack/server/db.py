@@ -32,6 +32,8 @@ from gpustack.schemas.stmt import (
     worker_after_drop_view_stmt_postgres,
     worker_after_create_view_stmt_mysql,
     worker_after_drop_view_stmt_mysql,
+    model_user_after_drop_view_stmt,
+    model_user_after_create_view_stmt,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,14 @@ def listen_events(engine: AsyncEngine):
         worker_after_create_view_stmt = worker_after_create_view_stmt_sqlite
     event.listen(Worker.metadata, "after_create", DDL(worker_after_drop_view_stmt))
     event.listen(Worker.metadata, "after_create", DDL(worker_after_create_view_stmt))
+    event.listen(
+        SQLModel.metadata, "after_create", DDL(model_user_after_drop_view_stmt)
+    )
+    event.listen(
+        SQLModel.metadata,
+        "after_create",
+        DDL(model_user_after_create_view_stmt(engine.dialect.name)),
+    )
 
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", setup_sqlite_pragmas)

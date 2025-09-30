@@ -17,9 +17,11 @@ from .common import PaginatedList
 from ..mixins import BaseModelMixin
 from .clusters import Cluster
 from .workers import Worker
+from gpustack.schemas.links import ModelUserLink
 
 if TYPE_CHECKING:
     from .api_keys import ApiKey
+    from gpustack.schemas.models import Model
 
 
 class UserRole(Enum):
@@ -110,6 +112,11 @@ class User(UserBase, BaseModelMixin, table=True):
     api_keys: List["ApiKey"] = Relationship(
         back_populates='user',
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+    )
+    models: List["Model"] = Relationship(
+        back_populates="users",
+        link_model=ModelUserLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
     )
 
 

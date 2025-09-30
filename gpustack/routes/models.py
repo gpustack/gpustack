@@ -31,6 +31,12 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
+from gpustack.schemas.models import (
+    ModelAccessUpdate,
+    ModelUserAccessExtended,
+    ModelAccessList,
+)
+from gpustack.schemas.users import User
 from gpustack.server.services import ModelService, WorkerService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
@@ -362,3 +368,57 @@ async def delete_model(session: SessionDep, id: int):
         await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
+
+
+def model_access_list(model: Model) -> List[ModelUserAccessExtended]:
+    return [
+        ModelUserAccessExtended(
+            id=access.id,
+            username=access.username,
+            full_name=access.full_name,
+            avatar_url=access.avatar_url,
+            # Add more user fields here if needed
+        )
+        for access in model.users
+    ]
+
+
+@router.get("/{id}/access", response_model=ModelAccessList)
+async def get_model_access(session: SessionDep, id: int):
+    model: Model = await Model.one_by_id(session, id)
+    if not model:
+        raise NotFoundException(message="Model not found")
+
+    return ModelAccessList(items=model_access_list(model))
+
+
+@router.post("/{id}/access", response_model=ModelAccessList)
+async def add_model_access(
+    session: SessionDep, id: int, access_request: ModelAccessUpdate
+):
+    model = await Model.one_by_id(session, id)
+    if not model:
+        raise NotFoundException(message="Model not found")
+    extra_conditions = [
+        col(User.id).in_([user.id for user in access_request.users]),
+    ]
+
+    users = await User.all_by_fields(
+        session=session, fields={}, extra_conditions=extra_conditions
+    )
+    if len(users) != len(access_request.users):
+        existing_user_ids = {user.id for user in users}
+        for req_user in access_request.users:
+            if req_user.id not in existing_user_ids:
+                raise NotFoundException(message=f"User ID {req_user.id} not found")
+
+    model.users = list(users)
+    model.public = (
+        model.public if access_request.set_public is None else access_request.set_public
+    )
+    try:
+        await ModelService(session).update(model)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to add model access: {e}")
+    await session.refresh(model)
+    return ModelAccessList(items=model_access_list(model))
