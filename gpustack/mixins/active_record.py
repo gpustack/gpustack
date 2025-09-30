@@ -40,11 +40,25 @@ def find_history(session: AsyncSession, flush_context, instances):
         if event.event.data not in dirty_objs:
             continue
         obj = event.event.data
+        relationship_keys = set(rel.key for rel in obj.__mapper__.relationships)
         state = inspect(obj)
         for attr in state.attrs:
             hist = attr.history
             if hist.has_changes():
-                event.event.changed_fields[attr.key] = (hist.deleted, hist.added)
+                if attr.key in relationship_keys:
+                    added_dump = [
+                        obj.__class__.model_validate(obj.model_dump())
+                        for obj in hist.added
+                        if obj is not None
+                    ]
+                    deleted_dump = [
+                        obj.__class__.model_validate(obj.model_dump())
+                        for obj in hist.deleted
+                        if obj is not None
+                    ]
+                    event.event.changed_fields[attr.key] = (deleted_dump, added_dump)
+                else:
+                    event.event.changed_fields[attr.key] = (hist.deleted, hist.added)
 
 
 @sa_event.listens_for(Session, "before_commit")

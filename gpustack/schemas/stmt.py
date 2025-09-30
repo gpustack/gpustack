@@ -92,3 +92,32 @@ FROM
 WHERE
     json_array_length(w.status::json->'gpu_devices') > 0
 """
+
+model_user_after_drop_view_stmt = "DROP VIEW IF EXISTS non_admin_user_models"
+
+
+def model_user_after_create_view_stmt(db_type: str) -> str:
+    sql_true = '1' if db_type == "sqlite" else 'TRUE'
+    sql_false = '0' if db_type == "sqlite" else 'FALSE'
+    pid = (
+        "CONCAT(m.id, ':', u.id)"
+        if db_type == "mysql"
+        else "CAST(m.id AS TEXT) || ':' || CAST(u.id AS TEXT)"
+    )
+    return f'''
+CREATE VIEW non_admin_user_models AS
+SELECT
+    {pid} AS pid,
+    u.id AS user_id,
+    m.*
+FROM
+    users u
+LEFT JOIN models m
+    ON m.public = {sql_true}
+    OR EXISTS (
+        SELECT 1 FROM modeluserlink mul
+        WHERE mul.model_id = m.id AND mul.user_id = u.id
+    )
+WHERE
+    u.is_admin = {sql_false} AND u.is_system = {sql_false}
+'''
