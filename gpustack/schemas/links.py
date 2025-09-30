@@ -27,3 +27,24 @@ class ModelInstanceModelFileLink(SQLModel, table=True):
     )
 
     model_config = ConfigDict(protected_namespaces=())
+
+
+class ModelUserLink(SQLModel, table=True):
+    model_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("models.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+    )
+    user_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("users.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+    )
+
+    model_config = ConfigDict(protected_namespaces=())

@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import Column, UniqueConstraint
-from sqlmodel import Field, SQLModel, Text, Relationship
+from sqlmodel import Field, SQLModel, Text, JSON, Relationship
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, UTCDateTime
@@ -10,7 +10,14 @@ if TYPE_CHECKING:
     from gpustack.schemas.users import User
 
 
-class ApiKeyBase(SQLModel):
+class ApiKeyUpdate(SQLModel):
+    allowed_model_names: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+
+
+class ApiKeyBase(ApiKeyUpdate):
     name: str
     description: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
