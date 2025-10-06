@@ -1,6 +1,7 @@
 import json
 import httpx
 import logging
+import jwt
 from gpustack.config.config import Config
 from typing import Annotated, Dict, Optional
 from fastapi import APIRouter, Form, Request, Response
@@ -23,6 +24,68 @@ from gpustack.utils.convert import safe_b64decode, inflate_data
 router = APIRouter()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 logger = logging.getLogger(__name__)
+
+
+async def get_oidc_user_data(
+    client: httpx.AsyncClient, token: str, userinfo_endpoint: str, config: Config
+) -> Dict:
+    """
+    Retrieve user data from OIDC token or userinfo endpoint.
+
+    First attempts to decode the JWT token to get user data directly.
+    If the token contains the required fields, validates it against the userinfo endpoint.
+    Falls back to fetching user data from the userinfo endpoint if needed.
+
+    Args:
+        client: HTTP client for making requests
+        token: The access token from OIDC provider
+        userinfo_endpoint: URL of the userinfo endpoint
+        config: Application configuration
+
+    Returns:
+        Dictionary containing user data
+    """
+    headers = {'Authorization': f'Bearer {token}'}
+
+    # Try to decode the token first and check if required fields are present
+    user_data = None
+    try:
+        # Decode JWT token without verification (we'll validate via userinfo endpoint)
+        decoded_token = jwt.decode(token, options={"verify_signature": False})
+
+        # Check if the required user data is in the token
+        has_required_data = False
+        if config.external_auth_name and config.external_auth_name in decoded_token:
+            has_required_data = True
+        elif "email" in decoded_token:
+            has_required_data = True
+
+        if has_required_data:
+            # Validate token by checking with userinfo endpoint
+            validation_res = await client.request(
+                'get', userinfo_endpoint, headers=headers
+            )
+            if validation_res.status_code == 200:
+                user_data = decoded_token
+                logger.debug("Using decoded token data for user information")
+            else:
+                logger.debug(
+                    "Token validation failed, falling back to userinfo endpoint"
+                )
+
+    except jwt.DecodeError:
+        logger.debug("Failed to decode token, falling back to userinfo endpoint")
+    except Exception as e:
+        logger.debug(
+            f"Error processing token: {str(e)}, falling back to userinfo endpoint"
+        )
+
+    # Fallback to userinfo endpoint if token decoding failed or required data not present
+    if user_data is None:
+        user_res = await client.request('get', userinfo_endpoint, headers=headers)
+        user_data = json.loads(user_res.text)
+
+    return user_data
 
 
 async def init_saml_auth(request: Request):
@@ -234,9 +297,11 @@ async def oidc_callback(request: Request, session: SessionDep):
             if "access_token" not in res_data:
                 raise UnauthorizedException(message=res_data['error_description'])
             token = res_data['access_token']
-            headers = {'Authorization': f'Bearer {token}'}
-            user_res = await client.request('get', userinfo_endpoint, headers=headers)
-            user_data = json.loads(user_res.text)
+
+            # Get user data from token or userinfo endpoint
+            user_data = await get_oidc_user_data(
+                client, token, userinfo_endpoint, config
+            )
 
             if config.external_auth_name:
                 # If external_auth_name is set, use it as username.
