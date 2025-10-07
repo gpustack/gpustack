@@ -169,6 +169,10 @@ async def get_user_from_jwt_token(
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
+    if user and not user.is_active:
+        logger.warning(f"Inactive user {username} attempted to access with JWT token")
+        return None
+
     return user
 
 
@@ -205,8 +209,12 @@ async def get_user_from_bearer_token(
                     user_id=api_key.user_id,
                     worker_uuid=worker_uuid,
                 )
-                if user is not None:
+                if user is not None and user.is_active:
                     return user
+                elif user is not None and not user.is_active:
+                    logger.warning(
+                        f"Inactive user {user.username} attempted to access with API key"
+                    )
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
@@ -222,6 +230,9 @@ async def authenticate_user(
 
     if not verify_hashed_secret(user.hashed_password, password):
         raise UnauthorizedException(message="Incorrect username or password")
+
+    if not user.is_active:
+        raise UnauthorizedException(message="User account is deactivated")
 
     return user
 
