@@ -129,6 +129,6 @@ if __name__ == "__main__":
             ("user", "{input}"),
         ]
     )
-    chain = prompt | ChatOpenAI(model="gpt-5", temperature=0.0)
+    chain = prompt | ChatOpenAI(model="gpt-5-2025-08-07", temperature=0.0)
     semaphore = asyncio.Semaphore(32)
     asyncio.run(main())
