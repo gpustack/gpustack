@@ -36,6 +36,7 @@ class AuthProviderEnum(str, Enum):
 class UserBase(SQLModel):
     username: str
     is_admin: bool = False
+    is_active: bool = True
     full_name: Optional[str] = None
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
