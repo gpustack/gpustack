@@ -82,6 +82,30 @@ class UserUpdate(UserBase):
     password: Optional[str] = None
 
 
+class UserSelfUpdate(SQLModel):
+    """Schema for users updating their own profile - excludes privileged fields"""
+
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    password: Optional[str] = None
+
+    @field_validator('password')
+    def validate_password(cls, value):
+        if value is None:
+            return value
+        if not re.search(r'[A-Z]', value):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', value):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', value):
+            raise ValueError('Password must contain at least one digit')
+        if not re.search(r'[!@#$%^&*_+]', value):
+            raise ValueError('Password must contain at least one special character')
+        return value
+
+
 class UpdatePassword(SQLModel):
     current_password: str
     new_password: str

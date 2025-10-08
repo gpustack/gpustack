@@ -15,6 +15,7 @@ from gpustack.schemas.users import (
     UserUpdate,
     UserPublic,
     UsersPublic,
+    UserSelfUpdate,
 )
 from gpustack.server.services import UserService
 
@@ -141,10 +142,10 @@ async def get_user_me(user: CurrentUserDep):
 
 @me_router.put("/me", response_model=UserPublic)
 async def update_user_me(
-    session: SessionDep, user: CurrentUserDep, user_in: UserUpdate
+    session: SessionDep, user: CurrentUserDep, user_in: UserSelfUpdate
 ):
     try:
-        update_data = user_in.model_dump()
+        update_data = user_in.model_dump(exclude_none=True)
         if "password" in update_data:
             hashed_password = get_secret_hash(update_data["password"])
             update_data["hashed_password"] = hashed_password
