@@ -113,6 +113,10 @@ class User(UserBase, BaseModelMixin, table=True):
     )
 
 
+class UserActivationUpdate(SQLModel):
+    is_active: bool
+
+
 class UserPublic(UserBase):
     id: int
     created_at: datetime

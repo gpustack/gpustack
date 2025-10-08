@@ -8,7 +8,14 @@ from gpustack.api.exceptions import (
 )
 from gpustack.security import get_secret_hash
 from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep, EngineDep
-from gpustack.schemas.users import User, UserCreate, UserUpdate, UserPublic, UsersPublic
+from gpustack.schemas.users import (
+    User,
+    UserActivationUpdate,
+    UserCreate,
+    UserUpdate,
+    UserPublic,
+    UsersPublic,
+)
 from gpustack.server.services import UserService
 
 router = APIRouter()
@@ -85,6 +92,28 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
         await user.update(session, update_data)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update user: {e}")
+
+    return user
+
+
+@router.patch("/{id}/activation", response_model=UserPublic)
+async def update_user_activation(
+    session: SessionDep, id: int, activation_data: UserActivationUpdate
+):
+    """
+    Activate or deactivate a user account.
+    Only administrators can perform this action.
+    """
+    user = await User.one_by_id(session, id)
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    try:
+        await user.update(session, {"is_active": activation_data.is_active})
+    except Exception as e:
+        raise InternalServerErrorException(
+            message=f"Failed to update user activation: {e}"
+        )
 
     return user
 
