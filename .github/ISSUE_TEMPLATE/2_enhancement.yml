@@ -29,4 +29,4 @@ body:
       description: A clear and concise description of what you want to happen.
       placeholder: Explain your proposed solution...
     validations:
-      required: true
+      required: false
