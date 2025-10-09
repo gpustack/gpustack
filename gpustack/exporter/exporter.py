@@ -56,6 +56,7 @@ class MetricExporter(Collector):
         )
 
         # worker metrics
+        worker_info = InfoMetricFamily(metric_name("worker"), "Worker information")
         worker_status = GaugeMetricFamily(
             metric_name("worker_status"),
             "Worker status",
@@ -83,6 +84,7 @@ class MetricExporter(Collector):
         metrics = [
             cluster_info,
             cluster_status,
+            worker_info,
             worker_status,
             model_info,
             model_desired_instances,
@@ -123,6 +125,23 @@ class MetricExporter(Collector):
                         worker.name,
                         worker.state,
                     ]
+
+                    worker_dynamic_label_keys = []
+                    worker_info_metric_values = {
+                        "cluster_id": str(cluster.id),
+                        "cluster_name": cluster.name,
+                        "worker_id": str(worker.id),
+                        "worker_name": worker.name,
+                    }
+                    for k, v in (worker.labels or {}).items():
+                        worker_dynamic_label_keys.append(k)
+                        worker_info_metric_values[k] = v
+
+                    worker_info.add_metric(
+                        worker_labels + worker_dynamic_label_keys,
+                        worker_info_metric_values,
+                    )
+
                     worker_status.add_metric(
                         worker_label_values,
                         1,
