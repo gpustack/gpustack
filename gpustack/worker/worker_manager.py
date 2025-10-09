@@ -100,7 +100,7 @@ class WorkerManager:
         try:
             token = self._register_worker()
             with open(os.path.join(self._cfg.data_dir, 'token'), 'w') as f:
-                f.write(token)
+                f.write(token + "\n")
             self._prepare_clients(token)
             return self._clientset
         except Exception as e:
