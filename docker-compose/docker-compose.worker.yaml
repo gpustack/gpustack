@@ -14,7 +14,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
-    command: --server-url http://myserver --token mytoken
+    command: --server-url http://myserver --registration-token mytoken # replace with actual server URL and registration token
     network_mode: host
 
 volumes:
