@@ -600,8 +600,8 @@ class Config(BaseSettings):
     def get_image_name(self) -> str:
         if self.image_name_override:
             return self.image_name_override
-        version = f"v{__version__}"
-        if version == "v0.0.0":
+        version = __version__
+        if version.removeprefix("v") == "0.0.0":
             version = "main"
         prefix = (
             f"{self.system_default_container_registry}/"
