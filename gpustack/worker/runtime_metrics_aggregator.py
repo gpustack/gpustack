@@ -249,7 +249,9 @@ class RuntimeMetricsAggregator:
             resp = self._clientset.http_client.get_httpx_client().get(
                 f"{self._clientset.base_url}/metrics/config", timeout=5
             )
-            if resp.status_code != 200:
+            if resp.status_code == 404:
+                return None
+            elif resp.status_code != 200:
                 logger.warning(
                     f"Failed to fetch online metrics config, status: {resp.status_code}"
                 )

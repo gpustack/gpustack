@@ -21,18 +21,15 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--web.enable-remote-write-receiver'
-    ports:
-      - "9090:9090"
     restart: unless-stopped
     volumes:
       - ./prometheus:/etc/prometheus
       - prom_data:/prometheus
+    network_mode: host
 
   grafana:
     image: grafana/grafana
     container_name: gpustack-grafana
-    ports:
-      - "3000:3000"
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_USER=admin
@@ -41,6 +38,7 @@ services:
     volumes:
       - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
       - ./grafana/grafana_dashboards:/etc/dashboards:ro
+    network_mode: host
 
 
 
