@@ -112,7 +112,7 @@ SELECT
     m.*
 FROM
     users u
-LEFT JOIN models m
+INNER JOIN models m
     ON m.public = {sql_true}
     OR EXISTS (
         SELECT 1 FROM modeluserlink mul
