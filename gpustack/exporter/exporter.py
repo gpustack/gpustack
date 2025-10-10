@@ -1,4 +1,5 @@
 import asyncio
+import re
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from prometheus_client.registry import Collector
 from prometheus_client.core import (
@@ -19,6 +20,10 @@ from fastapi import FastAPI, Response
 
 
 logger = logging.getLogger(__name__)
+
+# Prometheus label name pattern
+# https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
+label_name_pattern = r'^[a-zA-Z_:][a-zA-Z0-9_:]*$'
 
 
 class MetricExporter(Collector):
@@ -134,6 +139,8 @@ class MetricExporter(Collector):
                         "worker_name": worker.name,
                     }
                     for k, v in (worker.labels or {}).items():
+                        if not re.match(label_name_pattern, k):
+                            continue
                         worker_dynamic_label_keys.append(k)
                         worker_info_metric_values[k] = v
 
