@@ -94,6 +94,8 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
             weight_size = get_local_model_weight_size(model.local_path)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
+    except ValueError as e:
+        raise e
     except Exception as e:
         logger.warning(f"Cannot get weight size for model {model.name}: {e}")
 

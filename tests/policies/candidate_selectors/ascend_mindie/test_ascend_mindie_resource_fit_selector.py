@@ -860,6 +860,8 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         #   it should not be selected.
         # - Quantization support.
         (
+            # vllm-ascend/DeepSeek-V3-W8A8 has a non-standard index.json.
+            # It used 'quant_model_weight_w8a8_dynamic' as the base name and has 2 kind of safetensors files.
             new_model(
                 id=1,
                 name="automatic_multi_workers_selection_3",
