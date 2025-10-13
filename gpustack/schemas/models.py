@@ -66,6 +66,20 @@ class GPUSelector(BaseModel):
     gpu_ids: Optional[List[str]] = None
 
 
+class ExtendedKVCacheConfig(BaseModel):
+    enabled: bool = False
+    """ Enable extended KV cache for the model."""
+
+    chunk_size: Optional[int] = None
+    """ Chunk size for each KV cache chunk (unit: number of tokens). """
+
+    max_local_cpu_size: Optional[float] = None
+    """ Maximum size of the KV cache to be stored in local CPU memory (unit: GiB). """
+
+    remote_url: Optional[str] = None
+    """ Remote storage URL for offloading KV cache. Format: "protocol://host:port". """
+
+
 class ModelSource(BaseModel):
     source: SourceEnum
     huggingface_repo_id: Optional[str] = None
@@ -195,6 +209,11 @@ class ModelSpecBase(SQLModel, ModelSource):
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
     distributable: Optional[bool] = False
+
+    # Extended KV Cache configuration. Currently maps to LMCache config in vLLM and SGLang.
+    extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
+        sa_type=pydantic_column_type(ExtendedKVCacheConfig), default=None
+    )
 
     @model_validator(mode="after")
     def set_defaults(self):
