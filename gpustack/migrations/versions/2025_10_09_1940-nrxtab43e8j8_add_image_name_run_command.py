@@ -37,7 +37,7 @@ def upgrade() -> None:
         sa.Column('health_check_path', sa.String(length=255), nullable=True, default=''),
         sa.Column('version_configs', sa.JSON(), nullable=True),
         sa.Column('default_backend_param', sa.JSON(), nullable=True),
-        sa.Column('is_built_in', sa.Integer(), nullable=True),
+        sa.Column('is_built_in', sa.Boolean(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=True),
         sa.Column('updated_at', sa.DateTime(), nullable=True),
         sa.Column('deleted_at', sa.DateTime(), nullable=True),
