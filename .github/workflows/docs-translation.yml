@@ -1,0 +1,65 @@
+name: Documentation Translation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: |
+          auto (default) → only updated files, 
+          all → all files, 
+          custom → paths under docs/en, comma-separated
+        required: true
+        default: "auto"
+
+jobs:
+  translate-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set Up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -U langchain langchain-openai tqdm
+
+      - name: Run Translation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TARGET: ${{ github.event.inputs.target }}
+        run: python hack/translate.py
+
+      - name: Check for Changes in `docs/zh`
+        run: |
+          if git status --porcelain docs/zh | grep -q .; then
+            echo "DOCS_ZH_CHANGED=true" >> $GITHUB_ENV
+          else
+            echo "DOCS_ZH_CHANGED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create Pull Request
+        if: env.DOCS_ZH_CHANGED == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          add-paths: docs/zh
+          branch: ci/docs-translation-${{ github.run_number }}
+          commit-message: "docs: update translated documentation"
+          title: "docs: update translated documentation"
+          body: |
+            This pull request updates the translated documentation.
+            
+            Trigger mode:
+            - **auto** (default) → only updated files,
+            - **all** → all files, 
+            - **custom** → paths under docs/en, comma-separated
+            
+            Input received: **`${{ github.event.inputs.target }}`**
+          labels: documentation
+          delete-branch: true
