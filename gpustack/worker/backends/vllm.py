@@ -106,6 +106,9 @@ class VLLMServer(InferenceServer):
         """
         env = os.environ.copy()
 
+        # Apply LMCache environment variables if extended KV cache is enabled
+        self.set_lmcache_env(env)
+
         # Apply vLLM distributed environment setup
         self.set_vllm_distributed_env(env)
 
@@ -158,6 +161,14 @@ class VLLMServer(InferenceServer):
         if is_distributed_vllm(self._model_instance):
             arguments.extend(["--distributed-executor-backend", "ray"])
 
+        if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
+            arguments.extend(
+                [
+                    "--kv-transfer-config",
+                    '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+                ]
+            )
+
         # For Ascend 310P, we need to enforce eager execution and default dtype to float16
         if is_ascend_310p(self._worker):
             arguments.extend(
@@ -209,6 +220,34 @@ class VLLMServer(InferenceServer):
             logger.error(f"Failed to update model instance: {ue}")
 
         sys.exit(1)
+
+    def set_lmcache_env(self, env: Dict[str, str]):
+        """
+        Set up LMCache environment variables if extended KV cache is enabled.
+        """
+        if not (
+            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
+        ):
+            return
+
+        if (
+            self._model.extended_kv_cache.chunk_size
+            and self._model.extended_kv_cache.chunk_size > 0
+        ):
+            env["LMCACHE_CHUNK_SIZE"] = str(self._model.extended_kv_cache.chunk_size)
+
+        if (
+            self._model.extended_kv_cache.max_local_cpu_size
+            and self._model.extended_kv_cache.max_local_cpu_size > 0
+        ):
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
+                self._model.extended_kv_cache.max_local_cpu_size
+            )
+        else:
+            env["LMCACHE_LOCAL_CPU"] = str(False).lower()
+
+        if self._model.extended_kv_cache.remote_url:
+            env["LMCACHE_REMOTE_URL"] = self._model.extended_kv_cache.remote_url
 
     def set_vllm_distributed_env(self, env: Dict[str, str]):
         """
