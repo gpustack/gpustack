@@ -2,13 +2,14 @@ import logging
 from typing import List, Tuple, Optional, Dict
 
 import yaml
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, Body
 from sqlalchemy import or_, func
 from starlette.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
+    BadRequestException,
 )
 from gpustack.schemas import Worker
 from gpustack.schemas.common import Pagination
@@ -25,7 +26,7 @@ from gpustack.schemas.inference_backend import (
     get_built_in_backend_show_name,
     InferenceBackendPublic,
 )
-from gpustack.schemas.models import BackendEnum
+from gpustack.schemas.models import BackendEnum, Model
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack_runner import list_service_runners
 
@@ -46,6 +47,81 @@ def is_built_in_backend(backend_name: str) -> bool:
     built_in_backends = get_built_in_backend()
     built_in_backend_names = {backend.backend_name for backend in built_in_backends}
     return backend_name in built_in_backend_names
+
+
+def filter_yaml_fields(yaml_data: Dict, filter_keys: List[str]) -> Dict:
+    """
+    Recursively remove specified keys from a nested YAML dict.
+
+    Args:
+        yaml_data: Dictionary parsed from YAML content.
+        filter_keys: List of keys to remove wherever they appear.
+
+    Returns:
+        The same dict instance after filtering.
+    """
+
+    if not isinstance(yaml_data, dict):
+        return yaml_data
+
+    def _filter_in_place(obj: Dict):
+        # Delete keys that should be filtered
+        for key in list(obj.keys()):
+            if key in filter_keys:
+                try:
+                    del obj[key]
+                except Exception:
+                    # Silently ignore any deletion issues
+                    pass
+                continue
+
+            # Recurse into nested dicts
+            val = obj.get(key)
+            if isinstance(val, dict):
+                _filter_in_place(val)
+            elif isinstance(val, list):
+                for item in val:
+                    if isinstance(item, dict):
+                        _filter_in_place(item)
+
+    _filter_in_place(yaml_data)
+    return yaml_data
+
+
+async def check_backend_in_use(
+    session: SessionDep, backend_name: str, backend_version: Optional[str] = None
+) -> Tuple[bool, List[str]]:
+    """
+    Check if a backend or specific backend version is being used by any models.
+
+    Args:
+        session: Database session
+        backend_name: The name of the backend to check
+        backend_version: Optional specific version to check. If None, checks all versions.
+
+    Returns:
+        A tuple containing:
+        - Boolean indicating if the backend/version is in use
+        - List of model names that are using the backend/version
+    """
+    try:
+        # Query models that use the specified backend
+        if backend_version:
+            # Check for specific backend and version combination
+            models = await Model.all_by_fields(
+                session, {"backend": backend_name, "backend_version": backend_version}
+            )
+        else:
+            # Check for any models using this backend (any version)
+            models = await Model.all_by_field(session, "backend", backend_name)
+        models = [model for model in models if model.replicas > 0]
+        model_names = [model.name for model in models]
+        is_in_use = len(models) > 0
+
+        return is_in_use, model_names
+    except Exception as e:
+        logger.error(f"Error checking backend usage: {e}")
+        return False, []
 
 
 def get_runner_versions_and_configs(
@@ -392,7 +468,7 @@ async def get_inference_backend(session: SessionDep, id: int):
     """
     backend = await InferenceBackend.one_by_id(session, id)
     if not backend:
-        raise HTTPException(status_code=400, detail=f"Inference backend {id} not found")
+        raise BadRequestException(message=f"Inference backend {id} not found")
     return backend
 
 
@@ -403,7 +479,7 @@ async def get_inference_backend_by_name(session: SessionDep, backend_name: str):
     """
     backend = await InferenceBackend.one_by_field(session, "backend_name", backend_name)
     if not backend:
-        raise HTTPException(status_code=400, detail=f"Inference backend {id} not found")
+        raise BadRequestException(message=f"Inference backend {backend_name} not found")
     return backend
 
 
@@ -419,16 +495,14 @@ async def create_inference_backend(
         session, "backend_name", backend_in.backend_name
     )
     if existing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Inference backend with name '{backend_in.backend_name}' already exists",
+        raise BadRequestException(
+            message=f"Inference backend with name '{backend_in.backend_name}' already exists",
         )
 
     # Validate that built-in backends cannot have default_version set
     if is_built_in_backend(backend_in.backend_name) and backend_in.default_version:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Built-in backend '{backend_in.backend_name}' cannot have default_version set. Default version is managed automatically.",
+        raise BadRequestException(
+            message=f"Built-in backend '{backend_in.backend_name}' cannot have default_version set. Default version is managed automatically.",
         )
 
     try:
@@ -455,17 +529,63 @@ async def update_inference_backend(
 
     # Check if updating to a name that already exists (excluding current backend)
     if backend_in.backend_name != backend.backend_name:
-        raise HTTPException(
-            status_code=400,
-            detail="The name of inference-backend can not be modified",
+        raise BadRequestException(
+            message="The name of inference-backend can not be modified",
         )
 
     # Validate that built-in backends cannot have default_version set
     if is_built_in_backend(backend.backend_name) and backend_in.default_version:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Built-in backend '{backend.backend_name}' cannot have default_version set. Default version is managed automatically.",
+        raise BadRequestException(
+            message=f"Built-in backend '{backend.backend_name}' cannot have default_version set. Default version is managed automatically.",
         )
+
+    # Check if any versions are being removed or modified that are currently in use
+    if backend_in.version_configs is not None:
+        current_versions = {}
+        if backend.version_configs and backend.version_configs.root:
+            current_versions = backend.version_configs.root
+
+        new_versions = {}
+        if backend_in.version_configs and backend_in.version_configs.root:
+            new_versions = backend_in.version_configs.root
+
+        # Find versions that are being removed
+        removed_versions = set(current_versions.keys()) - set(new_versions.keys())
+
+        # Find versions that are being modified (same version name but different config)
+        modified_versions = []
+        for version_name in set(current_versions.keys()) & set(new_versions.keys()):
+            current_config = current_versions[version_name]
+            new_config = new_versions[version_name]
+
+            # Compare the configurations by converting to dict and comparing
+            current_dict = (
+                current_config.model_dump()
+                if hasattr(current_config, 'model_dump')
+                else current_config.__dict__
+            )
+            new_dict = (
+                new_config.model_dump()
+                if hasattr(new_config, 'model_dump')
+                else new_config.__dict__
+            )
+
+            if current_dict != new_dict:
+                modified_versions.append(version_name)
+
+        # Collect all versions that need to be checked (removed + modified)
+        versions_to_check = list(removed_versions) + modified_versions
+
+        # Check if any of these versions are in use
+        for version in versions_to_check:
+            is_in_use, model_names = await check_backend_in_use(
+                session, backend.backend_name, version
+            )
+            if is_in_use:
+                action = "remove" if version in removed_versions else "modify"
+                raise BadRequestException(
+                    message=f"Cannot {action} version '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+                )
 
     try:
         await backend.update(session, backend_in)
@@ -485,6 +605,13 @@ async def delete_inference_backend(session: SessionDep, id: int):
     backend = await InferenceBackend.one_by_id(session, id)
     if not backend:
         raise NotFoundException(message=f"Inference backend {id} not found")
+
+    # Check if the backend is being used by any models
+    is_in_use, model_names = await check_backend_in_use(session, backend.backend_name)
+    if is_in_use:
+        raise BadRequestException(
+            message=f"Cannot delete backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+        )
 
     try:
         await backend.delete(session)
@@ -523,37 +650,37 @@ async def create_inference_backend_from_yaml(
         # Extract YAML content from JSON payload
         yaml_content = payload.get("content")
         if not yaml_content:
-            raise HTTPException(
-                status_code=400, detail="Missing 'content' field in request body"
-            )
+            raise BadRequestException(message="Missing 'content' field in request body")
 
         # Parse YAML content
         yaml_data = yaml.safe_load(yaml_content)
 
         # Validate required fields
         if not yaml_data.get("backend_name"):
-            raise HTTPException(
-                status_code=400, detail="backend_name is required in YAML"
-            )
+            raise BadRequestException(message="backend_name is required in YAML")
 
         # Check if backend with same name already exists
         existing = await InferenceBackend.one_by_field(
             session, "backend_name", yaml_data["backend_name"]
         )
         if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Inference backend with name '{yaml_data['backend_name']}' already exists",
+            raise BadRequestException(
+                message=f"Inference backend with name '{yaml_data['backend_name']}' already exists",
             )
 
-        # Validate that built-in backends cannot have default_version set
-        if is_built_in_backend(yaml_data["backend_name"]) and yaml_data.get(
-            "default_version"
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Built-in backend '{yaml_data['backend_name']}' cannot have default_version set. Default version is managed automatically.",
-            )
+        # Filter out fields users should not set
+        common_filter_keys = [
+            "id",
+            "created_at",
+            "updated_at",
+            "framework_index_map",
+            "built_in_version_configs",
+        ]
+        if is_built_in_backend(yaml_data["backend_name"]):
+            # Built-in backend default_version is managed automatically
+            common_filter_keys.append("default_version")
+
+        yaml_data = filter_yaml_fields(yaml_data, common_filter_keys)
 
         # Convert version_configs to VersionConfigDict if present
         if 'version_configs' in yaml_data and yaml_data['version_configs']:
@@ -569,9 +696,9 @@ async def create_inference_backend_from_yaml(
         return backend
 
     except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML format: {e}")
-    except HTTPException:
-        raise  # Re-raise HTTPException without wrapping
+        raise BadRequestException(message=f"Invalid YAML format: {e}")
+    except BadRequestException:
+        raise  # Re-raise BadRequestException without wrapping
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to create inference backend from YAML: {e.__str__()}"
@@ -579,7 +706,7 @@ async def create_inference_backend_from_yaml(
 
 
 @router.put("/{id}/from-yaml", response_model=InferenceBackend)
-async def update_inference_backend_from_yaml(
+async def update_inference_backend_from_yaml(  # noqa: C901
     session: SessionDep, id: int, payload: dict = Body(...)
 ):
     """
@@ -599,34 +726,34 @@ async def update_inference_backend_from_yaml(
         # Extract YAML content from JSON payload
         yaml_content = payload.get("content")
         if not yaml_content:
-            raise HTTPException(
-                status_code=400, detail="Missing 'content' field in request body"
-            )
+            raise BadRequestException(message="Missing 'content' field in request body")
 
         # Parse YAML content
         yaml_data = yaml.safe_load(yaml_content)
 
         # Validate required fields
         if not yaml_data.get("backend_name"):
-            raise HTTPException(
-                status_code=400, detail="backend_name is required in YAML"
-            )
+            raise BadRequestException(message="backend_name is required in YAML")
 
         # Check if updating to a name that already exists (excluding current backend)
         if yaml_data["backend_name"] != backend.backend_name:
-            raise HTTPException(
-                status_code=400,
-                detail="The name of inference-backend can not be modified",
+            raise BadRequestException(
+                message="The name of inference-backend can not be modified",
             )
 
-        # Validate that built-in backends cannot have default_version set
-        if is_built_in_backend(backend.backend_name) and yaml_data.get(
-            "default_version"
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Built-in backend '{backend.backend_name}' cannot have default_version set. Default version is managed automatically.",
-            )
+        # Filter out fields users should not set
+        common_filter_keys = [
+            "id",
+            "created_at",
+            "updated_at",
+            "framework_index_map",
+            "built_in_version_configs",
+        ]
+        if is_built_in_backend(backend.backend_name):
+            # Built-in backend default_version is managed automatically
+            common_filter_keys.append("default_version")
+
+        yaml_data = filter_yaml_fields(yaml_data, common_filter_keys)
 
         # Convert version_configs to VersionConfigDict if present
         if 'version_configs' in yaml_data and yaml_data['version_configs']:
@@ -638,15 +765,65 @@ async def update_inference_backend_from_yaml(
         # Create InferenceBackendUpdate object from YAML data
         backend_data = InferenceBackendUpdate(**yaml_data)
 
+        # Check if any versions are being removed or modified that are currently in use
+        if 'version_configs' in yaml_data:
+            current_versions = {}
+            if backend.version_configs and backend.version_configs.root:
+                current_versions = backend.version_configs.root
+
+            new_versions = {}
+            if yaml_data['version_configs'] and hasattr(
+                yaml_data['version_configs'], 'root'
+            ):
+                new_versions = yaml_data['version_configs'].root
+
+            # Find versions that are being removed
+            removed_versions = set(current_versions.keys()) - set(new_versions.keys())
+
+            # Find versions that are being modified (same version name but different config)
+            modified_versions = []
+            for version_name in set(current_versions.keys()) & set(new_versions.keys()):
+                current_config = current_versions[version_name]
+                new_config = new_versions[version_name]
+
+                # Compare the configurations by converting to dict and comparing
+                current_dict = (
+                    current_config.model_dump()
+                    if hasattr(current_config, 'model_dump')
+                    else current_config.__dict__
+                )
+                new_dict = (
+                    new_config.model_dump()
+                    if hasattr(new_config, 'model_dump')
+                    else new_config.__dict__
+                )
+
+                if current_dict != new_dict:
+                    modified_versions.append(version_name)
+
+            # Collect all versions that need to be checked (removed + modified)
+            versions_to_check = list(removed_versions) + modified_versions
+
+            # Check if any of these versions are in use
+            for version in versions_to_check:
+                is_in_use, model_names = await check_backend_in_use(
+                    session, backend.backend_name, version
+                )
+                if is_in_use:
+                    action = "remove" if version in removed_versions else "modify"
+                    raise BadRequestException(
+                        message=f"Cannot {action} version '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+                    )
+
         # Update the backend
         await backend.update(session, backend_data)
 
         return backend
 
     except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML format: {e}")
-    except HTTPException:
-        raise  # Re-raise HTTPException without wrapping
+        raise BadRequestException(message=f"Invalid YAML format: {e}")
+    except BadRequestException:
+        raise  # Re-raise BadRequestException without wrapping
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update inference backend from YAML: {e}"
