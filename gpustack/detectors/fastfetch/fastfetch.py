@@ -2,12 +2,9 @@ import json
 import logging
 import platform
 import subprocess
-from gpustack.detectors.base import GPUDetector, SystemInfoDetector
+from gpustack.detectors.base import SystemInfoDetector
 from gpustack.schemas.workers import (
     CPUInfo,
-    GPUCoreInfo,
-    GPUDeviceInfo,
-    GPUDevicesInfo,
     KernelInfo,
     MemoryInfo,
     MountPoint,
@@ -15,15 +12,13 @@ from gpustack.schemas.workers import (
     SwapInfo,
     SystemInfo,
     UptimeInfo,
-    VendorEnum,
 )
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils.platform import device_type_from_vendor
 
 logger = logging.getLogger(__name__)
 
 
-class Fastfetch(GPUDetector, SystemInfoDetector):
+class Fastfetch(SystemInfoDetector):
     def is_available(self) -> bool:
         try:
             self._run_command(self._command_version(), parse_output=False)
@@ -31,21 +26,6 @@ class Fastfetch(GPUDetector, SystemInfoDetector):
         except Exception as e:
             logger.warning(f"Fastfetch is not available: {e}")
             return False
-
-    def gather_gpu_info(self) -> GPUDevicesInfo:
-        command = self._command_gather_gpu()
-        results = self._run_command(command)
-
-        for result in results:
-            typ = result.get("type")
-            r = result.get("result")
-
-            if r is None:
-                continue
-
-            if typ == "GPU":
-                gpu_devices = self._decode_gpu_devices(r)
-                return gpu_devices
 
     def gather_system_info(self) -> SystemInfo:  # noqa: C901
         command = self._command_gather_system()
@@ -69,7 +49,7 @@ class Fastfetch(GPUDetector, SystemInfoDetector):
                     name=self._get_value(r, "name"),
                     release=self._get_value(r, "release"),
                     version=self._get_value(r, "version"),
-                    architecure=self._get_value(r, "architecure"),
+                    architecture=self._get_value(r, "architecture"),
                 )
 
                 system_info.kernel = k
@@ -139,94 +119,8 @@ class Fastfetch(GPUDetector, SystemInfoDetector):
 
         return system_info
 
-    def _decode_gpu_devices(self, result: str) -> GPUDevicesInfo:
-        devices = []
-        list = sorted(result, key=lambda x: x["name"])
-        key_set = set()
-        for i, value in enumerate(list):
-            # Metadatas.
-            vender = self._get_value(value, "vendor")
-            if vender is None or vender == "":
-                continue
-
-            name = self._get_value(value, "name")
-            index = self._get_value(value, "index")
-
-            if index is None:
-                index = i
-
-            key = f"{name}-{index}"
-            if key in key_set:
-                for offset in range(len(list)):
-                    key = f"{name}-{offset}"
-                    if key not in key_set:
-                        index = offset
-                        key_set.add(key)
-                        break
-            else:
-                key_set.add(key)
-
-            is_unified_memory = False
-            if (
-                vender == VendorEnum.Apple
-                and self._get_value(value, "type") == "Integrated"
-            ):
-                is_unified_memory = True
-
-            is_integrated = self._get_value(value, "type") == "Integrated"
-
-            # Memory.
-            memory_total = 0
-            memory_used = 0
-            if is_integrated:
-                memory_total = self._get_value(value, "memory", "shared", "total") or 0
-                memory_used = self._get_value(value, "memory", "shared", "used") or 0
-            else:
-                memory_total = (
-                    self._get_value(value, "memory", "dedicated", "total") or 0
-                )
-                memory_used = self._get_value(value, "memory", "dedicated", "used") or 0
-            memory_utilization_rate = (
-                (memory_used / memory_total * 100) if memory_total > 0 else 0
-            )
-            memory = MemoryInfo(
-                is_unified_memory=is_unified_memory,
-                total=memory_total,
-                used=memory_used,
-                utilization_rate=memory_utilization_rate,
-            )
-
-            # Core.
-            core_count = self._get_value(value, "coreCount") or 0
-            core_utilization_rate = self._get_value(value, "coreUsage") or 0
-            core = GPUCoreInfo(total=core_count, utilization_rate=core_utilization_rate)
-
-            vendor = self._get_value(value, "vendor")
-            vendor_all_values = [vendor.value for vendor in VendorEnum]
-            vendor = next(
-                (v for v in vendor_all_values if v.lower() in vendor.lower()), vendor
-            )
-            device = device_type_from_vendor(vender)
-
-            # Append.
-            devices.append(
-                GPUDeviceInfo(
-                    index=index,
-                    device_index=index,
-                    device_chip_index=0,
-                    name=name,
-                    uuid=self._get_value(value, "uuid"),
-                    vendor=vendor,
-                    core=core,
-                    memory=memory,
-                    temperature=self._get_value(value, "temperature"),
-                    type=device,
-                )
-            )
-
-        return devices
-
-    def _run_command(self, command, parse_output=True):
+    @staticmethod
+    def _run_command(command, parse_output=True):
         result = None
         try:
             result = subprocess.run(
@@ -257,7 +151,8 @@ class Fastfetch(GPUDetector, SystemInfoDetector):
                 f"Failed to parse the output of {command}: {e}, output: {output}"
             )
 
-    def _command_executable_path(self):
+    @staticmethod
+    def _command_executable_path():
         command = "fastfetch"
         if platform.system().lower() == "windows":
             command += ".exe"
@@ -310,7 +205,8 @@ class Fastfetch(GPUDetector, SystemInfoDetector):
             ]
             return executable_command
 
-    def _get_value(self, input: dict, *keys):
+    @staticmethod
+    def _get_value(input: dict, *keys):
         current_value = input
         for key in keys:
             if isinstance(current_value, dict) and key in current_value:

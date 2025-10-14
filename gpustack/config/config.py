@@ -1,6 +1,12 @@
 import os
 import secrets
 from typing import List, Optional
+
+from gpustack_runtime.detector import (
+    manufacturer_to_backend,
+    supported_manufacturers,
+    supported_backends,
+)
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 import requests
@@ -16,13 +22,11 @@ from gpustack.schemas.workers import (
     SwapInfo,
     SystemInfo,
     UptimeInfo,
-    VendorEnum,
     GPUDevicesInfo,
     GPUNetworkInfo,
 )
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.utils import platform
-from gpustack.utils.platform import DeviceTypeEnum, device_type_from_vendor
 from gpustack import __version__
 
 _config = None
@@ -415,7 +419,7 @@ class Config(BaseSettings):
         resources:
             gpu_devices:
             - name: Ascend CANN 910b
-              vendor: Huawei
+              vendor: ascend
               index: 0
               device_index: 0              # optional
               device_chip_index: 0         # optional
@@ -448,7 +452,7 @@ class Config(BaseSettings):
             vendor = gd.get("vendor")
             memory = gd.get("memory")
             network = gd.get("network")
-            type = gd.get("type") or device_type_from_vendor(vendor)
+            type_ = gd.get("type") or manufacturer_to_backend(vendor)
 
             if not name:
                 raise Exception("GPU device name is required")
@@ -456,9 +460,10 @@ class Config(BaseSettings):
             if index is None:
                 raise Exception("GPU device index is required")
 
-            if vendor not in VendorEnum.__members__.values():
+            vendors = supported_manufacturers()
+            if vendor not in vendors:
                 raise Exception(
-                    "Unsupported GPU device vendor, supported vendors are: Apple, NVIDIA, 'Moore Threads', Huawei, AMD, Hygon, Iluvatar, Cambricon"
+                    f"Unsupported GPU device vendor, supported vendors are: {','.join(map(str, vendors))}"
                 )
 
             if not memory:
@@ -484,9 +489,10 @@ class Config(BaseSettings):
                 if gateway and not validators.ip(gateway):
                     raise Exception("GPU device network gateway is invalid")
 
-            if type not in DeviceTypeEnum.__members__.values():
+            types = supported_backends()
+            if type_ not in types:
                 raise Exception(
-                    "Unsupported GPU type, supported type are: cuda, musa, npu, mps, rocm, dcu, corex, mlu"
+                    f"Unsupported GPU type, supported type are: {','.join(map(str, types))}"
                 )
 
             gpu_devices.append(
@@ -513,7 +519,7 @@ class Config(BaseSettings):
                             mtu=network.get("mtu", None),
                         )
                     ),
-                    type=type,
+                    type=type_,
                 )
             )
 

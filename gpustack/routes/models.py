@@ -2,6 +2,7 @@ import math
 from typing import List, Optional, Union
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
@@ -22,7 +23,7 @@ from gpustack.schemas.models import (
     is_audio_model,
     BackendEnum,
 )
-from gpustack.schemas.workers import GPUDeviceInfo, VendorEnum, Worker
+from gpustack.schemas.workers import GPUDeviceInfo, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack.schemas.models import (
     Model,
@@ -284,24 +285,17 @@ async def validate_gpu_ids(  # noqa: C901
 def validate_gpu(
     gpu_device: GPUDeviceInfo, is_audio_model: bool = False, model_backend: str = ""
 ):
-    if is_audio_model and gpu_device.vendor != VendorEnum.NVIDIA.value:
+    if is_audio_model and gpu_device.vendor != ManufacturerEnum.NVIDIA.value:
         raise BadRequestException(
             "Audio models are supported only on NVIDIA GPUs and CPUs."
         )
 
     if (
         model_backend == BackendEnum.ASCEND_MINDIE
-        and gpu_device.vendor != VendorEnum.Huawei.value
+        and gpu_device.vendor != ManufacturerEnum.ASCEND.value
     ):
         raise BadRequestException(
             f"Ascend MindIE backend requires Ascend NPUs. Selected {gpu_device.vendor} GPU is not supported."
-        )
-
-    if model_backend == BackendEnum.VLLM and gpu_device.vendor in [
-        VendorEnum.Apple.value,
-    ]:
-        raise BadRequestException(
-            f"vLLM backend is not supported on {gpu_device.vendor} GPUs."
         )
 
 
