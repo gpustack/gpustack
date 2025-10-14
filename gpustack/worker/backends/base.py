@@ -82,7 +82,6 @@ class InferenceServer(ABC):
                 # A basic InferenceBackend object is created to prevent exceptions in subsequent workflows.
                 self.inference_backend = InferenceBackend(
                     backend_name=BackendEnum.CUSTOM.value,
-                    image_name=self._model.image_name,
                     run_command=self._model.run_command,
                 )
 
@@ -236,8 +235,8 @@ class InferenceServer(ABC):
         except Exception as e:
             logger.error(f"Failed to detect devices: {e}")
         runner_param = {
-            "backend": backend_type.lower(),
-            "service": self._model.backend.lower(),
+            "backend": backend_type.lower() if backend_type else None,
+            "service": self._model.backend.lower() if self._model.backend else None,
             "platform": get_runner_platform(),
         }
         if self._model.backend_version:
@@ -257,7 +256,7 @@ class InferenceServer(ABC):
                     for v in service.versions
                     for b in v.backends
                     for b_ver in b.versions
-                    if compare_versions(b_ver.version, runtime_version) < 0
+                    if compare_versions(b_ver.version, runtime_version) <= 0
                     for b_var in b_ver.variants
                     for p in b_var.platforms
                     if p.docker_image
