@@ -145,6 +145,7 @@ nav:
       - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
       - Integrate with Dify: integrations/integrate-with-dify.md
       - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
+      - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
   - Architecture: architecture.md
   - Scheduler: scheduler.md
   - Troubleshooting: troubleshooting.md
