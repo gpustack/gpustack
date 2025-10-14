@@ -482,6 +482,7 @@ class ServeManager:
             if not workload_status or workload_status.state in [
                 WorkloadStatusStateEnum.INACTIVE,
                 WorkloadStatusStateEnum.FAILED,
+                WorkloadStatusStateEnum.PENDING,
             ]:
                 workload_alive = False
 
@@ -626,7 +627,7 @@ def is_ready(
             # For llama-box, use /health to avoid printing error logs.
             health_check_url = "/health"
         elif not any(b.value == backend for b in BackendEnum):
-            if inference_backend:
+            if inference_backend and inference_backend.health_check_path:
                 health_check_url = inference_backend.health_check_path
 
         response = requests.get(health_check_domain + health_check_url, timeout=1)
