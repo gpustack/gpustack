@@ -22,13 +22,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def access_control_upgrade() -> None:
-    with op.batch_alter_table('models', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('public', sa.Boolean(), nullable=True))
-    op.execute(
-        sa.text("UPDATE models SET public = true WHERE public IS NULL")
+    access_policy_enum = sa.Enum(
+        'PUBLIC',
+        'AUTHED',
+        'ALLOWED_USERS',
+        name='accesspolicyenum',
     )
     with op.batch_alter_table('models', schema=None) as batch_op:
-        batch_op.alter_column('public', existing_type=sa.Boolean(), nullable=False)
+        batch_op.add_column(sa.Column('access_policy', access_policy_enum, nullable=True, server_default='AUTHED'))
+    op.execute(
+        "UPDATE models SET access_policy='AUTHED' WHERE access_policy IS NULL"
+    )
+    with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.alter_column('access_policy', nullable=False)
 
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.add_column(sa.Column('allowed_model_names', sa.JSON(), nullable=True))
@@ -47,7 +53,14 @@ def access_control_downgrade() -> None:
     if table_exists('modeluserlink'):
         op.drop_table('modeluserlink')
     with op.batch_alter_table('models', schema=None) as batch_op:
-        batch_op.drop_column('public')
+        batch_op.drop_column('access_policy')
+    access_policy_enum = sa.Enum(
+        'PUBLIC',
+        'AUTHED',
+        'ALLOWED_USERS',
+        name='accesspolicyenum',
+    )
+    access_policy_enum.drop(op.get_bind(), checkfirst=True)
 
 
 def upgrade() -> None:

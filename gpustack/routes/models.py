@@ -413,9 +413,8 @@ async def add_model_access(
                 raise NotFoundException(message=f"User ID {req_user.id} not found")
 
     model.users = list(users)
-    model.public = (
-        model.public if access_request.set_public is None else access_request.set_public
-    )
+    if access_request.access_policy is not None:
+        model.access_policy = access_request.access_policy
     try:
         await ModelService(session).update(model)
     except Exception as e:
