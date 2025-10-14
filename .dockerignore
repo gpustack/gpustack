@@ -6,3 +6,5 @@ dist/
 
 **/third_party/bin
 *.ma
+
+.cache/
