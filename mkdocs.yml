@@ -59,20 +59,20 @@ plugins:
                 - AMD ROCm:
                     - 在线安装: installation/amd-rocm/online-installation.md
                     - 离线安装: installation/amd-rocm/air-gapped-installation.md
-                - Apple Metal（苹果芯片）: installation/apple-metal-installation.md
-                - Ascend CANN（华为昇腾）:
+                - Apple Metal: installation/apple-metal-installation.md
+                - 昇腾 CANN:
                     - 在线安装: installation/ascend-cann/online-installation.md
                     - 离线安装: installation/ascend-cann/air-gapped-installation.md
-                - Hygon DTK（海光）:
+                - 海光 DTK:
                     - 在线安装: installation/hygon-dtk/online-installation.md
                     - 离线安装: installation/hygon-dtk/air-gapped-installation.md
-                - Moore Threads MUSA（摩尔线程）:
+                - 摩尔线程 MUSA:
                     - 在线安装: installation/moorethreads-musa/online-installation.md
                     - 离线安装: installation/moorethreads-musa/air-gapped-installation.md
-                - Iluvatar Corex（天数智芯）:
+                - 天数智芯 Corex:
                     - 在线安装: installation/iluvatar-corex/online-installation.md
                     - 离线安装: installation/iluvatar-corex/air-gapped-installation.md
-                - Cambricon MLU（寒武纪）:
+                - 寒武纪 MLU:
                     - 在线安装: installation/cambricon-mlu/online-installation.md
                 - CPU:
                     - 在线安装: installation/cpu/online-installation.md
