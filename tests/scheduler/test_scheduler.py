@@ -11,7 +11,7 @@ async def test_evaluate_pretrained_config(config):
         "test_name",
         1,
         huggingface_repo_id="microsoft/Phi-4-multimodal-instruct",
-        backend=BackendEnum.VLLM,
+        backend=BackendEnum.VLLM.value,
         backend_parameters=[],
     )
 
@@ -37,7 +37,7 @@ async def test_evaluate_pretrained_config(config):
     )
 
     # Model architecture not supported, should raise ValueError
-    with pytest.raises(ValueError, match="Not a supported model"):
+    with pytest.raises(ValueError, match="Unsupported architecture: "):
         await evaluate_pretrained_config(t5)
 
     qwen = new_model(
