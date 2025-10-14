@@ -1,6 +1,6 @@
 name: ❓ Question
 description: Ask a question about GPUStack
-title: "[Question]: "
+title: ""
 type: "Question"
 assignees: [ ]
 
