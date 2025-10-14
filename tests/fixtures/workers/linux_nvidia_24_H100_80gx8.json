@@ -22,7 +22,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 0,
                 "device_index": 0,
                 "device_chip_index": 0,
@@ -43,7 +43,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c264",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 1,
                 "device_index": 1,
                 "device_chip_index": 0,
@@ -64,7 +64,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c265",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 2,
                 "device_index": 2,
                 "device_chip_index": 0,
@@ -85,7 +85,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c266",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 3,
                 "device_index": 3,
                 "device_chip_index": 0,
@@ -106,7 +106,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c267",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 4,
                 "device_index": 4,
                 "device_chip_index": 0,
@@ -127,7 +127,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c268",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 5,
                 "device_index": 5,
                 "device_chip_index": 0,
@@ -148,7 +148,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c269",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 6,
                 "device_index": 6,
                 "device_chip_index": 0,
@@ -169,7 +169,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c270",
                 "name": "H100 SXM5",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 7,
                 "device_index": 7,
                 "device_chip_index": 0,

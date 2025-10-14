@@ -248,7 +248,9 @@ ARG TARGETPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
 
+## Configure data volume
 VOLUME /var/lib/gpustack
+ENV GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR="/var/lib/gpustack/cache/gpustack-runtime"
 
 ## Update PCI ID database
 RUN <<EOF
@@ -303,8 +305,6 @@ RUN --mount=type=cache,target=/root/.cache \
         && rm -rf /tmp/* \
         && rm -rf /workspace/gpustack/dist
 EOF
-ENV GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
-    GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR="/var/lib/gpustack/cache/gpustack-runtime"
 
 ## Entrypoint
 

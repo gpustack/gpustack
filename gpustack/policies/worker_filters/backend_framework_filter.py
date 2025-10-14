@@ -112,8 +112,7 @@ class BackendFrameworkFilter(WorkerFilter):
             worker_frameworks.add("cpu")
             if worker.status and worker.status.gpu_devices:
                 for gpu_device in worker.status.gpu_devices:
-                    if gpu_device.runtime_framework:
-                        worker_frameworks.add(gpu_device.runtime_framework)
+                    worker_frameworks.add(gpu_device.type)
 
             # Check if any worker framework is supported by the backend
             compatible_frameworks = worker_frameworks.intersection(

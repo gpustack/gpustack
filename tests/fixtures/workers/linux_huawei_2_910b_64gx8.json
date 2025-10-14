@@ -61,7 +61,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "6A87A664 0060AC47 2803F2B2 84528485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -83,8 +83,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 1,
@@ -92,7 +91,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "1EC1A664 016090F1 3EB130B2 98500485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -114,8 +113,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 2,
@@ -123,7 +121,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "1EC1A664 00A04FF1 07B870B2 98500485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -145,8 +143,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 3,
@@ -154,7 +151,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "1EC1A664 00A04FF1 07B870B2 98400485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -176,8 +173,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 4,
@@ -185,7 +181,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "CD036E64 00C042DF 15DB72B2 84528485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -207,8 +203,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 5,
@@ -216,7 +211,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "EA87A664 0060AC47 2803F2B2 84528485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -238,8 +233,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 6,
@@ -247,7 +241,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "6A8CA664 0060AC47 2803F2B2 84528485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -269,8 +263,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             },
             {
                 "index": 7,
@@ -278,7 +271,7 @@
                 "device_chip_index": 0,
                 "name": "910B1",
                 "uuid": "6A87A664 0060AC37 4803F2B2 84528485 104301E2",
-                "vendor": "Huawei",
+                "vendor": "ascend",
                 "core": {
                     "total": 25,
                     "utilization_rate": 0.0
@@ -300,8 +293,7 @@
                     "mtu": 8192
                 },
                 "temperature": 40.0,
-                "labels": {},
-                "type": "npu"
+                "type": "cann"
             }
         ]
     },

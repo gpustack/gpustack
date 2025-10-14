@@ -501,7 +501,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                         device.index
                         in self._selected_worker_name_devices_idx[worker.name]
                     ):
-                        if device.type != "npu":
+                        if device.type != "cann":
                             self._diagnostic_messages.append(
                                 f"The selected worker {worker.name} contain non-NPU devices."
                             )
@@ -570,7 +570,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 selected_devices_idx: Dict[int, GPUDeviceInfo] = {
                     device.index: device
                     for device in self.__worker_sorted_devices_idx[worker.id]
-                    if device.type == "npu"
+                    if device.type == "cann"
                 }
 
                 # Index the worker and its devices.
@@ -1067,7 +1067,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                         if local_world_size_remain == 0:
                             break
 
-                        if device.type != "npu":
+                        if device.type != "cann":
                             continue
 
                         # Calculate device VRAM request.

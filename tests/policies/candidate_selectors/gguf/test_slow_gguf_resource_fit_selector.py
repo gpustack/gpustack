@@ -1315,7 +1315,6 @@ def create_worker(
                         is_unified_memory=is_uma,
                     ),
                     "temperature": 0,
-                    "labels": {},
                     "type": gpu_type,
                 }
                 for index, gpu_memory in gpu_memorys.items()

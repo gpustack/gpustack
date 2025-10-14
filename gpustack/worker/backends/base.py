@@ -14,6 +14,7 @@ from gpustack_runtime.detector import (
     detect_devices,
     ManufacturerEnum,
 )
+from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config, get_global_config
@@ -29,7 +30,6 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import all_gpu_match
-from gpustack.utils.platform import get_cann_chip, get_runner_platform
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform, envs
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
@@ -297,7 +297,7 @@ class InferenceServer(ABC):
         runner_param = {
             "backend": backend_type.lower() if backend_type else None,
             "service": self._model.backend.lower() if self._model.backend else None,
-            "platform": get_runner_platform(),
+            "platform": platform.get_runner_platform(),
         }
         if self._model.backend_version:
             runner_param["service_version"] = self._model.backend_version
@@ -374,17 +374,13 @@ def set_vllm_env(
     if system != "linux" or vendor != VendorEnum.AMD:
         return
 
-    llvm = None
+    cc = None
     for g in gpu_devices:
-        if (
-            g.index in gpu_indexes
-            and g.labels.get("llvm")
-            and g.vendor == VendorEnum.AMD
-        ):
-            llvm = g.labels.get("llvm")
+        if g.index in gpu_indexes and g.compute_compatibility:
+            cc = g.compute_compatibility
             break
 
-    if llvm:
+    if cc:
         # vllm supports llvm target: gfx908;gfx90a;gfx942;gfx1100,
         # try to use the similar LLVM target that is supported.
         # https://docs.vllm.ai/en/v0.6.2/getting_started/amd-installation.html#build-from-source-rocm
@@ -394,8 +390,8 @@ def set_vllm_env(
             "gfx1102": "11.0.0",
         }
 
-        if emulate_gfx_version.get(llvm):
-            env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[llvm]
+        if emulate_gfx_version.get(cc):
+            env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[cc]
 
 
 def set_ascend_mindie_env(
@@ -470,10 +466,10 @@ def is_ascend_310p(worker: WorkerBase) -> bool:
     Check if the model instance is running on VLLM Ascend 310P.
     """
 
-    return (
-        all_gpu_match(
-            worker,
-            lambda gpu: gpu.vendor == VendorEnum.Huawei.value,
-        )
-        and get_cann_chip() == "310p"
+    return all_gpu_match(
+        worker,
+        lambda gpu: (
+            gpu.vendor == VendorEnum.Huawei.value
+            and get_ascend_cann_variant(gpu.arch_family) == "310p"
+        ),
     )

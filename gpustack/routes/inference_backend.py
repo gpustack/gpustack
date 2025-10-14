@@ -194,7 +194,7 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
     for worker in workers:
         if worker.status and worker.status.gpu_devices:
             for gpu in worker.status.gpu_devices:
-                framework_list.add(gpu.runtime_framework)
+                framework_list.add(gpu.type)
 
     # Process all backends from database (includes both built-in and custom backends)
     try:
@@ -400,7 +400,7 @@ async def get_inference_backends(
     for worker in workers:
         if worker.status and worker.status.gpu_devices:
             for gpu in worker.status.gpu_devices:
-                framework_list.add(gpu.runtime_framework)
+                framework_list.add(gpu.type)
 
     for backend in merged_backends:
         # sorted by if framework is supported
