@@ -443,7 +443,9 @@ async def evaluate_gguf_model(
         task_output.resource_architecture
         and not task_output.resource_architecture.is_deployable()
     ):
-        raise ValueError("Not a supported model.")
+        raise ValueError(
+            "Unsupported model. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+        )
 
     should_update = False
     if task_output.resource_claim_estimate.reranking and not model.categories:
@@ -511,7 +513,9 @@ async def evaluate_audio_model(
 
     supported = model_dict.get("supported", False)
     if not supported:
-        raise ValueError("Not a supported model.")
+        raise ValueError(
+            "Unsupported model. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+        )
 
     should_update = False
     task_type = model_dict.get("task_type")
@@ -567,13 +571,15 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
 
         architectures = getattr(pretrained_config, "architectures", []) or []
         if not architectures and not model.backend_version:
-            raise ValueError("Not a supported model. Unrecognized architecture.")
+            raise ValueError(
+                "Unrecognized architecture. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+            )
 
     model_type = detect_model_type(architectures)
 
     if model_type == CategoryEnum.UNKNOWN and not model.backend_version:
         raise ValueError(
-            f"Not a supported model. Detected architectures: {architectures}."
+            f"Unsupported architecture: {architectures}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
         )
 
     return set_model_categories(model, model_type)
@@ -629,7 +635,13 @@ def simplify_auto_config_value_error(e: ValueError) -> ValueError:
         return ValueError(
             "The model contains custom code that must be executed to load correctly. If you trust the source, please pass the backend parameter `--trust-remote-code` to allow custom code to be run."
         )
-    return ValueError("Not a supported model.")
+
+    if "pip install --upgrade transformers" in message:
+        return ValueError(
+            "Unsupported model. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
+        )
+
+    return ValueError(f"Not a supported model.\n\n{message}")
 
 
 def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
