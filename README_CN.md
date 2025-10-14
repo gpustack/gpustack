@@ -64,7 +64,7 @@ docker run -d --name gpustack \
       gpustack/gpustack
 ```
 
-有关其它平台的安装或详细配置选项，请参考[安装文档](docs/installation/installation-requirements.md).
+有关其它平台的安装或详细配置选项，请参考[安装文档](docs/installation/installation-requirements.md)。
 
 容器正常运行后，执行以下命令获取默认密码：
 
