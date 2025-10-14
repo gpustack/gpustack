@@ -363,7 +363,7 @@ def real_model_path(model_paths: List[str]) -> str:
 
 def set_vllm_env(
     env: Dict[str, str],
-    vendor: VendorEnum,
+    vendor: ManufacturerEnum,
     gpu_indexes: List[int] = None,
     gpu_devices: GPUDevicesInfo = None,
 ):
@@ -371,7 +371,7 @@ def set_vllm_env(
     if not gpu_indexes or not gpu_devices:
         return
 
-    if system != "linux" or vendor != VendorEnum.AMD:
+    if system != "linux" or vendor != ManufacturerEnum.AMD:
         return
 
     cc = None
@@ -396,7 +396,7 @@ def set_vllm_env(
 
 def set_ascend_mindie_env(
     env: Dict[str, str],
-    vendor: VendorEnum,
+    vendor: ManufacturerEnum,
     gpu_indexes: List[int] = None,
     gpu_devices: GPUDevicesInfo = None,
     version: str = "latest",
@@ -405,7 +405,7 @@ def set_ascend_mindie_env(
     if not gpu_indexes or not gpu_devices:
         return
 
-    if system != "linux" or vendor != VendorEnum.Huawei:
+    if system != "linux" or vendor != ManufacturerEnum.ASCEND:
         return
 
     # Select root path
@@ -469,7 +469,7 @@ def is_ascend_310p(worker: WorkerBase) -> bool:
     return all_gpu_match(
         worker,
         lambda gpu: (
-            gpu.vendor == VendorEnum.Huawei.value
+            gpu.vendor == ManufacturerEnum.ASCEND.value
             and get_ascend_cann_variant(gpu.arch_family) == "310p"
         ),
     )

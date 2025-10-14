@@ -17,9 +17,9 @@ from gpustack_runtime.deployer import (
     get_workload,
     logs_workload,
 )
+from gpustack_runtime.detector import ManufacturerEnum
 
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
-from gpustack.schemas.workers import VendorEnum
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.gpu import all_gpu_match
@@ -261,7 +261,9 @@ class VLLMServer(InferenceServer):
             return
 
         device_str = "GPU"
-        if all_gpu_match(worker, lambda gpu: gpu.vendor == VendorEnum.Huawei.value):
+        if all_gpu_match(
+            worker, lambda gpu: gpu.vendor == ManufacturerEnum.ASCEND.value
+        ):
             device_str = "NPU"
 
         ray_placement_group_bundles: List[Dict[str, float]] = []
