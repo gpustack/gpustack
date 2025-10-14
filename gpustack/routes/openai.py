@@ -134,12 +134,12 @@ async def list_models(
     all_categories = list(all_categories)
     target_class = Model if user.is_admin else MyModel
     statement = select(target_class).where(target_class.ready_replicas > 0)
+    if target_class == MyModel:
+        # Non-admin users should only see their own private models when filtering by categories.
+        statement = statement.where(target_class.user_id == user.id)
 
     if all_categories:
         conditions = build_category_conditions(session, all_categories)
-        if target_class == MyModel:
-            # Non-admin users should only see their own private models when filtering by categories.
-            conditions.append(target_class.user_id == user.id)
         statement = statement.where(or_(*conditions))
 
     models = (await session.exec(statement)).all()
