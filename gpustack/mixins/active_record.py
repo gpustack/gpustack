@@ -84,7 +84,7 @@ def send_post_commit_events(session: AsyncSession):
     for event in events:
         # copy before submit to avoid mutation
         id = getattr(event.event.data, "id", None)
-        logger.debug(f"Sending event {event.name} of type {event.event.type}, id {id}")
+        logger.trace(f"Sending event {event.name} of type {event.event.type}, id {id}")
         bus_event = event.event
         copied_dict = bus_event.data.model_dump()
         bus_event.data = type(bus_event.data).model_validate(copied_dict)

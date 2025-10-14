@@ -119,7 +119,7 @@ class RuntimeMetricsAggregator:
                 endpoint_to_instance[endpoint] = mi
                 instance_id_to_model[mi.id] = model_id_to_model.get(mi.model_id)
             else:
-                logger.debug(
+                logger.trace(
                     f"Skipping model instance {mi.id} in state {mi.state} without worker_ip or ports."
                 )
         return endpoints, endpoint_to_instance, instance_id_to_model
