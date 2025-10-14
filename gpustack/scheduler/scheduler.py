@@ -30,6 +30,7 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 )
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
 from gpustack.scheduler.model_registry import (
     vllm_supported_embedding_architectures,
     vllm_supported_llm_architectures,
@@ -363,6 +364,7 @@ async def find_candidate(
                 - A list of messages for the scheduling process.
     """
     filters = [
+        ClusterFilter(model),
         GPUMatchingFilter(model),
         LabelMatchingFilter(model),
         StatusFilter(model),
