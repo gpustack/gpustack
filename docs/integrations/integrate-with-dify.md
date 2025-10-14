@@ -83,7 +83,7 @@ Inside Dify, when adding the GPUStack model:
 | **API Key**    | Your API Key from GPUStack                                             |
 | **Model Name** | Must match the deployed model name in GPUStack (e.g., `qwen3`)         |
 
-### Test Connectivity (inside the Dify container)
+### Test Connectivity
 
 You can test the connection from inside the Dify container:
 
@@ -93,10 +93,10 @@ docker exec -it <dify-container-name> curl http://host.docker.internal:80/v1-ope
 
 If it returns the list of models, the integration is successful.
 
-### Notes
+!!! note
 
-- On **macOS or Windows**, use `host.docker.internal` to access services on the host machine from inside Docker.
-- `localhost` or `0.0.0.0` **does not work inside Docker containers** unless Dify and GPUStack are running inside the same container.
+    - On **macOS or Windows**, use `host.docker.internal` to access services on the host machine from inside Docker.
+    - `localhost` or `0.0.0.0` **does not work inside Docker containers** unless Dify and GPUStack are running inside the same container.
 
 ### Quick Reference
 
