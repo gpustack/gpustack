@@ -113,6 +113,8 @@ class InferenceBackendBase(SQLModel):
         return command
 
     def get_image_name(self, version: Optional[str] = None) -> str:
+        if self.backend_name == BackendEnum.CUSTOM.value:
+            return ""
         version_config = self.get_version_config(version)
         return version_config.image_name
 

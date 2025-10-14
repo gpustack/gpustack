@@ -70,9 +70,21 @@ class InferenceServer(ABC):
             self._model_instance = mi
             self._config = cfg
             self._worker = self._clientset.workers.get(worker_id)
-            self.inference_backend = inference_backend
 
             self.get_model()
+            self.inference_backend = inference_backend
+            if (
+                not inference_backend
+                and self._model.image_name
+                and self._model.run_command
+            ):
+                # Any deployment that directly specifies an image and command is treated as a Custom backend.
+                # A basic InferenceBackend object is created to prevent exceptions in subsequent workflows.
+                self.inference_backend = InferenceBackend(
+                    backend_name=BackendEnum.CUSTOM.value,
+                    image_name=self._model.image_name,
+                    run_command=self._model.run_command,
+                )
 
             logger.info("Preparing model files...")
 
