@@ -414,18 +414,6 @@ class Config(BaseSettings):
         ```yaml
         resources:
             gpu_devices:
-            - name: Apple M1 Pro
-              vendor: Apple
-              index: 0
-              device_index: 0              # optional
-              device_chip_index: 0         # optional
-              memory:
-                  total: 22906503168
-                  is_unified_memory: true
-        ```
-        ```yaml
-        resources:
-            gpu_devices:
             - name: Ascend CANN 910b
               vendor: Huawei
               index: 0

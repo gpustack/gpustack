@@ -57,29 +57,72 @@ class SwapInfo(UtilizationInfo):
 
 
 class GPUDeviceInfo(BaseModel):
-    # GPU index, which is the logic ID of the GPU chip,
-    # which is a human-readable index and counted from 0 generally.
-    # It might be recognized as the GPU device ID in some cases, when there is no more than one GPU chip on the same card.
-    index: Optional[int] = Field(default=None)
-    # GPU device index, which is the index of the onboard GPU device.
-    # In Linux, it can be retrieved under the /dev/ path.
-    # For example, /dev/nvidia0 (the first Nvidia card), /dev/davinci2(the third Ascend card), etc.
-    device_index: Optional[int] = Field(default=0)
-    # GPU device chip index, which is the index of the GPU chip on the card.
-    # It works with `device_index` to identify a GPU chip uniquely.
-    # For example, the first chip on the first card is 0, and the second chip on the first card is 1.
-    device_chip_index: Optional[int] = Field(default=0)
-    name: str = Field(default="")
-    uuid: Optional[str] = Field(default="")
     vendor: Optional[str] = Field(default="")
-    core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
-    memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
-    network: Optional[GPUNetworkInfo] = Field(sa_column=Column(JSON), default=None)
-    temperature: Optional[float] = Field(default=None)  # in celsius
-    labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
+    """
+    Manufacturer of the GPU device, e.g. nvidia, amd, ascend, etc.
+    """
     type: Optional[str] = Field(default="")
-    # Detected call to function 'manufacturer_to_backend()' from gpustack-runtime.
-    runtime_framework: Optional[str] = Field(default="")
+    """
+    Device runtime backend type, e.g. cuda, rocm, cann, etc.
+    """
+    index: Optional[int] = Field(default=None)
+    """
+    GPU index, which is the logic ID of the GPU chip,
+    which is a human-readable index and counted from 0 generally.
+    It might be recognized as the GPU device ID in some cases, when there is no more than one GPU chip on the same card.
+    """
+    device_index: Optional[int] = Field(default=0)
+    """
+    GPU device index, which is the index of the onboard GPU device.
+    In Linux, it can be retrieved under the /dev/ path.
+    For example, /dev/nvidia0 (the first Nvidia card), /dev/davinci2(the third Ascend card), etc.
+    """
+    device_chip_index: Optional[int] = Field(default=0)
+    """
+    GPU device chip index, which is the index of the GPU chip on the card.
+    It works with `device_index` to identify a GPU chip uniquely.
+    For example, the first chip on the first card is 0, and the second chip on the first card is 1.
+    """
+    arch_family: Optional[str] = Field(default=None)
+    """
+    Architecture family of the GPU device.
+    """
+    name: str = Field(default="")
+    """
+    GPU name, e.g. NVIDIA A100-SXM4-40GB, NVIDIA RTX 3090, AMD MI100, Ascend 310P, etc.
+    """
+    uuid: Optional[str] = Field(default="")
+    """
+    UUID is a unique identifier assigned to each GPU device.
+    """
+    driver_version: Optional[str] = Field(default=None)
+    """
+    Driver version of the GPU device, e.g. for NVIDIA GPUs.
+    """
+    runtime_version: Optional[str] = Field(default=None)
+    """
+    Runtime version of the GPU device, e.g. CUDA version for NVIDIA GPUs.
+    """
+    compute_capability: Optional[str] = Field(default=None)
+    """
+    Compute compatibility version of the GPU device, e.g. for NVIDIA GPUs.
+    """
+    core: Optional[GPUCoreInfo] = Field(sa_column=Column(JSON), default=None)
+    """
+    Core information of the GPU device.
+    """
+    memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
+    """
+    Memory information of the GPU device.
+    """
+    temperature: Optional[float] = Field(default=None)
+    """
+    Temperature of the GPU device in Celsius.
+    """
+    network: Optional[GPUNetworkInfo] = Field(sa_column=Column(JSON), default=None)
+    """
+    Network information of the GPU device, mainly for Ascend devices.
+    """
 
 
 GPUDevicesInfo = List[GPUDeviceInfo]

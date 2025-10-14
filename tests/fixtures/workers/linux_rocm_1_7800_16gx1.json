@@ -68,7 +68,7 @@
             {
                 "name": "AMD Radeon RX 7800 XT",
                 "uuid": "0x747e",
-                "vendor": "AMD",
+                "vendor": "amd",
                 "index": 0,
                 "device_index": 0,
                 "device_chip_index": 0,
@@ -84,9 +84,7 @@
                     "allocated": 16503328768
                 },
                 "temperature": 48.0,
-                "labels": {
-                    "llvm": "gfx1101"
-                },
+                "compute_capability": "gfx1101",
                 "type": "rocm"
             }
         ],

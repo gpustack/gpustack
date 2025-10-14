@@ -87,7 +87,7 @@
             {
                 "name": "NVIDIA GeForce RTX 4090 D",
                 "uuid": "",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 0,
                 "device_index": 0,
                 "device_chip_index": 0,
@@ -103,7 +103,6 @@
                     "allocated": null
                 },
                 "temperature": 37.0,
-                "labels": {},
                 "type": "cuda"
             }
         ],
