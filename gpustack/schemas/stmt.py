@@ -100,7 +100,6 @@ model_user_after_drop_view_stmt = "DROP VIEW IF EXISTS non_admin_user_models"
 
 
 def model_user_after_create_view_stmt(db_type: str) -> str:
-    sql_true = '1' if db_type == "sqlite" else 'TRUE'
     sql_false = '0' if db_type == "sqlite" else 'FALSE'
     pid = (
         "CONCAT(m.id, ':', u.id)"
@@ -116,7 +115,7 @@ SELECT
 FROM
     users u
 INNER JOIN models m
-    ON m.public = {sql_true}
+    ON m.access_policy in ('PUBLIC', 'AUTHED')
     OR EXISTS (
         SELECT 1 FROM modeluserlink mul
         WHERE mul.model_id = m.id AND mul.user_id = u.id
