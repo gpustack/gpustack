@@ -141,6 +141,7 @@ nav:
       - Inference On CPUs: tutorials/inference-on-cpus.md
       - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
       - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
+      - Custom inference backend: tutorials/custom-inference-backend.md
   - Integrations:
       - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
       - Integrate with Dify: integrations/integrate-with-dify.md
