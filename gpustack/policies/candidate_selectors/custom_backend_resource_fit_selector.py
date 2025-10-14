@@ -20,6 +20,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
+from gpustack.server.db import get_engine
 from gpustack.utils.hub import get_model_weight_size
 from gpustack.utils.unit import byte_to_gib
 
@@ -90,6 +91,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._event_collector = EventCollector(model)
         self._messages = []
+        self._engine = get_engine()
 
         # Estimated resource requirements
         self._vram_claim = 0
@@ -163,7 +165,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             if not worker.status or not worker.status.gpu_devices:
                 continue
 
-            allocatable = await get_worker_allocatable_resource(worker)
+            allocatable = await get_worker_allocatable_resource(self._engine, worker)
 
             for gpu_device in worker.status.gpu_devices:
                 gpu_index = gpu_device.index
@@ -197,7 +199,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             if len(worker.status.gpu_devices) < 2:
                 continue  # Need at least 2 GPUs for multi-GPU
 
-            allocatable = await get_worker_allocatable_resource(worker)
+            allocatable = await get_worker_allocatable_resource(self._engine, worker)
 
             # Try to distribute VRAM across multiple GPUs
             available_gpus = []
@@ -235,7 +237,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
 
         for worker in workers:
-            allocatable = await get_worker_allocatable_resource(worker)
+            allocatable = await get_worker_allocatable_resource(self._engine, worker)
 
             # Check if worker has enough RAM for CPU inference
             if allocatable.ram >= self._ram_claim:

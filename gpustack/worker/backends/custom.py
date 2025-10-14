@@ -123,8 +123,8 @@ class CustomServer(InferenceServer):
         """
         Handle errors during server startup.
         """
-        command_name = getattr(self._model, 'backend_command', 'unknown')
-        error_message = f"Failed to run the {command_name} server: {error}"
+        command_name = getattr(self._model, 'run_command', 'unknown')
+        error_message = f"Failed to run the {command_name} error: {error}"
         logger.error(error_message)
 
         try:
