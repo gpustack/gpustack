@@ -157,7 +157,7 @@ jobs:
           provenance: true
           sbom: true
           push: ${{ github.event_name != 'pull_request' }}
-          file: ${{ github.workspace }}/pack/Dockerfile.all
+          file: ${{ github.workspace }}/pack/Dockerfile
           context: ${{ github.workspace }}
           platforms: "linux/amd64,linux/arm64"
           build-args: |
