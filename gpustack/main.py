@@ -3,6 +3,7 @@ from multiprocessing import freeze_support
 
 from gpustack.cmd import setup_start_cmd
 from gpustack.cmd.chat import setup_chat_cmd
+from gpustack.cmd.db_migration import setup_migrate_cmd
 from gpustack.cmd.download_tools import setup_download_tools_cmd
 from gpustack.cmd.draw import setup_draw_cmd
 from gpustack.cmd.reset_admin_password import setup_reset_admin_password_cmd
@@ -28,6 +29,7 @@ def main():
     setup_download_tools_cmd(subparsers)
     setup_version_cmd(subparsers)
     setup_reset_admin_password_cmd(subparsers)
+    setup_migrate_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

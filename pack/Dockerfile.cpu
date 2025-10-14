@@ -5,6 +5,8 @@
 #    - Install C buildkit.
 #    - Upgrade Python if needed.
 #    - Install Python buildkit.
+#    - Install PostgreSQL.
+#    - Install S6-overlay.
 # 2. gpustack target(final):
 #    - Install GPUStack.
 #    - Install Vox-Box as an independent executor for GPUStack,
@@ -63,7 +65,7 @@ RUN <<EOF
         tzdata locales \
         iproute2 iputils-ping ifstat net-tools dnsutils pciutils ipmitool \
         procps sysstat htop \
-        tini vim jq bc tree
+        vim jq bc tree
 
     # Update locale
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
@@ -129,10 +131,10 @@ RUN <<EOF
     apt-get install -y --no-install-recommends \
         perl-openssl-defaults perl yasm \
         zlib1g zlib1g-dev libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev \
-        openssl libssl-dev libsqlite3-dev lcov libomp-dev \
+        openssl libssl-dev lcov libomp-dev \
         libblas-dev liblapack-dev libopenblas-dev libblas3 liblapack3 libhdf5-dev \
         libxml2 libxslt1-dev libgl1-mesa-glx libgmpxx4ldbl \
-        libncurses5-dev libreadline6-dev libsqlite3-dev \
+        libncurses5-dev libreadline6-dev \
         liblzma-dev lzma lzma-dev tk-dev uuid-dev libmpdec-dev \
         ffmpeg libjpeg-dev libpng-dev libtiff-dev libwebp-dev \
         libnuma-dev libjemalloc-dev
@@ -227,6 +229,106 @@ EOF
 ENV LOCAL_VENVS=/opt/venvs \
     USE_EMOJI="false"
 
+
+## Install PostgreSQL
+
+ENV PGDATA=/var/lib/postgresql/data
+ENV PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf
+ENV POSTGRES_DB=gpustack
+
+RUN set -eux; \
+	groupadd -r postgres --gid=9999; \
+	useradd -r -g postgres --uid=9999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres; \
+	mkdir -p /var/lib/postgresql; \
+	chown -R postgres:postgres /var/lib/postgresql
+
+RUN <<EOF
+    # PostgreSQL
+
+    set -eux
+
+    # Add PostgreSQL APT repository
+    wget -O /tmp/ACCC4CF8.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        && gpg --dearmor /tmp/ACCC4CF8.asc \
+        && mv /tmp/ACCC4CF8.asc.gpg /usr/share/keyrings/postgresql-archive-keyring.gpg \
+        && echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+    
+    # Install
+    apt-get update -y && apt-get install -y --no-install-recommends \
+        postgresql-17 \
+        gosu
+
+    # Prepare directories
+    mkdir -p /var/log/postgresql
+    chown postgres:postgres /var/log/postgresql
+    chmod 0755 /var/log/postgresql
+
+    # Create symlinks for PostgreSQL 17 to simplify usage
+    ln -s /usr/lib/postgresql/17/bin /usr/lib/postgresql/bin \
+        && ln -s /etc/postgresql/17/main /etc/postgresql/main \
+        && ln -s /var/lib/postgresql/17/main /var/lib/postgresql/main \
+        && ls -1 /usr/lib/postgresql/bin/ | xargs -I @ ln -sf /usr/lib/postgresql/bin/@ /usr/bin/@
+
+    gosu postgres echo "listen_addresses='*'" >> "$PGCONFIG_FILE" \
+        && gosu postgres echo "local all  postgres            peer" > /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  root  127.0.0.1/32  trust" >> /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  root  ::1/128       trust" >> /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  all   0.0.0.0/0     scram-sha-256" >> /etc/postgresql/main/pg_hba.conf
+
+    gosu postgres initdb -D "$PGDATA"
+    gosu postgres pg_ctl -D "$PGDATA" -o "-c listen_addresses='localhost'" -w start
+    gosu postgres psql --command "CREATE USER root WITH PASSWORD 'Root123';"
+    gosu postgres psql --command "CREATE DATABASE gpustack OWNER root;"
+    gosu postgres pg_ctl -D "$PGDATA" -m fast -w stop
+
+    gosu postgres sed -i "s/^data_directory/#data_directory/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^hba_file/#hba_file/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_destination/log_destination/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_min_messages = warning/log_min_messages = info/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i 's/^#log_directory = '\''log'\''/log_directory = '\''\/var\/log\/postgresql'\''/g' "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
+
+EOF
+
+## Install s6-overlay
+
+ARG S6_OVERLAY_VERSION=3.2.1.0
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64)   S6_ARCH="x86_64" ;; \
+        arm64)   S6_ARCH="aarch64" ;; \
+        arm/v7)  S6_ARCH="armhf" ;; \
+        arm/v6)  S6_ARCH="arm" ;; \
+        *) \
+            echo >&2 "⚠️  Warning: Unknown TARGETARCH='${TARGETARCH}', defaulting to x86_64"; \
+            S6_ARCH="x86_64"; \
+        ;; \
+    esac; \
+    echo "Installing s6-overlay ${S6_OVERLAY_VERSION} for arch: ${S6_ARCH} (from TARGETARCH=${TARGETARCH})"; \
+    base_url="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
+    for pkg in noarch ${S6_ARCH}; do \
+        wget -q -O "/tmp/s6-overlay-${pkg}.tar.xz" "${base_url}/s6-overlay-${pkg}.tar.xz"; \
+    done \
+    && echo "📦  Extracting s6-overlay ..." \
+    && tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz \
+    && tar -C / -Jxpf /tmp/s6-overlay-${S6_ARCH}.tar.xz \
+    && rm -f /tmp/s6-overlay-*.tar.xz \
+    && echo "Installed s6-overlay ${S6_OVERLAY_VERSION} successfully."
+
+ENV S6_KEEP_ENV=1 \
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
+    S6_SERVICES_GRACETIME=3000 \
+    S6_KILL_GRACETIME=3000 \
+    S6_VERBOSITY=5
+
+
 #
 # Stage GPUStack
 #
@@ -320,4 +422,7 @@ EOF
 ENV PIPX_HOME=/var/lib/gpustack/pipx \
     PIPX_BIN_DIR=/var/lib/gpustack/bin
 
-ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
+COPY pack/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

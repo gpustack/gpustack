@@ -23,7 +23,7 @@ GPUStack workers are responsible for:
 
 ### SQL Database
 
-The GPUStack server connects to a SQL database as the datastore. GPUStack uses SQLite by default, but you can configure it to use an external PostgreSQL or MySQL as well.
+The GPUStack server connects to a SQL database as the datastore. GPUStack uses PostgreSQL by default, but you can configure it to use an external MySQL as well.
 
 ### Inference Server
 

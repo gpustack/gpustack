@@ -106,16 +106,7 @@ def build_mysql_category_condition(category: str):
 
 def build_category_conditions(session, categories):
     dialect = session.bind.dialect.name
-    if dialect == "sqlite":
-        return [
-            (
-                col(Model.categories) == []
-                if category == ""
-                else col(Model.categories).contains(category)
-            )
-            for category in categories
-        ]
-    elif dialect == "postgresql":
+    if dialect == "postgresql":
         return [build_pg_category_condition(category) for category in categories]
     elif dialect == "mysql":
         return [build_mysql_category_condition(category) for category in categories]
