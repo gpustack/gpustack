@@ -188,7 +188,7 @@ class VLLMServer(InferenceServer):
         Handle errors during container server startup.
         """
         error_message = f"Failed to run the vLLM container server: {error}"
-        logger.error(error_message)
+        logger.exception(error_message)
 
         try:
             patch_dict = {
