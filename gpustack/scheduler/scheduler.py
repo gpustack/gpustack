@@ -444,8 +444,7 @@ async def evaluate_gguf_model(
         and not task_output.resource_architecture.is_deployable()
     ):
         raise ValueError(
-            "Unsupported model. This model cannot be deployed with the current backend. "
-            "If a newer backend version supports it, you can try deploying with a custom backend version."
+            f"Unsupported model. To proceed with deployment, ensure the model is supported by {model.backend}, or deploy it using a custom {model.backend} version or custom backend."
         )
 
     should_update = False
@@ -514,7 +513,9 @@ async def evaluate_audio_model(
 
     supported = model_dict.get("supported", False)
     if not supported:
-        raise ValueError("Unsupported model. This model is not supported by VoxBox.")
+        raise ValueError(
+            f"Unsupported model. To proceed with deployment, ensure the model is supported by {model.backend}, or deploy it using a custom {model.backend} version or custom backend."
+        )
 
     should_update = False
     task_type = model_dict.get("task_type")
@@ -558,7 +559,7 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
             logger.debug(
                 f"Failed to get config for model {model.name or model.readable_source}: {e}"
             )
-            raise simplify_auto_config_value_error(e)
+            raise simplify_auto_config_value_error(e, model.backend)
         except TimeoutError:
             raise Exception(
                 f"Timeout while getting config for model {model.name or model.readable_source}."
@@ -571,14 +572,14 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         architectures = getattr(pretrained_config, "architectures", []) or []
         if not architectures and not model.backend_version:
             raise ValueError(
-                "Unrecognized architecture. To proceed with deployment, ensure the model is supported by the current backend, or deploy it using a custom backend version or custom backend."
+                f"Unrecognized architecture. To proceed with deployment, ensure the model is supported by {model.backend}, or deploy it using a custom {model.backend} version or custom backend."
             )
 
     model_type = detect_model_type(architectures)
 
     if model_type == CategoryEnum.UNKNOWN and not model.backend_version:
         raise ValueError(
-            f"Unrecognized architecture: {architectures}. To proceed with deployment, ensure the model is supported by the current backend, or deploy it using a custom backend version or custom backend."
+            f"Unrecognized architecture: {architectures}. To proceed with deployment, ensure the model is supported by {model.backend}, or deploy it using a custom {model.backend} version or custom backend."
         )
 
     return set_model_categories(model, model_type)
@@ -625,19 +626,19 @@ def should_skip_architecture_check(model: Model) -> bool:
     return False
 
 
-def simplify_auto_config_value_error(e: ValueError) -> ValueError:
+def simplify_auto_config_value_error(e: ValueError, backend: str) -> ValueError:
     """
     Simplify the error message for ValueError exceptions.
     """
     message = str(e)
     if "trust_remote_code=True" in message:
         return ValueError(
-            "The model contains custom code that must be executed to load correctly. If you trust the source, please pass the backend parameter `--trust-remote-code` to allow custom code to be run."
+            f"The model contains custom code that must be executed to load correctly. If you trust the source, please pass the {backend} parameter `--trust-remote-code` to allow custom code to be run."
         )
 
     if "pip install --upgrade transformers" in message:
         return ValueError(
-            "Unrecognized model. To proceed with deployment, ensure the model is supported by the current backend, or deploy it using a custom backend version or custom backend."
+            f"Unrecognized model. To proceed with deployment, ensure the model is supported by {backend}, or deploy it using a custom {backend} version or custom backend."
         )
 
     return ValueError(f"Not a supported model.\n\n{message}")
