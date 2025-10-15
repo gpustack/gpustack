@@ -17,7 +17,7 @@ from gpustack_runtime.detector import (
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.config.config import Config, set_global_config, get_global_config
+from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
 from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.models import (
@@ -31,7 +31,7 @@ from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.profiling import time_decorator
-from gpustack.utils import platform, envs
+from gpustack.utils import platform
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 logger = logging.getLogger(__name__)
@@ -148,9 +148,7 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def get_inference_running_env(
-        self, env: Dict[str, str] = None, version: str = None
-    ) -> Dict[str, str]:
+    def get_inference_running_env(self, env: Dict[str, str] = None) -> Dict[str, str]:
         if env is None:
             env = os.environ.copy()
 
@@ -178,12 +176,6 @@ class InferenceServer(ABC):
 
             if get_backend(self._model) == BackendEnum.VLLM:
                 set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
-            elif get_backend(self._model) == BackendEnum.ASCEND_MINDIE:
-                # Enable service monitor mode for Ascend MindIE
-                # https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0316.html
-                env["MIES_SERVICE_MONITOR_MODE"] = "1"
-
-                set_ascend_mindie_env(env, vendor, gpu_indexes, gpu_devices, version)
 
         env.update(self._model.env or {})
 
@@ -392,55 +384,6 @@ def set_vllm_env(
 
         if emulate_gfx_version.get(cc):
             env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[cc]
-
-
-def set_ascend_mindie_env(
-    env: Dict[str, str],
-    vendor: ManufacturerEnum,
-    gpu_indexes: List[int] = None,
-    gpu_devices: GPUDevicesInfo = None,
-    version: str = "latest",
-):
-    system = platform.system()
-    if not gpu_indexes or not gpu_devices:
-        return
-
-    if system != "linux" or vendor != ManufacturerEnum.ASCEND:
-        return
-
-    # Select root path
-    root_path = next(
-        (
-            rp
-            for rp in envs.get_unix_available_root_paths_of_ascend()
-            if rp.joinpath("mindie", version).is_dir()
-        ),
-        None,
-    )
-    if not root_path:
-        logger.error(
-            "Ascend MindIE root path not found. " "Please check the installation."
-        )
-        return
-
-    # Extract the environment variables from the script
-    # - Get the paths of Ascend MindIE set_env.sh
-    script_paths = [
-        root_path.joinpath("mindie", version, "mindie-rt", "set_env.sh"),
-        root_path.joinpath("mindie", version, "mindie-torch", "set_env.sh"),
-        root_path.joinpath("mindie", version, "mindie-service", "set_env.sh"),
-        root_path.joinpath("mindie", version, "mindie-llm", "set_env.sh"),
-    ]
-    # - Get the paths of Ascend MindIE virtual environment if needed
-    cfg = get_global_config()
-    venv_dir = Path(cfg.data_dir).joinpath("venvs", "mindie", version)
-    venv_path = venv_dir.joinpath("bin", "activate")
-    if venv_dir.is_dir() and venv_path.is_file():
-        script_paths.append(venv_path)
-
-    # Update the environment variables with diff
-    env_diff = envs.extract_unix_vars_of_source(script_paths)
-    env.update(env_diff)
 
 
 def get_visible_devices_env_name(vendor: str) -> str:
