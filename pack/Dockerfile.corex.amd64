@@ -1,4 +1,4 @@
-FROM crpi-thyzhdzt86bexebt.cn-hangzhou.personal.cr.aliyuncs.com/gpustack_ai/gpustack:iluvator-corex4.2.0-vllm0.8.3-py3.10 AS build
+FROM crpi-92uj7jb20gffz04j.cn-guangzhou.personal.cr.aliyuncs.com/iluvatar_common/vllm0.10.1-4.3.0-x86:v3 AS build
 
 RUN apt-get update && apt-get install -y \
     git \
@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
 COPY .. /workspace/gpustack
 RUN cd /workspace/gpustack && make build
 
-FROM crpi-thyzhdzt86bexebt.cn-hangzhou.personal.cr.aliyuncs.com/gpustack_ai/gpustack:iluvator-corex4.2.0-vllm0.8.3-py3.10 AS runtime
+FROM crpi-92uj7jb20gffz04j.cn-guangzhou.personal.cr.aliyuncs.com/iluvatar_common/vllm0.10.1-4.3.0-x86:v3 AS runtime
 
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -23,6 +23,6 @@ RUN pip install /dist/*.whl && \
     pip cache purge && \
     rm -rf /dist
 
-RUN gpustack download-tools
+RUN gpustack download-tools --device cpu
 
 ENTRYPOINT [ "tini", "--", "gpustack", "start" ]
