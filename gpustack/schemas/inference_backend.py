@@ -172,14 +172,6 @@ def get_built_in_backend() -> List[InferenceBackend]:
     return [
         InferenceBackend(backend_name=BackendEnum.VLLM, is_built_in=True),
         InferenceBackend(backend_name=BackendEnum.ASCEND_MINDIE, is_built_in=True),
+        InferenceBackend(backend_name=BackendEnum.VOX_BOX, is_built_in=True),
         InferenceBackend(backend_name=BackendEnum.CUSTOM, is_built_in=True),
     ]
-
-
-def get_built_in_backend_show_name(backend_name):
-    name_map = {
-        BackendEnum.VLLM: "vLLM",
-        BackendEnum.ASCEND_MINDIE: "Ascend MindIE",
-        BackendEnum.CUSTOM: "Custom",
-    }
-    return name_map.get(backend_name, backend_name)

@@ -50,7 +50,7 @@ class PlacementStrategyEnum(str, Enum):
 class BackendEnum(str, Enum):
     LLAMA_BOX = "llama-box"
     VLLM = "vLLM"
-    VOX_BOX = "vox-box"
+    VOX_BOX = "VoxBox"
     ASCEND_MINDIE = "MindIE"
     CUSTOM = "Custom"
 
