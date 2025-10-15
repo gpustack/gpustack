@@ -297,7 +297,7 @@ class InferenceServer(ABC):
         runner_param = {
             "backend": backend_type.lower() if backend_type else None,
             "service": self._model.backend.lower() if self._model.backend else None,
-            "platform": platform.get_runner_platform(),
+            "platform": platform.system_arch(),
         }
         if self._model.backend_version:
             runner_param["service_version"] = self._model.backend_version

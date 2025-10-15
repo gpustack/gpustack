@@ -87,14 +87,7 @@
                 "compute_capability": "gfx1101",
                 "type": "rocm"
             }
-        ],
-        "rpc_servers": {
-            "0": {
-                "pid": 653482,
-                "port": 50339,
-                "gpu_index": 0
-            }
-        }
+        ]
     },
     "unreachable": false,
     "heartbeat_time": "2025-02-07T05:09:09Z",
