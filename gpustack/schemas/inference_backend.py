@@ -124,15 +124,19 @@ class InferenceBackend(InferenceBackendBase, BaseModelMixin, table=True):
     id: Optional[int] = SQLField(default=None, primary_key=True)
 
 
+class VersionListItem(BaseModel):
+    version: str = Field(...)
+    is_deprecated: bool = Field(default=False)
+
+
 class InferenceBackendListItem(BaseModel):
     """Backend configuration item."""
 
     backend_name: str = Field(...)
-    backend_show_name: Optional[str] = Field(None)
     is_built_in: Optional[bool] = Field(None)
     default_version: Optional[str] = Field(None)
     default_backend_param: Optional[List[str]] = Field(None)
-    versions: Optional[List[str]] = Field(
+    versions: Optional[List[VersionListItem]] = Field(
         None, description="Available versions for this backend"
     )
 

@@ -3,6 +3,7 @@ from typing import List, Tuple, Optional, Dict
 
 import yaml
 from fastapi import APIRouter, Body
+from gpustack_runner.runner import ServiceVersionedRunner
 from sqlalchemy import or_, func
 from starlette.responses import StreamingResponse
 
@@ -23,8 +24,8 @@ from gpustack.schemas.inference_backend import (
     VersionConfig,
     VersionConfigDict,
     get_built_in_backend,
-    get_built_in_backend_show_name,
     InferenceBackendPublic,
+    VersionListItem,
 )
 from gpustack.schemas.models import BackendEnum, Model
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
@@ -126,7 +127,7 @@ async def check_backend_in_use(
 
 def get_runner_versions_and_configs(
     backend_name: str,
-) -> Tuple[List[str], VersionConfigDict, Optional[str]]:
+) -> Tuple[Dict[str, ServiceVersionedRunner], VersionConfigDict, Optional[str]]:
     """
     Get runner versions and version configs for a given backend.
 
@@ -140,14 +141,14 @@ def get_runner_versions_and_configs(
         - Default version (first available version or None)
     """
     runners_list = list_service_runners(service=backend_name.lower())
-    versions = []
+    runner_versions: Dict[str, ServiceVersionedRunner] = {}
     version_configs = VersionConfigDict()
     default_version = None
 
     if runners_list and len(runners_list) > 0:
         for version in runners_list[0].versions:
             if version.version:
-                versions.append(version.version)
+                runner_versions[version.version] = version
                 backend_list = [
                     f"{backend_runner.backend}" for backend_runner in version.backends
                 ]
@@ -158,7 +159,20 @@ def get_runner_versions_and_configs(
                 if default_version is None:
                     default_version = version.version
 
-    return versions, version_configs, default_version
+    return runner_versions, version_configs, default_version
+
+
+def deduplicate_versions(versions: List[VersionListItem]) -> List[VersionListItem]:
+    seen = set()
+    result = []
+
+    for item in versions:
+        key = (item.version, item.is_deprecated)
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+
+    return result
 
 
 @router.get("/list", response_model=InferenceBackendResponse)
@@ -187,14 +201,17 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
         inference_backends = await InferenceBackend.all(session)
         for backend in inference_backends:
             # Get versions from version_config
-            versions = []
+            versions: List[VersionListItem] = []
             if backend.version_configs and backend.version_configs.root:
-                versions = list(backend.version_configs.root.keys())
+                versions = [
+                    VersionListItem(version=version)
+                    for version in backend.version_configs.root.keys()
+                ]
 
             if backend.is_built_in:
                 # For built-in backends, add runner versions and use special show name
-                _, version_configs, default_version = get_runner_versions_and_configs(
-                    backend.backend_name
+                runner_versions, version_configs, default_version = (
+                    get_runner_versions_and_configs(backend.backend_name)
                 )
                 # Merge runner versions with existing versions
                 for version, config in version_configs.root.items():
@@ -204,10 +221,17 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
                         if framework in framework_list
                     ]
                     if filtered_frameworks:
-                        versions.append(version)
+                        is_deprecated = False
+                        if runner_versions.get(version):
+                            is_deprecated = runner_versions[version].deprecated
+                        versions.append(
+                            VersionListItem(
+                                version=version, is_deprecated=is_deprecated
+                            )
+                        )
 
                 # Remove duplicates while preserving order
-                versions = list(dict.fromkeys(versions))
+                versions = deduplicate_versions(versions)
 
                 # Update default version if found from runner
                 if default_version and not backend.default_version:
@@ -215,9 +239,6 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
 
                 backend_item = InferenceBackendListItem(
                     backend_name=backend.backend_name,
-                    backend_show_name=get_built_in_backend_show_name(
-                        backend.backend_name
-                    ),
                     default_version=backend.default_version,
                     default_backend_param=backend.default_backend_param,
                     versions=versions,
@@ -227,7 +248,6 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
                 # For custom backends, use backend_name as show_name
                 backend_item = InferenceBackendListItem(
                     backend_name=backend.backend_name,
-                    backend_show_name=backend.backend_name,
                     default_version=backend.default_version,
                     default_backend_param=backend.default_backend_param,
                     versions=versions,
@@ -239,7 +259,6 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
         # Ensure Custom backend is always included even if not in database
         custom_backend_item = InferenceBackendListItem(
             backend_name=BackendEnum.CUSTOM,
-            backend_show_name=get_built_in_backend_show_name(BackendEnum.CUSTOM),
             default_version=None,
             default_backend_param=None,
             versions=[],
