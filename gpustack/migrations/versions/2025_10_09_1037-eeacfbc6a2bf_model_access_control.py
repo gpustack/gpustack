@@ -28,6 +28,9 @@ def access_control_upgrade() -> None:
         'ALLOWED_USERS',
         name='accesspolicyenum',
     )
+    bind = op.get_bind()
+    if bind.dialect.name in ('postgresql', 'mysql'):
+        access_policy_enum.create(bind, checkfirst=True)
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.add_column(sa.Column('access_policy', access_policy_enum, nullable=True, server_default='AUTHED'))
     op.execute(
