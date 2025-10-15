@@ -26,6 +26,9 @@ class VoxBoxServer(InferenceServer):
                 model_dir = os.path.dirname(self._model_path)
                 mounts.append(ContainerMount(path=model_dir))
 
+            # Get configured environment variables
+            envs = self._get_configured_env()
+
             # Build vox-box command arguments
             arguments = [
                 "vox-box",
@@ -56,6 +59,11 @@ class VoxBoxServer(InferenceServer):
             if self._model.backend_parameters:
                 arguments.extend(self._model.backend_parameters)
 
+            # Get resources configuration
+            resources = self._get_configured_resources(
+                # Pass-through all devices as vox-box handles device itself.
+                mount_all_devices=True,
+            )
             if self._model_instance.gpu_indexes is not None:
                 arguments.extend(
                     [
@@ -66,10 +74,6 @@ class VoxBoxServer(InferenceServer):
 
             # Extend built-in arguments at the end
             arguments.extend(built_in_arguments)
-
-            # Setup environment variables
-            env = os.environ.copy()
-            env.update(self._model.env or {})
 
             # Get vox-box image name via runtime
             image_name = self._get_backend_image_name()
@@ -86,8 +90,13 @@ class VoxBoxServer(InferenceServer):
                     args=arguments,
                 ),
                 envs=[
-                    ContainerEnv(name=name, value=value) for name, value in env.items()
+                    ContainerEnv(
+                        name=name,
+                        value=value,
+                    )
+                    for name, value in envs.items()
                 ],
+                resources=resources,
                 mounts=mounts,
             )
 

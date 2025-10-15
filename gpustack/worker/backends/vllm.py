@@ -56,6 +56,9 @@ class VLLMServer(InferenceServer):
             # Setup environment variables
             envs = self._setup_environment()
 
+            # Get resources configuration
+            resources = self._get_configured_resources()
+
             # Build vLLM command arguments
             arguments = self._build_vllm_arguments()
 
@@ -75,8 +78,13 @@ class VLLMServer(InferenceServer):
                     args=arguments,
                 ),
                 envs=[
-                    ContainerEnv(name=name, value=value) for name, value in envs.items()
+                    ContainerEnv(
+                        name=name,
+                        value=value,
+                    )
+                    for name, value in envs.items()
                 ],
+                resources=resources,
                 mounts=mounts,
             )
 

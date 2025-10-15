@@ -128,17 +128,6 @@ class GPUDeviceInfo(BaseModel):
 GPUDevicesInfo = List[GPUDeviceInfo]
 
 
-class VendorEnum(str, Enum):
-    NVIDIA = "NVIDIA"
-    MTHREADS = "Moore Threads"
-    Apple = "Apple"
-    Huawei = "Ascend"
-    AMD = "AMD"
-    Hygon = "Hygon"
-    Iluvatar = "Iluvatar"
-    Cambricon = "Cambricon"
-
-
 class MountPoint(BaseModel):
     name: str = Field(default="")
     mount_point: str = Field(default="")
