@@ -8,6 +8,7 @@ from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_service_runners
+from gpustack_runtime.deployer import ContainerResources
 from gpustack_runtime.deployer.__utils__ import compare_versions, correct_runner_image
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
@@ -16,6 +17,7 @@ from gpustack_runtime.detector import (
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
+from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
@@ -27,24 +29,14 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
 )
-from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
+from gpustack.schemas.workers import GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
-from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
-
-_VISIBLE_DEVICES_ENV_NAME_MAPPER = {
-    VendorEnum.NVIDIA: "CUDA_VISIBLE_DEVICES",
-    VendorEnum.Huawei: "ASCEND_RT_VISIBLE_DEVICES",
-    VendorEnum.AMD: "ROCR_VISIBLE_DEVICES",
-    VendorEnum.Hygon: "HIP_VISIBLE_DEVICES",
-    VendorEnum.Iluvatar: "CUDA_VISIBLE_DEVICES",
-    VendorEnum.Cambricon: "MLU_VISIBLE_DEVICES",
-}
 
 
 class ModelInstanceStateError(Exception):
@@ -196,6 +188,43 @@ class InferenceServer(ABC):
                 if gpu_device:
                     gpu_devices.append(gpu_device)
         return gpu_devices
+
+    def _get_configured_resources(
+        self, mount_all_devices: bool = False
+    ) -> ContainerResources:
+        """
+        Get the resource requests for the model instance.
+
+        Args:
+            mount_all_devices:
+                Whether to mount all available GPU devices.
+                If true, ignores the GPUs assigned to the model instance and try to mount all available GPUs.
+
+        Returns:
+            A ContainerResources object representing the resource requests for the model instance.
+
+        Raises:
+            If the GPUs assigned to the model instance are of different types.
+        """
+        resources = ContainerResources()
+        gpu_devices = self._get_selected_gpu_devices()
+        if gpu_devices:
+            gpu_type = gpu_devices[0].type
+            for device in gpu_devices[1:]:
+                if device.type != gpu_type:
+                    raise RuntimeError(
+                        "All GPUs assigned to the model instance must be of the same type."
+                    )
+            key = runtime_envs.GPUSTACK_RUNTIME_DETECT_BACKEND_MAP_RESOURCE_KEY.get(
+                gpu_type
+            )
+            if key:
+                resources[key] = (
+                    ",".join(str(d.index) for d in gpu_devices)
+                    if not mount_all_devices
+                    else "all"
+                )
+        return resources
 
     def build_versioned_command_args(
         self,

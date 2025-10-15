@@ -1411,6 +1411,9 @@ class AscendMindIEServer(InferenceServer):
             ContainerMount(path=self._model_path),
         ]
 
+        # Get resources configuration
+        resources = self._get_configured_resources()
+
         image_name = self._get_backend_image_name(backend_type="cann")
 
         # Build command arguments
@@ -1427,7 +1430,14 @@ class AscendMindIEServer(InferenceServer):
                 privileged=True,
                 args=arguments,
             ),
-            envs=[ContainerEnv(name=name, value=value) for name, value in env.items()],
+            envs=[
+                ContainerEnv(
+                    name=name,
+                    value=value,
+                )
+                for name, value in env.items()
+            ],
+            resources=resources,
             mounts=mounts,
             files=files,
         )

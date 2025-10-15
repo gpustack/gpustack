@@ -21,7 +21,6 @@ from gpustack_runtime.deployer import (
     logs_workload,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -56,6 +55,9 @@ class CustomServer(InferenceServer):
 
             envs = self._setup_environment()
 
+            # Get resources configuration
+            resources = self._get_configured_resources()
+
             image_cmd = []
             command = self.inference_backend.replace_command_param(
                 self._model.backend_version,
@@ -82,9 +84,14 @@ class CustomServer(InferenceServer):
                     args=image_cmd,
                 ),
                 envs=[
-                    ContainerEnv(name=name, value=value) for name, value in envs.items()
+                    ContainerEnv(
+                        name=name,
+                        value=value,
+                    )
+                    for name, value in envs.items()
                 ],
                 mounts=mounts,
+                resources=resources,
             )
 
             # Store workload name for management operations
