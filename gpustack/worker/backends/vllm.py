@@ -90,6 +90,7 @@ class VLLMServer(InferenceServer):
             )
 
             logger.info(f"Creating vLLM container workload: {self._workload_name}")
+            logger.info(f"Container image name: {image_name} arguments: {arguments}")
             create_workload(workload_plan)
 
             logger.info(
@@ -143,6 +144,8 @@ class VLLMServer(InferenceServer):
             self._model_path,
         ]
 
+        arguments = self.build_versioned_command_args(arguments)
+
         derived_max_model_len = self._derive_max_model_len()
         if derived_max_model_len and derived_max_model_len > 8192:
             arguments.extend(["--max-model-len", "8192"])
@@ -171,11 +174,15 @@ class VLLMServer(InferenceServer):
         built_in_arguments = [
             "--host",
             "0.0.0.0",
-            "--port",
-            str(self._model_instance.port),
-            "--served-model-name",
-            self._model_instance.model_name,
         ]
+
+        has_port = any(arg == "--port" for arg in arguments)
+        if not has_port:
+            built_in_arguments.extend(["--port", str(self._model_instance.port)])
+
+        built_in_arguments.extend(
+            ["--served-model-name", self._model_instance.model_name]
+        )
 
         # Extend the built-in arguments at the end so that
         # they cannot be overridden by the user-defined arguments

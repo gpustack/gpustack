@@ -1413,9 +1413,9 @@ class AscendMindIEServer(InferenceServer):
         image_name = self._get_backend_image_name(backend_type="cann")
 
         # Build command arguments
-        arguments = []
-        image_cmd = service_bin_path.split(" ")
-        arguments.extend(image_cmd)
+        arguments = service_bin_path.split(" ")
+
+        arguments = self.build_versioned_command_args(arguments)
 
         # Create container configuration
         run_container = Container(
@@ -1441,6 +1441,7 @@ class AscendMindIEServer(InferenceServer):
         )
 
         logger.info(f"Creating Ascend MindIE container workload: {self._workload_name}")
+        logger.info(f"Container image name: {image_name} arguments: {arguments}")
         create_workload(workload_plan)
 
         logger.info(
