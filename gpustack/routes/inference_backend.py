@@ -403,18 +403,25 @@ async def get_inference_backends(
                 framework_list.add(gpu.runtime_framework)
 
     for backend in merged_backends:
-        filtered_version_configs = {}
+        # sorted by if framework is supported
+        sorted_version_configs = {}
         for version, config in backend.built_in_version_configs.items():
-            filtered_frameworks = [
-                framework
-                for framework in config.built_in_frameworks
-                if framework in framework_list
-            ]
-            if filtered_frameworks:
-                config.built_in_frameworks = filtered_frameworks
-                filtered_version_configs[version] = config
+            if config.built_in_frameworks:
+                supported = [
+                    framework
+                    for framework in config.built_in_frameworks
+                    if framework in framework_list
+                ]
+                unsupported = [
+                    framework
+                    for framework in config.built_in_frameworks
+                    if framework not in framework_list
+                ]
+                config.built_in_frameworks = supported + unsupported
 
-        backend.built_in_version_configs = filtered_version_configs
+            sorted_version_configs[version] = config
+
+        backend.built_in_version_configs = sorted_version_configs
         filter_backends.append(backend)
 
     # Apply search filter to merged backends if search is provided
