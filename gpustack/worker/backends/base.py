@@ -189,6 +189,66 @@ class InferenceServer(ABC):
 
         return env
 
+    def build_versioned_command_args(
+        self,
+        default_args: List[str],
+        model_path: Optional[str] = None,
+        port: Optional[int] = None,
+    ) -> List[str]:
+        """
+        Override default startup arguments based on version configuration
+        when the version uses non-built-in version and defines a custom run_command
+
+        Args:
+        - default_args: The default command argument list (e.g., ["vllm", "serve", "/path/to/model"]).
+        - model_path: Path used to replace {{model_path}}; if None, fall back to self._model_path.
+        - port: Port used to replace {{port}}; if None, fall back to self._model_instance.port.
+
+        Returns:
+            The final command argument list used for container execution.
+        """
+
+        # if no version or inference backend is available, return default_args
+        version = getattr(self._model, "backend_version", None)
+        if not version or not getattr(self, "inference_backend", None):
+            return default_args
+
+        # Load version configuration
+        version_config = None
+        try:
+            version_config = self.inference_backend.get_version_config(version)
+        except Exception:
+            version_config = self.inference_backend.version_configs.root.get(version)
+
+        # Only perform replacement when the version uses non-built-in version and defines run_command
+        if (
+            version_config
+            and getattr(version_config, "built_in_frameworks", None) is None
+            and getattr(version_config, "run_command", None)
+        ):
+            resolved_model_path = (
+                model_path
+                if model_path is not None
+                else getattr(self, "_model_path", None)
+            )
+            resolved_port = (
+                port
+                if port is not None
+                else getattr(self._model_instance, "port", None)
+            )
+
+            command = self.inference_backend.replace_command_param(
+                version,
+                resolved_model_path,
+                resolved_port,
+                version_config.run_command,
+            )
+            if command:
+                return command.split(" ")
+
+        # Return original default_args by default
+        return default_args
+
     def _get_backend_image_name(self, backend_type: Optional[str] = None) -> str:
         """
         Get supported backend images from gpustack-runner.
