@@ -571,14 +571,14 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
         architectures = getattr(pretrained_config, "architectures", []) or []
         if not architectures and not model.backend_version:
             raise ValueError(
-                "Unrecognized architecture. If this model is supported in a newer backend version, you can deploy it using a custom backend version."
+                "Unrecognized architecture. To proceed with deployment, ensure the model is supported by the current backend, or deploy it using a custom backend version or custom backend."
             )
 
     model_type = detect_model_type(architectures)
 
     if model_type == CategoryEnum.UNKNOWN and not model.backend_version:
         raise ValueError(
-            f"Unrecognized architecture: {architectures}. If this model is supported in a newer backend version, you can deploy it using a custom backend version."
+            f"Unrecognized architecture: {architectures}. To proceed with deployment, ensure the model is supported by the current backend, or deploy it using a custom backend version or custom backend."
         )
 
     return set_model_categories(model, model_type)
@@ -637,7 +637,7 @@ def simplify_auto_config_value_error(e: ValueError) -> ValueError:
 
     if "pip install --upgrade transformers" in message:
         return ValueError(
-            "Unrecognized model. If this model is supported in a newer backend version, you can deploy it using a custom backend version."
+            "Unrecognized model. To proceed with deployment, ensure the model is supported by the current backend, or deploy it using a custom backend version or custom backend."
         )
 
     return ValueError(f"Not a supported model.\n\n{message}")
