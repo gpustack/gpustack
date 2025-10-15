@@ -67,11 +67,9 @@ class Config(BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
         disable_worker_metrics: Disable worker metrics.
-        disable_rpc_servers: Disable RPC servers.
         worker_metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
         service_port_range: Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40000-40063'.
-        rpc_server_port_range: Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40064-40095'.
         ray_node_manager_port: Raylet port for node manager. Used when Ray is enabled. Default is 40098.
         ray_object_manager_port: Raylet port for object manager. Used when Ray is enabled. Default is 40099.
         ray_runtime_env_agent_port: Port for Ray Runtime Environment Agent. Used when Ray is enabled. Default is 40100.
@@ -168,18 +166,15 @@ class Config(BaseSettings):
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
     disable_worker_metrics: bool = False
-    disable_rpc_servers: bool = False
     worker_port: int = 10150
     worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
-    rpc_server_port_range: Optional[str] = "40064-40095"
     ray_worker_port_range: Optional[str] = "40200-40999"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
-    rpc_server_args: Optional[List[str]] = None
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
 
@@ -260,9 +255,6 @@ class Config(BaseSettings):
 
         if self.service_port_range:
             self.check_port_range(self.service_port_range)
-
-        if self.rpc_server_port_range:
-            self.check_port_range(self.rpc_server_port_range)
 
         if self.ray_worker_port_range:
             self.check_port_range(self.ray_worker_port_range)

@@ -159,14 +159,7 @@
                 "temperature": 35.55470275878906,
                 "type": "mps"
             }
-        ],
-        "rpc_servers": {
-            "0": {
-                "pid": 92801,
-                "port": 50683,
-                "gpu_index": 0
-            }
-        }
+        ]
     },
     "unreachable": false,
     "heartbeat_time": "2025-02-07T05:10:19Z",

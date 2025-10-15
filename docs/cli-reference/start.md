@@ -173,14 +173,11 @@ server_url: http://your_gpustack_server_url
 worker_name: your_worker_name
 worker_ip: 192.168.1.101
 disable_metrics: false
-disable_rpc_servers: false
 worker_metrics_port: 10151
 worker_port: 10150
 service_port_range: 40000-40063
-rpc_server_port_range: 40064-40095
 ray_worker_port_range: 40200-40999
 log_dir: /path/to/log_dir
-rpc_server_args: ["--verbose"]
 system_reserved:
   ram: 2
   vram: 1
