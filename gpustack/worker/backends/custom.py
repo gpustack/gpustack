@@ -108,14 +108,9 @@ class CustomServer(InferenceServer):
         """
         Setup environment variables for the inference server.
         """
-        env = os.environ.copy()
 
         # Apply GPUStack's inference environment setup
-        env = self.get_inference_running_env(env)
-
-        # Add model-specific environment variables
-        if self._model.env:
-            env.update(self._model.env)
+        env = self._get_configured_env()
 
         return env
 

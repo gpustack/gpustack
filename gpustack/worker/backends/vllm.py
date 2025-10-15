@@ -104,20 +104,15 @@ class VLLMServer(InferenceServer):
         """
         Setup environment variables for the vLLM container server.
         """
-        env = os.environ.copy()
+
+        # Apply GPUStack's inference environment setup
+        env = self._get_configured_env()
 
         # Apply LMCache environment variables if extended KV cache is enabled
         self.set_lmcache_env(env)
 
         # Apply vLLM distributed environment setup
         self.set_vllm_distributed_env(env)
-
-        # Apply GPUStack's inference environment setup
-        env = self.get_inference_running_env(env)
-
-        # Add model-specific environment variables
-        if self._model.env:
-            env.update(self._model.env)
 
         # Log environment variables
         env_view = None
