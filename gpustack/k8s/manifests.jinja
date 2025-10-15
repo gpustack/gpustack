@@ -14,6 +14,69 @@ type: Opaque
 data:
   token: {{ config.token | b64encode }}
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-cm-creator
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: gpustack-system-{{ config.cluster_suffix }}
+  name: gpustack-worker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: gpustack-system-{{ config.cluster_suffix }}
+  name: pod-cm-creator
+subjects:
+- kind: ServiceAccount
+  name: gpustack-worker
+  namespace: gpustack-system-{{ config.cluster_suffix }}
+roleRef:
+  kind: ClusterRole
+  name: pod-cm-creator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: gpustack-system-{{ config.cluster_suffix }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "10151"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: gpustack-worker
+  ports:
+    - name: gateway
+      port: 8080
+      targetPort: 8080
+    - name: api
+      port: 10150
+      targetPort: 10150
+    - name: metrics
+      port: 10151
+      targetPort: 10151
+---
 # DaemonSet
 apiVersion: apps/v1
 kind: DaemonSet
@@ -41,12 +104,10 @@ spec:
                   name: registration-token
             - name: GPUSTACK_SERVER_URL
               value: {{ config.server_url }}
-            - name: GPUSTACK_WORKER_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
+            - name: GPUSTACK_PORT
+              value: '8080'
           image: {{ config.image }}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           name: gpustack-worker
           resources: {}
           securityContext:
@@ -58,15 +119,44 @@ spec:
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
           volumeMounts:
-            - name: host-dev
-              mountPath: /dev
+            - name: gpustack-data-dir
+              mountPath: /var/lib/gpustack
+          ports:
+            - name: gateway
+              containerPort: 8080
+              protocol: TCP
+            - name: api
+              containerPort: 10150
+              protocol: TCP
+            - name: metrics
+              containerPort: 10151
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 5
+            successThreshold: 1
       volumes:
-      - name: host-dev
-        hostPath:
-          path: /dev
-          type: Directory
+        - name: gpustack-data-dir
+          hostPath:
+            path: /var/lib/gpustack
+            type: DirectoryOrCreate
       hostNetwork: true
       hostIPC: true
+      serviceAccountName: gpustack-worker
   updateStrategy:
     rollingUpdate:
       maxSurge: 0
