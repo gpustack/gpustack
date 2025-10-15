@@ -889,10 +889,8 @@ class AscendMindIEServer(InferenceServer):
         # the config includes two parts: environment variables and a JSON configuration file.
         logger.info("Loading Ascend MindIE config")
 
-        # - Load environment variables,
-        #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0416.html,
-        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0300.html.
-        env = self.get_inference_running_env()
+        # - Load environment variables.
+        env = self._get_configured_env()
         config_files: list[ContainerFile] = []
 
         # - Load JSON configuration,

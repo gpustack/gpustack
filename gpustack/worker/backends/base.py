@@ -1,10 +1,10 @@
-import glob
 import logging
 import os
 import sys
 import threading
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_service_runners
@@ -15,6 +15,7 @@ from gpustack_runtime.detector import (
     ManufacturerEnum,
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
+from gpustack_runtime import envs as runtime_envs
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
@@ -25,7 +26,6 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
-    get_backend,
 )
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
@@ -148,38 +148,54 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def get_inference_running_env(self, env: Dict[str, str] = None) -> Dict[str, str]:
-        if env is None:
-            env = os.environ.copy()
+    def _get_configured_env(self) -> Dict[str, str]:
+        """
+        Get the environment variables for the model instance.
+        Merge the model's env with the system env.
+        If there are conflicts, the model's env takes precedence.
 
-        system = platform.system()
-        gpu_indexes = self._model_instance.gpu_indexes
-        if (system == "linux" or system == "windows") and gpu_indexes:
-            vendor = None
-            gpu_devices = None
-            if self._worker and self._worker.status.gpu_devices:
-                gpu_devices = self._worker.status.gpu_devices
+        Returns:
+            A dictionary of environment variables for the model instance.
+        """
 
-            if gpu_devices:
-                # Now use the first GPU index to get the vendor
-                first_index = gpu_indexes[0]
-                gpu_device = next(
-                    (d for d in gpu_devices if d.index == first_index), None
-                )
-                vendor = gpu_device.vendor if gpu_device else None
+        env = {}
+        if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
+            env = {
+                # Exclude GPUSTACK_ and *_VISIBLE_DEVICES env vars,
+                # which are reserved for gpustack internal use.
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("GPUSTACK_") and not k.endswith("_VISIBLE_DEVICES")
+            }
 
-            # Keep GPU indexes in ascending order,
-            # this is important for some vendors like Ascend CANN,
-            # see https://github.com/gpustack/gpustack/issues/2527.
-            env_name = get_visible_devices_env_name(vendor)
-            env[env_name] = ",".join(map(str, sorted(gpu_indexes)))
-
-            if get_backend(self._model) == BackendEnum.VLLM:
-                set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
-
-        env.update(self._model.env or {})
+        if self._model.env:
+            env.update(self._model.env)
 
         return env
+
+    @lru_cache
+    def _get_selected_gpu_devices(self) -> GPUDevicesInfo:
+        """
+        Get the GPU devices assigned to the model instance.
+
+        Returns:
+            A list of GPU device information assigned to the model instance.
+        """
+        gpu_indexes = sorted(self._model_instance.gpu_indexes)
+        gpu_devices: GPUDevicesInfo = []
+        if (
+            self._model_instance.gpu_indexes
+            and self._worker
+            and self._worker.status.gpu_devices
+        ):
+            for index in gpu_indexes:
+                gpu_device = next(
+                    (d for d in self._worker.status.gpu_devices if d.index == index),
+                    None,
+                )
+                if gpu_device:
+                    gpu_devices.append(gpu_device)
+        return gpu_devices
 
     def build_versioned_command_args(
         self,
@@ -335,73 +351,6 @@ class InferenceServer(ABC):
         logger.info(f"{self._model.backend} image name: {docker_image}")
 
         return docker_image
-
-
-def real_model_path(model_paths: List[str]) -> str:
-    """
-    Get the real model path from the resolved paths.
-    """
-    if len(model_paths) == 0:
-        raise ValueError("Model paths are empty.")
-
-    model_path = model_paths[0]
-    # resolve glob pattern
-    if "*" in model_path:
-        match_paths = glob.glob(model_path)
-        if len(match_paths) == 0:
-            raise ValueError(f"No match file found for {model_path}")
-        return sorted(match_paths)[0]
-
-
-def set_vllm_env(
-    env: Dict[str, str],
-    vendor: ManufacturerEnum,
-    gpu_indexes: List[int] = None,
-    gpu_devices: GPUDevicesInfo = None,
-):
-    system = platform.system()
-    if not gpu_indexes or not gpu_devices:
-        return
-
-    if system != "linux" or vendor != ManufacturerEnum.AMD:
-        return
-
-    cc = None
-    for g in gpu_devices:
-        if g.index in gpu_indexes and g.compute_compatibility:
-            cc = g.compute_compatibility
-            break
-
-    if cc:
-        # vllm supports llvm target: gfx908;gfx90a;gfx942;gfx1100,
-        # try to use the similar LLVM target that is supported.
-        # https://docs.vllm.ai/en/v0.6.2/getting_started/amd-installation.html#build-from-source-rocm
-        # https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html
-        emulate_gfx_version = {
-            "gfx1101": "11.0.0",
-            "gfx1102": "11.0.0",
-        }
-
-        if emulate_gfx_version.get(cc):
-            env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[cc]
-
-
-def get_visible_devices_env_name(vendor: str) -> str:
-    """
-    Get the environment variable name for visible devices based on the vendor.
-    For example, if the vendor is "NVIDIA", it returns "CUDA_VISIBLE_DEVICES",
-    if the vendor is "Huawei", it returns "ASCEND_RT_VISIBLE_DEVICES".
-    Return "CUDA_VISIBLE_DEVICES" if the vendor is not recognized.
-    """
-
-    return next(
-        (
-            v
-            for k, v in _VISIBLE_DEVICES_ENV_NAME_MAPPER.items()
-            if vendor is not None and k.value.lower() in vendor.lower()
-        ),
-        "CUDA_VISIBLE_DEVICES",
-    )
 
 
 def is_ascend_310p(worker: WorkerBase) -> bool:

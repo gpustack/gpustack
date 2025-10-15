@@ -162,7 +162,7 @@ class LlamaBoxServer(InferenceServer):
                     f"Model environment variables: {', '.join(f'{key}={value}' for key, value in self._model.env.items())}"
                 )
 
-            env = self.get_inference_running_env()
+            env = self._get_configured_env()
             cwd = str(command_path.parent)
             if platform.system() == "linux":
                 ld_library_path = env.get("LD_LIBRARY_PATH", "")
