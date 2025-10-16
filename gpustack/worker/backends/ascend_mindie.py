@@ -1452,7 +1452,9 @@ class AscendMindIEServer(InferenceServer):
         """
         Report error message to the model instance.
         """
-        error_message = f"Failed to run Ascend MindIE: {ex}"
+        cause = getattr(ex, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        error_message = f"Failed to run Ascend MindIE: {ex}{cause_text}"
         logger.error(error_message, exc_info=True)
         try:
             patch_dict = {

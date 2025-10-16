@@ -124,8 +124,10 @@ class CustomServer(InferenceServer):
         Handle errors during server startup.
         """
         command_name = getattr(self._model, 'run_command', 'unknown')
-        error_message = f"Failed to run the {command_name} error: {error}"
-        logger.error(error_message)
+        cause = getattr(error, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        error_message = f"Failed to run the {command_name} error: {error}{cause_text}"
+        logger.exception(error_message)
 
         try:
             patch_dict = {

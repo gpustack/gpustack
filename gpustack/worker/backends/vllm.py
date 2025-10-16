@@ -194,7 +194,9 @@ class VLLMServer(InferenceServer):
         """
         Handle errors during container server startup.
         """
-        error_message = f"Failed to run the vLLM container server: {error}"
+        cause = getattr(error, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        error_message = f"Failed to run the vLLM container server: {error}{cause_text}"
         logger.exception(error_message)
 
         try:
