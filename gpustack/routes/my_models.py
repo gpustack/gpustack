@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
-from sqlmodel import col, or_, func
+from sqlmodel import or_, func
 from gpustack.api.exceptions import (
     NotFoundException,
 )
@@ -89,16 +89,7 @@ def build_mysql_category_condition(category: str):
 
 def build_category_conditions(session, categories):
     dialect = session.bind.dialect.name
-    if dialect == "sqlite":
-        return [
-            (
-                col(MyModel.categories) == []
-                if category == ""
-                else col(MyModel.categories).contains(category)
-            )
-            for category in categories
-        ]
-    elif dialect == "postgresql":
+    if dialect == "postgresql":
         return [build_pg_category_condition(category) for category in categories]
     elif dialect == "mysql":
         return [build_mysql_category_condition(category) for category in categories]

@@ -30,7 +30,7 @@ rm -rf /var/lib/gpustack
 
 !!! warning
 
-    Uninstallation script deletes the data in local datastore(sqlite), configuration, model cache, and all of the scripts and CLI tools. It does not remove any data from external datastores.
+    Uninstallation script deletes the data in local datastore, configuration, model cache, and all of the scripts and CLI tools. It does not remove any data from external datastores.
 
 If you installed GPUStack using the installation script, a script to uninstall GPUStack was generated during installation.
 
