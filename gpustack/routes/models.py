@@ -19,7 +19,6 @@ from gpustack.schemas.common import Pagination
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
-    get_backend,
     is_audio_model,
     BackendEnum,
 )
@@ -32,6 +31,12 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
+from gpustack.schemas.models import (
+    ModelAccessUpdate,
+    ModelUserAccessExtended,
+    ModelAccessList,
+)
+from gpustack.schemas.users import User
 from gpustack.server.services import ModelService, WorkerService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
@@ -214,7 +219,8 @@ async def validate_gpu_ids(  # noqa: C901
             message="Audio models are restricted to execution on a single NVIDIA GPU."
         )
 
-    model_backend = get_backend(model_in)
+    cfg = get_global_config()
+    model_backend = model_in.backend
 
     worker_name_set = set()
     for gpu_id in model_in.gpu_selector.gpu_ids:
@@ -255,7 +261,6 @@ async def validate_gpu_ids(  # noqa: C901
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
     if model_backend == BackendEnum.VLLM:
-        cfg = get_global_config()
         if len(worker_name_set) > 1 and not cfg.enable_ray:
             # REVIEW BEFORE RELEASE: Check if the documentation link needs to be updated.
             raise BadRequestException(
@@ -363,3 +368,56 @@ async def delete_model(session: SessionDep, id: int):
         await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
+
+
+def model_access_list(model: Model) -> List[ModelUserAccessExtended]:
+    return [
+        ModelUserAccessExtended(
+            id=access.id,
+            username=access.username,
+            full_name=access.full_name,
+            avatar_url=access.avatar_url,
+            # Add more user fields here if needed
+        )
+        for access in model.users
+    ]
+
+
+@router.get("/{id}/access", response_model=ModelAccessList)
+async def get_model_access(session: SessionDep, id: int):
+    model: Model = await Model.one_by_id(session, id)
+    if not model:
+        raise NotFoundException(message="Model not found")
+
+    return ModelAccessList(items=model_access_list(model))
+
+
+@router.post("/{id}/access", response_model=ModelAccessList)
+async def add_model_access(
+    session: SessionDep, id: int, access_request: ModelAccessUpdate
+):
+    model = await Model.one_by_id(session, id)
+    if not model:
+        raise NotFoundException(message="Model not found")
+    extra_conditions = [
+        col(User.id).in_([user.id for user in access_request.users]),
+    ]
+
+    users = await User.all_by_fields(
+        session=session, fields={}, extra_conditions=extra_conditions
+    )
+    if len(users) != len(access_request.users):
+        existing_user_ids = {user.id for user in users}
+        for req_user in access_request.users:
+            if req_user.id not in existing_user_ids:
+                raise NotFoundException(message=f"User ID {req_user.id} not found")
+
+    model.users = list(users)
+    if access_request.access_policy is not None:
+        model.access_policy = access_request.access_policy
+    try:
+        await ModelService(session).update(model)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to add model access: {e}")
+    await session.refresh(model)
+    return ModelAccessList(items=model_access_list(model))

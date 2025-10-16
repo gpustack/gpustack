@@ -27,6 +27,7 @@ from gpustack.server.controllers import (
     WorkerController,
     ClusterController,
     WorkerPoolController,
+    InferenceBackendController,
 )
 from gpustack.server.db import get_engine, init_db
 from gpustack.scheduler.scheduler import Scheduler
@@ -186,6 +187,9 @@ class Server:
 
         worker_pool_controller = WorkerPoolController()
         self._create_async_task(worker_pool_controller.start())
+
+        inference_backend_controller = InferenceBackendController()
+        self._create_async_task(inference_backend_controller.start())
 
         logger.debug("Controllers started.")
 

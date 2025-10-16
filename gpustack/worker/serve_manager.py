@@ -8,18 +8,28 @@ import os
 from typing import Dict, Optional, Set
 import logging
 
+from gpustack_runtime.deployer import (
+    get_workload,
+    WorkloadStatusStateEnum,
+    delete_workload,
+    UnsupportedError,
+    OperationError,
+)
+
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack.logging import (
     RedirectStdoutStderr,
 )
+from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.utils import network, platform
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
-from gpustack.worker.backends.llama_box import LlamaBoxServer
-from gpustack.worker.backends.vox_box import VoxBoxServer
-from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
+from gpustack.worker.backends.llama_box import LlamaBoxServer
+from gpustack.worker.backends.vllm import VLLMServer
+from gpustack.worker.backends.vox_box import VoxBoxServer
+from gpustack.worker.backends.custom import CustomServer
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
     BackendEnum,
@@ -32,6 +42,7 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
 )
 from gpustack.server.bus import Event, EventType
+from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +64,8 @@ class ServeManager:
         self._model_cache_by_instance: Dict[int, Model] = {}
         self._clientset = clientset
         self._cache_dir = cfg.cache_dir
+
+        self.inference_backend_manager = InferenceBackendManager(clientset)
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -244,6 +257,7 @@ class ServeManager:
                     log_file_path,
                     self._config,
                     self._worker_id,
+                    self.inference_backend_manager.get_backend_by_name(backend),
                 ),
             )
             process.daemon = False
@@ -309,6 +323,7 @@ class ServeManager:
         log_file_path: str,
         cfg: Config,
         worker_id: int,
+        inference_backend: InferenceBackend,
     ):
 
         setproctitle.setproctitle(f"gpustack_serving_process: model_instance_{mi.id}")
@@ -322,15 +337,26 @@ class ServeManager:
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with RedirectStdoutStderr(log_file):
                 if backend == BackendEnum.LLAMA_BOX:
-                    LlamaBoxServer(clientset, mi, cfg, worker_id).start()
+                    LlamaBoxServer(
+                        clientset, mi, cfg, worker_id, inference_backend
+                    ).start()
                 elif backend == BackendEnum.VLLM:
-                    VLLMServer(clientset, mi, cfg, worker_id).start()
+                    VLLMServer(clientset, mi, cfg, worker_id, inference_backend).start()
                 elif backend == BackendEnum.VOX_BOX:
-                    VoxBoxServer(clientset, mi, cfg, worker_id).start()
+                    VoxBoxServer(
+                        clientset, mi, cfg, worker_id, inference_backend
+                    ).start()
                 elif backend == BackendEnum.ASCEND_MINDIE:
-                    AscendMindIEServer(clientset, mi, cfg, worker_id).start()
+                    AscendMindIEServer(
+                        clientset, mi, cfg, worker_id, inference_backend
+                    ).start()
                 else:
-                    raise ValueError(f"Unsupported backend {backend}")
+                    try:
+                        CustomServer(
+                            clientset, mi, cfg, worker_id, inference_backend
+                        ).start()
+                    except Exception as e:
+                        logger.error(f"Failed to start model instance {mi.name}: {e}")
 
     def _update_model_instance(self, id: str, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
@@ -368,7 +394,35 @@ class ServeManager:
             except Exception as e:
                 logger.error(f"Failed to stop model instance: {pid}: {e}")
 
+            # For CustomServer backend, also delete the Docker container
+            self._cleanup_inference_server_container(mi)
+
             self._post_stop_model_instance(mi)
+
+    def _cleanup_inference_server_container(self, mi: ModelInstance):
+        """
+        Clean up Docker container for CustomServer backend.
+
+        This method checks if the model instance uses CustomServer backend
+        and calls the container deletion functionality.
+        """
+        try:
+            # Get the model to check backend type
+            logger.info(f"Cleaning up container for {mi.name}")
+
+            delete_workload(mi.name)
+
+        except OperationError as oe:
+            logger.warning(
+                f"Operation error during container cleanup for {mi.name}: {oe}"
+            )
+        except UnsupportedError as ue:
+            logger.warning(
+                f"Unsupported error during container cleanup for {mi.name}: {ue}"
+            )
+        except Exception as e:
+            logger.error(f"Error during container cleanup for {mi.name}: {e}")
+            # Don't raise the exception to avoid affecting the normal stop process
 
     def _restart_error_instance(self, mi: ModelInstance):
         """Attempts to restart a model instance that is in error state with exponential backoff."""
@@ -423,8 +477,17 @@ class ServeManager:
 
             is_main_worker = mi.worker_id == self._worker_id
 
+            workload_status = get_workload(mi.name)
+            workload_alive = True
+            if not workload_status or workload_status.state in [
+                WorkloadStatusStateEnum.INACTIVE,
+                WorkloadStatusStateEnum.FAILED,
+                WorkloadStatusStateEnum.PENDING,
+            ]:
+                workload_alive = False
+
             # Monitor inference server process exit
-            if not process.is_alive():
+            if not process.is_alive() and not workload_alive:
                 try:
                     if mi.state != ModelInstanceStateEnum.ERROR:
                         # Get patch dict for main worker.
@@ -463,6 +526,9 @@ class ServeManager:
             # Otherwise, check if the process is ready to serve.
             model = self._get_model_with_cache(mi)
             backend = get_backend(model)
+            inference_backend = self.inference_backend_manager.get_backend_by_name(
+                backend
+            )
             try:
                 # Get patch dict for main worker.
                 if is_main_worker:
@@ -478,7 +544,7 @@ class ServeManager:
                     # If there is no error message from subordinate workers,
                     # check the main worker's health.
                     if not sw_error_msg:
-                        if not is_ready(backend, mi):
+                        if not is_ready(backend, mi, inference_backend):
                             continue
                         if mi.state == ModelInstanceStateEnum.RUNNING:
                             continue
@@ -539,7 +605,9 @@ class ServeManager:
         self._model_cache_by_instance.pop(mi.id, None)
 
 
-def is_ready(backend: str, mi: ModelInstance) -> bool:
+def is_ready(
+    backend: str, mi: ModelInstance, inference_backend: Optional[InferenceBackend]
+) -> bool:
     """
     Access the health endpoint of the given model instance to check if it is servable.
     """
@@ -553,14 +621,19 @@ def is_ready(backend: str, mi: ModelInstance) -> bool:
 
         # Check /v1/models by default if dedicated health check endpoint is not available.
         # This is served by all backends (llama-box, vox-box, vllm, mindIE)
-        health_check_url = f"http://{hostname}:{mi.port}/v1/models"
+        health_check_domain = f"http://{hostname}:{mi.port}"
+        health_check_url = "/v1/models"
         if backend == BackendEnum.LLAMA_BOX:
             # For llama-box, use /health to avoid printing error logs.
-            health_check_url = f"http://{hostname}:{mi.port}/health"
+            health_check_url = "/health"
+        elif not any(b.value == backend for b in BackendEnum):
+            if inference_backend and inference_backend.health_check_path:
+                health_check_url = inference_backend.health_check_path
 
-        response = requests.get(health_check_url, timeout=1)
+        response = requests.get(health_check_domain + health_check_url, timeout=1)
         if response.status_code == 200:
             return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error checking model instance health: {e}")
         pass
     return False

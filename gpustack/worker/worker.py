@@ -160,6 +160,10 @@ class Worker:
             return platform.device_type_from_vendor(vendor)
         return None
 
+    def get_inference_backend_cache(self):
+        """Get the InferenceBackend cache instance."""
+        return self._inference_backend_manager
+
     async def start_async(self):
         """
         Start the worker.
@@ -218,6 +222,11 @@ class Worker:
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
         )
         self._create_async_task(model_file_manager.watch_model_files())
+
+        # Start InferenceBackend listener to cache backend data
+        self._create_async_task(
+            serve_manager.inference_backend_manager.start_listener()
+        )
 
         await asyncio.gather(*self._async_tasks)
 

@@ -1,4 +1,5 @@
 import asyncio
+import re
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from prometheus_client.registry import Collector
 from prometheus_client.core import (
@@ -19,6 +20,10 @@ from fastapi import FastAPI, Response
 
 
 logger = logging.getLogger(__name__)
+
+# Prometheus label name pattern
+# https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
+label_name_pattern = r'^[a-zA-Z_:][a-zA-Z0-9_:]*$'
 
 
 class MetricExporter(Collector):
@@ -56,6 +61,7 @@ class MetricExporter(Collector):
         )
 
         # worker metrics
+        worker_info = InfoMetricFamily(metric_name("worker"), "Worker information")
         worker_status = GaugeMetricFamily(
             metric_name("worker_status"),
             "Worker status",
@@ -83,6 +89,7 @@ class MetricExporter(Collector):
         metrics = [
             cluster_info,
             cluster_status,
+            worker_info,
             worker_status,
             model_info,
             model_desired_instances,
@@ -123,6 +130,25 @@ class MetricExporter(Collector):
                         worker.name,
                         worker.state,
                     ]
+
+                    worker_dynamic_label_keys = []
+                    worker_info_metric_values = {
+                        "cluster_id": str(cluster.id),
+                        "cluster_name": cluster.name,
+                        "worker_id": str(worker.id),
+                        "worker_name": worker.name,
+                    }
+                    for k, v in (worker.labels or {}).items():
+                        if not re.match(label_name_pattern, k):
+                            continue
+                        worker_dynamic_label_keys.append(k)
+                        worker_info_metric_values[k] = v
+
+                    worker_info.add_metric(
+                        worker_labels + worker_dynamic_label_keys,
+                        worker_info_metric_values,
+                    )
+
                     worker_status.add_metric(
                         worker_label_values,
                         1,

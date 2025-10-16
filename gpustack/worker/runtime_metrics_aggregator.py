@@ -119,7 +119,7 @@ class RuntimeMetricsAggregator:
                 endpoint_to_instance[endpoint] = mi
                 instance_id_to_model[mi.id] = model_id_to_model.get(mi.model_id)
             else:
-                logger.debug(
+                logger.trace(
                     f"Skipping model instance {mi.id} in state {mi.state} without worker_ip or ports."
                 )
         return endpoints, endpoint_to_instance, instance_id_to_model
@@ -249,7 +249,9 @@ class RuntimeMetricsAggregator:
             resp = self._clientset.http_client.get_httpx_client().get(
                 f"{self._clientset.base_url}/metrics/config", timeout=5
             )
-            if resp.status_code != 200:
+            if resp.status_code == 404:
+                return None
+            elif resp.status_code != 200:
                 logger.warning(
                     f"Failed to fetch online metrics config, status: {resp.status_code}"
                 )

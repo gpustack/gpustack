@@ -6,6 +6,7 @@ from gpustack.routes import (
     dashboard,
     debug,
     gpu_devices,
+    inference_backend,
     metrics,
     model_evaluations,
     model_files,
@@ -22,6 +23,8 @@ from gpustack.routes import (
     cloud_credentials,
     worker_pools,
     clusters,
+    token,
+    my_models,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -37,6 +40,12 @@ from gpustack.api.auth import (
 api_router = APIRouter(responses=error_responses)
 api_router.include_router(probes.router, tags=["Probes"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
+api_router.include_router(
+    router=token.router,
+    prefix="/token-auth",
+    dependencies=[Depends(get_current_user)],
+    include_in_schema=False,
+)
 
 # authed routes
 
@@ -45,6 +54,12 @@ v1_base_router.include_router(users.me_router, prefix="/users", tags=["Users"])
 v1_base_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
+)
+v1_base_router.include_router(
+    my_models.router,
+    dependencies=[Depends(get_current_user)],
+    prefix="/my-models",
+    tags=["My Models"],
 )
 
 cluster_client_router = APIRouter()
@@ -90,6 +105,9 @@ worker_client_router.add_api_route(
     endpoint=workers.create_worker_status,
     methods=["POST"],
     include_in_schema=False,
+)
+worker_client_router.include_router(
+    inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
 
 admin_routers = model_routers + [

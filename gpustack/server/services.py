@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import functools
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, Set
 from aiocache import Cache, BaseCache
 from sqlmodel import SQLModel, bindparam, cast, col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -139,6 +139,26 @@ class UserService:
                 APIKeyService.get_by_access_key, apikey.access_key
             )
         return result
+
+    @locked_cached(ttl=60)
+    async def get_user_accessible_model_names(
+        self, user_id: int, access_key: Optional[str]
+    ) -> Set[str]:
+        # Get all accessible model names for the user
+        user: User = await self.get_by_id(user_id)
+        if user is None:
+            return []
+        model_names = {model.name for model in user.models}
+        if user.is_admin:
+            all_models = await Model.all_by_field(self.session, "deleted_at", None)
+            model_names = {model.name for model in all_models}
+        if access_key is not None:
+            api_key: ApiKey = await APIKeyService(self.session).get_by_access_key(
+                access_key
+            )
+            if api_key.allowed_model_names is not None:
+                model_names = model_names.intersection(set(api_key.allowed_model_names))
+        return model_names
 
 
 class APIKeyService:

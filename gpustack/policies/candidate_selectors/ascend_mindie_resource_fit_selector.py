@@ -12,13 +12,11 @@ from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
     ScheduleCandidatesSelector,
 )
-from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
-    get_local_model_weight_size,
-)
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     ListMessageBuilder,
     get_model_num_attention_heads,
+    get_local_model_weight_size,
 )
 from gpustack.schemas.models import (
     ComputedResourceClaim,

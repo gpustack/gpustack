@@ -17,9 +17,11 @@ from .common import PaginatedList
 from ..mixins import BaseModelMixin
 from .clusters import Cluster
 from .workers import Worker
+from gpustack.schemas.links import ModelUserLink
 
 if TYPE_CHECKING:
     from .api_keys import ApiKey
+    from gpustack.schemas.models import Model
 
 
 class UserRole(Enum):
@@ -36,6 +38,7 @@ class AuthProviderEnum(str, Enum):
 class UserBase(SQLModel):
     username: str
     is_admin: bool = False
+    is_active: bool = True
     full_name: Optional[str] = None
     avatar_url: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
@@ -110,6 +113,15 @@ class User(UserBase, BaseModelMixin, table=True):
         back_populates='user',
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
     )
+    models: List["Model"] = Relationship(
+        back_populates="users",
+        link_model=ModelUserLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+
+
+class UserActivationUpdate(SQLModel):
+    is_active: bool
 
 
 class UserPublic(UserBase):

@@ -4,12 +4,21 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
+
+from gpustack_runner import list_service_runners
+from gpustack_runtime.deployer.__utils__ import compare_versions, correct_runner_image
+from gpustack_runtime.detector import (
+    manufacturer_to_backend,
+    detect_devices,
+    ManufacturerEnum,
+)
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config, get_global_config
 from gpustack.logging import setup_logging
+from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -20,10 +29,10 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import all_gpu_match
-from gpustack.utils.platform import get_cann_chip
+from gpustack.utils.platform import get_cann_chip, get_runner_platform
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform, envs
-from gpustack.worker.tools_manager import ToolsManager
+from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
@@ -50,8 +59,10 @@ class InferenceServer(ABC):
         mi: ModelInstance,
         cfg: Config,
         worker_id: int,
+        inference_backend: InferenceBackend,
     ):
         setup_logging(debug=cfg.debug)
+        setup_runtime_logging()
         set_global_config(cfg)
 
         try:
@@ -61,20 +72,17 @@ class InferenceServer(ABC):
             self._worker = self._clientset.workers.get(worker_id)
 
             self.get_model()
-
-            if self._model.backend_version:
-                tools_manager = ToolsManager(
-                    tools_download_base_url=cfg.tools_download_base_url,
-                    data_dir=cfg.data_dir,
-                    bin_dir=cfg.bin_dir,
-                    pipx_path=cfg.pipx_path,
-                )
-                backend = get_backend(self._model)
-                tools_manager.init_dependency_manager(
-                    backend, self._model.backend_version, self._model.env
-                )
-                tools_manager.prepare_versioned_backend(
-                    backend, self._model.backend_version
+            self.inference_backend = inference_backend
+            if (
+                not inference_backend
+                and self._model.image_name
+                and self._model.run_command
+            ):
+                # Any deployment that directly specifies an image and command is treated as a Custom backend.
+                # A basic InferenceBackend object is created to prevent exceptions in subsequent workflows.
+                self.inference_backend = InferenceBackend(
+                    backend_name=BackendEnum.CUSTOM.value,
+                    run_command=self._model.run_command,
                 )
 
             logger.info("Preparing model files...")
@@ -131,7 +139,7 @@ class InferenceServer(ABC):
             params={"id": self._model_instance.id},
         )
 
-    def _update_model_instance(self, id: str, **kwargs):
+    def _update_model_instance(self, id: int, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())
@@ -180,6 +188,161 @@ class InferenceServer(ABC):
         env.update(self._model.env or {})
 
         return env
+
+    def build_versioned_command_args(
+        self,
+        default_args: List[str],
+        model_path: Optional[str] = None,
+        port: Optional[int] = None,
+    ) -> List[str]:
+        """
+        Override default startup arguments based on version configuration
+        when the version uses non-built-in version and defines a custom run_command
+
+        Args:
+        - default_args: The default command argument list (e.g., ["vllm", "serve", "/path/to/model"]).
+        - model_path: Path used to replace {{model_path}}; if None, fall back to self._model_path.
+        - port: Port used to replace {{port}}; if None, fall back to self._model_instance.port.
+
+        Returns:
+            The final command argument list used for container execution.
+        """
+
+        # if no version or inference backend is available, return default_args
+        version = getattr(self._model, "backend_version", None)
+        if not version or not getattr(self, "inference_backend", None):
+            return default_args
+
+        # Load version configuration
+        version_config = None
+        try:
+            version_config = self.inference_backend.get_version_config(version)
+        except Exception:
+            version_config = self.inference_backend.version_configs.root.get(version)
+
+        # Only perform replacement when the version uses non-built-in version and defines run_command
+        if (
+            version_config
+            and getattr(version_config, "built_in_frameworks", None) is None
+            and getattr(version_config, "run_command", None)
+        ):
+            resolved_model_path = (
+                model_path
+                if model_path is not None
+                else getattr(self, "_model_path", None)
+            )
+            resolved_port = (
+                port
+                if port is not None
+                else getattr(self._model_instance, "port", None)
+            )
+
+            command = self.inference_backend.replace_command_param(
+                version,
+                resolved_model_path,
+                resolved_port,
+                version_config.run_command,
+            )
+            if command:
+                return command.split(" ")
+
+        # Return original default_args by default
+        return default_args
+
+    def _get_backend_image_name(self, backend_type: Optional[str] = None) -> str:
+        """
+        Get supported backend images from gpustack-runner.
+
+        Args:
+            backend_type: Optional backend type override (e.g., "cann" for MindIE)
+                         If not provided, will be derived from GPU vendor
+
+        Returns:
+            Docker image name for the backend
+        """
+        # Get GPU vendor from the first GPU assigned to this model instance
+        vendor = None
+        if (
+            self._model_instance.gpu_indexes
+            and self._worker
+            and self._worker.status.gpu_devices
+        ):
+            gpu_devices = self._worker.status.gpu_devices
+            first_index = self._model_instance.gpu_indexes[0]
+            gpu_device = next((d for d in gpu_devices if d.index == first_index), None)
+            if gpu_device:
+                vendor = gpu_device.vendor.lower()
+
+        if vendor == "Huawei":
+            vendor = ManufacturerEnum.ASCEND
+        # Determine backend_type if not provided
+        if backend_type is None:
+            backend_type = manufacturer_to_backend(vendor) if vendor else None
+
+        # Get supported images from gpustack-runner
+        runtime_version = ""
+        try:
+            devices = detect_devices()
+            runtime_version = next(
+                (
+                    device.runtime_version
+                    for device in devices
+                    if device.manufacturer == vendor
+                ),
+                "",
+            )
+            logger.debug(f"runtime_version: {runtime_version}")
+        except Exception as e:
+            logger.error(f"Failed to detect devices: {e}")
+        runner_param = {
+            "backend": backend_type.lower() if backend_type else None,
+            "service": self._model.backend.lower() if self._model.backend else None,
+            "platform": get_runner_platform(),
+        }
+        if self._model.backend_version:
+            runner_param["service_version"] = self._model.backend_version
+
+        service_list = list_service_runners(**runner_param)
+
+        docker_image = ""
+        if self._model.image_name:
+            docker_image = self._model.image_name
+        elif service_list and len(service_list) > 0:
+            service = service_list[0]
+            logger.debug(f"Get {len(service.versions)} service runners")
+            runner_info = next(
+                (
+                    (p.docker_image, v)
+                    for v in service.versions
+                    for b in v.backends
+                    for b_ver in b.versions
+                    if compare_versions(b_ver.version, runtime_version) <= 0
+                    for b_var in b_ver.variants
+                    for p in b_var.platforms
+                    if p.docker_image
+                ),
+                ("", None),
+            )
+            if runner_info[0]:
+                docker_image = runner_info[0]
+            if runner_info[1] and not self._model.backend_version:
+                self._model.backend_version = runner_info[1].version
+                self._clientset.models.update(self._model.id, self._model)
+        if not docker_image:
+            docker_image = self.inference_backend.get_image_name(
+                self._model.backend_version
+            )
+
+        if not docker_image and self._model.backend_version:
+            docker_image = f"gpustack/runner:{backend_type}{runtime_version}-{self._model.backend}{self._model.backend_version}"
+
+        # Finally, invoke the runtime to make a correction to the docker_image.
+        if docker_image:
+            docker_image = correct_runner_image(docker_image)
+
+        logger.info(f"{self._model.backend} image name: {docker_image}")
+
+        return docker_image
 
 
 def real_model_path(model_paths: List[str]) -> str:

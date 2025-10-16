@@ -13,6 +13,7 @@ from sqlalchemy import DDL, event
 
 from gpustack.config.envs import DB_ECHO, DB_MAX_OVERFLOW, DB_POOL_SIZE, DB_POOL_TIMEOUT
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
@@ -31,6 +32,8 @@ from gpustack.schemas.stmt import (
     worker_after_drop_view_stmt_postgres,
     worker_after_create_view_stmt_mysql,
     worker_after_drop_view_stmt_mysql,
+    model_user_after_drop_view_stmt,
+    model_user_after_create_view_stmt,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,7 @@ async def create_db_and_tables(engine: AsyncEngine):
             SQLModel.metadata.create_all,
             tables=[
                 ApiKey.__table__,
+                InferenceBackend.__table__,
                 ModelUsage.__table__,
                 Model.__table__,
                 ModelInstance.__table__,
@@ -122,6 +126,14 @@ def listen_events(engine: AsyncEngine):
         worker_after_create_view_stmt = worker_after_create_view_stmt_sqlite
     event.listen(Worker.metadata, "after_create", DDL(worker_after_drop_view_stmt))
     event.listen(Worker.metadata, "after_create", DDL(worker_after_create_view_stmt))
+    event.listen(
+        SQLModel.metadata, "after_create", DDL(model_user_after_drop_view_stmt)
+    )
+    event.listen(
+        SQLModel.metadata,
+        "after_create",
+        DDL(model_user_after_create_view_stmt(engine.dialect.name)),
+    )
 
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", setup_sqlite_pragmas)

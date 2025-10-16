@@ -28,8 +28,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 sqlite_now = "datetime('now')"
-now_func = sa.func.now() if op.get_bind().dialect.name != 'sqlite' else sa.text(sqlite_now)
-now_sql_func = "NOW()" if op.get_bind().dialect.name != 'sqlite' else sqlite_now
+
+def now_func():
+    return sa.func.now() if op.get_bind().dialect.name != 'sqlite' else sa.text(sqlite_now)
+def now_sql_func():
+    return "NOW()" if op.get_bind().dialect.name != 'sqlite' else sqlite_now
 
 WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'INITIALIZING', 'DELETING', "ERROR"]
 
@@ -55,8 +58,8 @@ def upgrade() -> None:
         sa.Column('key', sa.String(length=255), nullable=True),
         sa.Column('secret', sa.String(length=255), nullable=True),
         sa.Column('options', sa.JSON(), nullable=True),
-        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func),
-        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func, onupdate=now_func),
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
         sa.Column('deleted_at', sa.DateTime(), nullable=True),
     )
     op.create_index('idx_cloud_credentials_deleted_at_created_at', 'cloud_credentials', ['deleted_at', 'created_at'])
@@ -73,8 +76,8 @@ def upgrade() -> None:
         sa.Column('state_message', sa.Text(), nullable=True),
         sa.Column('hashed_suffix', sa.String(length=12), nullable=False),
         sa.Column('registration_token', sa.String(length=58), nullable=False),
-        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func),
-        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func, onupdate=now_func),
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
         sa.Column('deleted_at', sa.DateTime(), nullable=True),
     )
     op.create_index('idx_clusters_deleted_at_created_at', 'clusters', ['deleted_at', 'created_at'])
@@ -82,7 +85,7 @@ def upgrade() -> None:
     # stat == 3 means PROVISIONED and READY
     op.execute(f"""
         INSERT INTO clusters (name, description, provider, state, hashed_suffix, registration_token, created_at, updated_at)
-        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func}, {now_sql_func})
+        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func()}, {now_sql_func()})
     """)
 
     op.create_table(
@@ -99,8 +102,8 @@ def upgrade() -> None:
         sa.Column('cloud_options', sa.JSON(), nullable=True, default=dict),
         sa.Column('batch_size', sa.Integer(), nullable=True),
         sa.Column('replicas', sa.Integer(), nullable=True, default=1),
-        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func),
-        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func, onupdate=now_func),
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
         sa.Column('deleted_at', sa.DateTime(), nullable=True),
     )
     op.create_index('idx_worker_pools_deleted_at_created_at', 'worker_pools', ['deleted_at', 'created_at'])
@@ -175,8 +178,8 @@ def upgrade() -> None:
     op.execute(f"""
         INSERT INTO users (username, is_admin, require_password_change, hashed_password, is_system, role, cluster_id, created_at, updated_at)
         VALUES
-            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {now_sql_func}, {now_sql_func}),
-            ('system/worker-0', false, false, '', true, 'Worker', (SELECT max(id) FROM clusters), {now_sql_func}, {now_sql_func});
+            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()}),
+            ('system/worker-0', false, false, '', true, 'Worker', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()});
     """)
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.drop_constraint('uix_name_user_id', type_='unique')
@@ -200,8 +203,8 @@ def upgrade() -> None:
         sa.Column('public_key', sa.Text(), nullable=False),
         sa.Column('encoded_private_key', sa.Text(), nullable=False),
         sa.Column('ssh_key_options', sa.JSON(), nullable=True, default=None),
-        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func),
-        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func, onupdate=now_func),
+        sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+        sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
         sa.Column('deleted_at', sa.DateTime(), nullable=True),
     )
     op.create_index('idx_credentials_external_id', 'credentials', ['external_id'])

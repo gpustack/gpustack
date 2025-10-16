@@ -1,8 +1,10 @@
 import logging
 import random
 import string
-from typing import Any, Dict, List, Tuple, Optional
+import asyncio
+from typing import Any, Dict, List, Tuple, Optional, Set
 import httpx
+from gpustack_runtime.deployer import get_workload, WorkloadStatusStateEnum
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
@@ -13,9 +15,11 @@ from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
+from gpustack.schemas.inference_backend import InferenceBackend, get_built_in_backend
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import (
     BackendEnum,
+    MyModel,
     Model,
     ModelInstance,
     ModelInstanceCreate,
@@ -37,6 +41,8 @@ from gpustack.schemas.clusters import (
     ClusterStateEnum,
     SSHKeyOptions,
 )
+
+from gpustack.schemas.users import User
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.db import get_engine
 from gpustack.server.services import (
@@ -88,6 +94,7 @@ class ModelController:
             async with AsyncSession(self._engine) as session:
                 await set_default_worker_selector(session, model)
                 await sync_replicas(session, model, self._config)
+                await distribute_models_to_user(session, model, event)
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
 
@@ -255,6 +262,66 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 instance = candidate.model_instance
                 await ModelInstanceService(session).delete(instance)
                 logger.debug(f"Deleted model instance {instance.name}")
+
+
+async def distribute_models_to_user(session: AsyncSession, model: Model, event: Event):
+    if len(event.changed_fields) == 0 and event.type == EventType.CREATED:
+        return
+    model_dict = model.model_dump(exclude={"instances", "users", "cluster"})
+    model_id = model.id
+    to_delete_model_user_ids: Set[int] = set()
+    to_update_model_user_ids: Set[int] = set()
+    to_create_model_user_ids: Set[int] = set()
+    if event.type == EventType.DELETED:
+        users = await User.all_by_fields(
+            session, fields={"deleted_at": None, "is_admin": False}
+        )
+        for user in users:
+            to_delete_model_user_ids.add(user.id)
+    if event.type == EventType.UPDATED:
+        changed_fields = event.changed_fields.copy()
+        changed_users = changed_fields.pop("users", None)
+        if changed_users is not None:
+            old_users, new_users = changed_users
+            old_user_ids = {user.id for user in old_users}
+            new_user_ids = {user.id for user in new_users}
+            to_create_model_user_ids = new_user_ids - old_user_ids
+            to_delete_model_user_ids = old_user_ids - new_user_ids
+        if len(changed_fields) > 0:
+            users = await User.all_by_fields(
+                session,
+                fields={"deleted_at": None, "is_admin": False},
+                extra_conditions=[User.models.any(Model.id == model.id)],
+            )
+            current_user_ids = {user.id for user in users}
+            to_update_model_user_ids = current_user_ids - to_create_model_user_ids
+    if event.type == EventType.CREATED:
+        users = await User.all_by_fields(
+            session,
+            fields={"deleted_at": None, "is_admin": False},
+            extra_conditions=[User.models.any(Model.id == model.id)],
+        )
+        for user in users:
+            to_create_model_user_ids.add(user.id)
+    tasks = []
+    for event_type, ids in [
+        (EventType.CREATED, to_create_model_user_ids),
+        (EventType.DELETED, to_delete_model_user_ids),
+        (EventType.UPDATED, to_update_model_user_ids),
+    ]:
+        for user_id in ids:
+            my_model = MyModel(
+                pid=f"{model_id}:{user_id}",
+                user_id=user_id,
+                **model_dict,
+            )
+            tasks.append(
+                event_bus.publish(
+                    MyModel.__name__.lower(), Event(type=event_type, data=my_model)
+                )
+            )
+    if tasks:
+        await asyncio.gather(*tasks)
 
 
 async def ensure_instance_model_file(session: AsyncSession, instance: ModelInstance):
@@ -480,8 +547,12 @@ class WorkerController:
                 worker.state == WorkerStateEnum.NOT_READY
                 or event.type == EventType.DELETED
             ):
-                instance_names = [instance.name for instance in instances]
                 for instance in instances:
+                    workload = get_workload(instance.name)
+                    if workload and workload.state == WorkloadStatusStateEnum.RUNNING:
+                        # container is still running, need not delete
+                        continue
+                    instance_names.append(instance.name)
                     await ModelInstanceService(session).delete(instance)
 
                 if instance_names:
@@ -576,6 +647,25 @@ class WorkerController:
                         data=copied_cluster,
                     ),
                 )
+
+
+class InferenceBackendController:
+    def __init__(self):
+        self._engine = get_engine()
+
+    async def start(self):
+        async with AsyncSession(self._engine) as session:
+            for built_in_backend in get_built_in_backend():
+                if built_in_backend.backend_name == BackendEnum.CUSTOM:
+                    continue
+                backend = await InferenceBackend.one_by_field(
+                    session, "backend_name", built_in_backend.backend_name
+                )
+                if not backend:
+                    await InferenceBackend.create(session, built_in_backend)
+                    logger.info(
+                        f"Init built-in backend {built_in_backend.backend_name} in database"
+                    )
 
 
 class ModelFileController:

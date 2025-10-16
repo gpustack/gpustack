@@ -3,14 +3,27 @@ import dataclasses
 import json
 import logging
 import shutil
-import subprocess
-import sys
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Iterator, Any
+
+from gpustack_runtime.deployer import (
+    ContainerMount,
+    Container,
+    ContainerProfileEnum,
+    ContainerExecution,
+    ContainerEnv,
+    WorkloadPlan,
+    create_workload,
+    logs_workload,
+    WorkloadStatus,
+    get_workload,
+    delete_workload,
+    ContainerFile,
+)
+
 from gpustack.schemas.models import ModelInstanceStateEnum
-from gpustack.utils import envs
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 from gpustack.utils.hub import (
@@ -819,7 +832,19 @@ class AscendMindIEParameters:
 
 
 class AscendMindIEServer(InferenceServer):
+    """
+    Containerized Ascend MindIE inference server backend using gpustack-runtime.
+
+    This backend preserves all the original logic from AscendMindIEServer but runs
+    the final service in a Docker container instead of a subprocess.
+    """
+
     _model_path_mapped: Optional[Path] = None
+    _inference_backend: str = "mindie"  # adapt the definition of runtime
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._workload_name: Optional[str] = None
 
     def __del__(self):
         self.cleanup()
@@ -836,15 +861,11 @@ class AscendMindIEServer(InferenceServer):
         finally:
             self.cleanup()
 
-    def cleanup(self):
-        # Clean up
-        if self._model_path_mapped:
-            shutil.rmtree(self._model_path_mapped)
-        self._model_path_mapped = None
-
     def _start(self):  # noqa: max-complexity=15
         """
-        Start Ascend MindIE service.
+        Start Ascend MindIE service in container.
+        This method preserves all the original logic from AscendMindIEServer._start()
+        but launches the service in a container instead of subprocess.
         """
         version = self._model.backend_version
         if not version:
@@ -867,21 +888,9 @@ class AscendMindIEServer(InferenceServer):
                 subworker_pos = i
                 break
 
-        # Select root path
-        root_path = next(
-            (
-                rp
-                for rp in envs.get_unix_available_root_paths_of_ascend()
-                if rp.joinpath("mindie", version).is_dir()
-            ),
-            None,
-        )
-        if not root_path:
-            e = FileNotFoundError(
-                f"Ascend MindIE version {version} is not installed. "
-                "Please install it first."
-            )
-            raise e
+        # Root path is defined by in Dockerfile ENV
+        # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
+        root_path = Path("/usr/local/Ascend")
 
         install_path = root_path.joinpath("mindie", version, "mindie-service")
 
@@ -897,16 +906,13 @@ class AscendMindIEServer(InferenceServer):
         # - Load JSON configuration,
         #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0004.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0285.html.
-        with open(
-            install_path.joinpath("conf", "config.json"), "r", encoding="utf-8"
-        ) as f:
-            config = json.load(f)
+        config = self._get_config_json(to_dict=True)
         log_config = config.get("LogConfig", {})  # Deprecated since MindIE 2.0.RC1
-        server_config = config["ServerConfig"]
-        backend_config = config["BackendConfig"]
-        model_deploy_config = backend_config["ModelDeployConfig"]
-        model_config = model_deploy_config["ModelConfig"][0]
-        schedule_config = backend_config["ScheduleConfig"]
+        server_config = config.get("ServerConfig", {})
+        backend_config = config.get("BackendConfig", {})
+        model_deploy_config = backend_config.get("ModelDeployConfig", {})
+        model_config = model_deploy_config.get("ModelConfig", [{}])[0]
+        schedule_config = backend_config.get("ScheduleConfig", {})
 
         # Mutate config
         logger.info("Mutating Ascend MindIE config")
@@ -1345,17 +1351,10 @@ class AscendMindIEServer(InferenceServer):
             logger.info(f"Saved Ascend MindIE rank table config to {rank_table_path}")
 
         # Generate JSON configuration file by model instance id.
-        config_path = install_path.joinpath("conf", f"config-{minstance.id}.json")
+        config_path = str(install_path.joinpath("conf", f"config-{minstance.id}.json"))
         config_str = json.dumps(config, indent=4, ensure_ascii=False)
-        with open(
-            config_path,
-            "w",
-            encoding="utf-8",
-        ) as f:
-            f.write(config_str)
-        # - Change mode to 640.
-        config_path.chmod(0o640)
-        logger.info(f"Saved Ascend MindIE config to {config_path}")
+        mindie_config_file = ContainerFile(path=config_path, content=config_str)
+        logger.info(f"Ascend MindIE config will save in container: {config_path}")
 
         # Start, configure environment variable to indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
@@ -1364,7 +1363,9 @@ class AscendMindIEServer(InferenceServer):
 
         try:
             # Display environment variables and JSON configuration.
-            logger.info(f"Starting Ascend MindIE: {service_bin_path}")
+            logger.info(
+                f"Starting Ascend MindIE container: {self._model_instance.name}"
+            )
             env_view = None
             if logger.isEnabledFor(logging.DEBUG):
                 env_view = sanitize_env(env)
@@ -1387,24 +1388,107 @@ class AscendMindIEServer(InferenceServer):
                     f"With rank table JSON configuration:{os.linesep}{rank_table_str}"
                 )
 
-            # Fork, inject environment variables and set working directory.
-            proc = subprocess.Popen(
-                [str(service_bin_path)],
-                stdout=sys.stdout,
-                stderr=sys.stderr,
-                env=env,
-                cwd=service_path,
-            )
-            exit_code = proc.wait()
-
-            self.exit_with_code(exit_code)
+            # Container startup - this replaces the subprocess.Popen call
+            self._start_container(env, str(service_bin_path), [mindie_config_file])
 
         except Exception as e:
             raise e
 
         finally:
             # Finally, remove JSON configuration file.
-            config_path.unlink(missing_ok=True)
+            Path(config_path).unlink(missing_ok=True)
+
+    def _start_container(
+        self, env: Dict[str, str], service_bin_path: str, files: List[ContainerFile]
+    ):
+        """
+        Start the Ascend MindIE service in a container.
+        This replaces the subprocess.Popen call from the original implementation.
+        """
+        # Setup container mounts
+        mounts = []
+        if self._model_path_mapped:
+            mounts.append(ContainerMount(path=str(self._model_path_mapped)))
+
+        image_name = self._get_backend_image_name(backend_type="cann")
+
+        # Build command arguments
+        arguments = service_bin_path.split(" ")
+
+        arguments = self.build_versioned_command_args(arguments)
+
+        # Create container configuration
+        run_container = Container(
+            image=image_name,
+            name=self._model_instance.name,
+            profile=ContainerProfileEnum.RUN,
+            execution=ContainerExecution(
+                privileged=True,
+                args=arguments,
+            ),
+            envs=[ContainerEnv(name=name, value=value) for name, value in env.items()],
+            mounts=mounts,
+            files=files,
+        )
+
+        # Store workload name for management operations
+        self._workload_name = self._model_instance.name
+
+        workload_plan = WorkloadPlan(
+            name=self._workload_name,
+            host_network=True,
+            containers=[run_container],
+        )
+
+        logger.info(f"Creating Ascend MindIE container workload: {self._workload_name}")
+        logger.info(f"Container image name: {image_name} arguments: {arguments}")
+        create_workload(workload_plan)
+
+        logger.info(
+            f"Ascend MindIE container workload {self._workload_name} created successfully"
+        )
+
+    def _report_error(self, ex: Exception):
+        """
+        Report error message to the model instance.
+        """
+        cause = getattr(ex, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        error_message = f"Failed to run Ascend MindIE: {ex}{cause_text}"
+        logger.error(error_message, exc_info=True)
+        try:
+            patch_dict = {
+                "state_message": error_message,
+                "state": ModelInstanceStateEnum.ERROR,
+            }
+            self._update_model_instance(self._model_instance.id, **patch_dict)
+        except Exception as e:
+            logger.error(f"Failed to update model instance state: {e}")
+
+    def _get_model_max_seq_len(self) -> Optional[int]:
+        """
+        Get the maximum sequence length of the model.
+        """
+        try:
+            pretrained_config = get_pretrained_config(self._model)
+            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
+            return get_max_model_len(pretrained_or_hf_text_config)
+        except Exception as e:
+            logger.error(f"Failed to get model max seq length: {e}")
+
+        return 8192
+
+    def cleanup(self):
+        """
+        Clean up temporary resources.
+        """
+        if self._model_path_mapped:
+            try:
+                shutil.rmtree(self._model_path_mapped)
+                logger.info(f"Cleaned up mapped model path: {self._model_path_mapped}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup mapped model path: {e}")
+        self._model_path_mapped = None
 
     def _map_model_path(self) -> Path:
         """
@@ -1462,30 +1546,253 @@ class AscendMindIEServer(InferenceServer):
         logger.info(f"Mapped original model path {self._model_path} to {mapped}")
         return mapped
 
-    def _report_error(self, ex: Exception):
+    def get_container_logs(
+        self,
+        tail: Optional[int] = 100,
+        follow: bool = False,
+        timestamps: bool = True,
+        since: Optional[int] = None,
+    ) -> Iterator[str]:
         """
-        Report error message to the model instance.
-        """
-        error_message = f"Failed to run Ascend MindIE: {ex}"
-        logger.error(error_message, exc_info=True)
-        try:
-            patch_dict = {
-                "state_message": error_message,
-                "state": ModelInstanceStateEnum.ERROR,
-            }
-            self._update_model_instance(self._model_instance.id, **patch_dict)
-        except Exception as e:
-            logger.error(f"Failed to update model instance state: {e}")
+        Get container logs.
 
-    def _get_model_max_seq_len(self) -> Optional[int]:
-        """
-        Get the maximum sequence length of the model.
-        """
-        try:
-            pretrained_config = get_pretrained_config(self._model)
-            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
-        except Exception as e:
-            logger.error(f"Failed to get model max seq length: {e}")
+        Args:
+            tail: Number of lines to show from the end of the logs
+            follow: Whether to follow log output (stream new logs)
+            timestamps: Whether to include timestamps in log output
+            since: Show logs since timestamp (Unix timestamp)
 
-        return 8192
+        Returns:
+            Iterator of log lines
+        """
+        if not self._workload_name:
+            logger.warning(
+                "No workload name available. Container may not be started yet."
+            )
+            return iter([])
+
+        try:
+            logger.info(
+                f"Getting logs for Ascend MindIE container: {self._workload_name}"
+            )
+            return logs_workload(
+                name=self._workload_name,
+                tail=tail,
+                follow=follow,
+                timestamps=timestamps,
+                since=since,
+            )
+        except Exception as e:
+            logger.error(f"Failed to get container logs: {e}")
+            return iter([])
+
+    def get_container_status(self) -> Optional[WorkloadStatus]:
+        """
+        Get the current status of the container.
+
+        Returns:
+            WorkloadStatus object containing container information, or None if not found.
+        """
+        if not self._workload_name:
+            logger.warning(
+                "No workload name available. Container may not be started yet."
+            )
+            return None
+
+        try:
+            status = get_workload(self._workload_name)
+            if status:
+                logger.info(
+                    f"Ascend MindIE container {self._workload_name} status: {status.state}"
+                )
+            else:
+                logger.warning(
+                    f"Ascend MindIE container {self._workload_name} not found"
+                )
+            return status
+        except Exception as e:
+            logger.error(f"Failed to get container status: {e}")
+            return None
+
+    def stop_container(self) -> bool:
+        """
+        Stop the container.
+
+        Returns:
+            True if container was stopped successfully, False otherwise.
+        """
+        if not self._workload_name:
+            logger.warning(
+                "No workload name available. Container may not be started yet."
+            )
+            return False
+
+        try:
+            logger.info(f"Stopping Ascend MindIE container: {self._workload_name}")
+            result = delete_workload(self._workload_name)
+
+            if result:
+                logger.info(
+                    f"Ascend MindIE container {self._workload_name} stopped successfully"
+                )
+                # Update model instance state
+                try:
+                    patch_dict = {
+                        "state_message": "Container stopped by user request",
+                        "state": ModelInstanceStateEnum.ERROR,
+                    }
+                    self._update_model_instance(self._model_instance.id, **patch_dict)
+                except Exception as ue:
+                    logger.error(f"Failed to update model instance state: {ue}")
+                return True
+            else:
+                logger.warning(
+                    f"Ascend MindIE container {self._workload_name} was not found or already stopped"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to stop container: {e}")
+            return False
+
+    def restart_container(self) -> bool:
+        """
+        Restart the container by stopping and starting it again.
+
+        Returns:
+            True if container was restarted successfully, False otherwise.
+        """
+        logger.info(f"Restarting Ascend MindIE container: {self._workload_name}")
+
+        # Stop the container first
+        if not self.stop_container():
+            logger.error("Failed to stop container for restart")
+            return False
+
+        # Wait a moment for cleanup
+        import time
+
+        time.sleep(2)
+
+        # Start the container again
+        try:
+            self.start()
+            logger.info(
+                f"Ascend MindIE container {self._workload_name} restarted successfully"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to restart container: {e}")
+            return False
+
+    def _get_config_json(self, to_dict: bool) -> dict[str, Any] | str:
+        config_str = """{
+    "Version" : "1.0.0",
+
+    "ServerConfig" :
+    {
+        "ipAddress" : "127.0.0.1",
+        "managementIpAddress" : "127.0.0.2",
+        "port" : 1025,
+        "managementPort" : 1026,
+        "metricsPort" : 1027,
+        "allowAllZeroIpListening" : false,
+        "maxLinkNum" : 1000,
+        "httpsEnabled" : true,
+        "fullTextEnabled" : false,
+        "tlsCaPath" : "security/ca/",
+        "tlsCaFile" : ["ca.pem"],
+        "tlsCert" : "security/certs/server.pem",
+        "tlsPk" : "security/keys/server.key.pem",
+        "tlsPkPwd" : "security/pass/key_pwd.txt",
+        "tlsCrlPath" : "security/certs/",
+        "tlsCrlFiles" : ["server_crl.pem"],
+        "managementTlsCaFile" : ["management_ca.pem"],
+        "managementTlsCert" : "security/certs/management/server.pem",
+        "managementTlsPk" : "security/keys/management/server.key.pem",
+        "managementTlsPkPwd" : "security/pass/management/key_pwd.txt",
+        "managementTlsCrlPath" : "security/management/certs/",
+        "managementTlsCrlFiles" : ["server_crl.pem"],
+        "kmcKsfMaster" : "tools/pmt/master/ksfa",
+        "kmcKsfStandby" : "tools/pmt/standby/ksfb",
+        "inferMode" : "standard",
+        "interCommTLSEnabled" : true,
+        "interCommPort" : 1121,
+        "interCommTlsCaPath" : "security/grpc/ca/",
+        "interCommTlsCaFiles" : ["ca.pem"],
+        "interCommTlsCert" : "security/grpc/certs/server.pem",
+        "interCommPk" : "security/grpc/keys/server.key.pem",
+        "interCommPkPwd" : "security/grpc/pass/key_pwd.txt",
+        "interCommTlsCrlPath" : "security/grpc/certs/",
+        "interCommTlsCrlFiles" : ["server_crl.pem"],
+        "openAiSupport" : "vllm",
+        "tokenTimeout" : 600,
+        "e2eTimeout" : 600,
+        "distDPServerEnabled":false
+    },
+
+    "BackendConfig" : {
+        "backendName" : "mindieservice_llm_engine",
+        "modelInstanceNumber" : 1,
+        "npuDeviceIds" : [[0,1,2,3]],
+        "tokenizerProcessNumber" : 8,
+        "multiNodesInferEnabled" : false,
+        "multiNodesInferPort" : 1120,
+        "interNodeTLSEnabled" : true,
+        "interNodeTlsCaPath" : "security/grpc/ca/",
+        "interNodeTlsCaFiles" : ["ca.pem"],
+        "interNodeTlsCert" : "security/grpc/certs/server.pem",
+        "interNodeTlsPk" : "security/grpc/keys/server.key.pem",
+        "interNodeTlsPkPwd" : "security/grpc/pass/mindie_server_key_pwd.txt",
+        "interNodeTlsCrlPath" : "security/grpc/certs/",
+        "interNodeTlsCrlFiles" : ["server_crl.pem"],
+        "interNodeKmcKsfMaster" : "tools/pmt/master/ksfa",
+        "interNodeKmcKsfStandby" : "tools/pmt/standby/ksfb",
+        "ModelDeployConfig" :
+        {
+            "maxSeqLen" : 2560,
+            "maxInputTokenLen" : 2048,
+            "truncation" : false,
+            "ModelConfig" : [
+                {
+                    "modelInstanceType" : "Standard",
+                    "modelName" : "llama_65b",
+                    "modelWeightPath" : "/data/atb_testdata/weights/llama1-65b-safetensors",
+                    "worldSize" : 4,
+                    "cpuMemSize" : 5,
+                    "npuMemSize" : -1,
+                    "backendType" : "atb",
+                    "trustRemoteCode" : false,
+                    "async_scheduler_wait_time": 120,
+                    "kv_trans_timeout": 10,
+                    "kv_link_timeout": 1080
+                }
+            ]
+        },
+
+        "ScheduleConfig" :
+        {
+            "templateType" : "Standard",
+            "templateName" : "Standard_LLM",
+            "cacheBlockSize" : 128,
+
+            "maxPrefillBatchSize" : 50,
+            "maxPrefillTokens" : 8192,
+            "prefillTimeMsPerReq" : 150,
+            "prefillPolicyType" : 0,
+
+            "decodeTimeMsPerReq" : 50,
+            "decodePolicyType" : 0,
+
+            "maxBatchSize" : 200,
+            "maxIterTimes" : 512,
+            "maxPreemptCount" : 0,
+            "supportSelectBatch" : false,
+            "maxQueueDelayMicroseconds" : 5000
+        }
+    }
+}"""
+        if to_dict:
+            return json.loads(config_str)
+        else:
+            return config_str

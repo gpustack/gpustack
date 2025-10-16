@@ -38,6 +38,7 @@ def new_model(
     model_scope_model_id=None,
     placement_strategy=PlacementStrategyEnum.BINPACK,
     distributable=True,
+    extended_kv_cache=None,
     **kargs,
 ) -> Model:
     worker_selector = kargs.get("worker_selector")
@@ -75,4 +76,5 @@ def new_model(
         gpu_selector=gpu_selector,
         backend_parameters=backend_parameters,
         categories=categories,
+        extended_kv_cache=extended_kv_cache,
     )

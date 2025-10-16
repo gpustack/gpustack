@@ -18,7 +18,7 @@ def write_registration_token(data_dir: str, token: str):
         if existing_token == token:
             return  # Token is already written
     with open(token_path, "w") as f:
-        f.write(token)
+        f.write(token + "\n")
 
 
 def registration_client(

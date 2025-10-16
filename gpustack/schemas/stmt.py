@@ -21,7 +21,8 @@ SELECT
     json_extract(value, '$.network') AS network,
     json_extract(value, '$.temperature') AS temperature,
     json_extract(value, '$.labels') AS labels,
-    json_extract(value, '$.type') AS type
+    json_extract(value, '$.type') AS type,
+    json_extract(value, '$.runtime_framework') AS runtime_framework
 FROM
     workers w,
     json_each(w.status, '$.gpu_devices')
@@ -52,7 +53,8 @@ SELECT
     JSON_EXTRACT(gpu_device, '$.network') AS network,
     CAST(JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.temperature')) AS DECIMAL(10, 2)) AS temperature,
     JSON_EXTRACT(gpu_device, '$.labels') AS labels,
-    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.type')) AS type
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.type')) AS type,
+    JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.runtime_framework')) AS runtime_framework
 FROM
     workers w,
     JSON_TABLE(w.status, '$.gpu_devices[*]' COLUMNS(
@@ -85,10 +87,39 @@ SELECT
     (gpu_device::json->>'network')::JSONB AS network,
     (gpu_device::json->>'temperature')::FLOAT AS temperature,
     (gpu_device::json->>'labels')::JSONB AS labels,
-    (gpu_device::json->>'type') AS type
+    (gpu_device::json->>'type') AS type,
+    (gpu_device::json->>'runtime_framework') AS runtime_framework
 FROM
     workers w,
     LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device
 WHERE
     json_array_length(w.status::json->'gpu_devices') > 0
 """
+
+model_user_after_drop_view_stmt = "DROP VIEW IF EXISTS non_admin_user_models"
+
+
+def model_user_after_create_view_stmt(db_type: str) -> str:
+    sql_false = '0' if db_type == "sqlite" else 'FALSE'
+    pid = (
+        "CONCAT(m.id, ':', u.id)"
+        if db_type == "mysql"
+        else "CAST(m.id AS TEXT) || ':' || CAST(u.id AS TEXT)"
+    )
+    return f'''
+CREATE VIEW non_admin_user_models AS
+SELECT
+    {pid} AS pid,
+    u.id AS user_id,
+    m.*
+FROM
+    users u
+INNER JOIN models m
+    ON m.access_policy in ('PUBLIC', 'AUTHED')
+    OR EXISTS (
+        SELECT 1 FROM modeluserlink mul
+        WHERE mul.model_id = m.id AND mul.user_id = u.id
+    )
+WHERE
+    u.is_admin = {sql_false} AND u.is_system = {sql_false}
+'''

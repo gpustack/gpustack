@@ -1,6 +1,5 @@
 name: 💡 Enhancement Request
 description: Suggest an improvement or enhancement to existing functionality
-title: "[Enhancement]: "
 type: "Enhancement"
 assignees: [ ]
 
@@ -29,4 +28,4 @@ body:
       description: A clear and concise description of what you want to happen.
       placeholder: Explain your proposed solution...
     validations:
-      required: true
+      required: false

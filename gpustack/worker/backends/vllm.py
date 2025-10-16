@@ -1,16 +1,26 @@
 import json
 import logging
 import os
-import subprocess
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Iterator
+
+from gpustack_runtime.deployer import (
+    Container,
+    ContainerEnv,
+    ContainerExecution,
+    ContainerProfileEnum,
+    ContainerMount,
+    WorkloadPlan,
+    WorkloadStatus,
+    create_workload,
+    delete_workload,
+    get_workload,
+    logs_workload,
+)
+
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
 from gpustack.schemas.workers import VendorEnum
-from gpustack.utils.command import (
-    find_parameter,
-    get_versioned_command,
-    get_command_path,
-)
+from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.hub import (
@@ -24,99 +34,226 @@ logger = logging.getLogger(__name__)
 
 
 class VLLMServer(InferenceServer):
+    """
+    Containerized vLLM inference server backend using gpustack-runtime.
+
+    This backend runs vLLM in a Docker container managed by gpustack-runtime,
+    providing better isolation, resource management, and deployment consistency.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._workload_name: Optional[str] = None
+
     def start(self):  # noqa: C901
         try:
-            command_path = get_command_path("vllm")
-            if self._model.backend_version:
-                command_path = os.path.join(
-                    self._config.bin_dir,
-                    get_versioned_command("vllm", self._model.backend_version),
-                )
-            arguments = [
-                "serve",
-                self._model_path,
-            ]
+            # Setup container mounts
+            mounts = []
+            if hasattr(self, "_model_path") and self._model_path:
+                model_dir = os.path.dirname(self._model_path)
+                mounts.append(ContainerMount(path=model_dir))
 
-            derived_max_model_len = self._derive_max_model_len()
-            if derived_max_model_len and derived_max_model_len > 8192:
-                arguments.extend(["--max-model-len", "8192"])
+            # Setup environment variables
+            envs = self._setup_environment()
 
-            auto_parallelism_arguments = get_auto_parallelism_arguments(
-                self._model.backend_parameters, self._model_instance
+            # Build vLLM command arguments
+            arguments = self._build_vllm_arguments()
+
+            # Get vLLM image name
+            image_name = self._get_backend_image_name()
+
+            if not image_name:
+                raise ValueError("Can't find compatible vLLM image")
+
+            # Create container configuration
+            run_container = Container(
+                image=image_name,
+                name=self._model_instance.name,
+                profile=ContainerProfileEnum.RUN,
+                execution=ContainerExecution(
+                    privileged=True,
+                    args=arguments,
+                ),
+                envs=[
+                    ContainerEnv(name=name, value=value) for name, value in envs.items()
+                ],
+                mounts=mounts,
             )
-            arguments.extend(auto_parallelism_arguments)
 
-            if is_distributed_vllm(self._model_instance):
-                arguments.extend(["--distributed-executor-backend", "ray"])
+            # Store workload name for management operations
+            self._workload_name = self._model_instance.name
 
-            # For Ascend 310P, we need to enforce eager execution and default dtype to float16,
-            # see example of https://vllm-ascend.readthedocs.io/en/latest/tutorials/single_node_300i.html.
-            # As a workaround, we should allow users to override this with backend parameters.
-            if is_ascend_310p(self._worker):
-                arguments.extend(
-                    [
-                        "--enforce-eager",
-                        "--dtype",
-                        "float16",
-                    ]
-                )
-
-            if self._model.backend_parameters:
-                arguments.extend(self._model.backend_parameters)
-
-            built_in_arguments = [
-                "--host",
-                "0.0.0.0",
-                "--port",
-                str(self._model_instance.port),
-                "--served-model-name",
-                self._model_instance.model_name,
-            ]
-
-            # Extend the built-in arguments at the end so that
-            # they cannot be overridden by the user-defined arguments
-            arguments.extend(built_in_arguments)
-
-            logger.info(f"Starting vLLM server: {command_path}")
-            logger.debug(f"Run vLLM with arguments: {' '.join(arguments)}")
-            env = os.environ.copy()
-            self.set_vllm_distributed_env(env)
-            env = self.get_inference_running_env(env)
-            env_view = None
-            if logger.isEnabledFor(logging.DEBUG):
-                env_view = sanitize_env(env)
-            elif self._model.env:
-                # If the model instance has its own environment variables,
-                # display the mutated environment variables.
-                env_view = self._model.env
-                for k, v in self._model.env.items():
-                    env_view[k] = env.get(k, v)
-            if env_view:
-                logger.info(
-                    f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
-                    f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
-                )
-            result = subprocess.run(
-                [command_path] + arguments,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
-                env=env,
+            workload_plan = WorkloadPlan(
+                name=self._workload_name,
+                host_network=True,
+                containers=[run_container],
             )
-            self.exit_with_code(result.returncode)
+
+            logger.info(f"Creating vLLM container workload: {self._workload_name}")
+            logger.info(f"Container image name: {image_name} arguments: {arguments}")
+            create_workload(workload_plan)
+
+            logger.info(
+                f"vLLM container workload {self._workload_name} created successfully"
+            )
+
         except Exception as e:
-            error_message = f"Failed to run the vLLM server: {e}"
-            logger.error(error_message)
-            try:
-                patch_dict = {
-                    "state_message": error_message,
-                    "state": ModelInstanceStateEnum.ERROR,
-                }
-                self._update_model_instance(self._model_instance.id, **patch_dict)
-            except Exception as ue:
-                logger.error(f"Failed to update model instance: {ue}")
-            sys.exit(1)
+            self._handle_error(e)
+
+    def _setup_environment(self) -> Dict[str, str]:
+        """
+        Setup environment variables for the vLLM container server.
+        """
+        env = os.environ.copy()
+
+        # Apply LMCache environment variables if extended KV cache is enabled
+        self.set_lmcache_env(env)
+
+        # Apply vLLM distributed environment setup
+        self.set_vllm_distributed_env(env)
+
+        # Apply GPUStack's inference environment setup
+        env = self.get_inference_running_env(env)
+
+        # Add model-specific environment variables
+        if self._model.env:
+            env.update(self._model.env)
+
+        # Log environment variables
+        env_view = None
+        if logger.isEnabledFor(logging.DEBUG):
+            env_view = sanitize_env(env)
+        elif self._model.env:
+            # If the model instance has its own environment variables,
+            # display the mutated environment variables.
+            env_view = self._model.env
+            for k, v in self._model.env.items():
+                env_view[k] = env.get(k, v)
+        if env_view:
+            logger.info(
+                f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
+                f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
+            )
+
+        return env
+
+    def _build_vllm_arguments(self) -> List[str]:
+        """
+        Build vLLM command arguments for container execution.
+        """
+        arguments = [
+            "vllm",
+            "serve",
+            self._model_path,
+        ]
+
+        arguments = self.build_versioned_command_args(arguments)
+
+        derived_max_model_len = self._derive_max_model_len()
+        if derived_max_model_len and derived_max_model_len > 8192:
+            arguments.extend(["--max-model-len", "8192"])
+
+        auto_parallelism_arguments = get_auto_parallelism_arguments(
+            self._model.backend_parameters, self._model_instance
+        )
+        arguments.extend(auto_parallelism_arguments)
+
+        if is_distributed_vllm(self._model_instance):
+            arguments.extend(["--distributed-executor-backend", "ray"])
+
+        if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
+            arguments.extend(
+                [
+                    "--kv-transfer-config",
+                    '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+                ]
+            )
+
+        # For Ascend 310P, we need to enforce eager execution and default dtype to float16
+        if is_ascend_310p(self._worker):
+            arguments.extend(
+                [
+                    "--enforce-eager",
+                    "--dtype",
+                    "float16",
+                ]
+            )
+
+        if self._model.backend_parameters:
+            arguments.extend(self._model.backend_parameters)
+
+        built_in_arguments = [
+            "--host",
+            "0.0.0.0",
+        ]
+
+        has_port = any(arg == "--port" for arg in arguments)
+        if not has_port:
+            built_in_arguments.extend(["--port", str(self._model_instance.port)])
+
+        built_in_arguments.extend(
+            ["--served-model-name", self._model_instance.model_name]
+        )
+
+        # Extend the built-in arguments at the end so that
+        # they cannot be overridden by the user-defined arguments
+        arguments.extend(built_in_arguments)
+
+        return arguments
+
+    def _handle_error(self, error: Exception):
+        """
+        Handle errors during container server startup.
+        """
+        cause = getattr(error, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        error_message = f"Failed to run the vLLM container server: {error}{cause_text}"
+        logger.exception(error_message)
+
+        try:
+            patch_dict = {
+                "state_message": error_message,
+                "state": ModelInstanceStateEnum.ERROR,
+            }
+            self._update_model_instance(self._model_instance.id, **patch_dict)
+        except Exception as ue:
+            logger.error(f"Failed to update model instance: {ue}")
+
+        sys.exit(1)
+
+    def set_lmcache_env(self, env: Dict[str, str]):
+        """
+        Set up LMCache environment variables if extended KV cache is enabled.
+        """
+        if not (
+            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
+        ):
+            return
+
+        if (
+            self._model.extended_kv_cache.chunk_size
+            and self._model.extended_kv_cache.chunk_size > 0
+        ):
+            env["LMCACHE_CHUNK_SIZE"] = str(self._model.extended_kv_cache.chunk_size)
+
+        if (
+            self._model.extended_kv_cache.max_local_cpu_size
+            and self._model.extended_kv_cache.max_local_cpu_size > 0
+        ):
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
+                self._model.extended_kv_cache.max_local_cpu_size
+            )
+        else:
+            env["LMCACHE_LOCAL_CPU"] = str(False).lower()
+
+        if self._model.extended_kv_cache.remote_url:
+            env["LMCACHE_REMOTE_URL"] = self._model.extended_kv_cache.remote_url
 
     def set_vllm_distributed_env(self, env: Dict[str, str]):
+        """
+        Set up vLLM distributed environment variables.
+        This method is reused from the original VLLMServer implementation.
+        """
         model_instance = self._model_instance
         worker = self._worker
         subordinate_workers = model_instance.distributed_servers.subordinate_workers
@@ -177,6 +314,139 @@ class VLLMServer(InferenceServer):
             logger.error(f"Failed to derive max model length: {e}")
 
         return None
+
+    def get_container_logs(
+        self,
+        tail: Optional[int] = 100,
+        follow: bool = False,
+        timestamps: bool = True,
+        since: Optional[int] = None,
+    ) -> Iterator[str]:
+        """
+        Get container logs.
+
+        Args:
+            tail: Number of lines to show from the end of the logs
+            follow: Whether to follow log output (stream new logs)
+            timestamps: Whether to include timestamps in log output
+            since: Show logs since timestamp (Unix timestamp)
+
+        Returns:
+            Iterator of log lines
+        """
+        if not self._workload_name:
+            logger.warning(
+                "No workload name available. Container may not be started yet."
+            )
+            return iter([])
+
+        try:
+            logger.info(f"Getting logs for vLLM container: {self._workload_name}")
+            return logs_workload(
+                name=self._workload_name,
+                tail=tail,
+                follow=follow,
+                timestamps=timestamps,
+                since=since,
+            )
+        except Exception as e:
+            logger.error(f"Failed to get container logs: {e}")
+            return iter([])
+
+    def get_container_status(self) -> Optional[WorkloadStatus]:
+        """
+        Get the current status of the container.
+
+        Returns:
+            WorkloadStatus object containing container information, or None if not found.
+        """
+        if not self._workload_name:
+            logger.warning(
+                "No workload name available. Container may not be started yet."
+            )
+            return None
+
+        try:
+            status = get_workload(self._workload_name)
+            if status:
+                logger.info(
+                    f"vLLM container {self._workload_name} status: {status.state}"
+                )
+            else:
+                logger.warning(f"vLLM container {self._workload_name} not found")
+            return status
+        except Exception as e:
+            logger.error(f"Failed to get container status: {e}")
+            return None
+
+    def stop_container(self) -> bool:
+        """
+        Stop the container.
+
+        Returns:
+            True if container was stopped successfully, False otherwise.
+        """
+        if not self._workload_name:
+            logger.warning(
+                "No workload name available. Container may not be started yet."
+            )
+            return False
+
+        try:
+            logger.info(f"Stopping vLLM container: {self._workload_name}")
+            result = delete_workload(self._workload_name)
+
+            if result:
+                logger.info(
+                    f"vLLM container {self._workload_name} stopped successfully"
+                )
+                # Update model instance state
+                try:
+                    patch_dict = {
+                        "state_message": "Container stopped by user request",
+                        "state": ModelInstanceStateEnum.ERROR,
+                    }
+                    self._update_model_instance(self._model_instance.id, **patch_dict)
+                except Exception as ue:
+                    logger.error(f"Failed to update model instance state: {ue}")
+                return True
+            else:
+                logger.warning(
+                    f"vLLM container {self._workload_name} was not found or already stopped"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to stop container: {e}")
+            return False
+
+    def restart_container(self) -> bool:
+        """
+        Restart the container by stopping and starting it again.
+
+        Returns:
+            True if container was restarted successfully, False otherwise.
+        """
+        logger.info(f"Restarting vLLM container: {self._workload_name}")
+
+        # Stop the container first
+        if not self.stop_container():
+            logger.error("Failed to stop container for restart")
+            return False
+
+        # Wait a moment for cleanup
+        import time
+
+        time.sleep(2)
+
+        # Start the container again
+        try:
+            self.start()
+            logger.info(f"vLLM container {self._workload_name} restarted successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to restart container: {e}")
+            return False
 
 
 def get_auto_parallelism_arguments(

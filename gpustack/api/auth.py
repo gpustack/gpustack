@@ -4,7 +4,7 @@ import logging
 from fastapi import Depends, Request
 from gpustack.config.config import Config
 from gpustack.server.db import get_session
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Tuple
 from fastapi.security import (
     APIKeyCookie,
     HTTPAuthorizationCredentials,
@@ -18,6 +18,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     UnauthorizedException,
 )
+from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.users import User, UserRole
 from gpustack.security import (
     API_KEY_PREFIX,
@@ -51,6 +52,10 @@ async def get_current_user(
     ] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
 ) -> User:
+    if hasattr(request.state, "user"):
+        user: User = getattr(request.state, "user")
+        return user
+    api_key: Optional[ApiKey] = None
     user = None
     if basic_credentials and is_system_user(basic_credentials.username):
         server_config: Config = request.app.state.server_config
@@ -61,7 +66,7 @@ async def get_current_user(
         jwt_manager: JWTManager = request.app.state.jwt_manager
         user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
     elif bearer_token:
-        user = await get_user_from_bearer_token(session, bearer_token)
+        user, api_key = await get_user_from_bearer_token(session, bearer_token)
 
     if user is None and request.client.host == "127.0.0.1":
         server_config: Config = request.app.state.server_config
@@ -71,7 +76,13 @@ async def get_current_user(
             except Exception as e:
                 raise InternalServerErrorException(message=f"Failed to get user: {e}")
     if user:
+        if not user.is_active:
+            raise UnauthorizedException(message="User account is deactivated")
         request.state.user = user
+        access_key = None if api_key is None else api_key.access_key
+        request.state.user_allow_model_names = await UserService(
+            session
+        ).get_user_accessible_model_names(user.id, access_key)
         return user
 
     raise credentials_exception
@@ -182,7 +193,7 @@ def parse_uuid(value: str) -> Optional[str]:
 
 async def get_user_from_bearer_token(
     session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
-) -> Optional[User]:
+) -> Tuple[Optional[User], Optional[ApiKey]]:
     try:
         parts = bearer_token.credentials.split("_")
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
@@ -206,11 +217,11 @@ async def get_user_from_bearer_token(
                     worker_uuid=worker_uuid,
                 )
                 if user is not None:
-                    return user
+                    return user, api_key
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
-    return None
+    return None, None
 
 
 async def authenticate_user(
@@ -222,6 +233,9 @@ async def authenticate_user(
 
     if not verify_hashed_secret(user.hashed_password, password):
         raise UnauthorizedException(message="Incorrect username or password")
+
+    if not user.is_active:
+        raise UnauthorizedException(message="User account is deactivated")
 
     return user
 

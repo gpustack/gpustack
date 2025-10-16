@@ -214,6 +214,7 @@ async def saml_callback(request: Request, session: SessionDep):
                 avatar_url=avatar_url,
                 hashed_password="",
                 is_admin=False,
+                is_active=False,
                 source=AuthProviderEnum.SAML,
                 require_password_change=False,
             )
@@ -350,6 +351,7 @@ async def oidc_callback(request: Request, session: SessionDep):
             avatar_url=avatar_url,
             hashed_password="",
             is_admin=False,
+            is_active=False,
             source=AuthProviderEnum.OIDC,
             require_password_change=False,
         )
