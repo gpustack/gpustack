@@ -139,7 +139,7 @@ class InferenceServer(ABC):
             params={"id": self._model_instance.id},
         )
 
-    def _update_model_instance(self, id: str, **kwargs):
+    def _update_model_instance(self, id: int, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())
