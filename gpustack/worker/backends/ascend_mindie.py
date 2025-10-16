@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Optional, List, Dict, Iterator, Any
 
 from gpustack_runtime.deployer import (
-    ContainerMount,
     Container,
     ContainerProfileEnum,
     ContainerExecution,
@@ -1408,9 +1407,7 @@ class AscendMindIEServer(InferenceServer):
         This replaces the subprocess.Popen call from the original implementation.
         """
         # Setup container mounts
-        mounts = [
-            ContainerMount(path=self._model_path),
-        ]
+        mounts = self._get_configured_mounts()
 
         # Get resources configuration
         resources = self._get_configured_resources()

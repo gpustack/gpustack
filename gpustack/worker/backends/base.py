@@ -8,7 +8,7 @@ from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_service_runners
-from gpustack_runtime.deployer import ContainerResources
+from gpustack_runtime.deployer import ContainerResources, ContainerMount
 from gpustack_runtime.deployer.__utils__ import compare_versions, correct_runner_image
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
@@ -44,6 +44,12 @@ class ModelInstanceStateError(Exception):
 
 
 class InferenceServer(ABC):
+    _model_path: Optional[str] = None
+    """
+    The absolute path to the model files.
+    This is set when the model instance state changes to STARTING.
+    """
+
     @time_decorator
     def __init__(
         self,
@@ -225,6 +231,27 @@ class InferenceServer(ABC):
                     else "all"
                 )
         return resources
+
+    def _get_configured_mounts(self) -> List[ContainerMount]:
+        """
+        Get the volume mounts for the model instance.
+        If runtime mirrored deployment is enabled, no mounts will be set up.
+
+        Returns:
+            A list of ContainerMount objects for the model instance.
+        """
+        mounts: List[ContainerMount] = []
+        if (
+            self._model_path
+            and not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
+        ):
+            model_dir = os.path.dirname(self._model_path)
+            mounts.append(
+                ContainerMount(
+                    path=model_dir,
+                ),
+            )
+        return mounts
 
     def _get_serving_port(self) -> int:
         """

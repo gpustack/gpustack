@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 from typing import Dict, List, Optional, Iterator
 
@@ -11,7 +10,6 @@ from gpustack_runtime.deployer import (
     ContainerEnv,
     ContainerExecution,
     ContainerProfileEnum,
-    ContainerMount,
     WorkloadPlan,
     WorkloadStatus,
     create_workload,
@@ -49,10 +47,7 @@ class CustomServer(InferenceServer):
 
     def start(self, **kwargs):
         try:
-            mounts = []
-            if hasattr(self, "_model_path") and self._model_path:
-                model_dir = os.path.dirname(self._model_path)
-                mounts.append(ContainerMount(path=model_dir))
+            mounts = self._get_configured_mounts()
 
             envs = self._setup_environment()
 

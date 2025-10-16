@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.worker.backends.base import InferenceServer
@@ -9,7 +8,6 @@ from gpustack_runtime.deployer import (
     ContainerEnv,
     ContainerExecution,
     ContainerProfileEnum,
-    ContainerMount,
     WorkloadPlan,
     create_workload,
     ContainerPort,
@@ -33,10 +31,7 @@ class VoxBoxServer(InferenceServer):
             )
 
             # Setup container mounts
-            mounts = []
-            if hasattr(self, "_model_path") and self._model_path:
-                model_dir = os.path.dirname(self._model_path)
-                mounts.append(ContainerMount(path=model_dir))
+            mounts = self._get_configured_mounts()
 
             # Get configured environment variables
             envs = self._get_configured_env()

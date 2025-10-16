@@ -9,7 +9,6 @@ from gpustack_runtime.deployer import (
     ContainerEnv,
     ContainerExecution,
     ContainerProfileEnum,
-    ContainerMount,
     WorkloadPlan,
     WorkloadStatus,
     create_workload,
@@ -49,10 +48,7 @@ class VLLMServer(InferenceServer):
     def start(self):  # noqa: C901
         try:
             # Setup container mounts
-            mounts = []
-            if hasattr(self, "_model_path") and self._model_path:
-                model_dir = os.path.dirname(self._model_path)
-                mounts.append(ContainerMount(path=model_dir))
+            mounts = self._get_configured_mounts()
 
             # Setup environment variables
             envs = self._setup_environment()
