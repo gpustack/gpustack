@@ -19,6 +19,7 @@ from gpustack_runtime.deployer import (
     get_workload,
     list_workloads,
     logs_workload,
+    ContainerPort,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,14 @@ class CustomServer(InferenceServer):
             # Get resources configuration
             resources = self._get_configured_resources()
 
+            # Get serving port
+            serving_port = self._get_serving_port()
+
             image_cmd = []
             command = self.inference_backend.replace_command_param(
                 self._model.backend_version,
                 self._model_path,
-                self._model_instance.port,
+                serving_port,
                 self._model.run_command,
             )
             if command:
@@ -92,6 +96,11 @@ class CustomServer(InferenceServer):
                 ],
                 mounts=mounts,
                 resources=resources,
+                ports=[
+                    ContainerPort(
+                        internal=serving_port,
+                    )
+                ],
             )
 
             # Store workload name for management operations

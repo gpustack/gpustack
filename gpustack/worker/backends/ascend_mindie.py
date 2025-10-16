@@ -20,6 +20,7 @@ from gpustack_runtime.deployer import (
     get_workload,
     delete_workload,
     ContainerFile,
+    ContainerPort,
 )
 
 from gpustack.schemas.models import ModelInstanceStateEnum
@@ -1017,7 +1018,7 @@ class AscendMindIEServer(InferenceServer):
         env["TORCH_AIE_PRINT_TO_FILE"] = "0"
 
         # - Listening config
-        serving_port = minstance.ports[0] if minstance.ports else minstance.port
+        serving_port = self._get_serving_port()
         server_config["ipAddress"] = self._worker.ip
         server_config.pop("managementIpAddress", None)
         server_config["allowAllZeroIpListening"] = True
@@ -1440,6 +1441,11 @@ class AscendMindIEServer(InferenceServer):
             resources=resources,
             mounts=mounts,
             files=files,
+            ports=[
+                ContainerPort(
+                    internal=self._get_serving_port(),
+                ),
+            ],
         )
 
         # Store workload name for management operations
