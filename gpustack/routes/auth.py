@@ -2,6 +2,7 @@ import json
 import httpx
 import logging
 import jwt
+from jwt.algorithms import RSAAlgorithm
 from gpustack.config.config import Config
 from typing import Annotated, Dict, Optional
 from fastapi import APIRouter, Form, Request, Response
@@ -26,65 +27,75 @@ timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
 logger = logging.getLogger(__name__)
 
 
+async def decode_and_validate_token(
+    client: httpx.AsyncClient, token: str, config: Config
+) -> Dict:
+    """
+    Decode the JWT token without verification and check if required fields are present.
+
+    Args:
+        token: The access token from OIDC provider
+        config: Application configuration
+    Returns:
+        Dictionary containing decoded token data
+    """
+    jwks_uri = config.openid_configuration["jwks_uri"]
+    jwks_res = await client.get(jwks_uri)
+    jwks = jwks_res.json()
+
+    unverified_header = jwt.get_unverified_header(token)
+    kid = unverified_header['kid']
+
+    public_key = None
+    for key in jwks['keys']:
+        if key['kid'] == kid:
+            public_key = RSAAlgorithm.from_jwk(json.dumps(key))
+            break
+
+    if public_key is None:
+        raise UnauthorizedException(message="Public key not found in JWKS")
+
+    claims = jwt.decode(
+        token,
+        public_key,
+        algorithms=['RS256'],
+        options={"verify_aud": False, "verify_iss": False},
+    )
+    return claims
+
+
 async def get_oidc_user_data(
-    client: httpx.AsyncClient, token: str, userinfo_endpoint: str, config: Config
+    client: httpx.AsyncClient, token: str, config: Config
 ) -> Dict:
     """
     Retrieve user data from OIDC token or userinfo endpoint.
 
-    First attempts to decode the JWT token to get user data directly.
-    If the token contains the required fields, validates it against the userinfo endpoint.
-    Falls back to fetching user data from the userinfo endpoint if needed.
-
     Args:
         client: HTTP client for making requests
         token: The access token from OIDC provider
-        userinfo_endpoint: URL of the userinfo endpoint
         config: Application configuration
 
     Returns:
         Dictionary containing user data
     """
-    headers = {'Authorization': f'Bearer {token}'}
-
-    # Try to decode the token first and check if required fields are present
     user_data = None
-    try:
-        # Decode JWT token without verification (we'll validate via userinfo endpoint)
-        decoded_token = jwt.decode(token, options={"verify_signature": False})
-
-        # Check if the required user data is in the token
-        has_required_data = False
-        if config.external_auth_name and config.external_auth_name in decoded_token:
-            has_required_data = True
-        elif "email" in decoded_token:
-            has_required_data = True
-
-        if has_required_data:
-            # Validate token by checking with userinfo endpoint
-            validation_res = await client.request(
-                'get', userinfo_endpoint, headers=headers
+    if not config.oidc_use_userinfo:
+        try:
+            user_data = await decode_and_validate_token(client, token, config)
+        except Exception as e:
+            logger.warning(f"Token decoding/validation failed: {str(e)}")
+    else:
+        userinfo_endpoint = config.openid_configuration["userinfo_endpoint"]
+        headers = {'Authorization': f'Bearer {token}'}
+        userinfo_res = await client.get(userinfo_endpoint, headers=headers)
+        if userinfo_res.status_code == 200:
+            user_data = userinfo_res.json()
+        else:
+            raise UnauthorizedException(
+                message="Failed to fetch user info from userinfo endpoint"
             )
-            if validation_res.status_code == 200:
-                user_data = decoded_token
-                logger.debug("Using decoded token data for user information")
-            else:
-                logger.debug(
-                    "Token validation failed, falling back to userinfo endpoint"
-                )
-
-    except jwt.DecodeError:
-        logger.debug("Failed to decode token, falling back to userinfo endpoint")
-    except Exception as e:
-        logger.debug(
-            f"Error processing token: {str(e)}, falling back to userinfo endpoint"
-        )
-
-    # Fallback to userinfo endpoint if token decoding failed or required data not present
-    if user_data is None:
-        user_res = await client.request('get', userinfo_endpoint, headers=headers)
-        user_data = json.loads(user_res.text)
-
+    if not user_data:
+        raise UnauthorizedException(message="Failed to retrieve valid user data")
     return user_data
 
 
@@ -292,7 +303,6 @@ async def oidc_callback(request: Request, session: SessionDep):
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             token_endpoint = config.openid_configuration["token_endpoint"]
-            userinfo_endpoint = config.openid_configuration["userinfo_endpoint"]
             token_res = await client.request("POST", token_endpoint, data=data)
             res_data = json.loads(token_res.text)
             if "access_token" not in res_data:
@@ -300,9 +310,7 @@ async def oidc_callback(request: Request, session: SessionDep):
             token = res_data['access_token']
 
             # Get user data from token or userinfo endpoint
-            user_data = await get_oidc_user_data(
-                client, token, userinfo_endpoint, config
-            )
+            user_data = await get_oidc_user_data(client, token, config)
 
             if config.external_auth_name:
                 # If external_auth_name is set, use it as username.
