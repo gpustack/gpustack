@@ -226,6 +226,19 @@ class InferenceServer(ABC):
                 )
         return resources
 
+    def _get_serving_port(self) -> int:
+        """
+        Get the (main) serving port for the model instance.
+
+        Returns:
+            The (main) serving port for the model instance.
+        """
+        return (
+            self._model_instance.ports[0]
+            if self._model_instance.ports
+            else self._model_instance.port
+        )
+
     def build_versioned_command_args(
         self,
         default_args: List[str],

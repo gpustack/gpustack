@@ -12,6 +12,7 @@ from gpustack_runtime.deployer import (
     ContainerMount,
     WorkloadPlan,
     create_workload,
+    ContainerPort,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,17 @@ logger = logging.getLogger(__name__)
 class VoxBoxServer(InferenceServer):
     def start(self):
         try:
+            # Get vox-box image name via runtime
+            image_name = self._get_backend_image_name()
+            if not image_name:
+                raise ValueError("Can't find compatible vox-box image")
+
+            # Get resources configuration
+            resources = self._get_configured_resources(
+                # Pass-through all devices as vox-box handles device itself.
+                mount_all_devices=True,
+            )
+
             # Setup container mounts
             mounts = []
             if hasattr(self, "_model_path") and self._model_path:
@@ -29,7 +41,9 @@ class VoxBoxServer(InferenceServer):
             # Get configured environment variables
             envs = self._get_configured_env()
 
-            # Build vox-box command arguments
+            # Get serving port
+            serving_port = self._get_serving_port()
+
             arguments = [
                 "vox-box",
                 "start",
@@ -43,42 +57,27 @@ class VoxBoxServer(InferenceServer):
             arguments = self.build_versioned_command_args(
                 arguments,
                 model_path=self._model_path,
-                port=self._model_instance.port,
+                port=serving_port,
             )
-
-            # Build built-in args, avoiding duplicates if version-specific command already sets them
-            built_in_arguments = [
-                "--host",
-                "0.0.0.0",
-            ]
-
-            has_port = any(arg == "--port" for arg in arguments)
-            if not has_port:
-                built_in_arguments.extend(["--port", str(self._model_instance.port)])
 
             if self._model.backend_parameters:
                 arguments.extend(self._model.backend_parameters)
 
-            # Get resources configuration
-            resources = self._get_configured_resources(
-                # Pass-through all devices as vox-box handles device itself.
-                mount_all_devices=True,
-            )
+            # Append immutable arguments to ensure proper operation for accessing
+            immutable_arguments = [
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(serving_port),
+            ]
             if self._model_instance.gpu_indexes is not None:
-                arguments.extend(
+                immutable_arguments.extend(
                     [
                         "--device",
                         f"cuda:{self._model_instance.gpu_indexes[0]}",
                     ]
                 )
-
-            # Extend built-in arguments at the end
-            arguments.extend(built_in_arguments)
-
-            # Get vox-box image name via runtime
-            image_name = self._get_backend_image_name()
-            if not image_name:
-                raise ValueError("Can't find compatible vox-box image")
+            arguments.extend(immutable_arguments)
 
             # Create container configuration
             run_container = Container(
@@ -98,6 +97,11 @@ class VoxBoxServer(InferenceServer):
                 ],
                 resources=resources,
                 mounts=mounts,
+                ports=[
+                    ContainerPort(
+                        internal=serving_port,
+                    ),
+                ],
             )
 
             # Store workload name for management operations

@@ -16,6 +16,7 @@ from gpustack_runtime.deployer import (
     delete_workload,
     get_workload,
     logs_workload,
+    ContainerPort,
 )
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -59,8 +60,11 @@ class VLLMServer(InferenceServer):
             # Get resources configuration
             resources = self._get_configured_resources()
 
+            # Get serving port
+            serving_port = self._get_serving_port()
+
             # Build vLLM command arguments
-            arguments = self._build_vllm_arguments()
+            arguments = self._build_vllm_arguments(port=serving_port)
 
             # Get vLLM image name
             image_name = self._get_backend_image_name()
@@ -86,6 +90,11 @@ class VLLMServer(InferenceServer):
                 ],
                 resources=resources,
                 mounts=mounts,
+                ports=[
+                    ContainerPort(
+                        internal=serving_port,
+                    ),
+                ],
             )
 
             # Store workload name for management operations
@@ -140,7 +149,7 @@ class VLLMServer(InferenceServer):
 
         return env
 
-    def _build_vllm_arguments(self) -> List[str]:
+    def _build_vllm_arguments(self, port: int) -> List[str]:
         """
         Build vLLM command arguments for container execution.
         """
@@ -150,6 +159,7 @@ class VLLMServer(InferenceServer):
             self._model_path,
         ]
 
+        # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
         derived_max_model_len = self._derive_max_model_len()
@@ -182,25 +192,20 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
+        # Inject user-defined backend parameters
         if self._model.backend_parameters:
             arguments.extend(self._model.backend_parameters)
 
-        built_in_arguments = [
+        # Append immutable arguments to ensure proper operation for accessing
+        immutable_arguments = [
             "--host",
             "0.0.0.0",
+            "--port",
+            str(port),
+            "--served-model-name",
+            self._model_instance.model_name,
         ]
-
-        has_port = any(arg == "--port" for arg in arguments)
-        if not has_port:
-            built_in_arguments.extend(["--port", str(self._model_instance.port)])
-
-        built_in_arguments.extend(
-            ["--served-model-name", self._model_instance.model_name]
-        )
-
-        # Extend the built-in arguments at the end so that
-        # they cannot be overridden by the user-defined arguments
-        arguments.extend(built_in_arguments)
+        arguments.extend(immutable_arguments)
 
         return arguments
 
