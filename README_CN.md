@@ -145,6 +145,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 - [x] 摩尔线程 MUSA
 - [x] 天数智芯 Corex
 - [x] 寒武纪 MLU
+- [x] 莹矽科技 Mars
 
 ## 模型支持
 
