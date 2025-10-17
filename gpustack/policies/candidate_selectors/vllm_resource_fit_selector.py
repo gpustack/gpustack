@@ -170,8 +170,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                         gpu_indexes.append(gpu_index)
                 self._selected_gpu_indexes_by_worker[worker_name] = gpu_indexes
 
-            # When user defined gpu selector, we use the gpu count from it.
-            self._gpu_count = len(self._model.gpu_selector.gpu_ids)
+            self._gpu_count = self._model.gpu_selector.gpus_per_replica or len(
+                self._model.gpu_selector.gpu_ids
+            )
 
         # When tp/pp is set, the gpu count is calculated by tp * pp.
         # Pick the candidate with satisfied gpu count.
@@ -396,24 +397,34 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             # Skip multi-GPU selection
             return []
 
-        if self._selected_gpu_worker_count > 1:
+        if (
+            self._selected_gpu_worker_count > 1
+            and self._gpu_count
+            and self._gpu_count > 1
+        ):
             # Skip multi-worker selection
             return []
 
         selected_gpu_worker = None
-        selected_gpu_index = None
+        filtered_workers = []
+
         if self._selected_gpu_workers:
             # Handle manual scheduling
-            selected_gpu_worker = self._selected_gpu_workers[0]
-            selected_gpu_indexes = self._selected_gpu_indexes_by_worker[
-                selected_gpu_worker
-            ]
-            selected_gpu_index = (
-                selected_gpu_indexes[0] if selected_gpu_indexes else None
-            )
+            for worker in workers:
+                if worker.name in self._selected_gpu_workers:
+                    filtered_worker = worker
+                    filtered_devices = []
+                    indexes = self._selected_gpu_indexes_by_worker.get(worker.name, [])
+                    for gpu in worker.status.gpu_devices:
+                        if gpu.index in indexes:
+                            filtered_devices.append(gpu)
+                    filtered_worker.status.gpu_devices = filtered_devices
+                    filtered_workers.append(filtered_worker)
+        else:
+            filtered_workers = workers
 
         candidates = []
-        for worker in workers:
+        for worker in filtered_workers:
             if not worker.status.gpu_devices:
                 continue
 
@@ -422,7 +433,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
             result = (
                 await self._find_single_worker_single_gpu_full_offloading_candidates(
-                    worker, selected_gpu_index
+                    worker,
                 )
             )
             if result:
@@ -431,7 +442,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         return candidates
 
     async def _find_single_worker_single_gpu_full_offloading_candidates(
-        self, worker: Worker, selected_gpu_index: Optional[int]
+        self,
+        worker: Worker,
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Find single worker single gpu full offloading candidates for the model instance with worker.
@@ -449,9 +461,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             return []
 
         for _, gpu in enumerate(worker.status.gpu_devices):
-
-            if selected_gpu_index is not None and gpu.index != selected_gpu_index:
-                continue
 
             gpu_index = gpu.index
             allocatable_vram = allocatable.vram.get(gpu_index, 0)
@@ -477,7 +486,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 and allocatable_gpu_memory_utilization < self._gpu_memory_utilization
             )
             if exceeds_vram or exceeds_memory_utilization:
-                if selected_gpu_index is not None:
+                if self._selected_gpu_worker_count != 0:
                     overcommit = True
                 else:
                     continue
@@ -520,8 +529,23 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     async def find_single_worker_multi_gpu_full_offloading_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
-        if self._gpu_count == 1 or self._selected_gpu_worker_count > 1:
+        if self._gpu_count == 1:
             return []
+
+        should_skip_worker = 0
+        if (
+            self._selected_gpu_worker_count > 1
+            and self._model.gpu_selector
+            and self._model.gpu_selector.gpus_per_replica
+        ):
+            for (
+                worker_name,
+                selected_gpus,
+            ) in self._selected_gpu_indexes_by_worker.items():
+                if len(selected_gpus) < self._model.gpu_selector.gpus_per_replica:
+                    should_skip_worker += 1
+            if should_skip_worker == self._selected_gpu_worker_count:
+                return []
 
         candidates = []
         for worker in workers:
@@ -665,23 +689,34 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
     async def manual_select_single_worker_multi_gpu_candidates(  # noqa: C901
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
-        if len(self._selected_gpu_workers) != 1:
+
+        if not worker.status or not worker.status.gpu_devices:
             return []
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
-        selected_gpu_worker = self._selected_gpu_workers[0]
-        selected_gpu_indexes = self._selected_gpu_indexes_by_worker[selected_gpu_worker]
-        if worker.name != selected_gpu_worker:
+        selected_gpu_indexes = self._selected_gpu_indexes_by_worker.get(worker.name)
+        if selected_gpu_indexes is None:
             return []
+
+        sorted_gpu_indexes_by_allocatable_rate = sort_gpu_indexes_by_allocatable_rate(
+            worker, allocatable.vram
+        )
+        gpu_set = {gpu.index: gpu for gpu in worker.status.gpu_devices}
 
         overcommit = False
         total_allocatable_vram = 0
         satisfied_gpu_count = 0
+        satisfied_gpu_indexes = []
         vram_claims = {}
-        for gpu in worker.status.gpu_devices:
-            if gpu.index not in selected_gpu_indexes:
+        for gpu_index in sorted_gpu_indexes_by_allocatable_rate:
+            if gpu_index not in selected_gpu_indexes:
                 continue
+
+            gpu = gpu_set.get(gpu_index)
+            if not gpu:
+                continue
+
             if gpu.memory is None or gpu.memory.total is None:
                 continue
             vram_claim = (
@@ -707,6 +742,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             total_allocatable_vram += allocatable_vram
             if allocatable_vram / gpu.memory.total > self._gpu_memory_utilization:
                 satisfied_gpu_count += 1
+                satisfied_gpu_indexes.append(gpu.index)
+
+            if self._gpu_count and satisfied_gpu_count >= self._gpu_count:
+                break
 
         self._largest_multi_gpu_vram = total_allocatable_vram
         self._largest_multi_gpu_utilization_satisfied_count = satisfied_gpu_count
@@ -742,7 +781,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         return [
             ModelInstanceScheduleCandidate(
                 worker=worker,
-                gpu_indexes=selected_gpu_indexes,
+                gpu_indexes=satisfied_gpu_indexes,
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claims,
                 ),
@@ -884,7 +923,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
-        Get manual selected multi worker multi gpu candidates.
+        Get manually selected multi worker multi gpu candidates.
         """
         if not self._selected_gpu_workers or len(self._selected_gpu_workers) < 2:
             return []
@@ -894,12 +933,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         sort_workers_by_gpu_count(workers)
 
-        main_worker = workers[0]
-        main_worker_name = main_worker.name
-        main_gpu_indexes = self._selected_gpu_indexes_by_worker[main_worker_name]
-        main_vram_claim = await self._get_worker_vram_claim(
-            main_worker, main_gpu_indexes, self._gpu_memory_utilization
-        )
+        main_worker = None
+        main_gpu_indexes = None
+        main_vram_claim = None
 
         subordinate_workers: List[ModelInstanceSubordinateWorker] = []
         for worker in workers:
@@ -907,15 +943,46 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             if not await self._validate_distributed_vllm_limit_per_worker(worker):
-                return []
-
-            if worker.name == main_worker_name:
                 continue
 
-            gpu_indexes = self._selected_gpu_indexes_by_worker[worker.name]
-            vram_claim = await self._get_worker_vram_claim(
-                worker, gpu_indexes, self._gpu_memory_utilization
+            if main_worker is None:
+                main_worker = worker
+                main_gpu_indexes = self._selected_gpu_indexes_by_worker[
+                    main_worker.name
+                ]
+                main_vram_claim = await self._get_worker_vram_claim(
+                    main_worker, main_gpu_indexes, self._gpu_memory_utilization
+                )
+                continue
+
+            if worker.name == main_worker.name:
+                continue
+
+            selected_gpu_indexes = self._selected_gpu_indexes_by_worker[worker.name]
+            selected_vram_claim = await self._get_worker_vram_claim(
+                worker, selected_gpu_indexes, self._gpu_memory_utilization
             )
+
+            gpu_indexes = []
+            vram_claim = {}
+            sorted_gpu_indexes = [
+                idx
+                for idx in sort_gpu_indexes_by_allocatable_rate(
+                    worker, selected_vram_claim
+                )
+                if idx in selected_gpu_indexes
+            ]
+
+            if self._model.gpu_selector and self._model.gpu_selector.gpus_per_replica:
+                current_gpu_count = len(main_gpu_indexes) + sum(
+                    len(sw.gpu_indexes) for sw in subordinate_workers
+                )
+                current = min(
+                    len(selected_gpu_indexes),
+                    self._model.gpu_selector.gpus_per_replica - current_gpu_count,
+                )
+                gpu_indexes = sorted_gpu_indexes[:current]
+                vram_claim = {idx: selected_vram_claim[idx] for idx in gpu_indexes}
 
             subordinate_workers.append(
                 ModelInstanceSubordinateWorker(
@@ -1086,3 +1153,22 @@ def sort_workers_by_gpu_count(workers: List[Worker]):
         ),
         reverse=True,
     )
+
+
+def sort_gpu_indexes_by_allocatable_rate(
+    worker: Worker, allocatable: dict
+) -> List[int]:
+    """
+    Sort GPU indexes of a worker by allocatable VRAM rate (allocatable_vram / total_vram), ascending.
+    """
+    allocatable_rate = {
+        gpu.index: (
+            allocatable.get(gpu.index, 0) / gpu.memory.total
+            if gpu.memory and gpu.memory.total
+            else 0
+        )
+        for gpu in worker.status.gpu_devices
+    }
+
+    # return a list of gpu indexes sorted by allocatable rate in ascending order
+    return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx])

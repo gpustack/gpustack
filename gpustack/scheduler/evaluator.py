@@ -391,4 +391,5 @@ def set_default_spec(model: ModelSpec) -> bool:
             model.categories = model_spec_in_catalog.categories
             modified = True
 
-    return modified
+    gpus_per_replica_modified = scheduler.set_model_gpus_per_replica(model)
+    return modified or gpus_per_replica_modified
