@@ -616,6 +616,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Store the overcommit worker for later scheduling message construction
         unsatisfied_devices_idx: Dict[str, List[int]] = {}
         unsatisfied_workers = []
+        replica_gpu_count = 0
 
         for worker, devices in available_worker_devices_idx.items():
             # Construct candidate by the main worker.
@@ -677,6 +678,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     candidate.computed_resource_claim.vram[device.index] = (
                         device_vram_request
                     )
+                    replica_gpu_count += 1
+
                 # Increase subordinate worker's devices.
                 else:
                     subworker.gpu_indexes.append(device.index)
@@ -690,6 +693,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     subworker.computed_resource_claim.vram[device.index] = (
                         device_vram_request
                     )
+                    replica_gpu_count += 1
 
                 # Validate
                 if device_vram_request > device_vram_allocate:
@@ -700,6 +704,14 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                 # Stats
                 worker_vram_request_remain -= device_vram_request
+
+                # GPUs per replica check
+                if (
+                    self._model.gpu_selector
+                    and self._model.gpu_selector.gpus_per_replica
+                    and replica_gpu_count >= self._model.gpu_selector.gpus_per_replica
+                ):
+                    break
 
             # Validate
             ram_allocate = worker_alloc.ram
@@ -714,6 +726,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             # Stats
             subworker_index += 1
             workers_vram_request_remain = worker_vram_request_remain
+
+            if (
+                self._model.gpu_selector
+                and self._model.gpu_selector.gpus_per_replica
+                and replica_gpu_count >= self._model.gpu_selector.gpus_per_replica
+            ):
+                break
 
         # Validate and construct scheduling messages.
         if unsatisfied_workers:

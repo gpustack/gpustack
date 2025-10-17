@@ -50,7 +50,8 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
             gpu_ids=[
                 "host4090:cuda:0",
                 "host-2-4090:cuda:0",
-            ]
+            ],
+            gpus_per_replica=2,
         ),
         backend_parameters=[],
     )
@@ -132,7 +133,8 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                 "host-4-4080:cuda:0",
                 "host-4-4080:cuda:1",
                 "host-4-4080:cuda:2",
-            ]
+            ],
+            gpus_per_replica=4,
         ),
         backend_parameters=[],
     )
@@ -217,7 +219,8 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                 "llm01-A100:cuda:1",
                 "llm02-A100:cuda:0",
                 "llm03-A100:cuda:0",
-            ]
+            ],
+            gpus_per_replica=4,
         ),
         backend_parameters=[],
     )
@@ -288,7 +291,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
 
 
 @pytest.mark.asyncio
-async def test_auto_schedule_to_2_worker_2_gpu(config):
+async def test_manual_schedule_to_2_worker_2_gpu_with_gpus_per_replica_1(config):
     workers = [
         linux_nvidia_1_4090_24gx1(),
         linux_nvidia_3_4090_24gx1(),
@@ -298,8 +301,15 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
         1,
         "test_name",
         1,
-        huggingface_repo_id="Qwen/Qwen2.5-14B-Instruct",
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
         cpu_offloading=False,
+        gpu_selector=GPUSelector(
+            gpu_ids=[
+                "host4090:cuda:0",
+                "host-2-4090:cuda:0",
+            ],
+            gpus_per_replica=1,
+        ),
         backend_parameters=[],
     )
 
@@ -309,6 +319,10 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
     with (
         patch(
             'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.get_worker_model_instances',
             return_value=[],
         ),
         patch(
@@ -335,17 +349,87 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
                 "vram": {
                     0: 23413653504,
                 },
-                "subordinate_workers": [
-                    ModelInstanceSubordinateWorker(
-                        worker_id=12,
-                        worker_ip="192.168.50.4",
-                        total_gpus=1,
-                        gpu_indexes=[0],
-                        computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 23181498777},
-                        ),
-                    )
-                ],
+            },
+            {
+                "worker_id": 12,
+                "worker_name": "host-2-4090",
+                "gpu_indexes": [0],
+                "is_unified_memory": False,
+                "vram": {
+                    0: 23181498777,
+                },
+            },
+        ]
+
+        assert len(candidates) == 2
+        assert candidate == candidates[1]
+        compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_manual_schedule_to_2_worker_4_gpu_with_gpus_per_replica_2(
+    config,
+):
+    workers = [
+        linux_nvidia_1_4090_24gx1(),
+        linux_nvidia_4_4080_16gx4(),
+    ]
+
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen2.5-7B-Instruct",
+        cpu_offloading=False,
+        gpu_selector=GPUSelector(
+            gpu_ids=[
+                "host4090:cuda:0",
+                "host-4-4080:cuda:0",
+                "host-4-4080:cuda:1",
+                "host-4-4080:cuda:2",
+            ],
+            gpus_per_replica=2,
+        ),
+        backend_parameters=[],
+    )
+
+    resource_fit_selector = VLLMResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+        candidate, _ = await scheduler.find_candidate(config, m, workers)
+
+        expected_candidates = [
+            {
+                "worker_id": 5,
+                "worker_name": "host-4-4080",
+                "gpu_indexes": [0, 1],
+                "is_unified_memory": False,
+                "vram": {
+                    0: 15454332518,
+                    1: 15454332518,
+                },
             },
         ]
 
@@ -756,7 +840,8 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
             gpu_ids=[
                 "host4090:cuda:0",
                 "host-2-4090:cuda:0",
-            ]
+            ],
+            gpus_per_replica=2,
         ),
         backend_parameters=[],
     )
