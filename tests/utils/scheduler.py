@@ -65,23 +65,23 @@ def compare_candidates(  # noqa: C901
 
                 assert (
                     actual_subworker.worker_id == expected_subworker.worker_id
-                ), f"Expected worker_id {expected_subworker.worker_id}, but got {actual_subworker.worker_id}"
+                ), f"Expected subordinate worker worker_id {expected_subworker.worker_id}, but got {actual_subworker.worker_id}"
                 assert (
                     actual_subworker.worker_ip == expected_subworker.worker_ip
-                ), f"Expected worker_ip {expected_subworker.worker_ip}, but got {actual_subworker.worker_ip}"
+                ), f"Expected subordinate worker worker_ip {expected_subworker.worker_ip}, but got {actual_subworker.worker_ip}"
                 assert (
                     actual_subworker.total_gpus == expected_subworker.total_gpus
-                ), f"Expected total_gpus {expected_subworker.total_gpus}, but got {actual_subworker.total_gpus}"
+                ), f"Expected subordinate worker total_gpus {expected_subworker.total_gpus}, but got {actual_subworker.total_gpus}"
                 assert (
                     actual_subworker.gpu_indexes == expected_subworker.gpu_indexes
-                ), f"Expected gpu_indexes {expected_subworker.gpu_indexes}, but got {actual_subworker.gpu_indexes}"
+                ), f"Expected subordinate worker gpu_indexes {expected_subworker.gpu_indexes}, but got {actual_subworker.gpu_indexes}"
                 assert (
                     actual_subworker.gpu_addresses == expected_subworker.gpu_addresses
-                ), f"Expected gpu_addresses {expected_subworker.gpu_addresses}, but got {actual_subworker.gpu_addresses}"
+                ), f"Expected subordinate worker gpu_addresses {expected_subworker.gpu_addresses}, but got {actual_subworker.gpu_addresses}"
                 assert (
                     actual_subworker.computed_resource_claim
                     == expected_subworker.computed_resource_claim
-                ), f"Expected computed_resource_claim {expected_subworker.computed_resource_claim}, but got {actual_subworker.computed_resource_claim}"
+                ), f"Expected subordinate worker computed_resource_claim {expected_subworker.computed_resource_claim}, but got {actual_subworker.computed_resource_claim}"
 
         if "tensor_split" in expected:
             assert (
