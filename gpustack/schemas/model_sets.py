@@ -3,20 +3,19 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
 
 from gpustack.schemas.models import (
+    ModelSource,
     ModelSpecBase,
 )
-
-
-class ModelTemplate(ModelSpecBase):
-    name: Optional[str] = None
-    quantizations: Optional[List[str]] = None
-    sizes: Optional[List[float]] = None
 
 
 class ModelSpec(ModelSpecBase):
     name: Optional[str] = None
     quantization: Optional[str] = None
-    size: Optional[float] = None
+    mode: Optional[str] = None
+
+
+class ModelRecipe(ModelSpec):
+    gpu_filters: Optional[list[dict]] = None
 
 
 class ModelSetBase(BaseModel):
@@ -28,7 +27,8 @@ class ModelSetBase(BaseModel):
     icon: Optional[str] = None
     categories: Optional[List[str]] = None
     capabilities: Optional[List[str]] = None
-    sizes: Optional[List[float]] = None
+    size: Optional[float] = None
+    activated_size: Optional[float] = None
     licenses: Optional[List[str]] = None
     release_date: Optional[date] = None
 
@@ -42,4 +42,14 @@ class ModelSetPublic(ModelSetBase):
 class ModelSet(ModelSetBase):
     quantizations: Optional[List[str]] = None
 
-    templates: List[ModelTemplate]
+    recipes: List[ModelRecipe]
+
+
+class DraftModel(ModelSource):
+    name: str
+    algorithm: str
+
+
+class Catalog(BaseModel):
+    model_sets: List[ModelSet]
+    draft_models: List[DraftModel]

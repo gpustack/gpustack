@@ -3,7 +3,7 @@ import time
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.scheduler.scheduler import SourceEnum
-from gpustack.server.catalog import get_model_set_specs, init_model_catalog
+from gpustack.server.catalog import get_model_set_recipes, init_model_catalog
 from gpustack.utils.hub import match_hugging_face_files, match_model_scope_file_paths
 from gpustack.utils.compat_importlib import pkg_resources
 from huggingface_hub import HfApi
@@ -17,7 +17,7 @@ from modelscope.hub.api import HubApi
 def test_model_catalog():
     init_model_catalog()
 
-    model_set_specs = get_model_set_specs()
+    model_set_specs = get_model_set_recipes()
 
     Hfapi = HfApi()
 
@@ -61,7 +61,7 @@ def test_model_catalog_modelscope():
 
     init_model_catalog(str(modelscope_catalog_file))
 
-    model_set_specs = get_model_set_specs()
+    model_set_specs = get_model_set_recipes()
 
     Msapi = HubApi()
 

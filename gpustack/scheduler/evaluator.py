@@ -16,7 +16,7 @@ from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
-from gpustack.server.catalog import model_set_specs_by_key
+from gpustack.server.catalog import model_set_recipes_by_key
 from gpustack.schemas.model_evaluations import (
     ModelEvaluationResult,
     ModelSpec,
@@ -372,7 +372,7 @@ def set_default_spec(model: ModelSpec) -> bool:
     """
     Set the default spec for the model if it matches the catalog spec.
     """
-    model_spec_in_catalog = model_set_specs_by_key.get(model.model_source_key)
+    model_spec_in_catalog = model_set_recipes_by_key.get(model.model_source_key)
 
     modified = False
     if model_spec_in_catalog:

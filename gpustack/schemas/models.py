@@ -61,6 +61,12 @@ class AccessPolicyEnum(str, Enum):
     ALLOWED_USERS = "allowed_users"
 
 
+class SpeculativeAlgorithmEnum(str, Enum):
+    EAGLE3 = "eagle3"
+    MTP = "mtp"
+    NGRAM = "ngram"
+
+
 class GPUSelector(BaseModel):
     # format of each element: "worker_name:device:gpu_index", example: "worker1:cuda:0"
     gpu_ids: Optional[List[str]] = None
@@ -160,6 +166,24 @@ class ModelSource(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
+class SpeculativeConfig(BaseModel):
+    """Configuration for speculative decoding."""
+
+    enabled: bool = False
+    """Whether speculative decoding is enabled."""
+    algorithm: SpeculativeAlgorithmEnum
+    """The algorithm to use for speculative decoding."""
+    draft_model_name: Optional[str] = None
+    """Name of the draft model to use for speculative decoding."""
+    num_draft_tokens: Optional[int] = None
+    """The number of draft tokens."""
+    # For ngram only
+    ngram_min_match_length: Optional[int] = None
+    """Minimum length of the n-gram to match."""
+    ngram_max_match_length: Optional[int] = None
+    """Maximum length of the n-gram to match."""
+
+
 class ModelSpecBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     description: Optional[str] = Field(
@@ -213,6 +237,10 @@ class ModelSpecBase(SQLModel, ModelSource):
     # Extended KV Cache configuration. Currently maps to LMCache config in vLLM and SGLang.
     extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
         sa_type=pydantic_column_type(ExtendedKVCacheConfig), default=None
+    )
+
+    speculative_config: Optional[SpeculativeConfig] = Field(
+        sa_type=pydantic_column_type(SpeculativeConfig), default=None
     )
 
     @model_validator(mode="after")
@@ -377,6 +405,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     port: Optional[int] = None
     ports: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     download_progress: Optional[float] = None
+    draft_model_download_progress: Optional[float] = None
     resolved_path: Optional[str] = None
     restart_count: Optional[int] = 0
     last_restart_time: Optional[datetime] = Field(
@@ -403,6 +432,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
     model_config = ConfigDict(protected_namespaces=())
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    draft_model_file_id: Optional[int] = Field(
+        default=None, foreign_key="model_files.id"
+    )
 
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):

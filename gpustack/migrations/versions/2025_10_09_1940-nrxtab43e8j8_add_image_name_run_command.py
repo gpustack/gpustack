@@ -23,6 +23,12 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('image_name', sa.String(length=255), nullable=True))
         batch_op.add_column(sa.Column('run_command', sa.String(length=255), nullable=True))
         batch_op.add_column(sa.Column('extended_kv_cache', sa.JSON(), nullable=True))
+        batch_op.add_column(sa.Column('speculative_config', sa.JSON(), nullable=True))
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('draft_model_download_progress', sa.Float(), nullable=True))
+        batch_op.add_column(sa.Column('draft_model_file_id', sa.Integer(), nullable=True))
+        batch_op.create_foreign_key('fk_model_instances_draft_model_file_id', 'model_files', ['draft_model_file_id'], ['id'])
 
     # Create inference_backends table
     op.create_table(
@@ -53,8 +59,14 @@ def downgrade() -> None:
     
     # Drop inference_backends table
     op.drop_table('inference_backends')
-    
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.drop_column('draft_model_download_progress')
+        batch_op.drop_constraint('fk_model_instances_draft_model_file_id', type_='foreignkey')
+        batch_op.drop_column('draft_model_file_id')
+
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.drop_column('run_command')
         batch_op.drop_column('image_name')
         batch_op.drop_column('extended_kv_cache')
+        batch_op.drop_column('speculative_config')
