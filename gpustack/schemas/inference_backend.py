@@ -115,7 +115,10 @@ class InferenceBackendBase(SQLModel):
     def get_image_name(self, version: Optional[str] = None) -> str:
         if self.backend_name == BackendEnum.CUSTOM.value:
             return ""
-        version_config = self.get_version_config(version)
+        try:
+            version_config = self.get_version_config(version)
+        except KeyError:
+            return ""
         return version_config.image_name
 
 
@@ -170,8 +173,27 @@ InferenceBackendsPublic = PaginatedList[InferenceBackendPublic]
 # built-in backend configurations
 def get_built_in_backend() -> List[InferenceBackend]:
     return [
-        InferenceBackend(backend_name=BackendEnum.VLLM, is_built_in=True),
-        InferenceBackend(backend_name=BackendEnum.ASCEND_MINDIE, is_built_in=True),
-        InferenceBackend(backend_name=BackendEnum.VOX_BOX, is_built_in=True),
-        InferenceBackend(backend_name=BackendEnum.CUSTOM, is_built_in=True),
+        InferenceBackend(backend_name=BackendEnum.VLLM.value, is_built_in=True),
+        InferenceBackend(
+            backend_name=BackendEnum.ASCEND_MINDIE.value, is_built_in=True
+        ),
+        InferenceBackend(backend_name=BackendEnum.VOX_BOX.value, is_built_in=True),
+        InferenceBackend(backend_name=BackendEnum.CUSTOM.value, is_built_in=True),
     ]
+
+
+def is_built_in_backend(backend_name: str) -> bool:
+    """
+    Check if a backend is a built-in backend.
+
+    Args:
+        backend_name: The name of the backend to check
+
+    Returns:
+        True if the backend is built-in, False otherwise
+    """
+    built_in_backends = get_built_in_backend()
+    built_in_backend_names = {
+        backend.backend_name.lower() for backend in built_in_backends
+    }
+    return backend_name.lower() in built_in_backend_names

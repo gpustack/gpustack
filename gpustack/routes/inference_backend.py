@@ -26,6 +26,7 @@ from gpustack.schemas.inference_backend import (
     get_built_in_backend,
     InferenceBackendPublic,
     VersionListItem,
+    is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
@@ -33,21 +34,6 @@ from gpustack_runner import list_service_runners
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def is_built_in_backend(backend_name: str) -> bool:
-    """
-    Check if a backend is a built-in backend.
-
-    Args:
-        backend_name: The name of the backend to check
-
-    Returns:
-        True if the backend is built-in, False otherwise
-    """
-    built_in_backends = get_built_in_backend()
-    built_in_backend_names = {backend.backend_name for backend in built_in_backends}
-    return backend_name in built_in_backend_names
 
 
 def filter_yaml_fields(yaml_data: Dict, filter_keys: List[str]) -> Dict:
@@ -290,7 +276,7 @@ async def merge_runner_versions_to_db(
     built_in_backend_names = set()
 
     for built_in_backend in get_built_in_backend():
-        if built_in_backend.backend_name == BackendEnum.CUSTOM:
+        if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
             continue
         built_in_backend_names.add(built_in_backend.backend_name)
 
@@ -516,6 +502,13 @@ async def create_inference_backend(
     """
     Create a new inference backend.
     """
+    # Duplicate names with built-in backends are prohibited (case-insensitive).
+    if is_built_in_backend(backend_in.backend_name):
+        raise BadRequestException(
+            message=(
+                f"Backend name {backend_in.backend_name} duplicates with built-in backends (case-insensitive). Please use another name."
+            ),
+        )
     # Check if backend with same name already exists
     existing = await InferenceBackend.one_by_field(
         session, "backend_name", backend_in.backend_name
@@ -523,12 +516,6 @@ async def create_inference_backend(
     if existing:
         raise BadRequestException(
             message=f"Inference backend with name '{backend_in.backend_name}' already exists",
-        )
-
-    # Validate that built-in backends cannot have default_version set
-    if is_built_in_backend(backend_in.backend_name) and backend_in.default_version:
-        raise BadRequestException(
-            message=f"Built-in backend '{backend_in.backend_name}' cannot have default_version set. Default version is managed automatically.",
         )
 
     try:
@@ -685,6 +672,14 @@ async def create_inference_backend_from_yaml(
         if not yaml_data.get("backend_name"):
             raise BadRequestException(message="backend_name is required in YAML")
 
+        # Check if backend name duplicates with built-in backends (case-insensitive)
+        if is_built_in_backend(yaml_data["backend_name"]):
+            raise BadRequestException(
+                message=(
+                    f"Backend name {yaml_data['backend_name']} duplicates with built-in backends (case-insensitive). Please use another name."
+                ),
+            )
+
         # Check if backend with same name already exists
         existing = await InferenceBackend.one_by_field(
             session, "backend_name", yaml_data["backend_name"]
@@ -702,9 +697,6 @@ async def create_inference_backend_from_yaml(
             "framework_index_map",
             "built_in_version_configs",
         ]
-        if is_built_in_backend(yaml_data["backend_name"]):
-            # Built-in backend default_version is managed automatically
-            common_filter_keys.append("default_version")
 
         yaml_data = filter_yaml_fields(yaml_data, common_filter_keys)
 
