@@ -656,7 +656,7 @@ class InferenceBackendController:
     async def start(self):
         async with AsyncSession(self._engine) as session:
             for built_in_backend in get_built_in_backend():
-                if built_in_backend.backend_name == BackendEnum.CUSTOM:
+                if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
                     continue
                 backend = await InferenceBackend.one_by_field(
                     session, "backend_name", built_in_backend.backend_name

@@ -4,7 +4,10 @@ from typing import List, Tuple
 from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model, get_backend
 from gpustack.schemas.workers import Worker
-from gpustack.schemas.inference_backend import InferenceBackend, get_built_in_backend
+from gpustack.schemas.inference_backend import (
+    InferenceBackend,
+    is_built_in_backend,
+)
 from gpustack.server.db import get_engine
 from gpustack_runner import list_service_runners
 from sqlmodel import Session, select
@@ -63,7 +66,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 f"Failed to get frameworks from database for backend {backend_name}: {e}"
             )
 
-        if backend_name in get_built_in_backend():
+        if is_built_in_backend(backend_name):
             runners_list = list_service_runners(service=backend_name.lower())
 
             if runners_list and len(runners_list) > 0:
