@@ -560,7 +560,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             return None
 
         if self._selected_gpu_workers:
-            return await self.manually_select_single_worker_multi_gpu_candidates(worker)
+            return await self.manual_select_single_worker_multi_gpu_candidates(worker)
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
@@ -662,7 +662,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
-    async def manually_select_single_worker_multi_gpu_candidates(  # noqa: C901
+    async def manual_select_single_worker_multi_gpu_candidates(  # noqa: C901
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
         if len(self._selected_gpu_workers) != 1:
