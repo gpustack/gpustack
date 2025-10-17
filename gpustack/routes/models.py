@@ -36,6 +36,7 @@ from gpustack.schemas.models import (
     ModelAccessUpdate,
     ModelUserAccessExtended,
     ModelAccessList,
+    MyModel,
 )
 from gpustack.schemas.users import User
 from gpustack.server.services import ModelService, WorkerService
@@ -88,38 +89,44 @@ async def get_models(
     )
 
 
-def build_pg_category_condition(category: str):
+def build_pg_category_condition(target_class: Union[Model, MyModel], category: str):
     if category == "":
-        return cast(Model.categories, JSONB).op('@>')(cast('[]', JSONB))
-    return cast(Model.categories, JSONB).op('?')(
+        return cast(target_class.categories, JSONB).op('@>')(cast('[]', JSONB))
+    return cast(target_class.categories, JSONB).op('?')(
         bindparam(f"category_{category}", category)
     )
 
 
 # Add MySQL category condition construction function
-def build_mysql_category_condition(category: str):
+def build_mysql_category_condition(target_class: Union[Model, MyModel], category: str):
     if category == "":
-        return func.json_length(Model.categories) == 0
+        return func.json_length(target_class.categories) == 0
     return func.json_contains(
-        Model.categories, func.cast(func.json_quote(category), JSON), '$'
+        target_class.categories, func.cast(func.json_quote(category), JSON), '$'
     )
 
 
-def build_category_conditions(session, categories):
+def build_category_conditions(session, target_class: Union[Model, MyModel], categories):
     dialect = session.bind.dialect.name
     if dialect == "sqlite":
         return [
             (
-                col(Model.categories) == []
+                col(target_class.categories) == []
                 if category == ""
-                else col(Model.categories).contains(category)
+                else col(target_class.categories).contains(category)
             )
             for category in categories
         ]
     elif dialect == "postgresql":
-        return [build_pg_category_condition(category) for category in categories]
+        return [
+            build_pg_category_condition(target_class, category)
+            for category in categories
+        ]
     elif dialect == "mysql":
-        return [build_mysql_category_condition(category) for category in categories]
+        return [
+            build_mysql_category_condition(target_class, category)
+            for category in categories
+        ]
     else:
         raise NotImplementedError(f'Unsupported database {dialect}')
 
