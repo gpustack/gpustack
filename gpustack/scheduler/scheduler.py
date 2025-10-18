@@ -60,9 +60,12 @@ from gpustack.scheduler.calculator import (
 )
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
+from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.task import run_in_thread
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -435,6 +438,7 @@ async def evaluate_gguf_model(
     config: Config,
     model: Model,
 ) -> bool:
+
     task_output = await calculate_model_resource_claim(
         model,
         offload=GPUOffloadEnum.Full,
@@ -480,6 +484,9 @@ async def evaluate_gguf_model(
         ):
             should_update = True
             model.distributed_inference_across_workers = True
+
+        gpus_per_replica_modified = set_model_gpus_per_replica(model)
+        should_update = should_update or gpus_per_replica_modified
 
     return should_update
 
@@ -578,7 +585,9 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
             f"Not a supported model. Detected architectures: {architectures}."
         )
 
-    return set_model_categories(model, model_type)
+    categories_modified = set_model_categories(model, model_type)
+    gpus_per_replica_modified = set_model_gpus_per_replica(model)
+    return categories_modified or gpus_per_replica_modified
 
 
 def get_vllm_override_architectures(model: Model) -> List[str]:
@@ -655,6 +664,51 @@ def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
         return True
 
     return False
+
+
+def set_model_gpus_per_replica(model: Model) -> bool:
+    """
+    Set the model's gpu_selector.gpus_per_replica based on its gpu_selector.gpu_ids and backend parameters.
+    Args:
+        model: Model to set.
+    Returns:
+        True if the model's gpu_selector.gpus_per_replica is updated, False otherwise.
+    """
+
+    def calculate_gpus_per_replica(model: Model) -> int:
+        tp_param = safe_int(
+            find_parameter(model.backend_parameters, ["tensor-parallel-size", "tp"])
+        )
+        if tp_param > 0:
+            return tp_param
+
+        worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+
+        # All GPUs in the same worker.
+        if len(worker_gpu_ids) == 1:
+            return largest_power_of_2_leq(
+                len(model.gpu_selector.gpu_ids) // model.replicas
+            )
+
+        # GPUs are distributed in multiple workers.
+        if model.replicas == 1:
+            # Use as many GPUs as possible.
+            return largest_power_of_2_leq(len(model.gpu_selector.gpu_ids))
+        else:
+            # Each replica in a worker, use all GPUs in the worker.
+            min_gpus = min(len(gpu_ids) for gpu_ids in worker_gpu_ids.values())
+            return largest_power_of_2_leq(min_gpus)
+
+    if not model.gpu_selector or not model.gpu_selector.gpu_ids:
+        return False
+
+    if model.gpu_selector.gpus_per_replica and model.gpu_selector.gpus_per_replica > 0:
+        return False
+
+    gpus_per_replica = calculate_gpus_per_replica(model)
+    model.gpu_selector.gpus_per_replica = gpus_per_replica
+    flag_modified(model, "gpu_selector")
+    return True
 
 
 def detect_model_type(architectures: List[str]) -> CategoryEnum:

@@ -64,6 +64,7 @@ class AccessPolicyEnum(str, Enum):
 class GPUSelector(BaseModel):
     # format of each element: "worker_name:device:gpu_index", example: "worker1:cuda:0"
     gpu_ids: Optional[List[str]] = None
+    gpus_per_replica: Optional[int] = None
 
 
 class ExtendedKVCacheConfig(BaseModel):

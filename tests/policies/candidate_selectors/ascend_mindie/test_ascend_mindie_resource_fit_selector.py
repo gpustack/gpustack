@@ -36,6 +36,7 @@ from tests.utils.scheduler import compare_candidates
                         "ascend_2:npu:0",
                         "ascend_4:npu:0",  # Unavailable worker.
                     ],
+                    gpus_per_replica=2,
                 ),
                 backend_parameters=[
                     "--trust-remote-code",
@@ -58,6 +59,7 @@ from tests.utils.scheduler import compare_candidates
                         "ascend_2:npu:0",
                         "ascend_3:npu:0",  # Unavailable device.
                     ],
+                    gpus_per_replica=2,
                 ),
                 backend_parameters=[
                     "--trust-remote-code",
@@ -519,6 +521,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     gpu_ids=[
                         "ascend_2:npu:0",
                     ],
+                    gpus_per_replica=1,
                 ),
                 backend_parameters=[
                     "--trust-remote-code",
@@ -551,6 +554,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                         "ascend_0:npu:0",
                         "ascend_0:npu:1",
                     ],
+                    gpus_per_replica=2,
                 ),
                 backend_parameters=[
                     "--npu-memory-fraction=0.8",
@@ -679,6 +683,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                         "ascend_2:npu:3",
                         "ascend_2:npu:4",
                     ],
+                    gpus_per_replica=4,
                 ),
                 backend_parameters=[
                     "--trust-remote-code",
@@ -724,6 +729,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                         "ascend_0:npu:0",
                         "ascend_2:npu:0",
                     ],
+                    gpus_per_replica=2,
                 ),
                 backend_parameters=[
                     "--npu-memory-fraction=0.8",
@@ -752,6 +758,40 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                         ),
                     ],
                 },
+            ],
+        ),
+        # Manual multi-workers selection with gpus per replica 2.
+        # Check point:
+        # - Specify GPU selector to enforce the selection of multi-workers with multiple devices.
+        (
+            new_model(
+                id=1,
+                name="manual_multi_workers_select_with_gpus_per_replica_2",
+                replicas=1,
+                huggingface_repo_id="Qwen/Qwen3-32B",
+                cpu_offloading=False,
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_0:npu:1",
+                        "ascend_0:npu:2",
+                        "ascend_2:npu:3",
+                        "ascend_2:npu:4",
+                    ],
+                    gpus_per_replica=2,
+                ),
+                backend_parameters=[
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                {
+                    "worker_id": 1,
+                    "worker_name": "ascend_0",
+                    "gpu_indexes": [1, 2],
+                    "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
+                    "ram": 536870912,
+                    "vram": {1: 61847529062, 2: 61847529062},
+                }
             ],
         ),
         # Automatic multi-workers selection.
@@ -1031,6 +1071,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                         "ascend_3:npu:6",
                         "ascend_3:npu:7",
                     ],
+                    gpus_per_replica=32,
                 ),
                 backend_parameters=[
                     "--npu-memory-fraction=0.95",
@@ -1138,6 +1179,118 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                 '29.18.67.77',
                                 '29.18.114.32',
                                 '29.18.105.71',
+                            ],
+                            computed_resource_claim=ComputedResourceClaim(
+                                ram=536870912,
+                                vram={
+                                    0: 65283502899,
+                                    1: 65283502899,
+                                    2: 65283502899,
+                                    3: 65283502899,
+                                    4: 65283502899,
+                                    5: 65283502899,
+                                    6: 65283502899,
+                                    7: 65283502899,
+                                },
+                            ),
+                        ),
+                    ],
+                }
+            ],
+        ),
+        # Manual multi-workers selection with 16 gpus per replica.
+        (
+            new_model(
+                id=1,
+                name="manual_multi_workers_selection_with_16_gpus_per_replica",
+                replicas=1,
+                model_scope_model_id="deepseek-ai/DeepSeek-R1-0528",
+                cpu_offloading=False,
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_0:npu:0",
+                        "ascend_0:npu:1",
+                        "ascend_0:npu:2",
+                        "ascend_0:npu:3",
+                        "ascend_0:npu:4",
+                        "ascend_0:npu:5",
+                        "ascend_0:npu:6",
+                        "ascend_0:npu:7",
+                        "ascend_1:npu:0",
+                        "ascend_1:npu:1",
+                        "ascend_1:npu:2",
+                        "ascend_1:npu:3",
+                        "ascend_1:npu:4",
+                        "ascend_1:npu:5",
+                        "ascend_1:npu:6",
+                        "ascend_1:npu:7",
+                        "ascend_2:npu:0",
+                        "ascend_2:npu:1",
+                        "ascend_2:npu:2",
+                        "ascend_2:npu:3",
+                        "ascend_2:npu:4",
+                        "ascend_2:npu:5",
+                        "ascend_2:npu:6",
+                        "ascend_2:npu:7",
+                        "ascend_3:npu:0",
+                        "ascend_3:npu:1",
+                        "ascend_3:npu:2",
+                        "ascend_3:npu:3",
+                        "ascend_3:npu:4",
+                        "ascend_3:npu:5",
+                        "ascend_3:npu:6",
+                        "ascend_3:npu:7",
+                    ],
+                    gpus_per_replica=16,
+                ),
+                backend_parameters=[
+                    "--npu-memory-fraction=0.95",
+                    "--data-parallel-size=4",
+                    "--tensor-parallel-size=8",
+                    "--trust-remote-code",
+                ],
+            ),
+            [
+                {
+                    "worker_id": 1,
+                    "worker_name": "ascend_0",
+                    "gpu_indexes": [0, 1, 2, 3, 4, 5, 6, 7],
+                    "gpu_addresses": [
+                        '29.17.48.39',
+                        '29.17.57.31',
+                        '29.17.51.57',
+                        '29.17.48.40',
+                        '29.17.45.215',
+                        '29.17.67.76',
+                        '29.17.114.31',
+                        '29.17.105.70',
+                    ],
+                    "ram": 536870912,
+                    "vram": {
+                        0: 65283502899,
+                        1: 65283502899,
+                        2: 65283502899,
+                        3: 65283502899,
+                        4: 65283502899,
+                        5: 65283502899,
+                        6: 65283502899,
+                        7: 65283502899,
+                    },
+                    "subordinate_workers": [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=2,
+                            worker_ip="192.168.50.2",
+                            total_gpus=8,
+                            gpu_indexes=[0, 1, 2, 3, 4, 5, 6, 7],
+                            gpu_addresses=[
+                                '29.17.48.42',
+                                '29.17.57.33',
+                                '29.17.51.79',
+                                '29.17.48.42',
+                                '29.17.45.217',
+                                '29.17.67.78',
+                                '29.17.114.33',
+                                '29.17.105.72',
                             ],
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
@@ -1490,6 +1643,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                         "ascend_3:npu:0",
                         "ascend_3:npu:2",
                     ],
+                    gpus_per_replica=8,
                 ),
             ),
             [
@@ -1522,6 +1676,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                         "ascend_3:npu:0",
                         "ascend_3:npu:2",
                     ],
+                    gpus_per_replica=8,
                 ),
             ),
             [
@@ -1554,6 +1709,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                         "ascend_3:npu:0",
                         "ascend_3:npu:2",
                     ],
+                    gpus_per_replica=8,
                 ),
             ),
             [

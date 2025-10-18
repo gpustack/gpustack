@@ -221,6 +221,17 @@ async def validate_model_in(
 async def validate_gpu_ids(  # noqa: C901
     session: SessionDep, model_in: Union[ModelCreate, ModelUpdate]
 ):
+
+    if (
+        model_in.gpu_selector
+        and model_in.gpu_selector.gpu_ids
+        and model_in.gpu_selector.gpus_per_replica
+    ):
+        if len(model_in.gpu_selector.gpu_ids) < model_in.gpu_selector.gpus_per_replica:
+            raise BadRequestException(
+                message="The number of selected GPUs must be greater than or equal to gpus_per_replica."
+            )
+
     audio_model = is_audio_model(model_in)
     if audio_model and len(model_in.gpu_selector.gpu_ids) > 1:
         raise BadRequestException(
