@@ -1,22 +1,26 @@
-import glob
 import logging
 import os
 import sys
 import threading
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_service_runners
+from gpustack_runtime.deployer import ContainerResources, ContainerMount
 from gpustack_runtime.deployer.__utils__ import compare_versions, correct_runner_image
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
     detect_devices,
     ManufacturerEnum,
 )
+from gpustack_runtime.detector.ascend import get_ascend_cann_variant
+from gpustack_runtime import envs as runtime_envs
+from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.config.config import Config, set_global_config, get_global_config
+from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
 from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.models import (
@@ -24,27 +28,15 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
-    get_backend,
 )
-from gpustack.schemas.workers import VendorEnum, GPUDevicesInfo, WorkerBase
+from gpustack.schemas.workers import GPUDevicesInfo, WorkerBase
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import all_gpu_match
-from gpustack.utils.platform import get_cann_chip, get_runner_platform
 from gpustack.utils.profiling import time_decorator
-from gpustack.utils import platform, envs
-from gpustack_runtime.logging import setup_logging as setup_runtime_logging
+from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
-
-_VISIBLE_DEVICES_ENV_NAME_MAPPER = {
-    VendorEnum.NVIDIA: "CUDA_VISIBLE_DEVICES",
-    VendorEnum.Huawei: "ASCEND_RT_VISIBLE_DEVICES",
-    VendorEnum.AMD: "ROCR_VISIBLE_DEVICES",
-    VendorEnum.Hygon: "HIP_VISIBLE_DEVICES",
-    VendorEnum.Iluvatar: "CUDA_VISIBLE_DEVICES",
-    VendorEnum.Cambricon: "MLU_VISIBLE_DEVICES",
-}
 
 
 class ModelInstanceStateError(Exception):
@@ -52,6 +44,12 @@ class ModelInstanceStateError(Exception):
 
 
 class InferenceServer(ABC):
+    _model_path: Optional[str] = None
+    """
+    The absolute path to the model files.
+    This is set when the model instance state changes to STARTING.
+    """
+
     @time_decorator
     def __init__(
         self,
@@ -148,46 +146,125 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def get_inference_running_env(
-        self, env: Dict[str, str] = None, version: str = None
-    ) -> Dict[str, str]:
-        if env is None:
-            env = os.environ.copy()
+    def _get_configured_env(self) -> Dict[str, str]:
+        """
+        Get the environment variables for the model instance.
+        Merge the model's env with the system env.
+        If there are conflicts, the model's env takes precedence.
 
-        system = platform.system()
-        gpu_indexes = self._model_instance.gpu_indexes
-        if (system == "linux" or system == "windows") and gpu_indexes:
-            vendor = None
-            gpu_devices = None
-            if self._worker and self._worker.status.gpu_devices:
-                gpu_devices = self._worker.status.gpu_devices
+        Returns:
+            A dictionary of environment variables for the model instance.
+        """
 
-            if gpu_devices:
-                # Now use the first GPU index to get the vendor
-                first_index = gpu_indexes[0]
-                gpu_device = next(
-                    (d for d in gpu_devices if d.index == first_index), None
-                )
-                vendor = gpu_device.vendor if gpu_device else None
+        env = {}
+        if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
+            env = {
+                # Exclude GPUSTACK_ and *_VISIBLE_DEVICES env vars,
+                # which are reserved for gpustack internal use.
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("GPUSTACK_") and not k.endswith("_VISIBLE_DEVICES")
+            }
 
-            # Keep GPU indexes in ascending order,
-            # this is important for some vendors like Ascend CANN,
-            # see https://github.com/gpustack/gpustack/issues/2527.
-            env_name = get_visible_devices_env_name(vendor)
-            env[env_name] = ",".join(map(str, sorted(gpu_indexes)))
-
-            if get_backend(self._model) == BackendEnum.VLLM:
-                set_vllm_env(env, vendor, gpu_indexes, gpu_devices)
-            elif get_backend(self._model) == BackendEnum.ASCEND_MINDIE:
-                # Enable service monitor mode for Ascend MindIE
-                # https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0316.html
-                env["MIES_SERVICE_MONITOR_MODE"] = "1"
-
-                set_ascend_mindie_env(env, vendor, gpu_indexes, gpu_devices, version)
-
-        env.update(self._model.env or {})
+        if self._model.env:
+            env.update(self._model.env)
 
         return env
+
+    @lru_cache
+    def _get_selected_gpu_devices(self) -> GPUDevicesInfo:
+        """
+        Get the GPU devices assigned to the model instance.
+
+        Returns:
+            A list of GPU device information assigned to the model instance.
+        """
+        gpu_indexes = sorted(self._model_instance.gpu_indexes)
+        gpu_devices: GPUDevicesInfo = []
+        if (
+            self._model_instance.gpu_indexes
+            and self._worker
+            and self._worker.status.gpu_devices
+        ):
+            for index in gpu_indexes:
+                gpu_device = next(
+                    (d for d in self._worker.status.gpu_devices if d.index == index),
+                    None,
+                )
+                if gpu_device:
+                    gpu_devices.append(gpu_device)
+        return gpu_devices
+
+    def _get_configured_resources(
+        self, mount_all_devices: bool = False
+    ) -> ContainerResources:
+        """
+        Get the resource requests for the model instance.
+
+        Args:
+            mount_all_devices:
+                Whether to mount all available GPU devices.
+                If true, ignores the GPUs assigned to the model instance and try to mount all available GPUs.
+
+        Returns:
+            A ContainerResources object representing the resource requests for the model instance.
+
+        Raises:
+            If the GPUs assigned to the model instance are of different types.
+        """
+        resources = ContainerResources()
+        gpu_devices = self._get_selected_gpu_devices()
+        if gpu_devices:
+            gpu_type = gpu_devices[0].type
+            for device in gpu_devices[1:]:
+                if device.type != gpu_type:
+                    raise RuntimeError(
+                        "All GPUs assigned to the model instance must be of the same type."
+                    )
+            key = runtime_envs.GPUSTACK_RUNTIME_DETECT_BACKEND_MAP_RESOURCE_KEY.get(
+                gpu_type
+            )
+            if key:
+                resources[key] = (
+                    ",".join(str(d.index) for d in gpu_devices)
+                    if not mount_all_devices
+                    else "all"
+                )
+        return resources
+
+    def _get_configured_mounts(self) -> List[ContainerMount]:
+        """
+        Get the volume mounts for the model instance.
+        If runtime mirrored deployment is enabled, no mounts will be set up.
+
+        Returns:
+            A list of ContainerMount objects for the model instance.
+        """
+        mounts: List[ContainerMount] = []
+        if (
+            self._model_path
+            and not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
+        ):
+            model_dir = os.path.dirname(self._model_path)
+            mounts.append(
+                ContainerMount(
+                    path=model_dir,
+                ),
+            )
+        return mounts
+
+    def _get_serving_port(self) -> int:
+        """
+        Get the (main) serving port for the model instance.
+
+        Returns:
+            The (main) serving port for the model instance.
+        """
+        return (
+            self._model_instance.ports[0]
+            if self._model_instance.ports
+            else self._model_instance.port
+        )
 
     def build_versioned_command_args(
         self,
@@ -297,7 +374,7 @@ class InferenceServer(ABC):
         runner_param = {
             "backend": backend_type.lower() if backend_type else None,
             "service": self._model.backend.lower() if self._model.backend else None,
-            "platform": get_runner_platform(),
+            "platform": platform.system_arch(),
         }
         if self._model.backend_version:
             runner_param["service_version"] = self._model.backend_version
@@ -345,135 +422,15 @@ class InferenceServer(ABC):
         return docker_image
 
 
-def real_model_path(model_paths: List[str]) -> str:
-    """
-    Get the real model path from the resolved paths.
-    """
-    if len(model_paths) == 0:
-        raise ValueError("Model paths are empty.")
-
-    model_path = model_paths[0]
-    # resolve glob pattern
-    if "*" in model_path:
-        match_paths = glob.glob(model_path)
-        if len(match_paths) == 0:
-            raise ValueError(f"No match file found for {model_path}")
-        return sorted(match_paths)[0]
-
-
-def set_vllm_env(
-    env: Dict[str, str],
-    vendor: VendorEnum,
-    gpu_indexes: List[int] = None,
-    gpu_devices: GPUDevicesInfo = None,
-):
-    system = platform.system()
-    if not gpu_indexes or not gpu_devices:
-        return
-
-    if system != "linux" or vendor != VendorEnum.AMD:
-        return
-
-    llvm = None
-    for g in gpu_devices:
-        if (
-            g.index in gpu_indexes
-            and g.labels.get("llvm")
-            and g.vendor == VendorEnum.AMD
-        ):
-            llvm = g.labels.get("llvm")
-            break
-
-    if llvm:
-        # vllm supports llvm target: gfx908;gfx90a;gfx942;gfx1100,
-        # try to use the similar LLVM target that is supported.
-        # https://docs.vllm.ai/en/v0.6.2/getting_started/amd-installation.html#build-from-source-rocm
-        # https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html
-        emulate_gfx_version = {
-            "gfx1101": "11.0.0",
-            "gfx1102": "11.0.0",
-        }
-
-        if emulate_gfx_version.get(llvm):
-            env["HSA_OVERRIDE_GFX_VERSION"] = emulate_gfx_version[llvm]
-
-
-def set_ascend_mindie_env(
-    env: Dict[str, str],
-    vendor: VendorEnum,
-    gpu_indexes: List[int] = None,
-    gpu_devices: GPUDevicesInfo = None,
-    version: str = "latest",
-):
-    system = platform.system()
-    if not gpu_indexes or not gpu_devices:
-        return
-
-    if system != "linux" or vendor != VendorEnum.Huawei:
-        return
-
-    # Select root path
-    root_path = next(
-        (
-            rp
-            for rp in envs.get_unix_available_root_paths_of_ascend()
-            if rp.joinpath("mindie", version).is_dir()
-        ),
-        None,
-    )
-    if not root_path:
-        logger.error(
-            "Ascend MindIE root path not found. " "Please check the installation."
-        )
-        return
-
-    # Extract the environment variables from the script
-    # - Get the paths of Ascend MindIE set_env.sh
-    script_paths = [
-        root_path.joinpath("mindie", version, "mindie-rt", "set_env.sh"),
-        root_path.joinpath("mindie", version, "mindie-torch", "set_env.sh"),
-        root_path.joinpath("mindie", version, "mindie-service", "set_env.sh"),
-        root_path.joinpath("mindie", version, "mindie-llm", "set_env.sh"),
-    ]
-    # - Get the paths of Ascend MindIE virtual environment if needed
-    cfg = get_global_config()
-    venv_dir = Path(cfg.data_dir).joinpath("venvs", "mindie", version)
-    venv_path = venv_dir.joinpath("bin", "activate")
-    if venv_dir.is_dir() and venv_path.is_file():
-        script_paths.append(venv_path)
-
-    # Update the environment variables with diff
-    env_diff = envs.extract_unix_vars_of_source(script_paths)
-    env.update(env_diff)
-
-
-def get_visible_devices_env_name(vendor: str) -> str:
-    """
-    Get the environment variable name for visible devices based on the vendor.
-    For example, if the vendor is "NVIDIA", it returns "CUDA_VISIBLE_DEVICES",
-    if the vendor is "Huawei", it returns "ASCEND_RT_VISIBLE_DEVICES".
-    Return "CUDA_VISIBLE_DEVICES" if the vendor is not recognized.
-    """
-
-    return next(
-        (
-            v
-            for k, v in _VISIBLE_DEVICES_ENV_NAME_MAPPER.items()
-            if vendor is not None and k.value.lower() in vendor.lower()
-        ),
-        "CUDA_VISIBLE_DEVICES",
-    )
-
-
 def is_ascend_310p(worker: WorkerBase) -> bool:
     """
     Check if the model instance is running on VLLM Ascend 310P.
     """
 
-    return (
-        all_gpu_match(
-            worker,
-            lambda gpu: gpu.vendor == VendorEnum.Huawei.value,
-        )
-        and get_cann_chip() == "310p"
+    return all_gpu_match(
+        worker,
+        lambda gpu: (
+            gpu.vendor == ManufacturerEnum.ASCEND.value
+            and get_ascend_cann_variant(gpu.arch_family) == "310p"
+        ),
     )

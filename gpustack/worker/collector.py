@@ -92,8 +92,6 @@ class WorkerStatusCollector:
         self, clientset: ClientSet = None, initial: bool = False
     ) -> WorkerStatusPublic:  # noqa: C901
         """Collect worker status information."""
-        self._detector_factory.validate_detectors()
-
         status = WorkerStatus()
         state_message = None
         try:

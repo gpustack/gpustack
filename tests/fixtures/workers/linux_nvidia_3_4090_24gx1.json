@@ -87,7 +87,7 @@
             {
                 "name": "NVIDIA GeForce RTX 4090 D",
                 "uuid": "",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 0,
                 "device_index": 0,
                 "device_chip_index": 0,
@@ -103,17 +103,9 @@
                     "allocated": null
                 },
                 "temperature": 37.0,
-                "labels": {},
                 "type": "cuda"
             }
-        ],
-        "rpc_servers": {
-            "0": {
-                "pid": 492309,
-                "port": 50082,
-                "gpu_index": 0
-            }
-        }
+        ]
     },
     "unreachable": false,
     "heartbeat_time": "2025-02-07T05:09:55Z",

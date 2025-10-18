@@ -9,17 +9,17 @@ from gpustack_runtime.deployer import (
     ContainerEnv,
     ContainerExecution,
     ContainerProfileEnum,
-    ContainerMount,
     WorkloadPlan,
     WorkloadStatus,
     create_workload,
     delete_workload,
     get_workload,
     logs_workload,
+    ContainerPort,
 )
+from gpustack_runtime.detector import ManufacturerEnum
 
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
-from gpustack.schemas.workers import VendorEnum
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.gpu import all_gpu_match
@@ -48,16 +48,19 @@ class VLLMServer(InferenceServer):
     def start(self):  # noqa: C901
         try:
             # Setup container mounts
-            mounts = []
-            if hasattr(self, "_model_path") and self._model_path:
-                model_dir = os.path.dirname(self._model_path)
-                mounts.append(ContainerMount(path=model_dir))
+            mounts = self._get_configured_mounts()
 
             # Setup environment variables
             envs = self._setup_environment()
 
+            # Get resources configuration
+            resources = self._get_configured_resources()
+
+            # Get serving port
+            serving_port = self._get_serving_port()
+
             # Build vLLM command arguments
-            arguments = self._build_vllm_arguments()
+            arguments = self._build_vllm_arguments(port=serving_port)
 
             # Get vLLM image name
             image_name = self._get_backend_image_name()
@@ -75,9 +78,19 @@ class VLLMServer(InferenceServer):
                     args=arguments,
                 ),
                 envs=[
-                    ContainerEnv(name=name, value=value) for name, value in envs.items()
+                    ContainerEnv(
+                        name=name,
+                        value=value,
+                    )
+                    for name, value in envs.items()
                 ],
+                resources=resources,
                 mounts=mounts,
+                ports=[
+                    ContainerPort(
+                        internal=serving_port,
+                    ),
+                ],
             )
 
             # Store workload name for management operations
@@ -104,20 +117,15 @@ class VLLMServer(InferenceServer):
         """
         Setup environment variables for the vLLM container server.
         """
-        env = os.environ.copy()
+
+        # Apply GPUStack's inference environment setup
+        env = self._get_configured_env()
 
         # Apply LMCache environment variables if extended KV cache is enabled
         self.set_lmcache_env(env)
 
         # Apply vLLM distributed environment setup
         self.set_vllm_distributed_env(env)
-
-        # Apply GPUStack's inference environment setup
-        env = self.get_inference_running_env(env)
-
-        # Add model-specific environment variables
-        if self._model.env:
-            env.update(self._model.env)
 
         # Log environment variables
         env_view = None
@@ -137,7 +145,7 @@ class VLLMServer(InferenceServer):
 
         return env
 
-    def _build_vllm_arguments(self) -> List[str]:
+    def _build_vllm_arguments(self, port: int) -> List[str]:
         """
         Build vLLM command arguments for container execution.
         """
@@ -147,6 +155,7 @@ class VLLMServer(InferenceServer):
             self._model_path,
         ]
 
+        # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
         derived_max_model_len = self._derive_max_model_len()
@@ -179,25 +188,20 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
+        # Inject user-defined backend parameters
         if self._model.backend_parameters:
             arguments.extend(self._model.backend_parameters)
 
-        built_in_arguments = [
+        # Append immutable arguments to ensure proper operation for accessing
+        immutable_arguments = [
             "--host",
             "0.0.0.0",
+            "--port",
+            str(port),
+            "--served-model-name",
+            self._model_instance.model_name,
         ]
-
-        has_port = any(arg == "--port" for arg in arguments)
-        if not has_port:
-            built_in_arguments.extend(["--port", str(self._model_instance.port)])
-
-        built_in_arguments.extend(
-            ["--served-model-name", self._model_instance.model_name]
-        )
-
-        # Extend the built-in arguments at the end so that
-        # they cannot be overridden by the user-defined arguments
-        arguments.extend(built_in_arguments)
+        arguments.extend(immutable_arguments)
 
         return arguments
 
@@ -261,7 +265,9 @@ class VLLMServer(InferenceServer):
             return
 
         device_str = "GPU"
-        if all_gpu_match(worker, lambda gpu: gpu.vendor == VendorEnum.Huawei.value):
+        if all_gpu_match(
+            worker, lambda gpu: gpu.vendor == ManufacturerEnum.ASCEND.value
+        ):
             device_str = "NPU"
 
         ray_placement_group_bundles: List[Dict[str, float]] = []

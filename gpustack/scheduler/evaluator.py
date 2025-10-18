@@ -5,12 +5,14 @@ import logging
 import os
 from collections import defaultdict
 from typing import List, Tuple, Optional, Dict
+
+from gpustack_runtime.detector import ManufacturerEnum
 from sqlmodel.ext.asyncio.session import AsyncSession
 from cachetools import TTLCache
 from aiolimiter import AsyncLimiter
 
 from gpustack.api.exceptions import HTTPException
-from gpustack.config.config import Config, VendorEnum
+from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
@@ -287,7 +289,7 @@ async def evaluate_environment(
         return False, ["The model is not supported on Windows workers."]
 
     if backend == BackendEnum.ASCEND_MINDIE and not any_gpu_match(
-        workers, lambda gpu: gpu.vendor == VendorEnum.Huawei.value
+        workers, lambda gpu: gpu.vendor == ManufacturerEnum.ASCEND.value
     ):
         return False, [
             "The Ascend MindIE backend requires Ascend NPUs but none are available."

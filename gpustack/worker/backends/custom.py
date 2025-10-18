@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 from typing import Dict, List, Optional, Iterator
 
@@ -11,7 +10,6 @@ from gpustack_runtime.deployer import (
     ContainerEnv,
     ContainerExecution,
     ContainerProfileEnum,
-    ContainerMount,
     WorkloadPlan,
     WorkloadStatus,
     create_workload,
@@ -19,8 +17,8 @@ from gpustack_runtime.deployer import (
     get_workload,
     list_workloads,
     logs_workload,
+    ContainerPort,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -49,18 +47,21 @@ class CustomServer(InferenceServer):
 
     def start(self, **kwargs):
         try:
-            mounts = []
-            if hasattr(self, "_model_path") and self._model_path:
-                model_dir = os.path.dirname(self._model_path)
-                mounts.append(ContainerMount(path=model_dir))
+            mounts = self._get_configured_mounts()
 
             envs = self._setup_environment()
+
+            # Get resources configuration
+            resources = self._get_configured_resources()
+
+            # Get serving port
+            serving_port = self._get_serving_port()
 
             image_cmd = []
             command = self.inference_backend.replace_command_param(
                 self._model.backend_version,
                 self._model_path,
-                self._model_instance.port,
+                serving_port,
                 self._model.run_command,
             )
             if command:
@@ -82,9 +83,19 @@ class CustomServer(InferenceServer):
                     args=image_cmd,
                 ),
                 envs=[
-                    ContainerEnv(name=name, value=value) for name, value in envs.items()
+                    ContainerEnv(
+                        name=name,
+                        value=value,
+                    )
+                    for name, value in envs.items()
                 ],
                 mounts=mounts,
+                resources=resources,
+                ports=[
+                    ContainerPort(
+                        internal=serving_port,
+                    )
+                ],
             )
 
             # Store workload name for management operations
@@ -108,14 +119,9 @@ class CustomServer(InferenceServer):
         """
         Setup environment variables for the inference server.
         """
-        env = os.environ.copy()
 
         # Apply GPUStack's inference environment setup
-        env = self.get_inference_running_env(env)
-
-        # Add model-specific environment variables
-        if self._model.env:
-            env.update(self._model.env)
+        env = self._get_configured_env()
 
         return env
 

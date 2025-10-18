@@ -13,7 +13,7 @@ def setup_download_tools_cmd(subparsers: argparse._SubParsersAction):
     parser: argparse.ArgumentParser = subparsers.add_parser(
         "download-tools",
         help="Download dependency tools.",
-        description="Download dependency tools, including llama-box, gguf-parser, and fastfetch.",
+        description="Download dependency tools.",
     )
 
     parser.add_argument(
@@ -46,12 +46,6 @@ def setup_download_tools_cmd(subparsers: argparse._SubParsersAction):
         help="Architecture to download tools for. Default is the current architecture. (e.g. amd64, arm64)",
         default=get_gpustack_env("ARCH"),
     )
-    parser.add_argument(
-        "--device",
-        type=str,
-        help="Device to download tools for. Default is the current device. (e.g. cuda, mps, npu, musa, cpu)",
-        default=get_gpustack_env("DEVICE"),
-    )
 
     parser.set_defaults(func=run)
 
@@ -68,7 +62,6 @@ def run(args):
             tools_download_base_url=tools_download_base_url,
             system=args.system,
             arch=args.arch,
-            device=args.device,
         )
 
         if args.load_archive:

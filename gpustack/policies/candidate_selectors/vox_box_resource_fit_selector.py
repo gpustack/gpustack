@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
 import asyncio
+
+from gpustack_runtime.detector import ManufacturerEnum
+
 from gpustack.config.config import Config
 from gpustack.utils.convert import safe_int
 from gpustack.utils.file import get_local_file_size_in_byte
@@ -20,7 +23,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
 )
-from gpustack.schemas.workers import VendorEnum, Worker
+from gpustack.schemas.workers import Worker
 
 from gpustack.server.db import get_engine
 
@@ -156,7 +159,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
                 ):
                     continue
 
-                if gpu.vendor != VendorEnum.NVIDIA.value:
+                if gpu.vendor != ManufacturerEnum.NVIDIA.value:
                     continue
 
                 gpu_index = gpu.index

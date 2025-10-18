@@ -12,7 +12,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.model_usage import ModelUsage
-from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
+from gpustack.schemas.models import (
+    Model,
+    ModelInstance,
+    ModelInstanceStateEnum,
+    MyModel,
+)
 from gpustack.schemas.users import User
 from gpustack.schemas.workers import Worker
 from gpustack.server.usage_buffer import usage_flush_buffer
@@ -148,10 +153,14 @@ class UserService:
         user: User = await self.get_by_id(user_id)
         if user is None:
             return []
-        model_names = {model.name for model in user.models}
         if user.is_admin:
             all_models = await Model.all_by_field(self.session, "deleted_at", None)
             model_names = {model.name for model in all_models}
+        else:
+            allowed_models = await MyModel.all_by_fields(
+                self.session, {"user_id": user.id, "deleted_at": None}
+            )
+            model_names = {model.name for model in allowed_models}
         if access_key is not None:
             api_key: ApiKey = await APIKeyService(self.session).get_by_access_key(
                 access_key

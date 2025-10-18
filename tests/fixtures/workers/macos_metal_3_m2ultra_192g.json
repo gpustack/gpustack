@@ -140,17 +140,9 @@
         },
         "network": null,
         "temperature": 36.87187576293945,
-        "labels": {},
         "type": "mps"
       }
-    ],
-    "rpc_servers": {
-      "0": {
-        "pid": 40196,
-        "port": 40068,
-        "gpu_index": 0
-      }
-    }
+    ]
   },
   "unreachable": false,
   "heartbeat_time": "2025-07-11T11:51:27Z",

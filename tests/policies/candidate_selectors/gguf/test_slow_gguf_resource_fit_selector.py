@@ -5,6 +5,8 @@ import subprocess
 from typing import Dict, List, Optional
 import uuid
 import pytest
+from gpustack_runtime.detector import manufacturer_to_backend, ManufacturerEnum
+
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
@@ -22,11 +24,9 @@ from gpustack.schemas.workers import (
     GPUCoreInfo,
     MemoryInfo,
     SystemReserved,
-    VendorEnum,
     Worker,
     WorkerStatus,
 )
-from gpustack.utils.platform import device_type_from_vendor
 from tests.fixtures.workers.fixtures import (
     linux_cpu_1,
     linux_cpu_2,
@@ -1284,9 +1284,9 @@ def create_worker(
     gpu_memorys: Dict[int, int],
     system_reserved: Optional[SystemReserved],
     is_uma: bool = False,
-    gpu_vendor: Optional[VendorEnum] = VendorEnum.NVIDIA.value,
+    gpu_vendor: Optional[ManufacturerEnum] = ManufacturerEnum.NVIDIA,
 ) -> Worker:
-    gpu_type = device_type_from_vendor(gpu_vendor)
+    gpu_type = manufacturer_to_backend(gpu_vendor)
     name = f"host{worker_id:02d}"
     return Worker(
         id=worker_id,
@@ -1315,7 +1315,6 @@ def create_worker(
                         is_unified_memory=is_uma,
                     ),
                     "temperature": 0,
-                    "labels": {},
                     "type": gpu_type,
                 }
                 for index, gpu_memory in gpu_memorys.items()

@@ -1,6 +1,12 @@
 import os
 import secrets
 from typing import List, Optional
+
+from gpustack_runtime.detector import (
+    manufacturer_to_backend,
+    supported_manufacturers,
+    supported_backends,
+)
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 import requests
@@ -16,13 +22,11 @@ from gpustack.schemas.workers import (
     SwapInfo,
     SystemInfo,
     UptimeInfo,
-    VendorEnum,
     GPUDevicesInfo,
     GPUNetworkInfo,
 )
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.utils import platform
-from gpustack.utils.platform import DeviceTypeEnum, device_type_from_vendor
 from gpustack import __version__
 
 _config = None
@@ -63,11 +67,9 @@ class Config(BaseSettings):
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
         disable_worker_metrics: Disable worker metrics.
-        disable_rpc_servers: Disable RPC servers.
         worker_metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
         service_port_range: Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40000-40063'.
-        rpc_server_port_range: Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40064-40095'.
         ray_node_manager_port: Raylet port for node manager. Used when Ray is enabled. Default is 40098.
         ray_object_manager_port: Raylet port for object manager. Used when Ray is enabled. Default is 40099.
         ray_runtime_env_agent_port: Port for Ray Runtime Environment Agent. Used when Ray is enabled. Default is 40100.
@@ -165,18 +167,15 @@ class Config(BaseSettings):
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
     disable_worker_metrics: bool = False
-    disable_rpc_servers: bool = False
     worker_port: int = 10150
     worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
-    rpc_server_port_range: Optional[str] = "40064-40095"
     ray_worker_port_range: Optional[str] = "40200-40999"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
-    rpc_server_args: Optional[List[str]] = None
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
 
@@ -257,9 +256,6 @@ class Config(BaseSettings):
 
         if self.service_port_range:
             self.check_port_range(self.service_port_range)
-
-        if self.rpc_server_port_range:
-            self.check_port_range(self.rpc_server_port_range)
 
         if self.ray_worker_port_range:
             self.check_port_range(self.ray_worker_port_range)
@@ -415,20 +411,8 @@ class Config(BaseSettings):
         ```yaml
         resources:
             gpu_devices:
-            - name: Apple M1 Pro
-              vendor: Apple
-              index: 0
-              device_index: 0              # optional
-              device_chip_index: 0         # optional
-              memory:
-                  total: 22906503168
-                  is_unified_memory: true
-        ```
-        ```yaml
-        resources:
-            gpu_devices:
             - name: Ascend CANN 910b
-              vendor: Huawei
+              vendor: ascend
               index: 0
               device_index: 0              # optional
               device_chip_index: 0         # optional
@@ -461,7 +445,7 @@ class Config(BaseSettings):
             vendor = gd.get("vendor")
             memory = gd.get("memory")
             network = gd.get("network")
-            type = gd.get("type") or device_type_from_vendor(vendor)
+            type_ = gd.get("type") or manufacturer_to_backend(vendor)
 
             if not name:
                 raise Exception("GPU device name is required")
@@ -469,9 +453,10 @@ class Config(BaseSettings):
             if index is None:
                 raise Exception("GPU device index is required")
 
-            if vendor not in VendorEnum.__members__.values():
+            vendors = supported_manufacturers()
+            if vendor not in vendors:
                 raise Exception(
-                    "Unsupported GPU device vendor, supported vendors are: Apple, NVIDIA, 'Moore Threads', Huawei, AMD, Hygon, Iluvatar, Cambricon"
+                    f"Unsupported GPU device vendor, supported vendors are: {','.join(map(str, vendors))}"
                 )
 
             if not memory:
@@ -497,9 +482,10 @@ class Config(BaseSettings):
                 if gateway and not validators.ip(gateway):
                     raise Exception("GPU device network gateway is invalid")
 
-            if type not in DeviceTypeEnum.__members__.values():
+            types = supported_backends()
+            if type_ not in types:
                 raise Exception(
-                    "Unsupported GPU type, supported type are: cuda, musa, npu, mps, rocm, dcu, corex, mlu"
+                    f"Unsupported GPU type, supported type are: {','.join(map(str, types))}"
                 )
 
             gpu_devices.append(
@@ -526,7 +512,7 @@ class Config(BaseSettings):
                             mtu=network.get("mtu", None),
                         )
                     ),
-                    type=type,
+                    type=type_,
                 )
             )
 

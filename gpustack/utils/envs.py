@@ -1,70 +1,7 @@
-import functools
-import getpass
 import os
-import stat
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
-
-
-@functools.lru_cache
-def get_unix_available_root_paths_of_ascend(writable: bool = False) -> List[Path]:
-    """Returns the available root paths of the Ascend installation on *unix."""
-    # Assume the CANN has been installed,
-    # and the environment variable "ASCEND_HOME_PATH" has been set.
-    ascend_home_path = os.getenv("ASCEND_HOME_PATH")
-    if not ascend_home_path:
-        raise Exception("The environment variable 'ASCEND_HOME_PATH' is not set.")
-
-    ascend_home_path = Path(ascend_home_path)
-    if not ascend_home_path.is_dir():
-        raise Exception(
-            f"The path '{ascend_home_path}' does not exist or is not a directory."
-        )
-
-    # In practice, ASCEND_HOME_PATH should be "/usr/local/Ascend/ascend-toolkit/latest",
-    # we keep the path from start to "Ascend" word if it exists, like "/usr/local/Ascend".
-    ascend_root_path = Path(str(ascend_home_path).split("Ascend")[0] + "Ascend")
-
-    root_paths = []
-
-    # Judge whether the ascend_root_path can be accessed by the current user.
-    cuser = getpass.getuser()
-    owner = ascend_home_path.owner()
-    if cuser != owner:
-        import pwd
-
-        # Gain user info of the current user.
-        cuser_info = pwd.getpwnam(cuser)
-        # Gain all groups of the current user.
-        try:
-            cuser_groups = os.getgrouplist(cuser, cuser_info.pw_gid)
-        except AttributeError:
-            cuser_groups = [cuser_info.pw_gid]
-        # Gain mode mask
-        ascend_root_path_stat = ascend_root_path.stat()
-        # - Group member can RWX
-        if ascend_root_path_stat.st_gid in cuser_groups:
-            mode_mask = stat.S_IRGRP | stat.S_IXGRP
-            if writable:
-                mode_mask |= stat.S_IWGRP
-        # - Others can RWX
-        else:
-            mode_mask = stat.S_IROTH | stat.S_IXOTH
-            if writable:
-                mode_mask |= stat.S_IWOTH
-        # Add candidate root path if it can be accessed by the current user.
-        if ascend_root_path_stat.st_mode & mode_mask == mode_mask:
-            root_paths.append(ascend_root_path)
-
-        # In practice, personal Ascend tool is installed under "/home/<username>/Ascend",
-        # we can create the directory if it does not exist, and add it to the candidate root paths.
-        personal_ascend_root_path = Path(f"/home/{cuser}/Ascend")
-        root_paths.append(personal_ascend_root_path)
-    else:
-        root_paths.append(ascend_root_path)
-
-    return root_paths
 
 
 def extract_unix_vars_of_source(script_paths: List[Path]) -> Dict[str, str]:

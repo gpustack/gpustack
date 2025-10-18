@@ -2,14 +2,12 @@ import argparse
 import dataclasses
 import json
 import logging
-import shutil
 import os
-import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, List, Dict, Iterator, Any
 
 from gpustack_runtime.deployer import (
-    ContainerMount,
     Container,
     ContainerProfileEnum,
     ContainerExecution,
@@ -21,6 +19,7 @@ from gpustack_runtime.deployer import (
     get_workload,
     delete_workload,
     ContainerFile,
+    ContainerPort,
 )
 
 from gpustack.schemas.models import ModelInstanceStateEnum
@@ -78,7 +77,7 @@ class AscendMindIEParameters:
     override_generation_config: Optional[str] = None
     override_generation_config_parsed: Optional[any] = None  # store JSON parsed result
     enforce_eager: bool = False
-    metrics: bool = False
+    no_metrics: bool = False
     dtype: str = "auto"
     rope_scaling: Optional[str] = None
     rope_scaling_parsed: Optional[any] = None  # store JSON parsed result
@@ -395,9 +394,9 @@ class AscendMindIEParameters:
             "Use `--no-enable-prefix-caching` to disable explicitly.",
         )
         parser.add_argument(
-            "--metrics",
+            "--no-metrics",
             action='store_true',
-            help="Expose metrics in /metrics router.",
+            help="Disable exposing metrics in /metrics router.",
         )
         parser.add_argument(
             "--enforce-eager",
@@ -839,27 +838,19 @@ class AscendMindIEServer(InferenceServer):
     the final service in a Docker container instead of a subprocess.
     """
 
-    _model_path_mapped: Optional[Path] = None
     _inference_backend: str = "mindie"  # adapt the definition of runtime
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._workload_name: Optional[str] = None
 
-    def __del__(self):
-        self.cleanup()
-
     def start(self):
-        # Prepare
-        self._model_path_mapped = self._map_model_path()
         # Start
         try:
             self._start()
         except Exception as e:
             self._report_error(e)
             raise e
-        finally:
-            self.cleanup()
 
     def _start(self):  # noqa: max-complexity=15
         """
@@ -898,15 +889,14 @@ class AscendMindIEServer(InferenceServer):
         # the config includes two parts: environment variables and a JSON configuration file.
         logger.info("Loading Ascend MindIE config")
 
-        # - Load environment variables,
-        #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0416.html,
-        #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0300.html.
-        env = self.get_inference_running_env(version=version)
+        # - Load environment variables.
+        env = self._get_configured_env()
+        config_files: list[ContainerFile] = []
 
         # - Load JSON configuration,
         #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0004.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0285.html.
-        config = self._get_config_json(to_dict=True)
+        config = self._get_mindie_config_json()
         log_config = config.get("LogConfig", {})  # Deprecated since MindIE 2.0.RC1
         server_config = config.get("ServerConfig", {})
         backend_config = config.get("BackendConfig", {})
@@ -920,6 +910,8 @@ class AscendMindIEServer(InferenceServer):
         # - Global config
         # -- Pin installation path, which helps to locate other resources.
         env["MIES_INSTALL_PATH"] = str(install_path)
+        # -- Enable exposing metircs.
+        env["MIES_SERVICE_MONITOR_MODE"] = "1"
         # -- Enable high performance swapper.
         env["MIES_RECOMPUTE_THRESHOLD"] = "0.5"
         # env["MINDIE_LLM_USE_MB_SWAPPER"] = "1"  # Atlas 300I Duo needs to unset this.
@@ -1025,8 +1017,8 @@ class AscendMindIEServer(InferenceServer):
         env["TORCH_AIE_PRINT_TO_FILE"] = "0"
 
         # - Listening config
-        serving_port = minstance.ports[0] if minstance.ports else minstance.port
-        server_config["ipAddress"] = "0.0.0.0"
+        serving_port = self._get_serving_port()
+        server_config["ipAddress"] = self._worker.ip
         server_config.pop("managementIpAddress", None)
         server_config["allowAllZeroIpListening"] = True
         server_config["maxLinkNum"] = 1000
@@ -1062,7 +1054,7 @@ class AscendMindIEServer(InferenceServer):
         schedule_config["maxIterTimes"] = max_seq_len
         schedule_config["maxPrefillTokens"] = max_seq_len
         model_config["modelName"] = self._model.name
-        model_config["modelWeightPath"] = str(self._model_path_mapped)
+        model_config["modelWeightPath"] = self._model_path
 
         # - Customize config, translate to Ascend MindIE configuration language,
         #   see https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindieservice/servicedev/mindie_service0285.html,
@@ -1123,9 +1115,9 @@ class AscendMindIEServer(InferenceServer):
                 params.max_queue_delay_microseconds
             )
             # -- Extends or Features
-            # --- Exposing metrics
-            if params.metrics:
-                env["MIES_SERVICE_MONITOR_MODE"] = "1"
+            # --- Disable exposing metrics
+            if params.no_metrics:
+                env["MIES_SERVICE_MONITOR_MODE"] = "0"
             # --- Emitting operators in synchronous way.
             if params.enforce_eager:
                 env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = "0"
@@ -1133,7 +1125,7 @@ class AscendMindIEServer(InferenceServer):
                 env["ATB_OPERATION_EXECUTE_ASYNC"] = "0"
                 env["ASCEND_LAUNCH_BLOCKING"] = "1"
             # --- Mutating model config.
-            model_config_path = self._model_path_mapped.joinpath("config.json")
+            model_config_path = Path(self._model_path).joinpath("config.json")
             with open(
                 model_config_path,
                 "r",
@@ -1160,15 +1152,19 @@ class AscendMindIEServer(InferenceServer):
             if params.rope_theta:
                 model_path_config["rope_theta"] = params.rope_theta
             # Save the mutated model config
-            with open(
-                model_config_path,
-                "w",
-                encoding="utf-8",
-            ) as f:
-                json.dump(model_path_config, f, indent=4, ensure_ascii=False)
-            logger.info(f"Saved model config to {model_config_path}")
+            model_config_str = json.dumps(
+                model_path_config,
+                indent=4,
+                ensure_ascii=False,
+            )
+            config_files.append(
+                ContainerFile(
+                    path=str(model_config_path),
+                    content=model_config_str,
+                ),
+            )
             # --- Mutating model generation config
-            model_generation_config_path = self._model_path_mapped.joinpath(
+            model_generation_config_path = Path(self._model_path).joinpath(
                 "generation_config.json"
             )
             if params.override_generation_config_parsed:
@@ -1185,14 +1181,16 @@ class AscendMindIEServer(InferenceServer):
                     # Override the generation config
                     generation_config = params.override_generation_config_parsed
                 # Save the new generation config
-                with open(
-                    model_generation_config_path,
-                    "w",
-                    encoding="utf-8",
-                ) as f:
-                    json.dump(generation_config, f, indent=4, ensure_ascii=False)
-                logger.info(
-                    f"Saved model generation config to {model_generation_config_path}"
+                model_generation_config_str = json.dumps(
+                    generation_config,
+                    indent=4,
+                    ensure_ascii=False,
+                )
+                config_files.append(
+                    ContainerFile(
+                        path=str(model_generation_config_path),
+                        content=model_generation_config_str,
+                    ),
                 )
             # --- Split fuse
             if params.enable_split:
@@ -1316,16 +1314,15 @@ class AscendMindIEServer(InferenceServer):
                 "server_list": server_list,
                 "status": "completed",
             }
-            rank_table_path = self._model_path_mapped.joinpath("ranktable.json")
+            rank_table_path = Path(self._model_path).joinpath("ranktable.json")
             rank_table_str = json.dumps(rank_table, indent=4, ensure_ascii=False)
-            with open(
-                rank_table_path,
-                "w",
-                encoding="utf-8",
-            ) as f:
-                f.write(rank_table_str)
-            # - Change mode to 640.
-            rank_table_path.chmod(0o640)
+            config_files.append(
+                ContainerFile(
+                    path=str(rank_table_path),
+                    content=rank_table_str,
+                    mode=0o640,
+                )
+            )
             # - Set environment variables.
             env["WORLD_SIZE"] = str(len(minstance.gpu_indexes) * (len(subworkers) + 1))
             env["RANKTABLEFILE"] = str(rank_table_path)
@@ -1353,8 +1350,12 @@ class AscendMindIEServer(InferenceServer):
         # Generate JSON configuration file by model instance id.
         config_path = str(install_path.joinpath("conf", f"config-{minstance.id}.json"))
         config_str = json.dumps(config, indent=4, ensure_ascii=False)
-        mindie_config_file = ContainerFile(path=config_path, content=config_str)
-        logger.info(f"Ascend MindIE config will save in container: {config_path}")
+        config_files.append(
+            ContainerFile(
+                path=config_path,
+                content=config_str,
+            ),
+        )
 
         # Start, configure environment variable to indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
@@ -1389,7 +1390,7 @@ class AscendMindIEServer(InferenceServer):
                 )
 
             # Container startup - this replaces the subprocess.Popen call
-            self._start_container(env, str(service_bin_path), [mindie_config_file])
+            self._start_container(env, str(service_bin_path), config_files)
 
         except Exception as e:
             raise e
@@ -1406,9 +1407,10 @@ class AscendMindIEServer(InferenceServer):
         This replaces the subprocess.Popen call from the original implementation.
         """
         # Setup container mounts
-        mounts = []
-        if self._model_path_mapped:
-            mounts.append(ContainerMount(path=str(self._model_path_mapped)))
+        mounts = self._get_configured_mounts()
+
+        # Get resources configuration
+        resources = self._get_configured_resources()
 
         image_name = self._get_backend_image_name(backend_type="cann")
 
@@ -1426,9 +1428,21 @@ class AscendMindIEServer(InferenceServer):
                 privileged=True,
                 args=arguments,
             ),
-            envs=[ContainerEnv(name=name, value=value) for name, value in env.items()],
+            envs=[
+                ContainerEnv(
+                    name=name,
+                    value=value,
+                )
+                for name, value in env.items()
+            ],
+            resources=resources,
             mounts=mounts,
             files=files,
+            ports=[
+                ContainerPort(
+                    internal=self._get_serving_port(),
+                ),
+            ],
         )
 
         # Store workload name for management operations
@@ -1477,74 +1491,6 @@ class AscendMindIEServer(InferenceServer):
             logger.error(f"Failed to get model max seq length: {e}")
 
         return 8192
-
-    def cleanup(self):
-        """
-        Clean up temporary resources.
-        """
-        if self._model_path_mapped:
-            try:
-                shutil.rmtree(self._model_path_mapped)
-                logger.info(f"Cleaned up mapped model path: {self._model_path_mapped}")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup mapped model path: {e}")
-        self._model_path_mapped = None
-
-    def _map_model_path(self) -> Path:
-        """
-        Map model path.
-
-        Since MindIE doesn't support fine-grained model configuration,
-        we need to construct a temporary model path with weight sort links,
-        and copy the model configurations, like "config.json", "generation_config.json".
-
-        First, create a temporary directory,
-        it should be a subdirectory of system temporary directory,
-        e.g. "/tmp/ascend-mindie-<model_id>-xxx".
-        Then, link all files and directories to the temporary directory,
-        excluding: "config.json" and "generation_config.json".
-        Finally, copy "config.json" and "generation_config.json" files to the temporary directory.
-        """
-
-        raw = Path(self._model_path)
-
-        # Check if the model path exists
-        if not raw.is_dir():
-            raise FileNotFoundError(f"Model path {raw} does not exist.")
-
-        # Create a temporary directory
-        mapped = tempfile.mkdtemp(prefix=f"ascend-mindie-{self._model_instance.id}-")
-        mapped = Path(mapped)
-
-        mutable_files = ["config.json", "generation_config.json"]
-
-        # Link all files and directories to the temporary directory, excluding mutable files
-        for item in raw.iterdir():
-            if item.name in mutable_files:
-                continue
-            link_path = mapped.joinpath(item.name)
-            try:
-                os.symlink(item, link_path)
-            except FileExistsError:
-                # If the link already exists, remove it and create a new one
-                link_path.unlink(missing_ok=True)
-                os.symlink(item, link_path)
-
-        # Copy mutable files to the temporary directory
-        for item in mutable_files:
-            src = raw.joinpath(item)
-            if not src.is_file():
-                continue
-            dst = mapped.joinpath(item)
-            # Copy the file to the temporary directory
-            with open(src, "rb") as src_file:
-                with open(dst, "wb") as dst_file:
-                    dst_file.write(src_file.read())
-            # Change the file mode to 750
-            dst.chmod(0o750)
-
-        logger.info(f"Mapped original model path {self._model_path} to {mapped}")
-        return mapped
 
     def get_container_logs(
         self,
@@ -1685,8 +1631,11 @@ class AscendMindIEServer(InferenceServer):
             logger.error(f"Failed to restart container: {e}")
             return False
 
-    def _get_config_json(self, to_dict: bool) -> dict[str, Any] | str:
-        config_str = """{
+    @staticmethod
+    @lru_cache
+    def _get_mindie_config_json() -> dict[str, Any]:
+        config_str = """
+{
     "Version" : "1.0.0",
 
     "ServerConfig" :
@@ -1791,8 +1740,6 @@ class AscendMindIEServer(InferenceServer):
             "maxQueueDelayMicroseconds" : 5000
         }
     }
-}"""
-        if to_dict:
-            return json.loads(config_str)
-        else:
-            return config_str
+}
+"""
+        return json.loads(config_str)

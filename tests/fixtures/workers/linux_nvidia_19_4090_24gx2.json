@@ -22,7 +22,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c263",
                 "name": "NVIDIA Device 2685 (VGA compatible)",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 0,
                 "device_index": 0,
                 "device_chip_index": 0,
@@ -43,7 +43,7 @@
             {
                 "uuid": "GPU-e41f9601-2307-3af8-98c3-f25afe04c264",
                 "name": "NVIDIA Device 2685 (VGA compatible)",
-                "vendor": "NVIDIA",
+                "vendor": "nvidia",
                 "index": 1,
                 "device_index": 1,
                 "device_chip_index": 0,

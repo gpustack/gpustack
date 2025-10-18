@@ -309,12 +309,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("SERVICE_PORT_RANGE"),
     )
     group.add_argument(
-        "--rpc-server-port-range",
-        type=str,
-        help="Port range for RPC servers, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40064-40095'.",
-        default=get_gpustack_env("RPC_SERVER_PORT_RANGE"),
-    )
-    group.add_argument(
         "--ray-worker-port-range",
         type=str,
         help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40200-40999'.",
@@ -673,12 +667,9 @@ def set_worker_options(args, config_data: dict):
         "worker_name",
         "worker_port",
         "disable_worker_metrics",
-        "disable_rpc_servers",
         "worker_metrics_port",
         "service_port_range",
-        "rpc_server_port_range",
         "log_dir",
-        "rpc_server_args",
         "system_reserved",
         "tools_download_base_url",
         "ray_metrics_export_port",

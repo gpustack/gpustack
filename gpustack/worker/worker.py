@@ -19,7 +19,6 @@ from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.server import catalog
 from gpustack.ray.manager import RayManager
-from gpustack.utils import platform
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -137,7 +136,6 @@ class Worker:
         tools_manager = ToolsManager(
             tools_download_base_url=self._config.tools_download_base_url,
             pipx_path=self._config.pipx_path,
-            device=self.get_device_by_gpu_devices(),
             data_dir=self._config.data_dir,
             bin_dir=self._config.bin_dir,
         )
@@ -152,17 +150,6 @@ class Worker:
             logger.error(f"Error serving worker APIs: {e}")
         finally:
             logger.info("Worker has shut down.")
-
-    def get_device_by_gpu_devices(self) -> Optional[str]:
-        gpu_devices = self._config.get_gpu_devices()
-        if gpu_devices:
-            vendor = gpu_devices[0].vendor
-            return platform.device_type_from_vendor(vendor)
-        return None
-
-    def get_inference_backend_cache(self):
-        """Get the InferenceBackend cache instance."""
-        return self._inference_backend_manager
 
     async def start_async(self):
         """
@@ -193,10 +180,6 @@ class Worker:
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
-
-        if not self._config.disable_rpc_servers:
-            # Start rpc server instances with restart.
-            run_periodically_in_thread(self._worker_manager.start_rpc_servers, 20, 3)
 
         if self._config.enable_ray and not self._is_embedded:
             # Embedded worker does not start Ray.

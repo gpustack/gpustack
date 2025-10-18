@@ -1,9 +1,6 @@
-import multiprocessing
 import os
 import logging
-from typing import Dict, Optional
-
-import psutil
+from typing import Optional
 
 from gpustack.client import ClientSet
 from gpustack.client.worker_manager_clients import (
@@ -11,18 +8,13 @@ from gpustack.client.worker_manager_clients import (
     WorkerRegistrationClient,
 )
 from gpustack.config.config import Config
-from gpustack.detectors.custom.custom import Custom
 from gpustack.schemas.workers import (
     WorkerCreate,
     WorkerUpdate,
 )
-from gpustack.utils import network
 from gpustack.utils import platform
-from gpustack.utils.process import terminate_process_tree
 from gpustack.worker.collector import WorkerStatusCollector
-from gpustack.worker.rpc_server import RPCServer, RPCServerProcessInfo
 from gpustack.worker.registration import registration_client
-from gpustack.detectors.detector_factory import DetectorFactory
 from gpustack.utils.profiling import time_decorator
 from gpustack.security import API_KEY_PREFIX
 from gpustack.utils.uuid import get_legacy_uuid
@@ -50,11 +42,6 @@ class WorkerManager:
         self._cfg = cfg
         self._collector = collector
         self._worker_name = worker_name
-        self._rpc_servers: Dict[int, RPCServerProcessInfo] = {}
-        self._rpc_server_log_dir = f"{cfg.log_dir}/rpc_server"
-        self._rpc_server_cache_dir = f"{cfg.cache_dir}/rpc_server/"
-        self._rpc_server_args = cfg.rpc_server_args
-        os.makedirs(self._rpc_server_log_dir, exist_ok=True)
 
         if self._cfg.token and self._cfg.server_url:
             self._prepare_clients(self._cfg.token)
@@ -142,85 +129,6 @@ class WorkerManager:
 
     def _register_shutdown_hooks(self):
         pass
-
-    def start_rpc_servers(self):
-        try:
-            self._start_rpc_servers()
-        except Exception as e:
-            logger.error(f"Failed to start rpc servers: {e}")
-            return
-
-    def _start_rpc_servers(self):
-        try:
-            detector_factory = (
-                DetectorFactory(
-                    "custom", {"custom": [Custom(self._collector.gpu_devices)]}
-                )
-                if self._collector.gpu_devices
-                else DetectorFactory()
-            )
-            gpu_devices = detector_factory.detect_gpus()
-        except Exception as e:
-            logger.error(f"Failed to get GPU devices while start rpc servers: {e}")
-            return
-
-        for gpu_device in gpu_devices:
-            if gpu_device.index is None:
-                logger.warning(
-                    f"GPU device {gpu_device.name} does not have an index. Skipping start rpc server."
-                )
-                continue
-
-            current = self._rpc_servers.get(gpu_device.index)
-            if current:
-                if current.process.is_alive():
-                    continue
-
-                pid = current.process.pid
-                logger.warning(
-                    f"RPC server for GPU {gpu_device.index} is not running, pid {pid}, restarting."
-                )
-                try:
-                    terminate_process_tree(pid)
-                except psutil.NoSuchProcess:
-                    pass
-                except Exception as e:
-                    logger.error(f"Failed to terminate process {pid}: {e}")
-                self._rpc_servers.pop(gpu_device.index)
-
-            log_file_path = f"{self._rpc_server_log_dir}/gpu-{gpu_device.index}.log"
-            port = network.get_free_port(
-                port_range=self._cfg.rpc_server_port_range,
-                unavailable_ports=self.get_occupied_ports(),
-            )
-            process = multiprocessing.Process(
-                target=RPCServer.start,
-                args=(
-                    port,
-                    gpu_device.index,
-                    gpu_device.vendor,
-                    log_file_path,
-                    self._rpc_server_cache_dir,
-                    self._cfg.bin_dir,
-                    self._rpc_server_args,
-                ),
-            )
-
-            process.daemon = True
-            process.start()
-
-            self._rpc_servers[gpu_device.index] = RPCServerProcessInfo(
-                process=process, port=port, gpu_index=gpu_device.index
-            )
-            logger.info(
-                f"Started RPC server for GPU {gpu_device.index} on port {port}, pid {process.pid}"
-            )
-
-    def get_rpc_servers(self) -> Dict[int, RPCServerProcessInfo]:
-        return self._rpc_servers
-
-    def get_occupied_ports(self) -> set[int]:
-        return {server.port for server in self._rpc_servers.values()}
 
 
 def ensure_builtin_labels(worker_name: str) -> dict:
