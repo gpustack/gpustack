@@ -13,7 +13,7 @@ if [ $# -eq 0 ]; then
     show_help
 fi
 MESSAGE="$*"
-DEFAULT_DATABASE_URL="sqlite:////var/lib/gpustack/database.db"
+DEFAULT_DATABASE_URL="postgresql://root@localhost:5432/gpustack?sslmode=disable"
 DATABASE_URL=${DATABASE_URL:-$DEFAULT_DATABASE_URL}
 
 export DATABASE_URL
