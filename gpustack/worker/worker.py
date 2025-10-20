@@ -51,6 +51,9 @@ class Worker:
     def worker_id(self) -> int:
         return self._worker_id
 
+    def clientset(self) -> ClientSet:
+        return self._clientset
+
     def __init__(self, cfg: Config, is_embedded: bool = False):
         self._config = cfg
         self._is_embedded = is_embedded
@@ -84,6 +87,7 @@ class Worker:
             collector=self._status_collector,
             worker_ip_getter=self.worker_ip,
             worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
         )
 

@@ -66,7 +66,7 @@ class RuntimeMetricsAggregator:
             return
 
         trace_id = uuid.uuid4().hex[:8]
-        logger.debug(
+        logger.trace(
             f"trace_id: {trace_id}, fetching runtime metrics from {len(endpoints)} endpoints"
         )
 
@@ -97,7 +97,7 @@ class RuntimeMetricsAggregator:
 
         self._cache["unified"] = unified_metrics
         self._cache["raw"] = raw_metrics
-        logger.debug(f"trace_id: {trace_id}, completed fetching runtime metrics.")
+        logger.trace(f"trace_id: {trace_id}, completed fetching runtime metrics.")
 
     def _find_active_model_endpoints(self, worker_id: int):
         """
