@@ -18,7 +18,6 @@ from gpustack.config.envs import TCP_CONNECTOR_LIMIT
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.server import catalog
-from gpustack.ray.manager import RayManager
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -90,8 +89,6 @@ class Worker:
             clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
         )
-
-        self._ray_manager = RayManager(cfg=cfg)
 
     def _get_worker_name(self):
         # Hostname might change with the network, so we store the worker name in a file.
@@ -184,13 +181,6 @@ class Worker:
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
-
-        if self._config.enable_ray and not self._is_embedded:
-            # Embedded worker does not start Ray.
-            # Ray does not support starting pure head,
-            # and we don't want to start Ray head and worker on the same node.
-            # Ref: https://github.com/ray-project/ray/issues/19745.
-            self._create_async_task(self._ray_manager.start())
 
         # Start the worker server to expose APIs.
         self._create_async_task(self._serve_apis())

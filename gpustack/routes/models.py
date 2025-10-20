@@ -9,7 +9,6 @@ from sqlalchemy.dialects.mysql import JSON
 from sqlmodel import col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from gpustack.config.config import get_global_config
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -238,7 +237,6 @@ async def validate_gpu_ids(  # noqa: C901
             message="Audio models are restricted to execution on a single NVIDIA GPU."
         )
 
-    cfg = get_global_config()
     model_backend = model_in.backend
 
     worker_name_set = set()
@@ -278,19 +276,6 @@ async def validate_gpu_ids(  # noqa: C901
 
         if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
-
-    if model_backend == BackendEnum.VLLM:
-        if len(worker_name_set) > 1 and not cfg.enable_ray:
-            # REVIEW BEFORE RELEASE: Check if the documentation link needs to be updated.
-            raise BadRequestException(
-                message="Selected GPUs are on different workers, but Ray is not enabled. "
-                "Please enable Ray to make vLLM work across multiple workers. "
-                "For more information, please refer to the <a href='https://docs.gpustack.ai/latest/user-guide/inference-backends/#distributed-inference-across-workers-experimental'>documentation</a>."
-            )
-        if len(worker_name_set) > 1 and model_in.backend_version:
-            raise BadRequestException(
-                message="Using custom backend version to run vLLM across multiple workers is not supported."
-            )
 
     if model_backend == BackendEnum.LLAMA_BOX:
         ts = find_parameter(model_in.backend_parameters, ["ts", "tensor-split"])

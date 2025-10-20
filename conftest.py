@@ -15,7 +15,9 @@ def temp_dir():
 @pytest.fixture(scope="module", autouse=True)
 def config(temp_dir):
     cfg = Config(
-        token="test", jwt_secret_key="test", data_dir=temp_dir, enable_ray=True
+        token="test",
+        jwt_secret_key="test",
+        data_dir=temp_dir,
     )
     set_global_config(cfg)
     return cfg

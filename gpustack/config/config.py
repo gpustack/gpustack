@@ -26,7 +26,6 @@ from gpustack.schemas.workers import (
     GPUNetworkInfo,
 )
 from gpustack.schemas.users import AuthProviderEnum
-from gpustack.utils import platform
 from gpustack import __version__
 
 _config = None
@@ -40,8 +39,6 @@ class Config(BaseSettings):
         data_dir: Directory to store data. Default is OS specific.
         token: Shared secret used to add a worker.
         huggingface_token: User Access Token to authenticate to the Hugging Face Hub.
-        enable_ray: Enable Ray.
-        ray_args: Additional arguments to pass to Ray.
 
         host: Host to bind the server to.
         port: Port to bind the server to.
@@ -101,8 +98,6 @@ class Config(BaseSettings):
     cache_dir: Optional[str] = None
     token: Optional[str] = None
     huggingface_token: Optional[str] = None
-    enable_ray: bool = False
-    ray_args: Optional[List[str]] = None
     ray_node_manager_port: int = 40098
     ray_object_manager_port: int = 40099
     ray_runtime_env_agent_port: int = 40100
@@ -244,9 +239,6 @@ class Config(BaseSettings):
             self.get_gpu_devices()
             self.get_system_info()
 
-        if self.enable_ray:
-            self.check_ray()
-
         if self.service_port_range:
             self.check_port_range(self.service_port_range)
 
@@ -254,11 +246,6 @@ class Config(BaseSettings):
             self.check_port_range(self.ray_worker_port_range)
 
         return self
-
-    def check_ray(self):
-        system = platform.system()
-        if system != "linux":
-            raise Exception("Ray is only supported on Linux.")
 
     def check_port_range(self, port_range: str):
         ports = port_range.split("-")

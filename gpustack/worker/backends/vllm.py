@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import sys
@@ -17,12 +16,10 @@ from gpustack_runtime.deployer import (
     logs_workload,
     ContainerPort,
 )
-from gpustack_runtime.detector import ManufacturerEnum
 
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
-from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -123,9 +120,6 @@ class VLLMServer(InferenceServer):
 
         # Apply LMCache environment variables if extended KV cache is enabled
         self.set_lmcache_env(env)
-
-        # Apply vLLM distributed environment setup
-        self.set_vllm_distributed_env(env)
 
         # Log environment variables
         env_view = None
@@ -255,60 +249,6 @@ class VLLMServer(InferenceServer):
             # This is the claimed default value from LMCache docs
             # However, an assertion fails in LMCache if not explicitly set
             env["LMCACHE_REMOTE_SERDE"] = "naive"
-
-    def set_vllm_distributed_env(self, env: Dict[str, str]):
-        """
-        Set up vLLM distributed environment variables.
-        This method is reused from the original VLLMServer implementation.
-        """
-        model_instance = self._model_instance
-        worker = self._worker
-        subordinate_workers = model_instance.distributed_servers.subordinate_workers
-        if not subordinate_workers:
-            return
-
-        device_str = "GPU"
-        if all_gpu_match(
-            worker, lambda gpu: gpu.vendor == ManufacturerEnum.ASCEND.value
-        ):
-            device_str = "NPU"
-
-        ray_placement_group_bundles: List[Dict[str, float]] = []
-        bundle_indexes = []
-        bundle_index_offset = 0
-        # we add all gpus of involved workers to the bundle, then pick gpus by index
-        for i in range(len(worker.status.gpu_devices)):
-            bundle = {
-                device_str: 1,
-                f"node:{worker.ip}": 0.001,
-            }
-            ray_placement_group_bundles.append(bundle)
-        for gpu_index in model_instance.gpu_indexes:
-            bundle_indexes.append(gpu_index)
-        bundle_index_offset += len(worker.status.gpu_devices)
-
-        for subordinate_worker in subordinate_workers:
-            for i in range(subordinate_worker.total_gpus):
-                bundle = {
-                    device_str: 1,
-                    f"node:{subordinate_worker.worker_ip}": 0.001,
-                }
-                ray_placement_group_bundles.append(bundle)
-            for gpu_index in subordinate_worker.gpu_indexes:
-                bundle_indexes.append(bundle_index_offset + gpu_index)
-            bundle_index_offset += subordinate_worker.total_gpus
-
-        # encoded to json and set in GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES env
-        env["GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES"] = json.dumps(
-            ray_placement_group_bundles
-        )
-        # helps to pick specific gpus
-        env["VLLM_RAY_BUNDLE_INDICES"] = ", ".join([str(x) for x in bundle_indexes])
-
-        logger.debug(
-            f"Set GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES: {env['GPUSTACK_RAY_PLACEMENT_GROUP_BUNDLES']}. "
-            f"Set VLLM_RAY_BUNDLE_INDICES: {env['VLLM_RAY_BUNDLE_INDICES']}"
-        )
 
     def _derive_max_model_len(self) -> Optional[int]:
         """

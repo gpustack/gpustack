@@ -23,8 +23,6 @@ gpustack start [OPTIONS]
 | `--cache-dir` value                       | (empty)                                | Directory to store cache (e.g., model files). Defaults to <data-dir>/cache.                                                                                                                                                                                                                           |
 | `-t` value, `--token` value               | Auto-generated.                        | Shared secret used to add a worker.                                                                                                                                                                                                                                                                   |
 | `--huggingface-token` value               | (empty)                                | User Access Token to authenticate to the Hugging Face Hub. Can also be configured via the `HF_TOKEN` environment variable.                                                                                                                                                                            |
-| `--enable-ray`                            | `False`                                | Enable Ray for running distributed vLLM across multiple workers. Only supported on Linux.                                                                                                                                                                                                             |
-| `--ray-args` value                        | (empty)                                | Arguments to pass to Ray. Use `=` to avoid the CLI recognizing ray-args as a GPUStack argument. This can be used multiple times to pass a list of arguments. Example: `--ray-args=--port=6379 --ray-args=--verbose`. See [Ray docs](https://docs.ray.io/en/latest/cluster/cli.html) for more details. |
 | `--ray-node-manager-port` value           | `40098`                                | Port of Ray node manager. Used when Ray is enabled.                                                                                                                                                                                                                                                   |
 | `--ray-object-manager-port` value         | `40099`                                | Port of Ray object manager. Used when Ray is enabled.                                                                                                                                                                                                                                                 |
 | `--ray-runtime-env-agent-port` value      | `40100`                                | Port of Ray runtime env agent. Used when Ray is enabled.                                                                                                                                                                                                                                              |
@@ -118,8 +116,6 @@ data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
 token: your_token
 huggingface_token: your_huggingface_token
-enable_ray: false
-ray_args: ["--port=6379", "--verbose"]
 ray_node_manager_port: 40098
 ray_object_manager_port: 40099
 ray_runtime_env_agent_port: 40100

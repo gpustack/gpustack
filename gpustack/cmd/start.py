@@ -92,17 +92,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=os.getenv("HF_TOKEN"),
     )
     group.add_argument(
-        "--enable-ray",
-        action=OptionalBoolAction,
-        help="Enable Ray.",
-        default=get_gpustack_env_bool("ENABLE_RAY"),
-    )
-    group.add_argument(
-        "--ray-args",
-        action='append',
-        help="Arguments to pass to Ray.",
-    )
-    group.add_argument(
         "--ray-node-manager-port",
         type=int,
         help="Port of Ray node manager. Used when Ray is enabled. The default is 40098.",
@@ -587,8 +576,6 @@ def set_common_options(args, config_data: dict):
         "pipx_path",
         "token",
         "huggingface_token",
-        "enable_ray",
-        "ray_args",
         "ray_node_manager_port",
         "ray_object_manager_port",
         "system_default_container_registry",
