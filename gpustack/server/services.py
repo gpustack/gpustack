@@ -1,10 +1,9 @@
 import asyncio
-import json
 import logging
 import functools
 from typing import Any, Callable, Dict, List, Optional, Union, Set
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel, bindparam, cast, col, select
+from sqlmodel import SQLModel, bindparam, cast, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.dialects.postgresql import JSONB
@@ -349,12 +348,9 @@ class ModelFileService:
         self.session = session
 
     async def get_by_resolved_path(self, path: str) -> List[ModelFile]:
-        # sqlite
-        condition = col(ModelFile.resolved_paths).contains(json.dumps(path))
-        if self.session.bind.dialect.name == "postgresql":
-            condition = cast(ModelFile.resolved_paths, JSONB).op('?')(
-                bindparam("resolved_path", path)
-            )
+        condition = cast(ModelFile.resolved_paths, JSONB).op('?')(
+            bindparam("resolved_path", path)
+        )
 
         results = await ModelFile.all_by_fields(
             self.session,

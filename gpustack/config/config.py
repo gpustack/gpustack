@@ -502,16 +502,16 @@ class Config(BaseSettings):
 
     def init_database_url(self):
         if self.database_url is None:
-            self.database_url = f"sqlite:///{self.data_dir}/database.db"
+            self.database_url = (
+                "postgresql://root@127.0.0.1:5432/gpustack?sslmode=disable"
+            )
             return
 
-        if (
-            not self.database_url.startswith("sqlite://")
-            and not self.database_url.startswith("postgresql://")
-            and not self.database_url.startswith("mysql://")
-        ):
+        if not self.database_url.startswith(
+            "postgresql://"
+        ) and not self.database_url.startswith("mysql://"):
             raise Exception(
-                "Unsupported database scheme. Supported databases are sqlite, postgresql, and mysql."
+                "Unsupported database scheme. Supported databases are postgresql, and mysql."
             )
 
     def init_auth(self):

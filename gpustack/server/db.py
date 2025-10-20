@@ -55,42 +55,43 @@ async def get_session():
 async def init_db(db_url: str):
     global _engine, _session_maker
     if _engine is None:
-        connect_args = {}
-        if db_url.startswith("sqlite://"):
-            connect_args = {"check_same_thread": False}
-            # use async driver
-            db_url = re.sub(r'^sqlite://', 'sqlite+aiosqlite://', db_url)
-        elif db_url.startswith("postgresql://"):
-            db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
-            parsed = urlparse(db_url)
-            # rewrite the parameters to use asyncpg with custom database schema
-            query_params = parse_qs(parsed.query)
-            qoptions = query_params.pop('options', None)
-            schema_name = None
-            if qoptions is not None and len(qoptions) > 0:
-                option = qoptions[0]
-                if option.startswith('-csearch_path='):
-                    schema_name = option[len('-csearch_path=') :]
-            if schema_name:
-                connect_args['server_settings'] = {'search_path': schema_name}
-            new_parsed = parsed._replace(query={})
-            db_url = urlunparse(new_parsed)
-
-        elif db_url.startswith("mysql://"):
-            db_url = re.sub(r'^mysql://', 'mysql+asyncmy://', db_url)
-        else:
-            raise Exception(f"Unsupported database URL: {db_url}")
-
-        _engine = create_async_engine(
-            db_url,
-            echo=DB_ECHO,
-            pool_size=DB_POOL_SIZE,
-            max_overflow=DB_MAX_OVERFLOW,
-            pool_timeout=DB_POOL_TIMEOUT,
-            connect_args=connect_args,
-        )
+        _engine = await init_db_engine(db_url)
         listen_events(_engine)
     await create_db_and_tables(_engine)
+
+
+async def init_db_engine(db_url: str):
+    connect_args = {}
+    if db_url.startswith("postgresql://"):
+        db_url = re.sub(r'^postgresql://', 'postgresql+asyncpg://', db_url)
+        parsed = urlparse(db_url)
+        # rewrite the parameters to use asyncpg with custom database schema
+        query_params = parse_qs(parsed.query)
+        qoptions = query_params.pop('options', None)
+        schema_name = None
+        if qoptions is not None and len(qoptions) > 0:
+            option = qoptions[0]
+            if option.startswith('-csearch_path='):
+                schema_name = option[len('-csearch_path=') :]
+        if schema_name:
+            connect_args['server_settings'] = {'search_path': schema_name}
+        new_parsed = parsed._replace(query={})
+        db_url = urlunparse(new_parsed)
+
+    elif db_url.startswith("mysql://"):
+        db_url = re.sub(r'^mysql://', 'mysql+asyncmy://', db_url)
+    else:
+        raise Exception(f"Unsupported database URL: {db_url}")
+
+    engine = create_async_engine(
+        db_url,
+        echo=DB_ECHO,
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_MAX_OVERFLOW,
+        pool_timeout=DB_POOL_TIMEOUT,
+        connect_args=connect_args,
+    )
+    return engine
 
 
 async def create_db_and_tables(engine: AsyncEngine):
