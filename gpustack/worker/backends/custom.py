@@ -65,7 +65,7 @@ class CustomServer(InferenceServer):
                 self._model.run_command,
             )
             if command:
-                image_cmd.extend(command.split(" "))
+                image_cmd.extend(command.split())
             if self._model.backend_parameters:
                 image_cmd.extend(self._model.backend_parameters)
 
@@ -108,6 +108,7 @@ class CustomServer(InferenceServer):
             )
 
             logger.info(f"Creating workload: {self._workload_name}")
+            logger.info(f"Container image name: {image_name} arguments: {image_cmd}")
             create_workload(workload_plan)
 
             logger.info(f"Workload {self._workload_name} created successfully")
