@@ -159,11 +159,52 @@ class InferenceServer(ABC):
         env = {}
         if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
             env = {
-                # Exclude GPUSTACK_ and *_VISIBLE_DEVICES env vars,
+                # Exclude the following env vars,
                 # which are reserved for gpustack internal use.
+                # - start with GPUSTACK_, PIP_, PIPX_, UV_.
+                # - end with _VISIBLE_DEVICES, _DISABLE_REQUIRE, _DRIVER_CAPABILITIES, _PATH.
+                # - miscellaneous item.
+                #
+                # FIXME(thxCode): Make this configurable.
                 k: v
                 for k, v in os.environ.items()
-                if not k.startswith("GPUSTACK_") and not k.endswith("_VISIBLE_DEVICES")
+                if not (
+                    k.startswith(
+                        (
+                            "GPUSTACK_",
+                            "PIP_",
+                            "PIPX_",
+                            "POETRY_",
+                            "UV_",
+                        )
+                    )
+                    or k.endswith(
+                        (
+                            "_VISIBLE_DEVICES",
+                            "_DISABLE_REQUIRE",
+                            "_DRIVER_CAPABILITIES",
+                            "_PATH",
+                        )
+                    )
+                    or (
+                        k
+                        in (
+                            "DEBIAN_FRONTEND",
+                            "LANG",
+                            "LANGUAGE",
+                            "LC_ALL",
+                            "PYTHON_VERSION",
+                            "HOME",
+                            "HOSTNAME",
+                            "PWD",
+                            "_",
+                            "TERM",
+                            "SHLVL",
+                            "LS_COLORS",
+                            "PATH",
+                        )
+                    )
+                )
             }
 
         if self._model.env:
