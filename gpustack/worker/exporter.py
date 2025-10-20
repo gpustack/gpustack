@@ -10,6 +10,7 @@ from prometheus_client.core import (
     GaugeMetricFamily,
     InfoMetricFamily,
 )
+from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
 from gpustack.logging import setup_logging
 from gpustack.utils.name import metric_name
@@ -35,6 +36,7 @@ class MetricExporter(Collector):
         collector: WorkerStatusCollector,
         worker_ip_getter: Callable[[], str],
         worker_id_getter: Callable[[], str],
+        clientset_getter: Callable[[], ClientSet] = None,
         cache: dict = None,
     ):
         self._collector = collector
@@ -43,6 +45,7 @@ class MetricExporter(Collector):
         self._worker_ip_getter = worker_ip_getter
         self._port = cfg.worker_metrics_port
         self._cache = cache
+        self._clientset_getter = clientset_getter
 
     def collect(self):
         with ThreadPoolExecutor() as executor:
@@ -151,7 +154,7 @@ class MetricExporter(Collector):
         worker_name = self._worker_name
         worker_label_values = [worker_id, worker_name, worker_ip]
         try:
-            worker = self._collector.collect()
+            worker = self._collector.collect(clientset=self._clientset_getter())
             status = worker.status
             if status is None:
                 logger.error("Empty worker node status from collector.")
@@ -254,12 +257,16 @@ class MetricExporter(Collector):
         # filesystem
         if status.filesystem is not None:
             for _, d in enumerate(status.filesystem):
-                filesystem_total.add_metric(gpu_label_values + [d.mount_point], d.total)
-                filesystem_used.add_metric(gpu_label_values + [d.mount_point], d.used)
+                filesystem_total.add_metric(
+                    worker_label_values + [d.mount_point], d.total
+                )
+                filesystem_used.add_metric(
+                    worker_label_values + [d.mount_point], d.used
+                )
 
                 if d.total != 0 and d.used is not None:
                     filesystem_utilization_rate.add_metric(
-                        gpu_label_values + [d.mount_point],
+                        worker_label_values + [d.mount_point],
                         _rate(d.used, d.total),
                     )
 

@@ -54,8 +54,14 @@ class Fastfetch(SystemInfoDetector):
 
                 system_info.kernel = k
             elif typ == "Uptime":
+                uptime_value = self._get_value(r, "uptime")
+                uptime = (
+                    uptime_value / 1000
+                    if uptime_value and isinstance(uptime_value, (int, float))
+                    else 0
+                )
                 system_info.uptime = UptimeInfo(
-                    uptime=self._get_value(r, "uptime"),
+                    uptime=uptime,
                     boot_time=self._get_value(r, "bootTime"),
                 )
             elif typ == "CPU":
