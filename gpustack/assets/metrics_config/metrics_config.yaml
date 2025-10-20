@@ -68,7 +68,7 @@ gpustack_metrics:
 # Runtime Metrics Mapping (user-configurable)
 # -----------------------------
 runtime_mapping:
-  vllm:
+  vLLM:
     "*": # 0.10.2
       vllm:num_requests_running: gpustack:num_requests_running
       vllm:num_requests_waiting: gpustack:num_requests_waiting
@@ -89,7 +89,7 @@ runtime_mapping:
        vllm:gpu_prefix_cache_hits: gpustack:prefix_cache_hit_rate
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
-  sglang:
+  SGLang:
     "*":
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
@@ -101,7 +101,7 @@ runtime_mapping:
       sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       sglang:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
 
-  ascend-mindie:
+  MindIE:
     "*":
       num_requests_running: gpustack:num_requests_running
       num_requests_waiting: gpustack:num_requests_waiting
