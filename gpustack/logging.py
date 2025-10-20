@@ -38,7 +38,6 @@ def setup_logging(debug: bool = False):
         "httpx",
         "asyncio",
         "aiocache.base",
-        "aiosqlite",
         "urllib3.connectionpool",
         "multipart.multipart",
         "apscheduler.scheduler",
