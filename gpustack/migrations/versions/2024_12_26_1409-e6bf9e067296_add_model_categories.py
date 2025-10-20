@@ -200,7 +200,6 @@ def upgrade() -> None:
         # Execute modification
         conn.execute(sa.text(alter_sql))
 
-        conn.execute(sa.text(gpustack.schemas.stmt.worker_after_create_view_stmt_mysql))
         # MySQL-specific worker status update logic
         conn.execute(
             sa.text("""
