@@ -1,5 +1,6 @@
 import logging
-import sys
+from typing import Optional
+
 from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.worker.backends.base import InferenceServer
 
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class VoxBoxServer(InferenceServer):
+    _workload_name: Optional[str] = None
+
     def start(self):
         try:
             # Get vox-box image name via runtime
@@ -132,7 +135,6 @@ class VoxBoxServer(InferenceServer):
         error_message = (
             f"Failed to run the vox-box container server: {error}{cause_text}"
         )
-        logger.exception(error_message)
 
         try:
             patch_dict = {
@@ -143,4 +145,4 @@ class VoxBoxServer(InferenceServer):
         except Exception as ue:
             logger.error(f"Failed to update model instance: {ue}")
 
-        sys.exit(1)
+        raise error
