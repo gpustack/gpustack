@@ -1415,7 +1415,7 @@ class AscendMindIEServer(InferenceServer):
         image_name = self._get_backend_image_name(backend_type="cann")
 
         # Build command arguments
-        arguments = service_bin_path.split(" ")
+        arguments = service_bin_path.split()
 
         arguments = self.build_versioned_command_args(arguments)
 

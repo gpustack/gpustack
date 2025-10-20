@@ -321,7 +321,7 @@ class InferenceServer(ABC):
                 version_config.run_command,
             )
             if command:
-                return command.split(" ")
+                return command.split()
 
         # Return original default_args by default
         return default_args

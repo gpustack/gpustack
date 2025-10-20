@@ -10,8 +10,7 @@ from fastapi.responses import StreamingResponse
 from gpustack_runtime.deployer import logs_workload, get_workload
 
 from gpustack.api.exceptions import NotFoundException
-from gpustack.worker.logs import LogOptionsDep
-from gpustack.worker.logs import log_generator
+from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
 from gpustack.utils import file
 from gpustack.server.deps import SessionDep
 
@@ -107,8 +106,26 @@ async def container_log_generator(model_instance_name: str, options):
 
         # Handle different return types based on follow parameter
         if follow:
-            # When follow=True, logs_workload returns a generator
-            for log_line in log_stream:
+            # Offload blocking iteration to a background thread to avoid event loop blocking
+            try:
+                iterator = iter(log_stream)
+            except Exception as e:
+                logger.error(
+                    f"logs_workload did not return an iterable for {model_instance_name}: {e}"
+                )
+                return
+
+            while True:
+                try:
+                    log_line = await asyncio.to_thread(next, iterator)
+                except StopIteration:
+                    break
+                except Exception as e:
+                    logger.error(
+                        f"Error reading container log for {model_instance_name}: {e}"
+                    )
+                    break
+
                 if isinstance(log_line, bytes):
                     yield log_line.decode('utf-8', errors='replace')
                 else:
@@ -133,28 +150,47 @@ async def combined_log_generator(
 ):
     """Generate logs with optional download logs prepended"""
 
-    tasks = []
+    # Phase 1: file logs (download + main) merged together
+    file_tasks = []
+
+    # If follow=True, don't follow file logs to avoid indefinite merging; only emit existing file content
+    file_options = options
+    try:
+        if getattr(options, "follow", False):
+            file_options = LogOptions(tail=options.tail, follow=False)
+    except Exception:
+        file_options = options
 
     # Add download log if needed and file exists
     if download_log_path and Path(download_log_path).exists():
-        tasks.append(log_generator(download_log_path, options))
+        file_tasks.append(log_generator(download_log_path, file_options))
 
     if file_log_exists:
-        tasks.append(log_generator(main_log_path, options))
+        file_tasks.append(log_generator(main_log_path, file_options))
 
+    # Prepare container logs (Phase 2)
+    container_gen = None
     try:
         workload = get_workload(model_instance_name)
         if model_instance_name and workload:
-            tasks.append(container_log_generator(model_instance_name, options))
+            container_gen = container_log_generator(model_instance_name, options)
     except Exception as e:
         logger.error(f"Failed to get workload: {e}")
 
-    if not tasks:  # No download logs either
+    if (
+        not file_tasks and container_gen is None
+    ):  # No download/main logs and no container logs
         raise NotFoundException(message="Log file not found")
 
-    # Use merge_async_generators for both follow and non-follow modes
-    async for line in merge_async_generators(*tasks):
-        yield line
+    # Emit file logs first
+    if file_tasks:
+        async for line in merge_async_generators(*file_tasks):
+            yield line
+
+    # Then emit container logs separately
+    if container_gen is not None:
+        async for line in container_gen:
+            yield line
 
 
 @router.get("/serveLogs/{id}")
