@@ -122,7 +122,7 @@ def upgrade() -> None:
         UPDATE users SET is_system = false WHERE is_system IS NULL
     """)
     with op.batch_alter_table('users', schema=None) as batch_op:
-        batch_op.alter_column('is_system', nullable=False)
+        batch_op.alter_column('is_system', existing_type=sa.Boolean(), nullable=False)
 
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.add_column(sa.Column('cluster_id', sa.Integer(), nullable=True))
@@ -146,8 +146,8 @@ def upgrade() -> None:
     """)
 
     with op.batch_alter_table('workers', schema=None) as batch_op:
-        batch_op.alter_column('cluster_id', nullable=False)
-        batch_op.alter_column('provider', nullable=False)
+        batch_op.alter_column('cluster_id', existing_type=sa.Integer(), nullable=False)
+        batch_op.alter_column('provider', existing_type=cluster_provider_enum, nullable=False)
 
     with op.batch_alter_table('models', schema=None) as batch_op:
         batch_op.add_column(sa.Column('cluster_id', sa.Integer(), nullable=True))
@@ -159,7 +159,7 @@ def upgrade() -> None:
         WHERE cluster_id IS NULL
     """)
     with op.batch_alter_table('models', schema=None) as batch_op:
-        batch_op.alter_column('cluster_id', nullable=False)
+        batch_op.alter_column('cluster_id', existing_type=sa.Integer(), nullable=False)
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.add_column(sa.Column('cluster_id', sa.Integer(), nullable=True))
@@ -171,7 +171,7 @@ def upgrade() -> None:
         WHERE cluster_id IS NULL
     """)
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
-        batch_op.alter_column('cluster_id', nullable=False)
+        batch_op.alter_column('cluster_id', existing_type=sa.Integer(), nullable=False)
 
 
     # create default cluster system user legacy worker user

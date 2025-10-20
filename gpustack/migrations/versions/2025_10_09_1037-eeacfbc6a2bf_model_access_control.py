@@ -37,7 +37,7 @@ def access_control_upgrade() -> None:
         "UPDATE models SET access_policy='AUTHED' WHERE access_policy IS NULL"
     )
     with op.batch_alter_table('models', schema=None) as batch_op:
-        batch_op.alter_column('access_policy', nullable=False)
+        batch_op.alter_column('access_policy', existing_type=access_policy_enum, nullable=False)
 
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.add_column(sa.Column('allowed_model_names', sa.JSON(), nullable=True))
