@@ -351,7 +351,7 @@ class Server:
         cluster_user = await User.first_by_field(
             session=session, field="username", value="system/cluster-1"
         )
-        if not cluster_user.cluster:
+        if not cluster_user or not cluster_user.cluster:
             logger.info("Cluster doesn't exist, skipping writing registration token.")
             return
         write_registration_token(
