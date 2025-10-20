@@ -46,6 +46,13 @@ from gpustack.worker.inference_backend_manager import InferenceBackendManager
 
 logger = logging.getLogger(__name__)
 
+_SERVER_CLASS_MAPPING = {
+    BackendEnum.LLAMA_BOX: LlamaBoxServer,
+    BackendEnum.VLLM: VLLMServer,
+    BackendEnum.VOX_BOX: VoxBoxServer,
+    BackendEnum.ASCEND_MINDIE: AscendMindIEServer,
+}
+
 
 class ServeManager:
     def __init__(
@@ -338,27 +345,18 @@ class ServeManager:
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with RedirectStdoutStderr(log_file):
-                if backend == BackendEnum.LLAMA_BOX:
-                    LlamaBoxServer(
-                        clientset, mi, cfg, worker_id, inference_backend
+                try:
+                    server_cls = _SERVER_CLASS_MAPPING.get(backend, CustomServer)
+                    server_cls(
+                        clientset,
+                        mi,
+                        cfg,
+                        worker_id,
+                        inference_backend,
                     ).start()
-                elif backend == BackendEnum.VLLM:
-                    VLLMServer(clientset, mi, cfg, worker_id, inference_backend).start()
-                elif backend == BackendEnum.VOX_BOX:
-                    VoxBoxServer(
-                        clientset, mi, cfg, worker_id, inference_backend
-                    ).start()
-                elif backend == BackendEnum.ASCEND_MINDIE:
-                    AscendMindIEServer(
-                        clientset, mi, cfg, worker_id, inference_backend
-                    ).start()
-                else:
-                    try:
-                        CustomServer(
-                            clientset, mi, cfg, worker_id, inference_backend
-                        ).start()
-                    except Exception as e:
-                        logger.error(f"Failed to start model instance {mi.name}: {e}")
+                except Exception as e:
+                    logger.exception(f"Failed to start model instance {mi.name}")
+                    raise e
 
     def _update_model_instance(self, id: int, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)

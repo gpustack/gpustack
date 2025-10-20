@@ -1,7 +1,6 @@
 import logging
 import os
-import sys
-from typing import Dict, List, Optional, Iterator
+from typing import Dict, List, Optional
 
 from gpustack_runtime.deployer import (
     Container,
@@ -9,11 +8,7 @@ from gpustack_runtime.deployer import (
     ContainerExecution,
     ContainerProfileEnum,
     WorkloadPlan,
-    WorkloadStatus,
     create_workload,
-    delete_workload,
-    get_workload,
-    logs_workload,
     ContainerPort,
 )
 
@@ -38,9 +33,7 @@ class VLLMServer(InferenceServer):
     providing better isolation, resource management, and deployment consistency.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._workload_name: Optional[str] = None
+    _workload_name: Optional[str] = None
 
     def start(self):  # noqa: C901
         try:
@@ -201,12 +194,11 @@ class VLLMServer(InferenceServer):
 
     def _handle_error(self, error: Exception):
         """
-        Handle errors during container server startup.
+        Handle errors during server startup.
         """
         cause = getattr(error, "__cause__", None)
         cause_text = f": {cause}" if cause else ""
-        error_message = f"Failed to run the vLLM container server: {error}{cause_text}"
-        logger.exception(error_message)
+        error_message = f"Failed to run vLLM: {error}{cause_text}"
 
         try:
             patch_dict = {
@@ -217,7 +209,7 @@ class VLLMServer(InferenceServer):
         except Exception as ue:
             logger.error(f"Failed to update model instance: {ue}")
 
-        sys.exit(1)
+        raise error
 
     def set_lmcache_env(self, env: Dict[str, str]):
         """
@@ -263,139 +255,6 @@ class VLLMServer(InferenceServer):
             logger.error(f"Failed to derive max model length: {e}")
 
         return None
-
-    def get_container_logs(
-        self,
-        tail: Optional[int] = 100,
-        follow: bool = False,
-        timestamps: bool = True,
-        since: Optional[int] = None,
-    ) -> Iterator[str]:
-        """
-        Get container logs.
-
-        Args:
-            tail: Number of lines to show from the end of the logs
-            follow: Whether to follow log output (stream new logs)
-            timestamps: Whether to include timestamps in log output
-            since: Show logs since timestamp (Unix timestamp)
-
-        Returns:
-            Iterator of log lines
-        """
-        if not self._workload_name:
-            logger.warning(
-                "No workload name available. Container may not be started yet."
-            )
-            return iter([])
-
-        try:
-            logger.info(f"Getting logs for vLLM container: {self._workload_name}")
-            return logs_workload(
-                name=self._workload_name,
-                tail=tail,
-                follow=follow,
-                timestamps=timestamps,
-                since=since,
-            )
-        except Exception as e:
-            logger.error(f"Failed to get container logs: {e}")
-            return iter([])
-
-    def get_container_status(self) -> Optional[WorkloadStatus]:
-        """
-        Get the current status of the container.
-
-        Returns:
-            WorkloadStatus object containing container information, or None if not found.
-        """
-        if not self._workload_name:
-            logger.warning(
-                "No workload name available. Container may not be started yet."
-            )
-            return None
-
-        try:
-            status = get_workload(self._workload_name)
-            if status:
-                logger.info(
-                    f"vLLM container {self._workload_name} status: {status.state}"
-                )
-            else:
-                logger.warning(f"vLLM container {self._workload_name} not found")
-            return status
-        except Exception as e:
-            logger.error(f"Failed to get container status: {e}")
-            return None
-
-    def stop_container(self) -> bool:
-        """
-        Stop the container.
-
-        Returns:
-            True if container was stopped successfully, False otherwise.
-        """
-        if not self._workload_name:
-            logger.warning(
-                "No workload name available. Container may not be started yet."
-            )
-            return False
-
-        try:
-            logger.info(f"Stopping vLLM container: {self._workload_name}")
-            result = delete_workload(self._workload_name)
-
-            if result:
-                logger.info(
-                    f"vLLM container {self._workload_name} stopped successfully"
-                )
-                # Update model instance state
-                try:
-                    patch_dict = {
-                        "state_message": "Container stopped by user request",
-                        "state": ModelInstanceStateEnum.ERROR,
-                    }
-                    self._update_model_instance(self._model_instance.id, **patch_dict)
-                except Exception as ue:
-                    logger.error(f"Failed to update model instance state: {ue}")
-                return True
-            else:
-                logger.warning(
-                    f"vLLM container {self._workload_name} was not found or already stopped"
-                )
-                return False
-
-        except Exception as e:
-            logger.error(f"Failed to stop container: {e}")
-            return False
-
-    def restart_container(self) -> bool:
-        """
-        Restart the container by stopping and starting it again.
-
-        Returns:
-            True if container was restarted successfully, False otherwise.
-        """
-        logger.info(f"Restarting vLLM container: {self._workload_name}")
-
-        # Stop the container first
-        if not self.stop_container():
-            logger.error("Failed to stop container for restart")
-            return False
-
-        # Wait a moment for cleanup
-        import time
-
-        time.sleep(2)
-
-        # Start the container again
-        try:
-            self.start()
-            logger.info(f"vLLM container {self._workload_name} restarted successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to restart container: {e}")
-            return False
 
 
 def get_auto_parallelism_arguments(

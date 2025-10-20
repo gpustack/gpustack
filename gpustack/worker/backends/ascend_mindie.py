@@ -5,7 +5,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, List, Dict, Iterator, Any
+from typing import Optional, List, Dict, Any
 
 from gpustack_runtime.deployer import (
     Container,
@@ -14,10 +14,6 @@ from gpustack_runtime.deployer import (
     ContainerEnv,
     WorkloadPlan,
     create_workload,
-    logs_workload,
-    WorkloadStatus,
-    get_workload,
-    delete_workload,
     ContainerFile,
     ContainerPort,
 )
@@ -838,19 +834,13 @@ class AscendMindIEServer(InferenceServer):
     the final service in a Docker container instead of a subprocess.
     """
 
-    _inference_backend: str = "mindie"  # adapt the definition of runtime
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._workload_name: Optional[str] = None
+    _workload_name: Optional[str] = None
 
     def start(self):
-        # Start
         try:
             self._start()
         except Exception as e:
-            self._report_error(e)
-            raise e
+            self._handle_error(e)
 
     def _start(self):  # noqa: max-complexity=15
         """
@@ -858,14 +848,6 @@ class AscendMindIEServer(InferenceServer):
         This method preserves all the original logic from AscendMindIEServer._start()
         but launches the service in a container instead of subprocess.
         """
-        version = self._model.backend_version
-        if not version:
-            # Allow to control the version installed by user,
-            # this relies on the environment setting.
-            # There is a risk of failure, but flexible.
-            # When error happens, specify a version to avoid this.
-            version = "latest"
-
         minstance = self._model_instance
         dservers = minstance.distributed_servers
         subworkers = (
@@ -882,8 +864,7 @@ class AscendMindIEServer(InferenceServer):
         # Root path is defined by in Dockerfile ENV
         # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
         root_path = Path("/usr/local/Ascend")
-
-        install_path = root_path.joinpath("mindie", version, "mindie-service")
+        install_path = root_path.joinpath("mindie", "latest", "mindie-service")
 
         # Load config,
         # the config includes two parts: environment variables and a JSON configuration file.
@@ -1034,10 +1015,12 @@ class AscendMindIEServer(InferenceServer):
         model_config["worldSize"] = len(minstance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
         if subworkers:
+            # Add distributed config if in distributed mode.
             connecting_port = minstance.ports[1] if len(minstance.ports) > 1 else None
             backend_config["multiNodesInferEnabled"] = True
             backend_config["multiNodesInferPort"] = connecting_port
         if minstance.worker_id != self._worker.id:
+            # Override device config if is a subordinate worker.
             backend_config["npuDeviceIds"] = [subworkers[subworker_pos].gpu_indexes]
             model_config["worldSize"] = len(subworkers[subworker_pos].gpu_indexes)
 
@@ -1314,7 +1297,7 @@ class AscendMindIEServer(InferenceServer):
                 "server_list": server_list,
                 "status": "completed",
             }
-            rank_table_path = Path(self._model_path).joinpath("ranktable.json")
+            rank_table_path = install_path.joinpath("conf", "ranktable.json")
             rank_table_str = json.dumps(rank_table, indent=4, ensure_ascii=False)
             config_files.append(
                 ContainerFile(
@@ -1359,48 +1342,40 @@ class AscendMindIEServer(InferenceServer):
 
         # Start, configure environment variable to indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
-        service_path = root_path.joinpath("mindie", version, "mindie-service")
-        service_bin_path = service_path.joinpath("bin", "mindieservice_daemon")
 
-        try:
-            # Display environment variables and JSON configuration.
+        # Display environment variables and JSON configuration.
+        logger.info(f"Starting Ascend MindIE container: {self._model_instance.name}")
+        env_view = None
+        if logger.isEnabledFor(logging.DEBUG):
+            env_view = sanitize_env(env)
+        elif self._model.env:
+            # If the model instance has its own environment variables,
+            # display the mutated environment variables.
+            env_view = self._model.env
+            for k, v in self._model.env.items():
+                env_view[k] = env.get(k, v)
+        if env_view:
             logger.info(
-                f"Starting Ascend MindIE container: {self._model_instance.name}"
+                f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
+                f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
             )
-            env_view = None
-            if logger.isEnabledFor(logging.DEBUG):
-                env_view = sanitize_env(env)
-            elif self._model.env:
-                # If the model instance has its own environment variables,
-                # display the mutated environment variables.
-                env_view = self._model.env
-                for k, v in self._model.env.items():
-                    env_view[k] = env.get(k, v)
-            if env_view:
-                logger.info(
-                    f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
-                    f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
-                )
+        logger.info(
+            f"With JSON configuration(inconsistent input items mean unchangeable):{os.linesep}{config_str}"
+        )
+        if rank_table_str:
             logger.info(
-                f"With JSON configuration(inconsistent input items mean unchangeable):{os.linesep}{config_str}"
+                f"With rank table JSON configuration:{os.linesep}{rank_table_str}"
             )
-            if rank_table_str:
-                logger.info(
-                    f"With rank table JSON configuration:{os.linesep}{rank_table_str}"
-                )
 
-            # Container startup - this replaces the subprocess.Popen call
-            self._start_container(env, str(service_bin_path), config_files)
-
-        except Exception as e:
-            raise e
-
-        finally:
-            # Finally, remove JSON configuration file.
-            Path(config_path).unlink(missing_ok=True)
+        # Container startup - this replaces the subprocess.Popen call
+        service_bin = install_path.joinpath("bin", "mindieservice_daemon")
+        self._start_container(env, str(service_bin), config_files)
 
     def _start_container(
-        self, env: Dict[str, str], service_bin_path: str, files: List[ContainerFile]
+        self,
+        env: Dict[str, str],
+        service_bin: str,
+        files: List[ContainerFile],
     ):
         """
         Start the Ascend MindIE service in a container.
@@ -1413,11 +1388,11 @@ class AscendMindIEServer(InferenceServer):
         resources = self._get_configured_resources()
 
         image_name = self._get_backend_image_name(backend_type="cann")
+        if not image_name:
+            raise ValueError("No valid container image found for Ascend MindIE backend")
 
         # Build command arguments
-        arguments = service_bin_path.split()
-
-        arguments = self.build_versioned_command_args(arguments)
+        arguments = self.build_versioned_command_args([service_bin])
 
         # Create container configuration
         run_container = Container(
@@ -1462,22 +1437,24 @@ class AscendMindIEServer(InferenceServer):
             f"Ascend MindIE container workload {self._workload_name} created successfully"
         )
 
-    def _report_error(self, ex: Exception):
+    def _handle_error(self, error: Exception):
         """
-        Report error message to the model instance.
+        Handle errors during server startup.
         """
-        cause = getattr(ex, "__cause__", None)
+        cause = getattr(error, "__cause__", None)
         cause_text = f": {cause}" if cause else ""
-        error_message = f"Failed to run Ascend MindIE: {ex}{cause_text}"
-        logger.error(error_message, exc_info=True)
+        error_message = f"Failed to run Ascend MindIE: {error}{cause_text}"
+
         try:
             patch_dict = {
                 "state_message": error_message,
                 "state": ModelInstanceStateEnum.ERROR,
             }
             self._update_model_instance(self._model_instance.id, **patch_dict)
-        except Exception as e:
-            logger.error(f"Failed to update model instance state: {e}")
+        except Exception as ue:
+            logger.error(f"Failed to update model instance state: {ue}")
+
+        raise error
 
     def _get_model_max_seq_len(self) -> Optional[int]:
         """
@@ -1491,145 +1468,6 @@ class AscendMindIEServer(InferenceServer):
             logger.error(f"Failed to get model max seq length: {e}")
 
         return 8192
-
-    def get_container_logs(
-        self,
-        tail: Optional[int] = 100,
-        follow: bool = False,
-        timestamps: bool = True,
-        since: Optional[int] = None,
-    ) -> Iterator[str]:
-        """
-        Get container logs.
-
-        Args:
-            tail: Number of lines to show from the end of the logs
-            follow: Whether to follow log output (stream new logs)
-            timestamps: Whether to include timestamps in log output
-            since: Show logs since timestamp (Unix timestamp)
-
-        Returns:
-            Iterator of log lines
-        """
-        if not self._workload_name:
-            logger.warning(
-                "No workload name available. Container may not be started yet."
-            )
-            return iter([])
-
-        try:
-            logger.info(
-                f"Getting logs for Ascend MindIE container: {self._workload_name}"
-            )
-            return logs_workload(
-                name=self._workload_name,
-                tail=tail,
-                follow=follow,
-                timestamps=timestamps,
-                since=since,
-            )
-        except Exception as e:
-            logger.error(f"Failed to get container logs: {e}")
-            return iter([])
-
-    def get_container_status(self) -> Optional[WorkloadStatus]:
-        """
-        Get the current status of the container.
-
-        Returns:
-            WorkloadStatus object containing container information, or None if not found.
-        """
-        if not self._workload_name:
-            logger.warning(
-                "No workload name available. Container may not be started yet."
-            )
-            return None
-
-        try:
-            status = get_workload(self._workload_name)
-            if status:
-                logger.info(
-                    f"Ascend MindIE container {self._workload_name} status: {status.state}"
-                )
-            else:
-                logger.warning(
-                    f"Ascend MindIE container {self._workload_name} not found"
-                )
-            return status
-        except Exception as e:
-            logger.error(f"Failed to get container status: {e}")
-            return None
-
-    def stop_container(self) -> bool:
-        """
-        Stop the container.
-
-        Returns:
-            True if container was stopped successfully, False otherwise.
-        """
-        if not self._workload_name:
-            logger.warning(
-                "No workload name available. Container may not be started yet."
-            )
-            return False
-
-        try:
-            logger.info(f"Stopping Ascend MindIE container: {self._workload_name}")
-            result = delete_workload(self._workload_name)
-
-            if result:
-                logger.info(
-                    f"Ascend MindIE container {self._workload_name} stopped successfully"
-                )
-                # Update model instance state
-                try:
-                    patch_dict = {
-                        "state_message": "Container stopped by user request",
-                        "state": ModelInstanceStateEnum.ERROR,
-                    }
-                    self._update_model_instance(self._model_instance.id, **patch_dict)
-                except Exception as ue:
-                    logger.error(f"Failed to update model instance state: {ue}")
-                return True
-            else:
-                logger.warning(
-                    f"Ascend MindIE container {self._workload_name} was not found or already stopped"
-                )
-                return False
-
-        except Exception as e:
-            logger.error(f"Failed to stop container: {e}")
-            return False
-
-    def restart_container(self) -> bool:
-        """
-        Restart the container by stopping and starting it again.
-
-        Returns:
-            True if container was restarted successfully, False otherwise.
-        """
-        logger.info(f"Restarting Ascend MindIE container: {self._workload_name}")
-
-        # Stop the container first
-        if not self.stop_container():
-            logger.error("Failed to stop container for restart")
-            return False
-
-        # Wait a moment for cleanup
-        import time
-
-        time.sleep(2)
-
-        # Start the container again
-        try:
-            self.start()
-            logger.info(
-                f"Ascend MindIE container {self._workload_name} restarted successfully"
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to restart container: {e}")
-            return False
 
     @staticmethod
     @lru_cache
