@@ -252,6 +252,9 @@ class VLLMServer(InferenceServer):
 
         if self._model.extended_kv_cache.remote_url:
             env["LMCACHE_REMOTE_URL"] = self._model.extended_kv_cache.remote_url
+            # This is the claimed default value from LMCache docs
+            # However, an assertion fails in LMCache if not explicitly set
+            env["LMCACHE_REMOTE_SERDE"] = "naive"
 
     def set_vllm_distributed_env(self, env: Dict[str, str]):
         """
