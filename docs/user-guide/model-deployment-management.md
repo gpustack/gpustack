@@ -113,6 +113,28 @@ Starting a model deployment is equivalent to scaling up the model to one replica
 3. Find the model instance you want to check.
 4. Click the `View Logs` button for the model instance in the `Operations` column.
 
+## Performance-Related Configuration
+
+GPUStack provides the following configuration options to optimize model inference performance.
+
+### Extended KV Cache
+
+You can enable extended KV cache to offload the KV cache to CPU memory or remote storage. This feature is particularly useful for setups with limited GPU memory requiring long context lengths. Under the hood, GPUStack leverages [LMCache](https://github.com/LMCache/LMCache) to provide this functionality.
+
+Available options:
+
+- **Maximum CPU Cache Size**: The maximum size of the KV cache (in GiB) that can be offloaded to CPU memory.
+- **Size of Cache Chunks**: Number of tokens per KV cache chunk.
+- **Remote Storage URL**: The remote storage URL for offloading KV cache. Format: `protocol://host:port`. e.g., `redis://your-redis-server:6379`. For more details, please refer to the [LMCache documentation](https://docs.lmcache.ai/).
+
+This feature works for certain backends and frameworks only.
+
+#### Compatibility Matrix
+
+| Backend    | Framework  |
+|------------|------------|
+| vLLM       | CUDA, ROCm |
+
 ## Advanced Model Configuration
 
 GPUStack supports tailored configurations for model deployment.
