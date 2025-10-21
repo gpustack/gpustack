@@ -8,7 +8,7 @@ from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_service_runners
-from gpustack_runtime.deployer import ContainerResources, ContainerMount
+from gpustack_runtime.deployer import ContainerResources, ContainerMount, ContainerPort
 from gpustack_runtime.deployer.__utils__ import compare_versions, correct_runner_image
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
@@ -293,6 +293,20 @@ class InferenceServer(ABC):
                 ),
             )
         return mounts
+
+    def _get_configured_ports(self) -> List[ContainerPort]:
+        """
+        Get the ports for the model instance.
+
+        Returns:
+            A list of ContainerPort objects for the model instance.
+        """
+        return [
+            ContainerPort(
+                internal=port,
+            )
+            for port in self._model_instance.ports or []
+        ]
 
     def _get_serving_port(self) -> int:
         """

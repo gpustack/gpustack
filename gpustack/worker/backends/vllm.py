@@ -9,7 +9,6 @@ from gpustack_runtime.deployer import (
     ContainerProfileEnum,
     WorkloadPlan,
     create_workload,
-    ContainerPort,
 )
 
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
@@ -37,102 +36,125 @@ class VLLMServer(InferenceServer):
 
     def start(self):  # noqa: C901
         try:
-            # Setup container mounts
-            mounts = self._get_configured_mounts()
-
-            # Setup environment variables
-            envs = self._setup_environment()
-
-            # Get resources configuration
-            resources = self._get_configured_resources()
-
-            # Get serving port
-            serving_port = self._get_serving_port()
-
-            # Build vLLM command arguments
-            arguments = self._build_vllm_arguments(port=serving_port)
-
-            # Get vLLM image name
-            image_name = self._get_backend_image_name()
-
-            if not image_name:
-                raise ValueError("Can't find compatible vLLM image")
-
-            # Create container configuration
-            run_container = Container(
-                image=image_name,
-                name=self._model_instance.name,
-                profile=ContainerProfileEnum.RUN,
-                execution=ContainerExecution(
-                    privileged=True,
-                    args=arguments,
-                ),
-                envs=[
-                    ContainerEnv(
-                        name=name,
-                        value=value,
-                    )
-                    for name, value in envs.items()
-                ],
-                resources=resources,
-                mounts=mounts,
-                ports=[
-                    ContainerPort(
-                        internal=serving_port,
-                    ),
-                ],
-            )
-
-            # Store workload name for management operations
-            self._workload_name = self._model_instance.name
-
-            workload_plan = WorkloadPlan(
-                name=self._workload_name,
-                host_network=True,
-                containers=[run_container],
-            )
-
-            logger.info(f"Creating vLLM container workload: {self._workload_name}")
-            logger.info(f"Container image name: {image_name} arguments: {arguments}")
-            create_workload(workload_plan)
-
-            logger.info(
-                f"vLLM container workload {self._workload_name} created successfully"
-            )
-
+            self._start()
         except Exception as e:
             self._handle_error(e)
 
-    def _setup_environment(self) -> Dict[str, str]:
+    def _start(self):
+        logger.info(f"Starting vLLM model instance: {self._model_instance.name}")
+
+        env = self._get_configured_env()
+
+        command_args = self._build_command_args(
+            port=self._get_serving_port(),
+        )
+
+        self._create_workload(
+            command_args=command_args,
+            env=env,
+        )
+
+    def _create_workload(
+        self,
+        command_args: List[str],
+        env: Dict[str, str],
+    ):
+        # Store workload name for management operations
+        self._workload_name = self._model_instance.name
+
+        image_name = self._get_backend_image_name()
+        if not image_name:
+            raise ValueError("Failed to get vLLM backend image name")
+
+        resources = self._get_configured_resources()
+
+        mounts = self._get_configured_mounts()
+
+        ports = self._get_configured_ports()
+
+        run_container = Container(
+            image=image_name,
+            name=self._model_instance.name,
+            profile=ContainerProfileEnum.RUN,
+            execution=ContainerExecution(
+                privileged=True,
+                args=command_args,
+            ),
+            envs=[
+                ContainerEnv(
+                    name=name,
+                    value=value,
+                )
+                for name, value in env.items()
+            ],
+            resources=resources,
+            mounts=mounts,
+            ports=ports,
+        )
+
+        logger.info(f"Creating vLLM container workload: {self._workload_name}")
+        logger.info(
+            f"With image: {image_name}, "
+            f"arguments: [{' '.join(command_args)}], "
+            f"ports: [{','.join([str(port.internal) for port in ports])}], "
+            f"envs(inconsistent input items mean unchangeable):{os.linesep}"
+            f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
+        )
+
+        workload_plan = WorkloadPlan(
+            name=self._workload_name,
+            host_network=True,
+            containers=[run_container],
+        )
+        create_workload(workload_plan)
+
+        logger.info(f"Created vLLM container workload {self._workload_name}")
+
+    def _get_configured_env(self) -> Dict[str, str]:
         """
         Setup environment variables for the vLLM container server.
         """
 
         # Apply GPUStack's inference environment setup
-        env = self._get_configured_env()
+        env = super()._get_configured_env()
 
         # Apply LMCache environment variables if extended KV cache is enabled
-        self.set_lmcache_env(env)
-
-        # Log environment variables
-        env_view = None
-        if logger.isEnabledFor(logging.DEBUG):
-            env_view = sanitize_env(env)
-        elif self._model.env:
-            # If the model instance has its own environment variables,
-            # display the mutated environment variables.
-            env_view = self._model.env
-            for k, v in self._model.env.items():
-                env_view[k] = env.get(k, v)
-        if env_view:
-            logger.info(
-                f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
-                f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
-            )
+        self._set_lmcache_env(env)
 
         return env
 
-    def _build_vllm_arguments(self, port: int) -> List[str]:
+    def _set_lmcache_env(self, env: Dict[str, str]):
+        """
+        Set up LMCache environment variables if extended KV cache is enabled.
+        """
+        if not (
+            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
+        ):
+            return
+
+        if (
+            self._model.extended_kv_cache.chunk_size
+            and self._model.extended_kv_cache.chunk_size > 0
+        ):
+            env["LMCACHE_CHUNK_SIZE"] = str(self._model.extended_kv_cache.chunk_size)
+
+        if (
+            self._model.extended_kv_cache.max_local_cpu_size
+            and self._model.extended_kv_cache.max_local_cpu_size > 0
+        ):
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
+                self._model.extended_kv_cache.max_local_cpu_size
+            )
+        else:
+            env["LMCACHE_LOCAL_CPU"] = str(False).lower()
+
+        if self._model.extended_kv_cache.remote_url:
+            env["LMCACHE_REMOTE_URL"] = self._model.extended_kv_cache.remote_url
+            # This is the claimed default value from LMCache docs
+            # However, an assertion fails in LMCache if not explicitly set
+            env["LMCACHE_REMOTE_SERDE"] = "naive"
+
+    def _build_command_args(self, port: int) -> List[str]:
         """
         Build vLLM command arguments for container execution.
         """
@@ -192,6 +214,20 @@ class VLLMServer(InferenceServer):
 
         return arguments
 
+    def _derive_max_model_len(self) -> Optional[int]:
+        """
+        Derive max model length from model config.
+        Returns None if unavailable.
+        """
+        try:
+            pretrained_config = get_pretrained_config(self._model)
+            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
+            return get_max_model_len(pretrained_or_hf_text_config)
+        except Exception as e:
+            logger.error(f"Failed to derive max model length: {e}")
+
+        return None
+
     def _handle_error(self, error: Exception):
         """
         Handle errors during server startup.
@@ -210,51 +246,6 @@ class VLLMServer(InferenceServer):
             logger.error(f"Failed to update model instance: {ue}")
 
         raise error
-
-    def set_lmcache_env(self, env: Dict[str, str]):
-        """
-        Set up LMCache environment variables if extended KV cache is enabled.
-        """
-        if not (
-            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
-        ):
-            return
-
-        if (
-            self._model.extended_kv_cache.chunk_size
-            and self._model.extended_kv_cache.chunk_size > 0
-        ):
-            env["LMCACHE_CHUNK_SIZE"] = str(self._model.extended_kv_cache.chunk_size)
-
-        if (
-            self._model.extended_kv_cache.max_local_cpu_size
-            and self._model.extended_kv_cache.max_local_cpu_size > 0
-        ):
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
-                self._model.extended_kv_cache.max_local_cpu_size
-            )
-        else:
-            env["LMCACHE_LOCAL_CPU"] = str(False).lower()
-
-        if self._model.extended_kv_cache.remote_url:
-            env["LMCACHE_REMOTE_URL"] = self._model.extended_kv_cache.remote_url
-            # This is the claimed default value from LMCache docs
-            # However, an assertion fails in LMCache if not explicitly set
-            env["LMCACHE_REMOTE_SERDE"] = "naive"
-
-    def _derive_max_model_len(self) -> Optional[int]:
-        """
-        Derive max model length from model config.
-        Returns None if unavailable.
-        """
-        try:
-            pretrained_config = get_pretrained_config(self._model)
-            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
-        except Exception as e:
-            logger.error(f"Failed to derive max model length: {e}")
-
-        return None
 
 
 def get_auto_parallelism_arguments(
