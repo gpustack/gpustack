@@ -15,7 +15,6 @@ from gpustack_runtime.deployer import (
     WorkloadPlan,
     create_workload,
     ContainerFile,
-    ContainerPort,
 )
 
 from gpustack.schemas.models import ModelInstanceStateEnum
@@ -842,12 +841,11 @@ class AscendMindIEServer(InferenceServer):
         except Exception as e:
             self._handle_error(e)
 
-    def _start(self):  # noqa: max-complexity=15
-        """
-        Start Ascend MindIE service in container.
-        This method preserves all the original logic from AscendMindIEServer._start()
-        but launches the service in a container instead of subprocess.
-        """
+    def _start(self):  # noqa: C901
+        logger.info(
+            f"Starting Ascend MindIE model instance: {self._model_instance.name}"
+        )
+
         minstance = self._model_instance
         dservers = minstance.distributed_servers
         subworkers = (
@@ -868,7 +866,7 @@ class AscendMindIEServer(InferenceServer):
 
         # Load config,
         # the config includes two parts: environment variables and a JSON configuration file.
-        logger.info("Loading Ascend MindIE config")
+        logger.debug("Loading Ascend MindIE config")
 
         # - Load environment variables.
         env = self._get_configured_env()
@@ -886,7 +884,7 @@ class AscendMindIEServer(InferenceServer):
         schedule_config = backend_config.get("ScheduleConfig", {})
 
         # Mutate config
-        logger.info("Mutating Ascend MindIE config")
+        logger.debug("Mutating Ascend MindIE config")
 
         # - Global config
         # -- Pin installation path, which helps to locate other resources.
@@ -1258,7 +1256,6 @@ class AscendMindIEServer(InferenceServer):
         # Generate rank table file if needed,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html,
         #     https://www.hiascend.com/forum/thread-0237183374051498211-1-1.html
-        rank_table_str = None
         if subworkers:
             server_count = f"{len(subworkers) + 1}"
             server_list = [
@@ -1328,7 +1325,9 @@ class AscendMindIEServer(InferenceServer):
             # ATB_MATMUL_SHUFFLE_K_ENABLE=0
             # ATB_LLM_LCOC_ENABLE=0
             # HCCL_OP_EXPANSION_MODE=""
-            logger.info(f"Saved Ascend MindIE rank table config to {rank_table_path}")
+            logger.info(
+                f"With rank table JSON configuration:{os.linesep}{rank_table_str}"
+            )
 
         # Generate JSON configuration file by model instance id.
         config_path = str(install_path.joinpath("conf", f"config-{minstance.id}.json"))
@@ -1339,69 +1338,50 @@ class AscendMindIEServer(InferenceServer):
                 content=config_str,
             ),
         )
-
-        # Start, configure environment variable to indicate the JSON configuration file.
-        env["MIES_CONFIG_JSON_PATH"] = str(config_path)
-
-        # Display environment variables and JSON configuration.
-        logger.info(f"Starting Ascend MindIE container: {self._model_instance.name}")
-        env_view = None
-        if logger.isEnabledFor(logging.DEBUG):
-            env_view = sanitize_env(env)
-        elif self._model.env:
-            # If the model instance has its own environment variables,
-            # display the mutated environment variables.
-            env_view = self._model.env
-            for k, v in self._model.env.items():
-                env_view[k] = env.get(k, v)
-        if env_view:
-            logger.info(
-                f"With environment variables(inconsistent input items mean unchangeable):{os.linesep}"
-                f"{os.linesep.join(f'{k}={v}' for k, v in sorted(env_view.items()))}"
-            )
         logger.info(
             f"With JSON configuration(inconsistent input items mean unchangeable):{os.linesep}{config_str}"
         )
-        if rank_table_str:
-            logger.info(
-                f"With rank table JSON configuration:{os.linesep}{rank_table_str}"
-            )
 
-        # Container startup - this replaces the subprocess.Popen call
-        service_bin = install_path.joinpath("bin", "mindieservice_daemon")
-        self._start_container(env, str(service_bin), config_files)
+        # Indicate the JSON configuration file.
+        env["MIES_CONFIG_JSON_PATH"] = str(config_path)
 
-    def _start_container(
+        arguments = [
+            str(install_path.joinpath("bin", "mindieservice_daemon")),
+        ]
+        command_args = self.build_versioned_command_args(arguments)
+
+        self._create_workload(
+            command_args,
+            env,
+            config_files,
+        )
+
+    def _create_workload(
         self,
+        command_args: List[str],
         env: Dict[str, str],
-        service_bin: str,
-        files: List[ContainerFile],
+        config_files: List[ContainerFile],
     ):
-        """
-        Start the Ascend MindIE service in a container.
-        This replaces the subprocess.Popen call from the original implementation.
-        """
-        # Setup container mounts
-        mounts = self._get_configured_mounts()
-
-        # Get resources configuration
-        resources = self._get_configured_resources()
+        # Store workload name for management operations
+        self._workload_name = self._model_instance.name
 
         image_name = self._get_backend_image_name(backend_type="cann")
         if not image_name:
-            raise ValueError("No valid container image found for Ascend MindIE backend")
+            raise ValueError("Failed to get Ascend MindIE backend image name")
 
-        # Build command arguments
-        arguments = self.build_versioned_command_args([service_bin])
+        resources = self._get_configured_resources()
 
-        # Create container configuration
+        mounts = self._get_configured_mounts()
+
+        ports = self._get_configured_ports()
+
         run_container = Container(
             image=image_name,
             name=self._model_instance.name,
             profile=ContainerProfileEnum.RUN,
             execution=ContainerExecution(
                 privileged=True,
-                args=arguments,
+                command=command_args,
             ),
             envs=[
                 ContainerEnv(
@@ -1412,30 +1392,27 @@ class AscendMindIEServer(InferenceServer):
             ],
             resources=resources,
             mounts=mounts,
-            files=files,
-            ports=[
-                ContainerPort(
-                    internal=self._get_serving_port(),
-                ),
-            ],
+            files=config_files,
+            ports=ports,
         )
 
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
+        logger.info(f"Creating Ascend MindIE container workload: {self._workload_name}")
+        logger.info(
+            f"With image: {image_name}, "
+            f"arguments: [{' '.join(command_args)}], "
+            f"ports: [{','.join([str(port.internal) for port in ports])}], "
+            f"envs(inconsistent input items mean unchangeable):{os.linesep}"
+            f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
+        )
 
         workload_plan = WorkloadPlan(
             name=self._workload_name,
             host_network=True,
             containers=[run_container],
         )
-
-        logger.info(f"Creating Ascend MindIE container workload: {self._workload_name}")
-        logger.info(f"Container image name: {image_name} arguments: {arguments}")
         create_workload(workload_plan)
 
-        logger.info(
-            f"Ascend MindIE container workload {self._workload_name} created successfully"
-        )
+        logger.info(f"Created Ascend MindIE container workload {self._workload_name}")
 
     def _handle_error(self, error: Exception):
         """

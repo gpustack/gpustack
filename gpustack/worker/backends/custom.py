@@ -1,7 +1,9 @@
 import logging
-from typing import Dict, Optional
+import os
+from typing import Dict, Optional, List
 
 from gpustack.schemas.models import ModelInstanceStateEnum
+from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
 from gpustack_runtime.deployer import (
@@ -11,7 +13,6 @@ from gpustack_runtime.deployer import (
     ContainerProfileEnum,
     WorkloadPlan,
     create_workload,
-    ContainerPort,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,85 +40,89 @@ class CustomServer(InferenceServer):
 
     def start(self):
         try:
-            mounts = self._get_configured_mounts()
-
-            envs = self._setup_environment()
-
-            # Get resources configuration
-            resources = self._get_configured_resources()
-
-            # Get serving port
-            serving_port = self._get_serving_port()
-
-            image_cmd = []
-            command = self.inference_backend.replace_command_param(
-                self._model.backend_version,
-                self._model_path,
-                serving_port,
-                self._model_instance.model_name,
-                self._model.run_command,
-            )
-            if command:
-                image_cmd.extend(command.split())
-            if self._model.backend_parameters:
-                image_cmd.extend(self._model.backend_parameters)
-
-            image_name = (
-                self._model.image_name
-                or self.inference_backend.get_image_name(self._model.backend_version)
-            )
-
-            run_container = Container(
-                image=image_name,
-                name=self._model_instance.name,
-                profile=ContainerProfileEnum.RUN,
-                execution=ContainerExecution(
-                    privileged=True,
-                    args=image_cmd,
-                ),
-                envs=[
-                    ContainerEnv(
-                        name=name,
-                        value=value,
-                    )
-                    for name, value in envs.items()
-                ],
-                mounts=mounts,
-                resources=resources,
-                ports=[
-                    ContainerPort(
-                        internal=serving_port,
-                    )
-                ],
-            )
-
-            # Store workload name for management operations
-            self._workload_name = self._model_instance.name
-
-            workload_plan = WorkloadPlan(
-                name=self._workload_name,
-                host_network=True,
-                containers=[run_container],
-            )
-
-            logger.info(f"Creating workload: {self._workload_name}")
-            logger.info(f"Container image name: {image_name} arguments: {image_cmd}")
-            create_workload(workload_plan)
-
-            logger.info(f"Workload {self._workload_name} created successfully")
-
+            self._start()
         except Exception as e:
             self._handle_error(e)
 
-    def _setup_environment(self) -> Dict[str, str]:
-        """
-        Setup environment variables for the inference server.
-        """
+    def _start(self):
+        logger.info(f"Starting Custom model instance: {self._model_instance.name}")
 
-        # Apply GPUStack's inference environment setup
         env = self._get_configured_env()
 
-        return env
+        command_args = []
+        command = self.inference_backend.replace_command_param(
+            self._model.backend_version,
+            self._model_path,
+            self._get_serving_port(),
+            self._model.run_command,
+        )
+        if command:
+            command_args.extend(command.split(" "))
+        if self._model.backend_parameters:
+            command_args.extend(self._model.backend_parameters)
+
+        self._create_workload(
+            command_args,
+            env,
+        )
+
+    def _create_workload(
+        self,
+        command_args: List[str],
+        env: Dict[str, str],
+    ):
+        # Store workload name for management operations
+        self._workload_name = self._model_instance.name
+
+        image_name = self._model.image_name or self.inference_backend.get_image_name(
+            self._model.backend_version
+        )
+        if not image_name:
+            raise ValueError("Failed to get Custom backend image name")
+
+        resources = self._get_configured_resources()
+
+        mounts = self._get_configured_mounts()
+
+        ports = self._get_configured_ports()
+
+        run_container = Container(
+            image=image_name,
+            name=self._model_instance.name,
+            profile=ContainerProfileEnum.RUN,
+            execution=ContainerExecution(
+                privileged=True,
+                args=command_args,
+            ),
+            envs=[
+                ContainerEnv(
+                    name=name,
+                    value=value,
+                )
+                for name, value in env.items()
+            ],
+            mounts=mounts,
+            resources=resources,
+            ports=ports,
+        )
+
+        logger.info(f"Creating container workload: {self._workload_name}")
+        logger.info(
+            f"With image: {image_name}, "
+            f"arguments: [{' '.join(command_args)}], "
+            f"ports: [{','.join([str(port.internal) for port in ports])}], "
+            f"envs(inconsistent input items mean unchangeable):{os.linesep}"
+            f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
+        )
+
+        workload_plan = WorkloadPlan(
+            name=self._workload_name,
+            host_network=True,
+            containers=[run_container],
+        )
+        create_workload(workload_plan)
+
+        logger.info(f"Created container workload {self._workload_name}")
 
     def _handle_error(self, error: Exception):
         """
