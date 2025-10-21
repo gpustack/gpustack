@@ -2854,13 +2854,13 @@ dataclasses-json = ">=0.6.7"
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.16"
+version = "0.1.18"
 description = "GPUStack Runtime is library for detecting GPU resources and launching GPU workloads."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runtime-0.1.16-py3-none-any.whl", hash = "sha256:852e451a19c1bd5b18603c3a5127a86960de14d0cb3171f321f6da7674b1b635"},
-    {file = "gpustack_runtime-0.1.16.tar.gz", hash = "sha256:b63c651e63c7767bd604154504d36f3825c6d108f7142a7130294322e96ff84f"},
+    {file = "gpustack_runtime-0.1.18-py3-none-any.whl", hash = "sha256:5e7346028ef4bddcb8c54f10bd87a4490687a89ea392008e197039f95871d28d"},
+    {file = "gpustack_runtime-0.1.18.tar.gz", hash = "sha256:9fc57b05557503ff00a8bbf58736888fa0981ddcb3b717411b074e7ae699ac07"},
 ]
 
 [package.dependencies]
@@ -10989,4 +10989,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "4727400002ce5e88d5364b392f3207bc9d40bf9039b626873b980f432b17b653"
+content-hash = "bda7708133ab0eccb9d547f4b3f7da45b9dbf3d2cff21aeea90e72c34b3c7c9c"
