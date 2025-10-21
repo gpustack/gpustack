@@ -40,7 +40,7 @@ class Runtime(GPUDetector):
                 runtime_version=dev.runtime_version,
                 compute_capability=dev.compute_capability,
                 core=GPUCoreInfo(
-                    total=dev.cores,
+                    total=dev.cores or 0,
                     utilization_rate=dev.cores_utilization,
                 ),
                 memory=MemoryInfo(
