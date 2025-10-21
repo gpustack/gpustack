@@ -101,6 +101,7 @@ class InferenceBackendBase(SQLModel):
         version: Optional[str],
         model_path: Optional[str],
         port: Optional[int],
+        model_name: Optional[str] = None,
         command: Optional[str] = None,
     ) -> str:
         if not command:
@@ -110,6 +111,7 @@ class InferenceBackendBase(SQLModel):
 
         command = command.replace("{{model_path}}", model_path)
         command = command.replace("{{port}}", str(port))
+        command = command.replace("{{model_name}}", model_name)
         return command
 
     def get_image_name(self, version: Optional[str] = None) -> str:
