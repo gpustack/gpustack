@@ -313,11 +313,13 @@ class InferenceServer(ABC):
                 if port is not None
                 else getattr(self._model_instance, "port", None)
             )
+            resolved_model_name = getattr(self._model_instance, "model_name", None)
 
             command = self.inference_backend.replace_command_param(
                 version,
                 resolved_model_path,
                 resolved_port,
+                resolved_model_name,
                 version_config.run_command,
             )
             if command:
