@@ -148,6 +148,7 @@ class Config(BaseSettings):
     oidc_client_secret: Optional[str] = None  # oidc client secret
     oidc_redirect_uri: Optional[str] = None  # oidc redirect uri
     oidc_issuer: Optional[str] = None  # oidc issuer
+    oidc_use_userinfo: bool = False  # oidc use userinfo endpoint to get user info
     openid_configuration: Optional[dict] = None  # fetched openid configuration
     saml_sp_entity_id: Optional[str] = None  # saml sp_entity_id
     saml_sp_acs_url: Optional[str] = None  # saml sp_acs_url

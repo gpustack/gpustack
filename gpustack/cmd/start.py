@@ -445,6 +445,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.",
         default=get_gpustack_env("OIDC_REDIRECT_URI"),
     )
+    group.add_argument(
+        "--oidc-use-userinfo",
+        action=OptionalBoolAction,
+        help="Use the UserInfo endpoint to fetch user details after authentication.",
+        default=get_gpustack_env_bool("OIDC_USE_USERINFO"),
+    )
     # SAML settings
     group.add_argument(
         "--saml-idp-server-url",
