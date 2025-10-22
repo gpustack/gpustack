@@ -72,7 +72,7 @@ pydo = "^0.15.0"
 jinja2 = "^3.1.6"
 
 gpustack-runner = ">=0.1.10"
-gpustack-runtime = ">=0.1.18"
+gpustack-runtime = ">=0.1.20"
 
 [tool.poetry.group.dev.dependencies]
 installer = "0.7.0"
