@@ -1417,6 +1417,7 @@ class AscendMindIEServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=self._workload_name,
             host_network=True,
+            shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
         create_workload(workload_plan)
