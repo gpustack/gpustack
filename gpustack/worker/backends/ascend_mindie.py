@@ -846,6 +846,7 @@ class AscendMindIEServer(InferenceServer):
             f"Starting Ascend MindIE model instance: {self._model_instance.name}"
         )
 
+        # Prepare distributed information.
         minstance = self._model_instance
         dservers = minstance.distributed_servers
         subworkers = (
@@ -853,11 +854,11 @@ class AscendMindIEServer(InferenceServer):
             if dservers and dservers.subordinate_workers
             else []
         )
-        subworker_pos = None
-        for i, sw in enumerate(subworkers):
-            if sw.worker_id == self._worker.id:
-                subworker_pos = i
-                break
+        is_distributed = bool(subworkers)
+        is_distributed_leader = (
+            is_distributed and minstance.worker_id == self._worker.id
+        )
+        is_distributed_follower = is_distributed and not is_distributed_leader
 
         # Root path is defined by in Dockerfile ENV
         # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
@@ -936,7 +937,7 @@ class AscendMindIEServer(InferenceServer):
         env.pop("WORLD_SIZE", "")
         env.pop("RANKTABLEFILE", "")
         env.pop("RANK_TABLE_FILE", "")
-        if not subworkers:
+        if not is_distributed:
             env.pop("MIES_CONTAINER_IP", "")
             env.pop("HOST_IP", "")
 
@@ -1012,15 +1013,23 @@ class AscendMindIEServer(InferenceServer):
         backend_config["npuDeviceIds"] = [minstance.gpu_indexes]
         model_config["worldSize"] = len(minstance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
-        if subworkers:
+        if is_distributed:
             # Add distributed config if in distributed mode.
             connecting_port = minstance.ports[1] if len(minstance.ports) > 1 else None
             backend_config["multiNodesInferEnabled"] = True
             backend_config["multiNodesInferPort"] = connecting_port
-        if minstance.worker_id != self._worker.id:
+        if is_distributed_follower:
+            subworker = next(
+                (
+                    sw
+                    for sw in subworkers
+                    if sw.worker_id == self._model_instance.worker_id
+                ),
+                None,
+            )
             # Override device config if is a subordinate worker.
-            backend_config["npuDeviceIds"] = [subworkers[subworker_pos].gpu_indexes]
-            model_config["worldSize"] = len(subworkers[subworker_pos].gpu_indexes)
+            backend_config["npuDeviceIds"] = [subworker.gpu_indexes]
+            model_config["worldSize"] = len(subworker.gpu_indexes)
 
         # - Model config
         derived_max_seq_len = self._get_model_max_seq_len()
@@ -1047,7 +1056,7 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
         local_world_size = len(minstance.gpu_indexes)
         world_size = local_world_size
-        if subworkers:
+        if is_distributed:
             world_size = local_world_size * (len(subworkers) + 1)
         params = AscendMindIEParameters(
             local_world_size=local_world_size,
@@ -1056,7 +1065,7 @@ class AscendMindIEServer(InferenceServer):
         )
         # For Ascend 310P, we need to default dtype to float16.
         # As a workaround, we should allow users to override this with backend parameters.
-        if is_ascend_310p(self._worker):
+        if is_ascend_310p(self._get_selected_gpu_devices()):
             original_params = self._model.backend_parameters or []
             self._model.backend_parameters = ["--dtype=float16"]
             self._model.backend_parameters.extend(original_params)
@@ -1256,7 +1265,7 @@ class AscendMindIEServer(InferenceServer):
         # Generate rank table file if needed,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html,
         #     https://www.hiascend.com/forum/thread-0237183374051498211-1-1.html
-        if subworkers:
+        if is_distributed:
             server_count = f"{len(subworkers) + 1}"
             server_list = [
                 {
