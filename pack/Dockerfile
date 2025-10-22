@@ -305,6 +305,9 @@ RUN --mount=type=cache,target=/root/.cache \
         && rm -rf /tmp/* \
         && rm -rf /workspace/gpustack/dist
 EOF
+## Disable gpustack-runtime auto image correction,
+## let GPUStack to configure the correct runner image.
+ENV GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=0
 
 ## Entrypoint
 

@@ -85,9 +85,9 @@ class VLLMServer(InferenceServer):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
 
-        image_name = self._get_backend_image_name()
-        if not image_name:
-            raise ValueError("Failed to get vLLM backend image name")
+        image = self._get_configured_image()
+        if not image:
+            raise ValueError("Failed to get vLLM backend image")
 
         resources = self._get_configured_resources()
 
@@ -96,7 +96,7 @@ class VLLMServer(InferenceServer):
         ports = self._get_configured_ports()
 
         run_container = Container(
-            image=image_name,
+            image=image,
             name=self._model_instance.name,
             profile=ContainerProfileEnum.RUN,
             execution=ContainerExecution(
@@ -139,7 +139,7 @@ class VLLMServer(InferenceServer):
             )
 
             sidecar_container = Container(
-                image=image_name,
+                image=image,
                 name=f"{self._model_instance.name}-ray",
                 profile=ContainerProfileEnum.RUN,
                 execution=ContainerExecution(
@@ -154,7 +154,7 @@ class VLLMServer(InferenceServer):
 
         logger.info(f"Creating vLLM container workload: {self._workload_name}")
         logger.info(
-            f"With image: {image_name}, "
+            f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
