@@ -9,6 +9,8 @@ from gpustack_runtime.deployer import (
     ContainerProfileEnum,
     WorkloadPlan,
     create_workload,
+    ContainerMount,
+    ContainerPort,
 )
 
 from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
@@ -19,7 +21,7 @@ from gpustack.utils.hub import (
     get_max_model_len,
     get_pretrained_config,
 )
-from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
+from gpustack.worker.backends.base import InferenceServer, is_ascend_310p, is_ascend
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +45,42 @@ class VLLMServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting vLLM model instance: {self._model_instance.name}")
 
-        env = self._get_configured_env()
+        # Prepare distributed information.
+        minstance = self._model_instance
+        dservers = minstance.distributed_servers
+        subworkers = (
+            dservers.subordinate_workers
+            if dservers and dservers.subordinate_workers
+            else []
+        )
+        is_distributed = bool(subworkers)
+        is_distributed_leader = (
+            is_distributed and minstance.worker_id == self._worker.id
+        )
+        is_distributed_follower = is_distributed and not is_distributed_leader
+
+        env = self._get_configured_env(
+            is_distributed=is_distributed,
+        )
 
         command_args = self._build_command_args(
             port=self._get_serving_port(),
+            is_distributed=is_distributed,
         )
 
         self._create_workload(
             command_args=command_args,
             env=env,
+            is_distributed_leader=is_distributed_leader,
+            is_distributed_follower=is_distributed_follower,
         )
 
     def _create_workload(
         self,
         command_args: List[str],
         env: Dict[str, str],
+        is_distributed_leader: bool,
+        is_distributed_follower: bool,
     ):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
@@ -92,6 +115,43 @@ class VLLMServer(InferenceServer):
             ports=ports,
         )
 
+        # Adjust run container for distributed follower.
+        if is_distributed_follower:
+            ray_command_args, ray_ports = self._build_ray_configuration(
+                is_leader=False,
+            )
+
+            run_container.execution.args = ray_command_args
+            run_container.ports = ray_ports
+
+        # Create sidecar container for distributed leader.
+        sidecar_container = None
+        if is_distributed_leader:
+            run_container.mounts.append(
+                ContainerMount(
+                    path="/tmp",
+                    volume="tmp-volume",
+                ),
+            )
+
+            ray_command_args, ray_ports = self._build_ray_configuration(
+                is_leader=True,
+            )
+
+            sidecar_container = Container(
+                image=image_name,
+                name=f"{self._model_instance.name}-ray",
+                profile=ContainerProfileEnum.RUN,
+                execution=ContainerExecution(
+                    privileged=True,
+                    args=ray_command_args,
+                ),
+                envs=run_container.envs,
+                resources=run_container.resources,
+                mounts=run_container.mounts,
+                ports=ray_ports,
+            )
+
         logger.info(f"Creating vLLM container workload: {self._workload_name}")
         logger.info(
             f"With image: {image_name}, "
@@ -104,13 +164,17 @@ class VLLMServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=self._workload_name,
             host_network=True,
-            containers=[run_container],
+            containers=(
+                [run_container]
+                if not sidecar_container
+                else [run_container, sidecar_container]
+            ),
         )
         create_workload(workload_plan)
 
         logger.info(f"Created vLLM container workload {self._workload_name}")
 
-    def _get_configured_env(self) -> Dict[str, str]:
+    def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """
         Setup environment variables for the vLLM container server.
         """
@@ -120,6 +184,10 @@ class VLLMServer(InferenceServer):
 
         # Apply LMCache environment variables if extended KV cache is enabled
         self._set_lmcache_env(env)
+
+        # Apply distributed environment variables
+        if is_distributed:
+            self._set_distributed_env(env)
 
         return env
 
@@ -154,7 +222,28 @@ class VLLMServer(InferenceServer):
             # However, an assertion fails in LMCache if not explicitly set
             env["LMCACHE_REMOTE_SERDE"] = "naive"
 
-    def _build_command_args(self, port: int) -> List[str]:
+    def _set_distributed_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for distributed execution.
+        """
+        if is_ascend(self._get_selected_gpu_devices()):
+            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
+            if "HCCL_SOCKET_IFNAME" not in env:
+                env["HCCL_IF_IP"] = self._worker.ip
+                env["HCCL_SOCKET_IFNAME"] = self._worker.ifname
+                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+                env["TP_SOCKET_IFNAME"] = self._worker.ifname
+            return
+
+        if "NCCL_SOCKET_IFNAME" not in env:
+            env["NCCL_SOCKET_IFNAME"] = self._worker.ifname
+            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+
+    def _build_command_args(
+        self,
+        port: int,
+        is_distributed: bool,
+    ) -> List[str]:
         """
         Build vLLM command arguments for container execution.
         """
@@ -172,11 +261,13 @@ class VLLMServer(InferenceServer):
             arguments.extend(["--max-model-len", "8192"])
 
         auto_parallelism_arguments = get_auto_parallelism_arguments(
-            self._model.backend_parameters, self._model_instance
+            self._model.backend_parameters,
+            self._model_instance,
+            is_distributed,
         )
         arguments.extend(auto_parallelism_arguments)
 
-        if is_distributed_vllm(self._model_instance):
+        if is_distributed:
             arguments.extend(["--distributed-executor-backend", "ray"])
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
@@ -188,7 +279,7 @@ class VLLMServer(InferenceServer):
             )
 
         # For Ascend 310P, we need to enforce eager execution and default dtype to float16
-        if is_ascend_310p(self._worker):
+        if is_ascend_310p(self._get_selected_gpu_devices()):
             arguments.extend(
                 [
                     "--enforce-eager",
@@ -213,6 +304,49 @@ class VLLMServer(InferenceServer):
         arguments.extend(immutable_arguments)
 
         return arguments
+
+    def _build_ray_configuration(
+        self,
+        is_leader: bool,
+    ) -> (List[str], Optional[List[ContainerPort]]):
+        gcs_server_port = 6379
+        client_port = 10001
+        dashboard_port = 8265
+
+        if is_leader:
+            arguments = [
+                "ray",
+                "start",
+                "--block",
+                "--head",
+                f"--port={gcs_server_port}",
+                f"--ray-client-server-port={client_port}",
+                f"--dashboard-host={self._worker.ip}",
+                f"--dashboard-port={dashboard_port}",
+                f"--node-ip-address={self._worker.ip}",
+                "--disable-usage-stats",
+                "--verbose",
+            ]
+            ports = [
+                ContainerPort(
+                    internal=port,
+                )
+                for port in [gcs_server_port, client_port, dashboard_port]
+            ]
+
+            return arguments, ports
+
+        arguments = [
+            "ray",
+            "start",
+            "--block",
+            f"--address={self._model_instance.worker_ip}:{gcs_server_port}",
+            f"--node-ip-address={self._worker.ip}",
+            "--disable-usage-stats",
+            "--verbose",
+        ]
+
+        return arguments, None
 
     def _derive_max_model_len(self) -> Optional[int]:
         """
@@ -249,7 +383,9 @@ class VLLMServer(InferenceServer):
 
 
 def get_auto_parallelism_arguments(
-    backend_parameters: List[str], model_instance: ModelInstance
+    backend_parameters: List[str],
+    model_instance: ModelInstance,
+    is_distributed: bool,
 ) -> List[str]:
     parallelism = find_parameter(
         backend_parameters,
@@ -259,7 +395,7 @@ def get_auto_parallelism_arguments(
     if parallelism is not None:
         return []
 
-    if is_distributed_vllm(model_instance):
+    if is_distributed:
         # distributed across multiple workers
         pp = len(model_instance.distributed_servers.subordinate_workers) + 1
         tp = len(model_instance.gpu_indexes) if model_instance.gpu_indexes else 1
@@ -294,10 +430,3 @@ def get_auto_parallelism_arguments(
         ]
 
     return []
-
-
-def is_distributed_vllm(model_instance: ModelInstance) -> bool:
-    return (
-        model_instance.distributed_servers
-        and model_instance.distributed_servers.subordinate_workers
-    )

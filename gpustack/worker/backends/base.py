@@ -29,9 +29,8 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
 )
-from gpustack.schemas.workers import GPUDevicesInfo, WorkerBase
+from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.server.bus import Event
-from gpustack.utils.gpu import all_gpu_match
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 
@@ -146,7 +145,7 @@ class InferenceServer(ABC):
 
         self._clientset.model_instances.update(id=id, model_update=mi)
 
-    def _get_configured_env(self) -> Dict[str, str]:
+    def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """
         Get the environment variables for the model instance.
         Merge the model's env with the system env.
@@ -220,13 +219,27 @@ class InferenceServer(ABC):
         Returns:
             A list of GPU device information assigned to the model instance.
         """
-        gpu_indexes = sorted(self._model_instance.gpu_indexes)
-        gpu_devices: GPUDevicesInfo = []
+        minstance = self._model_instance
+        dservers = minstance.distributed_servers
         if (
-            self._model_instance.gpu_indexes
-            and self._worker
-            and self._worker.status.gpu_devices
+            dservers
+            and dservers.subordinate_workers
+            and minstance.worker_id != self._worker.id
         ):
+            subworker = next(
+                (
+                    w
+                    for w in dservers.subordinate_workers
+                    if w.worker_id == self._worker.id
+                ),
+                None,
+            )
+            gpu_indexes = sorted(subworker.gpu_indexes)
+        else:
+            gpu_indexes = sorted(self._model_instance.gpu_indexes)
+
+        gpu_devices: GPUDevicesInfo = []
+        if gpu_indexes and self._worker.status.gpu_devices:
             for index in gpu_indexes:
                 gpu_device = next(
                     (d for d in self._worker.status.gpu_devices if d.index == index),
@@ -479,15 +492,21 @@ class InferenceServer(ABC):
         return docker_image
 
 
-def is_ascend_310p(worker: WorkerBase) -> bool:
+def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
     """
     Check if the model instance is running on VLLM Ascend 310P.
     """
 
-    return all_gpu_match(
-        worker,
-        lambda gpu: (
-            gpu.vendor == ManufacturerEnum.ASCEND.value
-            and get_ascend_cann_variant(gpu.arch_family) == "310p"
-        ),
+    return all(
+        gpu.vendor == ManufacturerEnum.ASCEND.value
+        and get_ascend_cann_variant(gpu.arch_family) == "310p"
+        for gpu in devices
     )
+
+
+def is_ascend(devices: GPUDevicesInfo) -> bool:
+    """
+    Check if all devices are Ascend.
+    """
+
+    return all(gpu.vendor == ManufacturerEnum.ASCEND.value for gpu in devices)
