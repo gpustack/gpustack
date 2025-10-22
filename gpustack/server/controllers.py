@@ -1138,6 +1138,25 @@ class WorkerProvisioningController:
         if worker.deleted_at is not None:
             await WorkerService(session).delete(worker, auto_commit=False)
 
+    async def check_server_external_url(self):
+        if self._cfg.server_external_url is None or self._cfg.server_external_url == "":
+            raise ValueError("External server url is not configured")
+        import aiohttp
+        from yarl import URL
+
+        healthz_url = str(URL(self._cfg.server_external_url) / "healthz")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(healthz_url, timeout=10) as resp:
+                    if resp.status != 200:
+                        raise ValueError(
+                            f"External server healthz url {healthz_url} is not reachable, status code: {resp.status}"
+                        )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to check external server healthz url {healthz_url}: {e}"
+            )
+
     async def _reconcile(self, event: Event):
         """
         When provisioning a worker, the state will transition from following steps:
@@ -1172,6 +1191,8 @@ class WorkerProvisioningController:
                 credential=credential,
             )
             try:
+                if worker.state == WorkerStateEnum.PENDING:
+                    await self.check_server_external_url()
                 if worker.state in [
                     WorkerStateEnum.PENDING,
                     WorkerStateEnum.PROVISIONING,
