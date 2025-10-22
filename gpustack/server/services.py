@@ -165,7 +165,10 @@ class UserService:
             api_key: ApiKey = await APIKeyService(self.session).get_by_access_key(
                 access_key
             )
-            if api_key.allowed_model_names is not None:
+            if (
+                api_key.allowed_model_names is not None
+                and len(api_key.allowed_model_names) > 0
+            ):
                 model_names = model_names.intersection(set(api_key.allowed_model_names))
         return model_names
 
