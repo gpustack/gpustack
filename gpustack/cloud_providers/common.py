@@ -66,6 +66,7 @@ docker run -d --name gpustack-worker \
 --restart=unless-stopped \
 --privileged --net=host \
 -v /var/lib/gpustack:/var/lib/gpustack \
+-v /var/run/docker.sock:/var/run/docker.sock \
 {image_name} --server-url {server_url} --registration-token {registration_token}
 
 echo "$(date): gpustack worker container started" >> /var/log/post-reboot.log
