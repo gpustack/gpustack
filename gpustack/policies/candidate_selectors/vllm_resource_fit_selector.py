@@ -986,6 +986,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     worker_id=worker.id,
                     worker_name=worker.name,
                     worker_ip=worker.ip,
+                    worker_ifname=worker.ifname,
                     total_gpus=len(worker.status.gpu_devices),
                     gpu_indexes=gpu_indexes,
                     computed_resource_claim=ComputedResourceClaim(
@@ -1123,6 +1124,7 @@ def _create_candidate(
             worker_id=worker.id,
             worker_name=worker.name,
             worker_ip=worker.ip,
+            worker_ifname=worker.ifname,
             total_gpus=len(worker.status.gpu_devices),
             gpu_indexes=[gpu.index for gpu in worker.status.gpu_devices],
             computed_resource_claim=ComputedResourceClaim(

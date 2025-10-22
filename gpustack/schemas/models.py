@@ -286,6 +286,7 @@ class ModelInstanceSubordinateWorker(BaseModel):
     worker_id: Optional[int] = None
     worker_name: Optional[str] = None
     worker_ip: Optional[str] = None
+    worker_ifname: Optional[str] = None
     total_gpus: Optional[int] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
@@ -340,6 +341,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     worker_id: Optional[int] = None
     worker_name: Optional[str] = None
     worker_ip: Optional[str] = None
+    worker_ifname: Optional[str] = None
     pid: Optional[int] = None
     # FIXME: Migrate to ports.
     port: Optional[int] = None

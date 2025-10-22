@@ -229,6 +229,7 @@ class WorkerStatus(SystemInfo):
 class WorkerStatusPublic(BaseModel):
     hostname: str
     ip: str
+    ifname: str
     port: int
     metrics_port: Optional[int] = None
 
