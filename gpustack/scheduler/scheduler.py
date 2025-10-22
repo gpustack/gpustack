@@ -716,7 +716,11 @@ def set_model_gpus_per_replica(model: Model) -> bool:
 
     gpus_per_replica = calculate_gpus_per_replica(model)
     model.gpu_selector.gpus_per_replica = gpus_per_replica
-    flag_modified(model, "gpu_selector")
+    try:
+        flag_modified(model, "gpu_selector")
+    except AttributeError:
+        # Ignore if the given model is not a SQLModel instance.
+        pass
     return True
 
 
