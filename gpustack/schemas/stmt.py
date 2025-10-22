@@ -67,7 +67,8 @@ FROM
         gpu_device JSON PATH '$'
     )) AS gpu_devices
 WHERE
-    JSON_LENGTH(w.status, '$.gpu_devices') > 0
+    JSON_LENGTH(w.status, '$.gpu_devices') IS NOT NULL
+    AND JSON_LENGTH(w.status, '$.gpu_devices') > 0
 """
 
 worker_after_drop_view_stmt_postgres = "DROP VIEW IF EXISTS gpu_devices_view CASCADE"
@@ -102,7 +103,7 @@ FROM
     workers w,
     LATERAL json_array_elements(w.status::json->'gpu_devices') AS gpu_device
 WHERE
-    json_array_length(w.status::json->'gpu_devices') > 0
+    json_typeof(w.status::json->'gpu_devices') = 'array';
 """
 
 model_user_after_drop_view_stmt = "DROP VIEW IF EXISTS non_admin_user_models"
