@@ -7,7 +7,9 @@ from gpustack.schemas.workers import Worker
 from gpustack.schemas.inference_backend import InferenceBackend, get_built_in_backend
 from gpustack.server.db import get_engine
 from gpustack_runner import list_service_runners
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ class BackendFrameworkFilter(WorkerFilter):
         self.model = model
         self.backend_name = get_backend(model)
 
-    def _get_backend_supported_frameworks(self, backend_name: str) -> List[str]:
+    async def _get_backend_supported_frameworks(self, backend_name: str) -> List[str]:
         """
         Get supported frameworks for a given backend.
         This method supports both built-in backends (via gpustack-runner) and custom backends (via database).
@@ -38,11 +40,12 @@ class BackendFrameworkFilter(WorkerFilter):
         # First, try to get frameworks from database (for both built-in and custom backends)
         try:
             engine = get_engine()
-            with Session(engine) as session:
+            async with AsyncSession(engine) as session:
                 statement = select(InferenceBackend).where(
                     InferenceBackend.backend_name == backend_name
                 )
-                backend = session.exec(statement).first()
+                result = await session.exec(statement)
+                backend = result.first()
 
                 if backend and backend.version_configs and backend.version_configs.root:
                     for version_config in backend.version_configs.root.values():
@@ -95,7 +98,9 @@ class BackendFrameworkFilter(WorkerFilter):
             return workers, []
 
         # Get supported frameworks for the model's backend
-        supported_frameworks = self._get_backend_supported_frameworks(self.backend_name)
+        supported_frameworks = await self._get_backend_supported_frameworks(
+            self.backend_name
+        )
 
         if not supported_frameworks:
             logger.info(
