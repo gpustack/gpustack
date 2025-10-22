@@ -222,12 +222,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env_bool("FORCE_AUTH_LOCALHOST"),
     )
     group.add_argument(
-        "--ollama-library-base-url",
-        type=str,
-        help=argparse.SUPPRESS,
-        default=get_gpustack_env("OLLAMA_LIBRARY_BASE_URL"),
-    )
-    group.add_argument(
         "--disable-update-check",
         action=OptionalBoolAction,
         help="Disable update check.",
@@ -631,7 +625,6 @@ def set_server_options(args, config_data: dict):
         "ssl_keyfile",
         "ssl_certfile",
         "force_auth_localhost",
-        "ollama_library_base_url",
         "disable_update_check",
         "disable_openapi_docs",
         "update_check_url",

@@ -443,7 +443,6 @@ async def evaluate_gguf_model(
         model,
         offload=GPUOffloadEnum.Full,
         cache_dir=config.cache_dir,
-        ollama_library_base_url=config.ollama_library_base_url,
     )
     if (
         task_output.resource_architecture

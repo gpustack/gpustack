@@ -33,7 +33,6 @@ def new_model(
     id,
     name,
     replicas=1,
-    ollama_library_model_name=None,
     huggingface_repo_id=None,
     model_scope_model_id=None,
     placement_strategy=PlacementStrategyEnum.BINPACK,
@@ -50,7 +49,6 @@ def new_model(
     backend_parameters = kargs.get("backend_parameters")
     categories = kargs.get("categories", [CategoryEnum.LLM])
 
-    source = SourceEnum.OLLAMA_LIBRARY
     huggingface_filename = None
     if huggingface_repo_id is not None:
         source = SourceEnum.HUGGING_FACE
@@ -64,7 +62,6 @@ def new_model(
         replicas=replicas,
         ready_replicas=0,
         source=source,
-        ollama_library_model_name=ollama_library_model_name,
         huggingface_repo_id=huggingface_repo_id,
         huggingface_filename=huggingface_filename,
         model_scope_model_id=model_scope_model_id,

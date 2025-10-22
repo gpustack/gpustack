@@ -90,7 +90,14 @@ async def test_label_matching_filter():
     ]
 
     labels = {"os": "Darwin"}
-    m = new_model(1, "test", 1, "llama3:8b", worker_selector=labels)
+    m = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-8B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+        worker_selector=labels,
+    )
 
     filter = LabelMatchingFilter(m)
     candidates, _ = await filter.filter(workers)
@@ -107,7 +114,13 @@ async def test_schedule_to_single_worker_single_gpu(config):
         linux_nvidia_2_4080_16gx2(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:8b")
+    m = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-8B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+    )
 
     resource_fit_selector = GGUFResourceFitSelector(m)
     placement_scorer = PlacementScorer(m)
@@ -184,7 +197,13 @@ async def test_schedule_to_single_worker_multi_gpu(config):
         linux_nvidia_19_4090_24gx2(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b")
+    m = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+    )
 
     resource_fit_selector = GGUFResourceFitSelector(m)
     placement_scorer = PlacementScorer(m)
@@ -313,7 +332,12 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
     ]
 
     m = new_model(
-        1, "test", 1, "llama3:70b", placement_strategy=PlacementStrategyEnum.BINPACK
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+        placement_strategy=PlacementStrategyEnum.BINPACK,
     )
 
     mis = [
@@ -491,7 +515,8 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
         1,
         "test",
         1,
-        "llama3:70b",
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
         cpu_offloading=True,
         distributed_inference_across_workers=False,
     )
@@ -550,7 +575,14 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         linux_cpu_2(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=True)
+    m = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+        cpu_offloading=True,
+    )
 
     mis = [
         new_model_instance(
@@ -675,7 +707,14 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
         linux_nvidia_2_4080_16gx2(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b", cpu_offloading=False)
+    m = new_model(
+        1,
+        "test",
+        1,
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
+        cpu_offloading=False,
+    )
 
     resource_fit_selector_binpack = GGUFResourceFitSelector(m)
     placement_scorer_binpack = PlacementScorer(m)
@@ -753,7 +792,8 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
         1,
         "test",
         1,
-        "llama3:70b",
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
         cpu_offloading=False,
         gpu_selector=GPUSelector(
             gpu_ids=[
@@ -1073,7 +1113,8 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
         1,
         "test",
         1,
-        "llama3:70b",
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
         placement_strategy=PlacementStrategyEnum.BINPACK,
         gpu_selector=GPUSelector(
             gpu_ids=["host-4-4080:cuda:0", "host-4-4080:cuda:2", "host-4-4080:cuda:3"]
@@ -1198,7 +1239,8 @@ async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config
         1,
         "test",
         1,
-        "llama3:70b",
+        "Meta-Llama-3-70B-Instruct-GGUF",
+        huggingface_filename="*Q4_K_M*.gguf",
         cpu_offloading=True,
         distributed_inference_across_workers=False,
         gpu_selector=GPUSelector(gpu_ids=["host4080:cuda:0", "host4080:cuda:1"]),
@@ -1357,7 +1399,7 @@ def mock_calculate_model_resource_claim(  # noqa: C901
     mock_estimate = AsyncMock()
     tensor_split = kwargs.get("tensor_split")
     if offload == GPUOffloadEnum.Full:
-        if model.ollama_library_model_name == "llama3:70b":
+        if model.huggingface_repo_id == "Meta-Llama-3-70B-Instruct-GGUF":
             mock_estimate = llama3_70b_full_offload()
             if tensor_split:
                 mapping = {
@@ -1372,7 +1414,7 @@ def mock_calculate_model_resource_claim(  # noqa: C901
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
     if offload == GPUOffloadEnum.Partial:
-        if model.ollama_library_model_name == "llama3:70b":
+        if model.huggingface_repo_id == "Meta-Llama-3-70B-Instruct-GGUF":
             mock_estimate = llama3_70b_partial_offload()
             if tensor_split:
                 mapping = {
@@ -1424,7 +1466,7 @@ def mock_calculate_model_resource_claim(  # noqa: C901
                     ): llama3_70b_partial_offload_split_3_4080,
                 }
                 mock_estimate = mapping[tuple(tensor_split)]()
-        elif model.ollama_library_model_name == "llama3:8b":
+        elif model.huggingface_repo_id == "Meta-Llama-3-8B-Instruct-GGUF":
             mock_estimate = llama3_8b_partial_offload()
             if tensor_split:
                 mapping = {
@@ -1436,7 +1478,7 @@ def mock_calculate_model_resource_claim(  # noqa: C901
                 mock_estimate = mapping[tuple(tensor_split)]()
     elif offload == GPUOffloadEnum.Disable:
         mock_estimate = llama3_70b_disable_offload()
-        if model.ollama_library_model_name == "llama3:8b":
+        if model.huggingface_repo_id == "Meta-Llama-3-8B-Instruct-GGUF":
             return llama3_8b_disable_offload()
     return ModelResourceClaim(
         model=model, resource_claim_estimate=mock_estimate.estimate
