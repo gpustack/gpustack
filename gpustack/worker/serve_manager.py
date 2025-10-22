@@ -62,6 +62,8 @@ class ServeManager:
         self._starting_model_instances: Dict[int, ModelInstance] = {}
         self._error_model_instances: Dict[int, ModelInstance] = {}
         self._model_cache_by_instance: Dict[int, Model] = {}
+        # Track consecutive health endpoint failures for RUNNING instances
+        self._ready_failures: Dict[int, int] = {}
         self._clientset = clientset
         self._cache_dir = cfg.cache_dir
 
@@ -358,7 +360,7 @@ class ServeManager:
                     except Exception as e:
                         logger.error(f"Failed to start model instance {mi.name}: {e}")
 
-    def _update_model_instance(self, id: str, **kwargs):
+    def _update_model_instance(self, id: int, **kwargs):
         mi_public = self._clientset.model_instances.get(id=id)
 
         mi = ModelInstanceUpdate(**mi_public.model_dump())
@@ -366,6 +368,33 @@ class ServeManager:
             set_attr(mi, key, value)
 
         self._clientset.model_instances.update(id=id, model_update=mi)
+
+    def _handle_running_ready_failure(
+        self, mi: ModelInstance, failures_threshold: int = 3
+    ) -> bool:
+        """
+        Handle health endpoint failures for RUNNING state instances.
+        Increments the failure counter and updates the model instance state to ERROR
+        when the consecutive failure count reaches the threshold.
+        Returns True if threshold is reached and state updated to ERROR, False otherwise.
+        """
+        if mi.state != ModelInstanceStateEnum.RUNNING:
+            return False
+        failures = self._ready_failures.get(mi.id, 0) + 1
+        self._ready_failures[mi.id] = failures
+        if failures >= failures_threshold:
+            patch_dict = {
+                "state": ModelInstanceStateEnum.ERROR,
+                "state_message": f"Health check failed {failures} times; endpoint not ready.",
+            }
+            try:
+                self._update_model_instance(mi.id, **patch_dict)
+            except NotFoundException:
+                pass
+            # Reset failure counter after transitioning to ERROR
+            self._ready_failures.pop(mi.id, None)
+            return True
+        return False
 
     def _get_model_with_cache(self, mi: ModelInstance) -> Model:
         """Get model from cache or fetch from clientset."""
@@ -483,6 +512,7 @@ class ServeManager:
                 WorkloadStatusStateEnum.INACTIVE,
                 WorkloadStatusStateEnum.FAILED,
                 WorkloadStatusStateEnum.PENDING,
+                WorkloadStatusStateEnum.UNKNOWN,
             ]:
                 workload_alive = False
 
@@ -494,7 +524,7 @@ class ServeManager:
                         if is_main_worker:
                             patch_dict = {
                                 "state": ModelInstanceStateEnum.ERROR,
-                                "state_message": f"Inference server exited with code {process.exitcode}.",
+                                "state_message": "Inference server exited.",
                             }
                         # Get patch dict for subordinate worker.
                         else:
@@ -509,9 +539,7 @@ class ServeManager:
                             )
                             sw = mi.distributed_servers.subordinate_workers[sw_pos]
                             sw.state = ModelInstanceStateEnum.ERROR
-                            sw.state_message = (
-                                f"Inference server exited with code {process.exitcode}."
-                            )
+                            sw.state_message = "Inference server exited."
                             patch_dict = {
                                 f"distributed_servers.subordinate_workers.{sw_pos}": sw,
                             }
@@ -544,8 +572,11 @@ class ServeManager:
                     # If there is no error message from subordinate workers,
                     # check the main worker's health.
                     if not sw_error_msg:
-                        if not is_ready(backend, mi, inference_backend):
+                        ready_be_requested = is_ready(backend, mi, inference_backend)
+                        if not ready_be_requested:
+                            self._handle_running_ready_failure(mi)
                             continue
+                        self._ready_failures.pop(mi.id, None)
                         if mi.state == ModelInstanceStateEnum.RUNNING:
                             continue
                         patch_dict = {
