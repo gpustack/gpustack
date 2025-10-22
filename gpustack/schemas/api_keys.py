@@ -15,13 +15,13 @@ class ApiKeyUpdate(SQLModel):
         default=None,
         sa_column=Column(JSON, nullable=True),
     )
+    description: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
 
 
 class ApiKeyBase(ApiKeyUpdate):
     name: str
-    description: Optional[str] = Field(
-        default=None, sa_column=Column(Text, nullable=True)
-    )
 
 
 class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
