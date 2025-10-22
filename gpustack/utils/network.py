@@ -17,21 +17,41 @@ def normalize_route_path(path: str) -> str:
     return path
 
 
-def get_first_non_loopback_ip():
+def get_first_non_loopback_ip() -> Tuple[str, str]:
     """
     Get the first non-loopback IP address of the machine using psutil.
+
+    Returns:
+        A tuple containing the IP address and the interface name.
     """
 
-    for _, addrs in psutil.net_if_addrs().items():
+    for ifname, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
-            if addr.family == socket.AF_INET:
-                ip_address = addr.address
-                if not ip_address.startswith("127.") and not ip_address.startswith(
-                    "169.254."
-                ):
-                    return ip_address
+            if addr.family == socket.AF_INET and not addr.address.startswith(
+                ("127.", "169.254.")
+            ):
+                return addr.address, ifname
 
     raise Exception("No non-loopback IP address found.")
+
+
+def get_ifname_by_ip(ip_address: str) -> str:
+    """
+    Get the interface name by IP address using psutil.
+
+    Args:
+        ip_address: The IP address to look for.
+
+    Returns:
+        The interface name associated with the given IP address.
+    """
+
+    for ifname, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == socket.AF_INET and addr.address == ip_address:
+                return ifname
+
+    raise Exception(f"No interface found for IP address {ip_address}.")
 
 
 def parse_port_range(port_range: str) -> Tuple[int, int]:

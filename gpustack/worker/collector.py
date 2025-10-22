@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 class WorkerStatusCollector:
     _cfg: Config
     _worker_id_getter: Callable[[], int]
+    _worker_ifname_getter: Callable[[], str]
     _worker_ip_getter: Callable[[], str]
     _system_uuid: str
     _machine_id: str
@@ -44,10 +45,12 @@ class WorkerStatusCollector:
         self,
         cfg: Config,
         worker_ip_getter: Callable[[], str],
+        worker_ifname_getter: Callable[[], str],
         worker_id_getter: Callable[[], int],
     ):
         self._cfg = cfg
         self._worker_ip_getter = worker_ip_getter
+        self._worker_ifname_getter = worker_ifname_getter
         self._worker_id_getter = worker_id_getter
         self._system_uuid = get_legacy_uuid(cfg.data_dir) or get_system_uuid(
             cfg.data_dir
@@ -120,6 +123,7 @@ class WorkerStatusCollector:
         return WorkerStatusPublic(
             hostname=socket.gethostname(),
             ip=self._worker_ip_getter(),
+            ifname=self._worker_ifname_getter(),
             port=self._cfg.worker_port,
             metrics_port=metrics_port,
             system_reserved=self._system_reserved,

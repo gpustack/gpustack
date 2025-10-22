@@ -61,6 +61,7 @@ class Config(BaseSettings):
 
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
+        worker_ifname: Network interface name of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
         disable_worker_metrics: Disable worker metrics.
         worker_metrics_port: Port to expose metrics on.
@@ -158,6 +159,7 @@ class Config(BaseSettings):
     server_url: Optional[str] = None
     registration_token: Optional[str] = None
     worker_ip: Optional[str] = None
+    worker_ifname: Optional[str] = None
     worker_name: Optional[str] = None
     disable_worker_metrics: bool = False
     worker_port: int = 10150

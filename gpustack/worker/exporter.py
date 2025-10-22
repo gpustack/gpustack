@@ -35,7 +35,7 @@ class MetricExporter(Collector):
         worker_name: str,
         collector: WorkerStatusCollector,
         worker_ip_getter: Callable[[], str],
-        worker_id_getter: Callable[[], str],
+        worker_id_getter: Callable[[], int],
         clientset_getter: Callable[[], ClientSet] = None,
         cache: dict = None,
     ):

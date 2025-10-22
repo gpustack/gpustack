@@ -18,7 +18,7 @@ from gpustack.config.envs import TCP_CONNECTOR_LIMIT
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.server import catalog
-from gpustack.utils.network import get_first_non_loopback_ip
+from gpustack.utils.network import get_first_non_loopback_ip, get_ifname_by_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
@@ -42,10 +42,14 @@ class Worker:
     _worker_manager: WorkerManager
     _config: Config
     _worker_ip: Optional[str] = None
+    _worker_ifname: Optional[str] = None
     _worker_id: Optional[int] = None
 
     def worker_ip(self) -> str:
-        return self._config.worker_ip if self._config.worker_ip else self._worker_ip
+        return self._config.worker_ip or self._worker_ip
+
+    def worker_ifname(self) -> str:
+        return self._config.worker_ifname or self._worker_ifname
 
     def worker_id(self) -> int:
         return self._worker_id
@@ -60,7 +64,7 @@ class Worker:
         self._address = "0.0.0.0"
         self._exporter_enabled = not cfg.disable_worker_metrics
         self._async_tasks = []
-        self._worker_ip = get_first_non_loopback_ip()
+        self._worker_ip, self._worker_ifname = get_first_non_loopback_ip()
 
         self._worker_name = cfg.worker_name
         if self._worker_name is None:
@@ -70,6 +74,7 @@ class Worker:
         self._status_collector = WorkerStatusCollector(
             cfg=cfg,
             worker_ip_getter=self.worker_ip,
+            worker_ifname_getter=self.worker_ifname,
             worker_id_getter=self.worker_id,
         )
 
@@ -174,10 +179,13 @@ class Worker:
             # Start the metric exporter with retry.
             run_periodically_in_thread(self._exporter.start, 15)
 
-        # if not a fixed ip
+        # Monitor the ip change, if not fixed.
         if not self._config.worker_ip:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
+        # Fill the worker ifname if not set.
+        elif not self._config.worker_ifname:
+            self._worker_ifname = get_ifname_by_ip(self._config.worker_ip)
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
@@ -258,12 +266,16 @@ class Worker:
         instances so they can be recreated with the new worker IP.
         """
 
-        current_ip = get_first_non_loopback_ip()
-        old_ip = self.worker_ip()
-        if current_ip == old_ip:
+        new_ip, new_ifname = get_first_non_loopback_ip()
+        old_ip, old_ifname = self.worker_ip(), self.worker_ifname()
+        if new_ip == old_ip and new_ifname == old_ifname:
             return
-        logger.info(f"Worker IP changed from {old_ip} to {current_ip}")
-        self._worker_ip = current_ip
+
+        logger.info(
+            f"Worker IP changed from {old_ip}({old_ifname}) to {new_ip}{new_ifname}"
+        )
+        self._worker_ip = new_ip
+        self._worker_ifname = new_ifname
         self._worker_manager.sync_worker_status()
 
         for instance in self._clientset.model_instances.list(

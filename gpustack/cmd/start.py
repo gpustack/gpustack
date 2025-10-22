@@ -274,6 +274,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("WORKER_IP"),
     )
     group.add_argument(
+        "--worker-ifname",
+        type=str,
+        help="Network interface name of the worker node. Auto-detected by default.",
+        default=get_gpustack_env("WORKER_IFNAME"),
+    )
+    group.add_argument(
         "--worker-name",
         type=str,
         help="Name of the worker node. Use the hostname by default.",
@@ -637,6 +643,7 @@ def set_worker_options(args, config_data: dict):
     options = [
         "server_url",
         "worker_ip",
+        "worker_ifname",
         "worker_name",
         "worker_port",
         "disable_worker_metrics",

@@ -55,6 +55,7 @@ class ModelInstanceScheduleCandidate:
                     f"worker_id: {sw.worker_id}, "
                     f"worker_name: {sw.worker_name}, "
                     f"worker_ip: {sw.worker_ip}, "
+                    f"worker_ifname {sw.worker_ifname}, "
                     f"total_gpus: {sw.total_gpus}, "
                     f"gpu_indexes: {sw.gpu_indexes}, "
                     f"gpu_addresses: {sw.gpu_addresses}"

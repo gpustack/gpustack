@@ -13,6 +13,7 @@ class GPUDeviceBase(GPUDeviceInfo, BaseModel):
     worker_id: int
     worker_name: str
     worker_ip: str
+    worker_ifname: str
     cluster_id: int
 
 
