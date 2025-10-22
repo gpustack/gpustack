@@ -26,7 +26,6 @@ from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.models import build_category_conditions
 from gpustack.schemas.models import (
     BackendEnum,
-    CategoryEnum,
     Model,
     MyModel,
 )
@@ -86,31 +85,6 @@ router.include_router(aliasable_router)
 async def list_models(
     user: CurrentUserDep,
     session: SessionDep,
-    embedding_only: Optional[bool] = Query(
-        None,
-        deprecated=True,
-        description="This parameter is deprecated and will be removed in a future version.",
-    ),
-    image_only: Optional[bool] = Query(
-        None,
-        deprecated=True,
-        description="This parameter is deprecated and will be removed in a future version.",
-    ),
-    reranker: Optional[bool] = Query(
-        None,
-        deprecated=True,
-        description="This parameter is deprecated and will be removed in a future version.",
-    ),
-    speech_to_text: Optional[bool] = Query(
-        None,
-        deprecated=True,
-        description="This parameter is deprecated and will be removed in a future version.",
-    ),
-    text_to_speech: Optional[bool] = Query(
-        None,
-        deprecated=True,
-        description="This parameter is deprecated and will be removed in a future version.",
-    ),
     categories: List[str] = Query(
         [],
         description="Model categories to filter by.",
@@ -120,26 +94,14 @@ async def list_models(
         description="Include model meta information.",
     ),
 ):
-    all_categories = set(categories)
-    if embedding_only:
-        all_categories.add(CategoryEnum.EMBEDDING.value)
-    if image_only:
-        all_categories.add(CategoryEnum.IMAGE.value)
-    if reranker:
-        all_categories.add(CategoryEnum.RERANKER.value)
-    if speech_to_text:
-        all_categories.add(CategoryEnum.SPEECH_TO_TEXT.value)
-    if text_to_speech:
-        all_categories.add(CategoryEnum.TEXT_TO_SPEECH.value)
-    all_categories = list(all_categories)
     target_class = Model if user.is_admin else MyModel
     statement = select(target_class).where(target_class.ready_replicas > 0)
     if target_class == MyModel:
         # Non-admin users should only see their own private models when filtering by categories.
         statement = statement.where(target_class.user_id == user.id)
 
-    if all_categories:
-        conditions = build_category_conditions(session, target_class, all_categories)
+    if categories:
+        conditions = build_category_conditions(session, target_class, categories)
         statement = statement.where(or_(*conditions))
 
     models = (await session.exec(statement)).all()
