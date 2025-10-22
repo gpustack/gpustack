@@ -45,8 +45,6 @@ def get_model_path_and_name(model: Model) -> (str, str):
         return model.huggingface_repo_id, model.huggingface_filename
     elif model.source == SourceEnum.MODEL_SCOPE:
         return model.model_scope_model_id, model.model_scope_file_path
-    elif model.source == SourceEnum.OLLAMA_LIBRARY:
-        return model.ollama_library_model_name, ""
     elif model.source == SourceEnum.LOCAL_PATH:
         return model.local_path, ""
     else:

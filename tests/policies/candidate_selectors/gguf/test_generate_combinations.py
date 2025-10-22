@@ -22,7 +22,7 @@ async def test_generate_combinations_for_single_worker_gpus():
         linux_nvidia_8_3090_24gx8(),
     ]
 
-    m = new_model(1, "test", 1, "llama3:70b")
+    m = new_model(1, "test", 1, "Meta-Llama-3-70B-Instruct-GGUF")
     mi = new_model_instance(1, "test", 1)
 
     resource_fit_selector = GGUFResourceFitSelector(m, mi)

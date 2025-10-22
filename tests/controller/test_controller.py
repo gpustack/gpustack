@@ -29,7 +29,7 @@ async def test_find_scale_down_candidates():
         linux_cpu_1(),
     ]
 
-    m = new_model(1, "test", 3, "llama3:70b")
+    m = new_model(1, "test", 3, "Meta-Llama-3-70B-Instruct-GGUF")
     mis = [
         new_model_instance(
             1,

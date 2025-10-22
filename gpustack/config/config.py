@@ -56,7 +56,6 @@ class Config(BaseSettings):
         force_auth_localhost: Force authentication for requests originating from
                               localhost (127.0.0.1). When set to True, all requests
                               from localhost will require authentication.
-        ollama_library_base_url: Base URL of the Ollama library. Default is https://registry.ollama.ai.
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
         model_catalog_file: Path or URL to the model catalog file.
@@ -125,7 +124,6 @@ class Config(BaseSettings):
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
-    ollama_library_base_url: Optional[str] = "https://registry.ollama.ai"
     metrics_port: int = 10161
     disable_metrics: bool = False
     disable_update_check: bool = False
@@ -241,11 +239,6 @@ class Config(BaseSettings):
             self.server_url = self.server_url.rstrip("/")
             if validators.url(self.server_url) is not True:
                 raise Exception("Invalid server URL.")
-
-        if self.ollama_library_base_url:
-            self.ollama_library_base_url = self.ollama_library_base_url.rstrip("/")
-            if validators.url(self.ollama_library_base_url) is not True:
-                raise Exception("Invalid Ollama library base URL.")
 
         if self.resources:
             self.get_gpu_devices()

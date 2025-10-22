@@ -63,9 +63,6 @@ async def get_model_files(
                     func.lower(ModelFile.huggingface_filename).like(
                         f"%{lower_search}%"
                     ),
-                    func.lower(ModelFile.ollama_library_model_name).like(
-                        f"%{lower_search}%"
-                    ),
                     func.lower(ModelFile.model_scope_model_id).like(
                         f"%{lower_search}%"
                     ),
@@ -95,10 +92,6 @@ def search_model_file_filter(data: ModelFile, search: str) -> bool:
         or (
             data.huggingface_filename
             and search.lower() in data.huggingface_filename.lower()
-        )
-        or (
-            data.ollama_library_model_name
-            and search.lower() in data.ollama_library_model_name.lower()
         )
         or (
             data.model_scope_model_id

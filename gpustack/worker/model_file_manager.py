@@ -504,7 +504,6 @@ class ModelFileDownloadTask:
             self._model_file,
             local_dir=self._model_file.local_dir,
             cache_dir=self._config.cache_dir,
-            ollama_library_base_url=self._config.ollama_library_base_url,
             huggingface_token=self._config.huggingface_token,
         )
         self._download_completed = True
@@ -706,7 +705,6 @@ class ModelFileDownloadTask:
             self._model_file,
             huggingface_token=self._config.huggingface_token,
             cache_dir=self._config.cache_dir,
-            ollama_library_base_url=self._config.ollama_library_base_url,
         )
 
         (size, file_paths) = hub.match_file_and_calculate_size(

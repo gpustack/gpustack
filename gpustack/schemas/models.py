@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 class SourceEnum(str, Enum):
     HUGGING_FACE = "huggingface"
-    OLLAMA_LIBRARY = "ollama_library"
     MODEL_SCOPE = "model_scope"
     LOCAL_PATH = "local_path"
 
@@ -85,7 +84,6 @@ class ModelSource(BaseModel):
     source: SourceEnum
     huggingface_repo_id: Optional[str] = None
     huggingface_filename: Optional[str] = None
-    ollama_library_model_name: Optional[str] = None
     model_scope_model_id: Optional[str] = None
     model_scope_file_path: Optional[str] = None
     local_path: Optional[str] = None
@@ -95,8 +93,6 @@ class ModelSource(BaseModel):
         """Returns a unique identifier for the model, independent of quantization."""
         if self.source == SourceEnum.HUGGING_FACE:
             return self.huggingface_repo_id or ""
-        elif self.source == SourceEnum.OLLAMA_LIBRARY:
-            return self.ollama_library_model_name or ""
         elif self.source == SourceEnum.MODEL_SCOPE:
             return self.model_scope_model_id or ""
         elif self.source == SourceEnum.LOCAL_PATH:
@@ -108,8 +104,6 @@ class ModelSource(BaseModel):
         values = []
         if self.source == SourceEnum.HUGGING_FACE:
             values.extend([self.huggingface_repo_id, self.huggingface_filename])
-        elif self.source == SourceEnum.OLLAMA_LIBRARY:
-            values.extend([self.ollama_library_model_name])
         elif self.source == SourceEnum.MODEL_SCOPE:
             values.extend([self.model_scope_model_id, self.model_scope_file_path])
         elif self.source == SourceEnum.LOCAL_PATH:
@@ -122,8 +116,6 @@ class ModelSource(BaseModel):
         values = []
         if self.source == SourceEnum.HUGGING_FACE:
             values.extend([self.huggingface_repo_id, self.huggingface_filename])
-        elif self.source == SourceEnum.OLLAMA_LIBRARY:
-            values.extend([self.ollama_library_model_name])
         elif self.source == SourceEnum.MODEL_SCOPE:
             values.extend([self.model_scope_model_id, self.model_scope_file_path])
         elif self.source == SourceEnum.LOCAL_PATH:
@@ -138,11 +130,6 @@ class ModelSource(BaseModel):
                 raise ValueError(
                     "huggingface_repo_id must be provided "
                     "when source is 'huggingface'"
-                )
-        if self.source == SourceEnum.OLLAMA_LIBRARY:
-            if not self.ollama_library_model_name:
-                raise ValueError(
-                    "ollama_library_model_name must be provided when source is 'ollama_library'"
                 )
 
         if self.source == SourceEnum.MODEL_SCOPE:
@@ -434,8 +421,7 @@ def is_gguf_model(model: Union[Model, ModelSource]):
         model: Model to check.
     """
     return (
-        model.source == SourceEnum.OLLAMA_LIBRARY
-        or (
+        (
             model.source == SourceEnum.HUGGING_FACE
             and model.huggingface_filename
             and model.huggingface_filename.endswith(".gguf")

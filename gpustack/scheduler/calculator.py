@@ -686,7 +686,6 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
     """
 
     if model.source not in [
-        SourceEnum.OLLAMA_LIBRARY,
         SourceEnum.HUGGING_FACE,
         SourceEnum.MODEL_SCOPE,
         SourceEnum.LOCAL_PATH,
@@ -694,13 +693,7 @@ async def _gguf_parser_command_args_from_source(  # noqa: C901
         raise ValueError(f"Unsupported source: {model.source}")
 
     try:
-        if model.source == SourceEnum.OLLAMA_LIBRARY:
-            args = ["-ol-model", model.ollama_library_model_name]
-            ol_base_url = kwargs.get("ollama_library_base_url")
-            if ol_base_url:
-                args.extend(["-ol-base-url", ol_base_url])
-            return args
-        elif model.source in [SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE]:
+        if model.source in [SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE]:
             cache_expiration = kwargs.get("cache_expiration")
             if cache_expiration and cache_expiration != "0":
                 cache_expiration = parse_duration(cache_expiration)

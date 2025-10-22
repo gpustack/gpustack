@@ -28,6 +28,14 @@ def upgrade() -> None:
         batch_op.drop_column('image_only')
         batch_op.drop_column('speech_to_text')
         batch_op.drop_column('text_to_speech')
+        batch_op.drop_column('ollama_library_model_name')
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.drop_column('ollama_library_model_name')
+
+    with op.batch_alter_table('model_files', schema=None) as batch_op:
+        batch_op.drop_column('ollama_library_model_name')
+
 
     # Create inference_backends table
     op.create_table(
@@ -68,3 +76,10 @@ def downgrade() -> None:
         batch_op.add_column(sa.Column('image_only', sa.Boolean(), nullable=False, server_default="0"))
         batch_op.add_column(sa.Column('speech_to_text', sa.Boolean(), nullable=False, server_default="0"))
         batch_op.add_column(sa.Column('text_to_speech', sa.Boolean(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('ollama_library_model_name', sa.VARCHAR(), nullable=True))
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('ollama_library_model_name', sa.VARCHAR(), nullable=True))
+
+    with op.batch_alter_table('model_files', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('ollama_library_model_name', sa.VARCHAR(), nullable=True))
