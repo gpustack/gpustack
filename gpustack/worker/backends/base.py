@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
 
-from gpustack_runner import list_service_runners
+from gpustack_runner import list_backend_runners
+from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import ContainerResources, ContainerMount, ContainerPort
-from gpustack_runtime.deployer.__utils__ import compare_versions, correct_runner_image
+from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
-    detect_devices,
     ManufacturerEnum,
+    backend_to_manufacturer,
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
@@ -31,6 +32,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.server.bus import Event
+from gpustack.utils.gpu import parse_gpu_id
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 
@@ -238,15 +240,52 @@ class InferenceServer(ABC):
         else:
             gpu_indexes = sorted(self._model_instance.gpu_indexes)
 
+        # When doing manual selection, the device type is further confirmed in the selection information.
+        # This helps to find the correct item when there are multiple devices mixed in one node.
+        # For example, a node includes both NVIDIA device and AMD device.
+        #
+        # FIXME(thxCode): Currently, there is not field to indicate the device vendor corresponding to a certain device index.
+        #                 We should extend the processing of indexes selection, preserving both index and device type,
+        #                 and support automatic selection as well.
+        gpu_index_types: Dict[int, set[int]] = {}  # device index -> {device type}
+        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
+            for gpu_id in self._model.gpu_selector.gpu_ids:
+                is_valid, matched = parse_gpu_id(gpu_id)
+                if not is_valid:
+                    continue
+                if matched.get("worker_name") != self._worker.name:
+                    continue
+                gpu_device_type = matched.get("device")
+                gpu_index = int(matched.get("gpu_index"))
+                if gpu_index not in gpu_index_types:
+                    gpu_index_types[gpu_index] = set()
+                gpu_index_types[gpu_index].add(gpu_device_type)
+
         gpu_devices: GPUDevicesInfo = []
         if gpu_indexes and self._worker.status.gpu_devices:
-            for index in gpu_indexes:
-                gpu_device = next(
-                    (d for d in self._worker.status.gpu_devices if d.index == index),
-                    None,
-                )
-                if gpu_device:
-                    gpu_devices.append(gpu_device)
+            if gpu_index_types:
+                for i, d in enumerate(self._worker.status.gpu_devices):
+                    if d.index not in gpu_index_types:
+                        continue
+                    if d.type not in gpu_index_types[d.index]:
+                        continue
+                    # For example, with d = {"index": 0, "type": "cuda"},
+                    # before discard: gpu_index_types = {0: {cuda,rocm}, 1: {cuda}}
+                    # after discard:  gpu_index_types = {0: {     rocm}, 1: {cuda}}
+                    gpu_index_types[d.index].discard(d.type)
+                    gpu_devices.append(self._worker.status.gpu_devices[i])
+            else:
+                for index in gpu_indexes:
+                    gpu_device = next(
+                        (
+                            d
+                            for d in self._worker.status.gpu_devices
+                            if d.index == index
+                        ),
+                        None,
+                    )
+                    if gpu_device:
+                        gpu_devices.append(gpu_device)
         return gpu_devices
 
     def _get_configured_resources(
@@ -396,100 +435,141 @@ class InferenceServer(ABC):
         # Return original default_args by default
         return default_args
 
-    def _get_backend_image_name(self, backend_type: Optional[str] = None) -> str:
-        """
-        Get supported backend images from gpustack-runner.
-
-        Args:
-            backend_type: Optional backend type override (e.g., "cann" for MindIE)
-                         If not provided, will be derived from GPU vendor
-
-        Returns:
-            Docker image name for the backend
-        """
-        # Get GPU vendor from the first GPU assigned to this model instance
-        vendor = None
-        if (
-            self._model_instance.gpu_indexes
-            and self._worker
-            and self._worker.status.gpu_devices
-        ):
-            gpu_devices = self._worker.status.gpu_devices
-            first_index = self._model_instance.gpu_indexes[0]
-            gpu_device = next((d for d in gpu_devices if d.index == first_index), None)
-            if gpu_device:
-                vendor = gpu_device.vendor.lower()
-
-        if vendor == "Huawei":
-            vendor = ManufacturerEnum.ASCEND
-        # Determine backend_type if not provided
-        if backend_type is None:
-            backend_type = manufacturer_to_backend(vendor) if vendor else None
-
-        # Get supported images from gpustack-runner
-        runtime_version = ""
-        try:
-            devices = detect_devices()
-            runtime_version = next(
-                (
-                    device.runtime_version
-                    for device in devices
-                    if device.manufacturer == vendor
-                ),
-                "",
-            )
-            logger.debug(f"runtime_version: {runtime_version}")
-        except Exception as e:
-            logger.error(f"Failed to detect devices: {e}")
-        runner_param = {
-            "backend": backend_type.lower() if backend_type else None,
-            "service": self._model.backend.lower() if self._model.backend else None,
-            "platform": platform.system_arch(),
-        }
-        if self._model.backend_version:
-            runner_param["service_version"] = self._model.backend_version
-
-        service_list = list_service_runners(**runner_param)
-
-        docker_image = ""
+    def _get_configured_image(  # noqa: C901
+        self,
+        backend: Optional[str] = None,
+    ) -> Optional[str]:
+        # Return directly if provided.
         if self._model.image_name:
-            docker_image = self._model.image_name
-        elif service_list and len(service_list) > 0:
-            service = service_list[0]
-            logger.debug(f"Get {len(service.versions)} service runners")
-            runner_info = next(
-                (
-                    (p.docker_image, v)
-                    for v in service.versions
-                    for b in v.backends
-                    for b_ver in b.versions
-                    if compare_versions(b_ver.version, runtime_version) <= 0
-                    for b_var in b_ver.variants
-                    for p in b_var.platforms
-                    if p.docker_image
-                ),
-                ("", None),
+            return self._model.image_name
+
+        """
+        Prepare queries for retrieving runners.
+        """
+
+        def get_docker_image(bvr: BackendVersionedRunner) -> str:
+            return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
+
+        # Get vendor from selected devices at first,
+        # if no specified, retrieve from the first device of the worker.
+        vendor, runtime_version, arch_family = None, None, None
+        gpu_devices = self._get_selected_gpu_devices()
+        if gpu_devices:
+            gpu_device = gpu_devices[0]
+            vendor, runtime_version, arch_family = (
+                gpu_device.vendor,
+                gpu_device.runtime_version,
+                gpu_device.arch_family,
             )
-            if runner_info[0]:
-                docker_image = runner_info[0]
-            if runner_info[1] and not self._model.backend_version:
-                self._model.backend_version = runner_info[1].version
-                self._clientset.models.update(self._model.id, self._model)
-        if not docker_image:
-            docker_image = self.inference_backend.get_image_name(
-                self._model.backend_version
+        elif self._worker.status.gpu_devices:
+            gpu_device = self._worker.status.gpu_devices[0]
+            vendor, runtime_version, arch_family = (
+                gpu_device.vendor,
+                gpu_device.runtime_version,
+                gpu_device.arch_family,
             )
+        if not vendor:
+            # Return directly if there is not a valid device.
+            return None
 
-        if not docker_image and self._model.backend_version:
-            docker_image = f"gpustack/runner:{backend_type}{runtime_version}-{self._model.backend}{self._model.backend_version}"
+        # Determine backend if not provided.
+        if not backend:
+            backend = manufacturer_to_backend(ManufacturerEnum(vendor))
+        elif vendor != backend_to_manufacturer(backend):
+            # Return directly if selected vendor is not matched the backend.
+            return None
 
-        # Finally, invoke the runtime to make a correction to the docker_image.
-        if docker_image:
-            docker_image = correct_runner_image(docker_image)
+        """
+        Retrieve runners by queries.
 
-        logger.info(f"{self._model.backend} image name: {docker_image}")
+        For example, the queries of runners is as below.
 
-        return docker_image
+        - backend: cuda
+          backend_variant: None
+          service: vllm
+          service_version: 0.10.0
+          platform: linux/amd64
+        - backend: cann
+          backend_variant: 910b
+          service: vllm
+          service_version: 0.10.0
+          platform: linux/arm64
+        """
+
+        backend_variant = None
+        service = self._model.backend.lower()
+        service_version = (
+            self._model.backend_version if self._model.backend_version else None
+        )
+
+        # Default variant for some backends.
+        if backend == "cann":
+            if arch_family:
+                backend_variant = get_ascend_cann_variant(arch_family)
+            if not backend_variant:
+                backend_variant = "910b"
+
+        runners = list_backend_runners(
+            backend=backend,
+            backend_variant=backend_variant,
+            service=service,
+            service_version=service_version,
+            platform=platform.system_arch(),
+        )
+        if not runners:
+            # Return directly if there is not a valid runner.
+            return None
+
+        """
+        Pick the appropriate backend version from among the multiple versions.
+
+        For example, the content of runners is as below.
+
+        [
+            {
+                "backend": "cuda",
+                "versions": [
+                    {
+                        "version": "12.8",
+                        ...
+                    },
+                    {
+                        "version": "12.6",
+                        ...
+                    },
+                    {
+                        "version": "12.4",
+                        ...
+                    }
+                ]
+            }
+        ]
+        """
+
+        backend_versioned_runners = runners[0].versions
+
+        # Return directly if there is only one versioned backend.
+        if len(backend_versioned_runners) == 1:
+            return get_docker_image(backend_versioned_runners[0])
+
+        backend_version = runtime_version
+
+        # Iterate all backend versions, and get the one that less or equal to backend version.
+        # Here, we assume the runners' sequence is ordered and arranged in descending order.
+        if backend_version:
+            for backend_versioned_runner in backend_versioned_runners:
+                if (
+                    compare_versions(backend_versioned_runner.version, backend_version)
+                    <= 0
+                ):
+                    return get_docker_image(backend_versioned_runner)
+
+        # Return the last(oldest) backend version of selected runner
+        # if failed to detect host backend version or no backend version matched.
+        #
+        # NB(thxCode): Not using the latest backend version is to keep backend version idempotence
+        #              when the gpustack-runner adds new backend version.
+        return get_docker_image(backend_versioned_runners[-1])
 
 
 def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
