@@ -2,8 +2,8 @@ from datetime import datetime
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Union
-from pydantic import BaseModel, ConfigDict, model_validator, Field as PydanticField
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel, Text
 
@@ -173,26 +173,6 @@ class ModelSpecBase(SQLModel, ModelSource):
     replicas: int = Field(default=1, ge=0)
     ready_replicas: int = Field(default=0, ge=0)
     categories: List[str] = Field(sa_type=JSON, default=[])
-    embedding_only: Annotated[
-        bool,
-        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
-    ]
-    image_only: Annotated[
-        bool,
-        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
-    ]
-    reranker: Annotated[
-        bool,
-        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
-    ]
-    speech_to_text: Annotated[
-        bool,
-        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
-    ]
-    text_to_speech: Annotated[
-        bool,
-        PydanticField(default=False, deprecated="Deprecated, use categories instead"),
-    ]
     placement_strategy: PlacementStrategyEnum = PlacementStrategyEnum.SPREAD
     cpu_offloading: Optional[bool] = None
     distributed_inference_across_workers: Optional[bool] = None

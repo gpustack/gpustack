@@ -23,6 +23,11 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('image_name', sa.String(length=255), nullable=True))
         batch_op.add_column(sa.Column('run_command', sa.String(length=255), nullable=True))
         batch_op.add_column(sa.Column('extended_kv_cache', sa.JSON(), nullable=True))
+        batch_op.drop_column('embedding_only')
+        batch_op.drop_column('reranker')
+        batch_op.drop_column('image_only')
+        batch_op.drop_column('speech_to_text')
+        batch_op.drop_column('text_to_speech')
 
     # Create inference_backends table
     op.create_table(
@@ -58,3 +63,8 @@ def downgrade() -> None:
         batch_op.drop_column('run_command')
         batch_op.drop_column('image_name')
         batch_op.drop_column('extended_kv_cache')
+        batch_op.add_column(sa.Column('reranker', sa.Boolean(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('embedding_only', sa.Boolean(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('image_only', sa.Boolean(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('speech_to_text', sa.Boolean(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column('text_to_speech', sa.Boolean(), nullable=False, server_default="0"))
