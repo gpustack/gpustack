@@ -49,9 +49,11 @@ class VoxBoxServer(InferenceServer):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
 
-        image = self._get_configured_image()
+        image = self._get_configured_image() or self.inference_backend.get_image_name(
+            self._model.backend_version
+        )
         if not image:
-            raise ValueError("Failed to get vLLM backend image")
+            raise ValueError("Failed to get VoxBox backend image")
 
         resources = self._get_configured_resources(
             # Pass-through all devices as vox-box handles device itself.

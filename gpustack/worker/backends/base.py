@@ -439,9 +439,27 @@ class InferenceServer(ABC):
         self,
         backend: Optional[str] = None,
     ) -> Optional[str]:
-        # Return directly if provided.
+        """
+        Resolve the container image to use for the current backend.
+
+        Precedence:
+        1) Explicitly configured image on the model (self._model.image_name)
+        2) Prefer image name from the user's config when using custom backend or built-in backend with a custom version
+        3) Auto-detected image from gpustack-runner based on device vendor/arch and backend
+
+        """
+        # 1) Return directly if explicitly provided.
         if self._model.image_name:
             return self._model.image_name
+
+        # 2) Configuration takes priority when backend_version is set
+        if getattr(self._model, "backend_version", None) and getattr(
+            self, "inference_backend", None
+        ):
+            if image_name := self.inference_backend.get_image_name(
+                self._model.backend_version
+            ):
+                return image_name
 
         """
         Prepare queries for retrieving runners.
@@ -470,6 +488,8 @@ class InferenceServer(ABC):
             )
         if not vendor:
             # Return directly if there is not a valid device.
+            # GPUStack-Runner does not provide CPU-only platform images.
+            # To use a CPU-only version, user must configure in `Inference Backend` page.
             return None
 
         # Determine backend if not provided.
