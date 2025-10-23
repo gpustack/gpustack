@@ -1,0 +1,27 @@
+#!/command/with-contenv /bin/bash
+ROLE_FILE="/var/lib/gpustack/run/role"
+FLAG_POSTGRES_FLAG_FILE="/var/lib/gpustack/run/flag_should_start_postgres"
+
+
+ROLE=""
+POSTGRES_FLAG=""
+if [ -f "$ROLE_FILE" ]; then
+	ROLE=$(cat "$ROLE_FILE")
+fi
+if [ -f "$FLAG_POSTGRES_FLAG_FILE" ]; then
+	POSTGRES_FLAG=$(cat "$FLAG_POSTGRES_FLAG_FILE")
+fi
+
+if [ "$ROLE" != "server" ] || [ "$POSTGRES_FLAG" != "1" ]; then
+	echo "[INFO] Not server or not need to start postgres, skipping check..."
+	exit 0
+fi
+
+echo "[INFO] Checking Postgres readiness."
+if gosu postgres pg_isready -q; then
+    echo "[INFO] Postgres is ready."
+    exit 0
+else
+    echo "[ERROR] Postgres is not ready."
+    exit 1
+fi

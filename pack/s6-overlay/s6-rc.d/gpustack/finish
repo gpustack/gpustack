@@ -1,0 +1,6 @@
+#!/command/with-contenv bash
+
+echo "[ERROR] gpustack exited with code $1, shutting down all services..." >&2
+
+s6-svscanctl -t /run/service
+exit 1
