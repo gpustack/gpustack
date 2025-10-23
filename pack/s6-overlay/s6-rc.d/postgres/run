@@ -1,0 +1,86 @@
+#!/command/with-contenv /bin/bash
+# ================================
+# Postgres longrun service
+# ================================
+
+
+# Stage1: Load role and flag
+
+ROLE_FILE="/var/lib/gpustack/run/role"
+FLAG_POSTGRES_FLAG_FILE="/var/lib/gpustack/run/flag_should_start_postgres"
+
+ROLE=""
+POSTGRES_FLAG=""
+if [ -f "$ROLE_FILE" ]; then
+	ROLE=$(cat "$ROLE_FILE")
+fi
+if [ -f "$FLAG_POSTGRES_FLAG_FILE" ]; then
+	POSTGRES_FLAG=$(cat "$FLAG_POSTGRES_FLAG_FILE")
+fi
+
+if [ "$ROLE" != "server" ] || [ "$POSTGRES_FLAG" != "1" ]; then
+	echo "[INFO] Not server or not need to start postgres, sleeping."
+	sleep infinity
+	exit 0
+fi
+
+# Stage2: Start Postgres
+
+PGDATA="/var/lib/gpustack/postgresql/data"
+PGLOG="/var/lib/gpustack/log/postgresql"
+PASS_FILE="/var/lib/gpustack/postgres_root_pass"
+
+# Ensure data directory
+if [ ! -d "$PGDATA" ]; then
+	mkdir -p "$PGDATA" \
+		&& chown -R postgres:postgres "$PGDATA" \
+		&& chmod 0700 "$PGDATA"
+fi
+
+# Ensure log directory
+if [ ! -d "$PGLOG" ]; then
+	mkdir -p "$PGLOG" \
+		&& chown -R postgres:postgres "$PGLOG" \
+		&& chmod 0755 "$PGLOG"
+fi
+
+# Password setup
+ROOT_PASS=""
+if [ ! -f "$PASS_FILE" ]; then
+	if [ -n "$POSTGRES_PASSWORD" ]; then
+		ROOT_PASS="$POSTGRES_PASSWORD"
+	else
+		ROOT_PASS=$(tr -dc 'A-Za-z0-9!@#$%^&*_+=' </dev/urandom | head -c 16)
+		ROOT_PASS="$(tr -dc 'A-Za-z' </dev/urandom | head -c 1)${ROOT_PASS:1}"
+	fi
+	echo "$ROOT_PASS" > "$PASS_FILE"
+	chmod 600 "$PASS_FILE"
+	echo "[INFO] Postgres root password written to $PASS_FILE."
+elif [ -f "$PASS_FILE" ]; then
+    ROOT_PASS=$(cat "$PASS_FILE")
+    echo "[INFO] Postgres root password read from $PASS_FILE."
+fi
+
+# Initialize database
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "[INFO] Initializing Postgres database."
+	gosu postgres initdb -D "$PGDATA" > /dev/null
+fi
+gosu postgres pg_ctl -s -D "$PGDATA" -o "-c listen_addresses='localhost'" -w start > /dev/null
+if ! gosu postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='root'" | grep -q 1; then
+    gosu postgres psql -q --command "CREATE USER root WITH PASSWORD '$ROOT_PASS';" > /dev/null
+fi
+if ! gosu postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='gpustack'" | grep -q 1; then
+    gosu postgres psql -q --command "CREATE DATABASE gpustack OWNER root;" > /dev/null
+fi
+gosu postgres pg_ctl -s -D "$PGDATA" -m fast -w stop > /dev/null
+
+# Start Postgres
+echo "[INFO] Starting Postgres."
+exec s6-notifyoncheck \
+     -d -w 5000 -n 10 -s 3000 \
+     -- \
+     gosu postgres /usr/bin/postgres \
+         -D "$PGDATA" \
+         -c config_file=/etc/postgresql/main/postgresql.conf \
+         -c hba_file=/etc/postgresql/main/pg_hba.conf

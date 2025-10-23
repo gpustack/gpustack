@@ -6,8 +6,10 @@
 #    - Upgrade Python if needed.
 #    - Install Python buildkit.
 #    - Install Platform toolkit.
+#    - Install S6-overlay.
 # 2. gpustack target.
 #    - Install gpustack package from the mounted source code.
+#    - Install PostgreSQL.
 #    - Setup entrypoint to gpustack command.
 
 # Argument usage:
@@ -221,6 +223,7 @@ psutil
 poetry
 pipx
 uv
+yq
 EOT
     pip install -r /tmp/requirements.txt
 
@@ -228,6 +231,39 @@ EOT
     rm -rf /var/tmp/* \
         && rm -rf /tmp/*
 EOF
+
+## Install s6-overlay
+
+ARG S6_OVERLAY_VERSION=3.2.1.0
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64)   S6_ARCH="x86_64" ;; \
+        arm64)   S6_ARCH="aarch64" ;; \
+        arm/v7)  S6_ARCH="armhf" ;; \
+        arm/v6)  S6_ARCH="arm" ;; \
+        *) \
+            echo >&2 "⚠️  Warning: Unknown TARGETARCH='${TARGETARCH}', defaulting to x86_64"; \
+            S6_ARCH="x86_64"; \
+        ;; \
+    esac; \
+    echo "Installing s6-overlay ${S6_OVERLAY_VERSION} for arch: ${S6_ARCH} (from TARGETARCH=${TARGETARCH})"; \
+    base_url="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
+    for pkg in noarch ${S6_ARCH}; do \
+        wget -q -O "/tmp/s6-overlay-${pkg}.tar.xz" "${base_url}/s6-overlay-${pkg}.tar.xz"; \
+    done \
+    && echo "📦  Extracting s6-overlay ..." \
+    && tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz \
+    && tar -C / -Jxpf /tmp/s6-overlay-${S6_ARCH}.tar.xz \
+    && rm -f /tmp/s6-overlay-*.tar.xz \
+    && echo "Installed s6-overlay ${S6_OVERLAY_VERSION} successfully."
+
+ENV S6_KEEP_ENV=1 \
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
+    S6_SERVICES_GRACETIME=3000 \
+    S6_KILL_GRACETIME=3000 \
+    S6_VERBOSITY=1
+
+COPY pack/s6-overlay /etc/s6-overlay
 
 #
 # Stage GPUStack
@@ -308,6 +344,59 @@ EOF
 ## Disable gpustack-runtime auto image correction,
 ## let GPUStack to configure the correct runner image.
 ENV GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=0
+
+## Install PostgreSQL
+
+ENV PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf
+ENV POSTGRES_DB=gpustack
+
+RUN set -eux; \
+	groupadd -r postgres --gid=9999; \
+	useradd -r -g postgres --uid=9999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres; \
+	mkdir -p /var/lib/postgresql; \
+	chown -R postgres:postgres /var/lib/postgresql
+
+RUN <<EOF
+    set -eux
+
+    # Add PostgreSQL APT repository
+    wget -O /tmp/ACCC4CF8.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        && gpg --dearmor /tmp/ACCC4CF8.asc \
+        && mv /tmp/ACCC4CF8.asc.gpg /usr/share/keyrings/postgresql-archive-keyring.gpg \
+        && echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+    
+    # Install
+    apt-get update -y && apt-get install -y --no-install-recommends \
+        postgresql-17 \
+        gosu
+
+    # Create symlinks for PostgreSQL 17 to simplify usage
+    ln -s /usr/lib/postgresql/17/bin /usr/lib/postgresql/bin \
+        && ln -s /etc/postgresql/17/main /etc/postgresql/main \
+        && ln -s /var/lib/postgresql/17/main /var/lib/postgresql/main \
+        && ls -1 /usr/lib/postgresql/bin/ | xargs -I @ ln -sf /usr/lib/postgresql/bin/@ /usr/bin/@
+
+    gosu postgres echo "listen_addresses='*'" >> "$PGCONFIG_FILE" \
+        && gosu postgres echo "local all  postgres            peer" > /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  root  127.0.0.1/32  trust" >> /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  root  ::1/128       trust" >> /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  all   0.0.0.0/0     scram-sha-256" >> /etc/postgresql/main/pg_hba.conf
+
+    gosu postgres sed -i "s/^data_directory/#data_directory/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^hba_file/#hba_file/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_destination/log_destination/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_min_messages = warning/log_min_messages = info/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i 's/^#log_directory = '\''log'\''/log_directory = '\''\/var\/lib\/gpustack\/log\/postgresql'\''/g' "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
+
+EOF
 
 ## Entrypoint
 
@@ -406,5 +495,9 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
     NVIDIA_VISIBLE_DEVICES="0" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
+COPY pack/entrypoint.sh /usr/bin/entrypoint.sh
+
+RUN chmod +x /usr/bin/entrypoint.sh
+
 WORKDIR /
-ENTRYPOINT [ "tini", "--", "/usr/bin/bash", "-c", "source /etc/profile && exec gpustack start \"$@\"", "--" ]
+ENTRYPOINT [ "/usr/bin/entrypoint.sh" ]
