@@ -13,7 +13,7 @@ if [ -f "$FLAG_POSTGRES_FLAG_FILE" ]; then
 fi
 
 if [ "$ROLE" != "server" ] || [ "$POSTGRES_FLAG" != "1" ]; then
-	echo "[INFO] Not server or not need to start postgres, skipping check..."
+	echo "[INFO] Not server or not need to start postgres, skip checking."
 	exit 0
 fi
 

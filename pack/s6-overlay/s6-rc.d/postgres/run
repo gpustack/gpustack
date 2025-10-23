@@ -20,7 +20,10 @@ fi
 
 if [ "$ROLE" != "server" ] || [ "$POSTGRES_FLAG" != "1" ]; then
 	echo "[INFO] Not server or not need to start postgres, sleeping."
-	sleep infinity
+	exec s6-notifyoncheck \
+         -d -w 2000 -n 3 \
+         -- \
+         sleep infinity
 	exit 0
 fi
 
