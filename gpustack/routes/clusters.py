@@ -176,10 +176,14 @@ async def delete_cluster(session: SessionDep, id: int):
         raise NotFoundException(message=f"cluster {id} not found")
     # check for workers, if any are present, prevent deletion
     if len(existing.cluster_workers) > 0:
-        raise ForbiddenException(message=f"cluster {id} has workers, cannot be deleted")
+        raise ForbiddenException(
+            message=f"cluster {existing.name}(id: {id}) has workers, cannot be deleted"
+        )
     # check for models, if any are present, prevent deletion
     if len(existing.cluster_models) > 0:
-        raise ForbiddenException(message=f"cluster {id} has models, cannot be deleted")
+        raise ForbiddenException(
+            message=f"cluster {existing.name}(id: {id}) has models, cannot be deleted"
+        )
     try:
         await existing.delete(session=session)
     except Exception as e:
@@ -193,7 +197,7 @@ async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCrea
         raise NotFoundException(message=f"cluster {id} not found")
     if cluster.provider in [ClusterProvider.Docker, ClusterProvider.Kubernetes]:
         raise InvalidException(
-            message=f"Cannot create worker pool for cluster {id} with provider {cluster.provider}"
+            message=f"Cannot create worker pool for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
     try:
         cloud_options = input.cloud_options or CloudOptions()
@@ -231,7 +235,7 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         raise NotFoundException(message=f"cluster {id} not found")
     if cluster.provider != ClusterProvider.Kubernetes:
         raise InvalidException(
-            message=f"Cannot get manifests for cluster {id} with provider {cluster.provider}"
+            message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
     url = get_server_url(request)
     config = TemplateConfig(
