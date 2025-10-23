@@ -888,6 +888,7 @@ async def new_workers_from_pool(
         new_worker = Worker(
             hostname="",
             ip="",
+            ifname="",
             port=0,
             worker_uuid="",
             cluster=pool.cluster,
