@@ -527,11 +527,9 @@ async def evaluate_audio_model(
     task_type = model_dict.get("task_type")
     if task_type == "tts" and not model.categories:
         model.categories = [CategoryEnum.TEXT_TO_SPEECH]
-        model.text_to_speech = True
         should_update = True
     elif task_type == "stt" and not model.categories:
         model.categories = [CategoryEnum.SPEECH_TO_TEXT]
-        model.speech_to_text = True
         should_update = True
 
     return should_update
@@ -658,11 +656,9 @@ def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
 
     if model_type == CategoryEnum.EMBEDDING:
         model.categories = [CategoryEnum.EMBEDDING]
-        model.embedding_only = True
         return True
     elif model_type == CategoryEnum.RERANKER:
         model.categories = [CategoryEnum.RERANKER]
-        model.reranker = True
         return True
     elif model_type == CategoryEnum.LLM:
         model.categories = [CategoryEnum.LLM]
