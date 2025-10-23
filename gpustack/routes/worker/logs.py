@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
-from gpustack_runtime.deployer import logs_workload, get_workload
+from gpustack_runtime.deployer import logs_workload
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
@@ -171,9 +171,7 @@ async def combined_log_generator(
     # Prepare container logs (Phase 2)
     container_gen = None
     try:
-        workload = get_workload(model_instance_name)
-        if model_instance_name and workload:
-            container_gen = container_log_generator(model_instance_name, options)
+        container_gen = container_log_generator(model_instance_name, options)
     except Exception as e:
         logger.error(f"Failed to get workload: {e}")
 
