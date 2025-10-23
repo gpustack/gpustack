@@ -20,9 +20,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('worker_ifname', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('worker_ifname', sqlmodel.sql.sqltypes.AutoString(), nullable=True, server_default=""))
     with op.batch_alter_table('workers', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('ifname', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('ifname', sqlmodel.sql.sqltypes.AutoString(), nullable=True, server_default=""))
 
 
 def downgrade() -> None:
