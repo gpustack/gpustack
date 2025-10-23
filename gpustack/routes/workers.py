@@ -149,7 +149,7 @@ async def create_worker(
     existing = await Worker.one_by_fields(session, fields)
     if existing and worker_in.external_id is None:
         # avoid duplicate workers with the same name
-        raise AlreadyExistsException(message=f"worker f{worker_in.name} already exists")
+        raise AlreadyExistsException(message=f"worker {worker_in.name} already exists")
     elif existing is None and worker_in.external_id is not None:
         # avoid creating a worker with a non-existent external_id
         raise NotFoundException(
