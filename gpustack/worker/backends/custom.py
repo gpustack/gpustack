@@ -51,14 +51,14 @@ class CustomServer(InferenceServer):
 
         command_args = []
         command = self.inference_backend.replace_command_param(
-            self._model.backend_version,
-            self._model_path,
-            self._get_serving_port(),
-            self._model.name,
-            self._model.run_command,
+            version=self._model.backend_version,
+            model_path=self._model_path,
+            port=self._get_serving_port(),
+            model_name=self._model.name,
+            command=self._model.run_command,
         )
         if command:
-            command_args.extend(command.split(" "))
+            command_args.extend(command.split())
         if self._model.backend_parameters:
             command_args.extend(self._model.backend_parameters)
 
