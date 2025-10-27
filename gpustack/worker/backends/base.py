@@ -236,9 +236,9 @@ class InferenceServer(ABC):
                 ),
                 None,
             )
-            gpu_indexes = sorted(subworker.gpu_indexes)
+            gpu_indexes = sorted(subworker.gpu_indexes or [])
         else:
-            gpu_indexes = sorted(self._model_instance.gpu_indexes)
+            gpu_indexes = sorted(self._model_instance.gpu_indexes or [])
 
         # When doing manual selection, the device type is further confirmed in the selection information.
         # This helps to find the correct item when there are multiple devices mixed in one node.
