@@ -11,6 +11,7 @@ from gpustack_runtime.deployer import (
     create_workload,
     ContainerMount,
     ContainerPort,
+    ContainerRestartPolicyEnum,
 )
 
 from gpustack.schemas.models import ModelInstance
@@ -90,6 +91,7 @@ class VLLMServer(InferenceServer):
             image=image,
             name=self._model_instance.name,
             profile=ContainerProfileEnum.RUN,
+            restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
                 args=command_args,
@@ -133,6 +135,7 @@ class VLLMServer(InferenceServer):
                 image=image,
                 name=f"{self._model_instance.name}-ray",
                 profile=ContainerProfileEnum.RUN,
+                restart_policy=ContainerRestartPolicyEnum.NEVER,
                 execution=ContainerExecution(
                     privileged=True,
                     args=ray_command_args,

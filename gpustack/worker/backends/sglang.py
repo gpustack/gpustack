@@ -9,6 +9,7 @@ from gpustack_runtime.deployer import (
     ContainerProfileEnum,
     WorkloadPlan,
     create_workload,
+    ContainerRestartPolicyEnum,
 )
 
 from gpustack.schemas.models import ModelInstance
@@ -83,6 +84,7 @@ class SGLangServer(InferenceServer):
             image=image_name,
             name=self._model_instance.name,
             profile=ContainerProfileEnum.RUN,
+            restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 args=command_args,
             ),

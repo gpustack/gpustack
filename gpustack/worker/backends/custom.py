@@ -12,6 +12,7 @@ from gpustack_runtime.deployer import (
     ContainerProfileEnum,
     WorkloadPlan,
     create_workload,
+    ContainerRestartPolicyEnum,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class CustomServer(InferenceServer):
             image=image_name,
             name=self._model_instance.name,
             profile=ContainerProfileEnum.RUN,
+            restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
                 args=command_args,

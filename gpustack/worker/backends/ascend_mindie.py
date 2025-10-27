@@ -15,6 +15,7 @@ from gpustack_runtime.deployer import (
     WorkloadPlan,
     create_workload,
     ContainerFile,
+    ContainerRestartPolicyEnum,
 )
 
 from gpustack.utils.envs import sanitize_env
@@ -1391,6 +1392,7 @@ class AscendMindIEServer(InferenceServer):
             image=image,
             name=self._model_instance.name,
             profile=ContainerProfileEnum.RUN,
+            restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
                 command=command_args,
