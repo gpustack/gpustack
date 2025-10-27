@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import (
 from gpustack.cmd.start import get_gpustack_env
 from gpustack.config.envs import DB_ECHO, DB_MAX_OVERFLOW, DB_POOL_SIZE, DB_POOL_TIMEOUT
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 revision = "d19176de3b74"  # 0.7.1
