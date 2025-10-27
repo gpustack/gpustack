@@ -286,8 +286,12 @@ class ServeManager:
             # Get patch dict for subordinate worker.
             else:
                 sw.state = ModelInstanceStateEnum.INITIALIZING
-                # For Ascend MindIE, the state is set to RUNNING directly,
-                if backend == BackendEnum.ASCEND_MINDIE:
+                # For initialize later mode, the state is set to RUNNING directly,
+                # which means the subordinate worker doesn't need to wait for the main worker to be healthy.
+                if (
+                    mi.distributed_servers.mode
+                    == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                ):
                     sw.state = ModelInstanceStateEnum.RUNNING
                 sw.pid = process.pid
                 patch_dict = {
@@ -589,8 +593,12 @@ class ServeManager:
                         }
                 # Get patch dict for subordinate worker.
                 else:
-                    # Skip health check for Ascend MindIE subordinate workers
-                    if backend == BackendEnum.ASCEND_MINDIE:
+                    # For initialize later mode, the state is set to RUNNING directly,
+                    # which means the subordinate worker doesn't need to wait for the main worker to be healthy.
+                    if (
+                        mi.distributed_servers.mode
+                        == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+                    ):
                         # Remove from starting instances directly.
                         self._starting_model_instances.pop(mi.id, None)
                         continue
