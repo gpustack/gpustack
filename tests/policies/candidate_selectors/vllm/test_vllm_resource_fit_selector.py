@@ -16,6 +16,7 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelInstance,
     ModelInstanceSubordinateWorker,
+    BackendEnum,
 )
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_1_4090_24gx1,
@@ -347,6 +348,7 @@ async def test_select_candidates_2x_4090_24gx1(
             return_value=workers,
         ),
     ):
+        m.backend = BackendEnum.VLLM.value
         resource_fit_selector = VLLMResourceFitSelector(config, m)
         placement_scorer = PlacementScorer(m)
 

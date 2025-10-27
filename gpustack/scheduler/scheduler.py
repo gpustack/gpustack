@@ -390,10 +390,10 @@ async def find_candidate(
             )
         elif model.backend == BackendEnum.ASCEND_MINDIE:
             candidates_selector = AscendMindIEResourceFitSelector(config, model)
-        elif model.backend == BackendEnum.CUSTOM:
-            candidates_selector = CustomBackendResourceFitSelector(config, model)
-        else:
+        elif model.backend == BackendEnum.VLLM:
             candidates_selector = VLLMResourceFitSelector(config, model)
+        else:
+            candidates_selector = CustomBackendResourceFitSelector(config, model)
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
