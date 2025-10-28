@@ -8,7 +8,7 @@ from gpustack.server.catalog import (
     ModelSet,
     ModelSetPublic,
     ModelSpec,
-    get_model_catalog,
+    get_model_sets,
     get_model_set_specs,
 )
 from gpustack.server.deps import ListParamsDep
@@ -21,28 +21,28 @@ async def get_model_sets(
     params: ListParamsDep,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
-    model_catalog: List[ModelSet] = Depends(get_model_catalog),
+    model_sets: List[ModelSet] = Depends(get_model_sets),
 ):
     if search:
-        model_catalog = [
-            model for model in model_catalog if search.lower() in model.name.lower()
+        model_sets = [
+            model for model in model_sets if search.lower() in model.name.lower()
         ]
 
     if categories:
-        model_catalog = [
+        model_sets = [
             model
-            for model in model_catalog
+            for model in model_sets
             if model.categories is not None
             and any(category in model.categories for category in categories)
         ]
 
-    count = len(model_catalog)
+    count = len(model_sets)
     total_page = math.ceil(count / params.perPage)
 
     start_index = (params.page - 1) * params.perPage
     end_index = start_index + params.perPage
 
-    paginated_items = model_catalog[start_index:end_index]
+    paginated_items = model_sets[start_index:end_index]
 
     pagination = Pagination(
         page=params.page,
@@ -58,10 +58,10 @@ async def get_model_sets(
 async def get_model_specs(
     id: int,
     params: ListParamsDep,
-    get_model_set_specs: Dict[int, List[ModelSpec]] = Depends(get_model_set_specs),
+    model_set_specs: Dict[int, List[ModelSpec]] = Depends(get_model_set_specs),
 ):
 
-    specs = get_model_set_specs.get(id, [])
+    specs = model_set_specs.get(id, [])
     if not specs:
         raise NotFoundException(message="Model set not found")
 
