@@ -1,4 +1,5 @@
 #!/command/with-contenv /bin/bash
+# shellcheck shell=bash
 # ================================
 # Postgres longrun service
 # ================================
