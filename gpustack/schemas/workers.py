@@ -226,11 +226,12 @@ class WorkerStatus(SystemInfo):
         )
 
 
-class WorkerStatusPublic(BaseModel):
+class WorkerStatusStored(BaseModel):
     hostname: str
     ip: str
     ifname: str
     port: int
+    gateway_port: Optional[int] = None
     metrics_port: Optional[int] = None
 
     system_reserved: Optional[SystemReserved] = Field(
@@ -249,6 +250,10 @@ class WorkerStatusPublic(BaseModel):
     )  # The machine ID of the worker, used for identifying the worker in the cluster
 
 
+class WorkerStatusPublic(WorkerStatusStored):
+    gateway_endpoint: Optional[str] = None
+
+
 class WorkerUpdate(SQLModel):
     """
     WorkerUpdate: updatable fields for Worker
@@ -258,7 +263,7 @@ class WorkerUpdate(SQLModel):
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
 
 
-class WorkerCreate(WorkerStatusPublic, WorkerUpdate):
+class WorkerCreate(WorkerStatusStored, WorkerUpdate):
     cluster_id: Optional[int] = Field(
         sa_column=Column(Integer, ForeignKey("clusters.id"), nullable=False),
         default=None,

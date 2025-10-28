@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import functools
-from typing import Any, Callable, Dict, List, Optional, Union, Set
+from typing import Any, Callable, Dict, List, Optional, Union, Set, Tuple
 from aiocache import Cache, BaseCache
 from sqlmodel import SQLModel, bindparam, cast
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -15,8 +15,10 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     MyModel,
+    AccessPolicyEnum,
 )
 from gpustack.schemas.users import User
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import Worker
 from gpustack.server.usage_buffer import usage_flush_buffer
 
@@ -238,16 +240,30 @@ class ModelService:
         self.session.expunge(result)
         return result
 
+    @locked_cached(ttl=60)
+    async def get_model_auth_info_by_name(
+        self, name: str
+    ) -> Optional[Tuple[AccessPolicyEnum, str]]:
+        model = await Model.one_by_field(self.session, "name", name)
+        cluster = (
+            await Cluster.one_by_id(self.session, model.cluster_id) if model else None
+        )
+        if model is None or cluster is None:
+            return None
+        return model.access_policy, cluster.registration_token
+
     async def update(self, model: Model, source: Union[dict, SQLModel, None] = None):
         result = await model.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
+        await delete_cache_by_key(self.get_model_auth_info_by_name, model.name)
         return result
 
     async def delete(self, model: Model):
         result = await model.delete(self.session)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
+        await delete_cache_by_key(self.get_model_auth_info_by_name, model.name)
         return result
 
 

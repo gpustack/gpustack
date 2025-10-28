@@ -17,6 +17,7 @@ from gpustack.config import Config
 from gpustack.config.envs import TCP_CONNECTOR_LIMIT
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
+from gpustack.routes.token import worker_auth
 from gpustack.server import catalog
 from gpustack.utils.network import get_first_non_loopback_ip, get_ifname_by_ip
 from gpustack.client import ClientSet
@@ -33,6 +34,8 @@ from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.config.registration import read_worker_token
+from gpustack.worker.worker_gateway import WorkerGatewayController
+from gpustack.gateway.plugins import register as register_gateway_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +49,13 @@ class Worker:
     _worker_ip: Optional[str] = None
     _worker_ifname: Optional[str] = None
     _worker_id: Optional[int] = None
+    _cluster_id: Optional[int] = None
 
     def worker_ip(self) -> str:
-        return self._config.worker_ip or self._worker_ip
+        static_worker_ip = (
+            self._config.worker_ip or self._config.advertise_address or None
+        )
+        return static_worker_ip if static_worker_ip else self._worker_ip
 
     def worker_ifname(self) -> str:
         return self._config.worker_ifname or self._worker_ifname
@@ -58,6 +65,9 @@ class Worker:
 
     def clientset(self) -> ClientSet:
         return self._clientset
+
+    def cluster_id(self) -> Optional[int]:
+        return self._cluster_id
 
     def __init__(self, cfg: Config, is_embedded: bool = False):
         self._config = cfg
@@ -129,6 +139,7 @@ class Worker:
         if len(worker_list.items) != 1:
             raise Exception(f"Worker {self._worker_name} not registered.")
         self._worker_id = worker_list.items[0].id
+        self._cluster_id = worker_list.items[0].cluster_id
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -182,12 +193,12 @@ class Worker:
             run_periodically_in_thread(self._exporter.start, 15)
 
         # Monitor the ip change, if not fixed.
-        if not self._config.worker_ip:
+        if not self._config.worker_ip and not self._config.advertise_address:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
         # Fill the worker ifname if not set.
         elif not self._config.worker_ifname:
-            self._worker_ifname = get_ifname_by_ip(self._config.worker_ip)
+            self._worker_ifname = get_ifname_by_ip(self.worker_ip())
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
@@ -214,6 +225,16 @@ class Worker:
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
         )
         self._create_async_task(model_file_manager.watch_model_files())
+
+        controller = WorkerGatewayController(
+            worker_id=self._worker_id,
+            cluster_id=self._cluster_id,
+            clientset=self._clientset,
+            cfg=self._config,
+            is_embedded_worker=self._is_embedded,
+        )
+        self._create_async_task(controller.sync_model_cache())
+        self._create_async_task(controller.start_model_instance_controller())
 
         await asyncio.gather(*self._async_tasks)
 
@@ -246,6 +267,12 @@ class Worker:
         app.include_router(probes.router)
         app.include_router(logs.router)
         app.include_router(proxy.router)
+        app.add_api_route(
+            path="/token-auth",
+            endpoint=worker_auth,
+            methods=["POST"],
+        )
+        register_gateway_plugins(self._config, app)
         exceptions.register_handlers(app)
 
         config = uvicorn.Config(

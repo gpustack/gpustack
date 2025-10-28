@@ -16,6 +16,7 @@ from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
 from gpustack.server.server import Server
+from gpustack.gateway import initialize_gateway
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,24 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         description="Run GPUStack server or worker.",
     )
     group = parser_server.add_argument_group("Common settings")
+    group.add_argument(
+        "--advertise-address",
+        type=str,
+        help="The IP address to expose for external access. If not set, the system will auto-detect a suitable local IP address.",
+        default=get_gpustack_env("ADVERTISE_ADDRESS"),
+    )
+    group.add_argument(
+        "--port",
+        type=int,
+        help="Port to bind the server to.",
+        default=get_gpustack_env("PORT"),
+    )
+    group.add_argument(
+        "--tls-port",
+        type=int,
+        help="Port to bind the TLS server to.",
+        default=get_gpustack_env("TLS_PORT"),
+    )
     group.add_argument(
         "--config-file",
         type=str,
@@ -138,19 +157,43 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Override the default image repository gpustack/gpustack for the GPUStack container.",
         default=get_gpustack_env("IMAGE_REPO"),
     )
+    group.add_argument(
+        "--gateway-mode",
+        type=str,
+        help="Gateway running mode. Options: embedded, in-cluster, external, disabled, or auto (default).",
+        default=get_gpustack_env("GATEWAY_MODE"),
+    )
+    group.add_argument(
+        "--gateway-kubeconfig",
+        type=str,
+        help="Path to the kubeconfig file for gatway. Only useful for external gateway-mode.",
+        default=get_gpustack_env("GATEWAY_KUBECONFIG"),
+    )
+    group.add_argument(
+        "--gateway-concurrency",
+        type=int,
+        help="Number of concurrent connections for the gateway. The default is 16.",
+        default=get_gpustack_env("GATEWAY_CONCURRENCY"),
+    )
+    group.add_argument(
+        "--service-discovery-name",
+        type=str,
+        help="the name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.",
+        default=get_gpustack_env("SERVICE_DISCOVERY_NAME"),
+    )
+    group.add_argument(
+        "--namespace",
+        type=str,
+        help="Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.",
+        default=get_gpustack_env("NAMESPACE"),
+    )
 
     group = parser_server.add_argument_group("Server settings")
     group.add_argument(
-        "--host",
-        type=str,
-        help="Host to bind the server to.",
-        default=get_gpustack_env("HOST"),
-    )
-    group.add_argument(
-        "--port",
+        "--api-port",
         type=int,
-        help="Port to bind the server to.",
-        default=get_gpustack_env("PORT"),
+        help="Port to bind the GPUStack API server to.",
+        default=get_gpustack_env("API_PORT"),
     )
     group.add_argument(
         "--metrics-port",
@@ -499,6 +542,7 @@ def run(args: argparse.Namespace):
         debug_env_info()
         set_third_party_env(cfg=cfg)
         set_ulimit()
+        initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
         logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
@@ -515,11 +559,8 @@ def run_server(cfg: Config):
     sub_processes = []
 
     if not cfg.disable_worker:
-        scheme = "http://"
-        if cfg.ssl_certfile:
-            scheme = "https://"
         cfg.server_url = (
-            f"{scheme}127.0.0.1:{cfg.port}" if cfg.port else f"{scheme}127.0.0.1"
+            f"http://127.0.0.1:{cfg.api_port}" if cfg.api_port else "http://127.0.0.1"
         )
         worker = Worker(cfg, is_embedded=True)
         worker_process = multiprocessing.Process(target=worker.start)
@@ -586,6 +627,14 @@ def set_common_options(args, config_data: dict):
         "system_default_container_registry",
         "image_name_override",
         "image_repo",
+        "advertise_address",
+        "port",
+        "tls_port",
+        "gateway_mode",
+        "gateway_kubeconfig",
+        "gateway_concurrency",
+        "service_discovery_name",
+        "namespace",
     ]
 
     for option in options:
@@ -594,8 +643,7 @@ def set_common_options(args, config_data: dict):
 
 def set_server_options(args, config_data: dict):
     options = [
-        "host",
-        "port",
+        "api_port",
         "metrics_port",
         "disable_metrics",
         "database_url",

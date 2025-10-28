@@ -48,6 +48,8 @@ def setup_logging(debug: bool = False):
         "filelock",
         "fastapi-cdn-host",
         "huggingface_hub.file_download",
+        "docker.auth",
+        "kubernetes_asyncio.client.rest",
     ]
 
     for logger_name in disable_logger_names:

@@ -82,15 +82,6 @@ class Server:
         self._start_model_usage_flusher()
         self._start_metrics_exporter()
 
-        port = 80
-        if self._config.port:
-            port = self._config.port
-        elif self._config.ssl_certfile and self._config.ssl_keyfile:
-            port = 443
-        host = "0.0.0.0"
-        if self._config.host:
-            host = self._config.host
-
         jwt_manager = JWTManager(self._config.jwt_secret_key)
         # Start FastAPI server
         app = create_app(self._config)
@@ -106,8 +97,8 @@ class Server:
             )
         config = uvicorn.Config(
             app,
-            host=host,
-            port=port,
+            host="0.0.0.0",
+            port=self._config.api_port,
             access_log=False,
             log_level="error",
             ssl_certfile=self._config.ssl_certfile,
@@ -181,7 +172,7 @@ class Server:
         model_file_controller = ModelFileController()
         self._create_async_task(model_file_controller.start())
 
-        cluster_controller = ClusterController()
+        cluster_controller = ClusterController(self._config)
         self._create_async_task(cluster_controller.start())
 
         worker_pool_controller = WorkerPoolController()

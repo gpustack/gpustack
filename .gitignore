@@ -157,3 +157,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# kubernetes config
+kubeconfig

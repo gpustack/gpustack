@@ -1,5 +1,6 @@
 import os
 import secrets
+from enum import Enum
 from typing import List, Optional
 
 from gpustack_runtime.detector import (
@@ -28,20 +29,32 @@ from gpustack.schemas.workers import (
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack import __version__
 from gpustack.config.registration import read_registration_token, read_worker_token
+from gpustack.utils.network import get_first_non_loopback_ip
+from gpustack.utils import platform
 
 _config = None
+
+
+class GatewayModeEnum(str, Enum):
+    auto = "auto"
+    embedded = "embedded"
+    incluster = "incluster"
+    external = "external"
+    disabled = "disabled"
 
 
 class Config(BaseSettings):
     """A class used to define GPUStack configuration.
 
     Attributes:
+        port: Port to bind the server to. Default is 80.
+        tls_port: Port to bind the TLS server to. Default is 443.
+        advertise_address: The address to expose for external access. Auto-detected by default.
         debug: Enable debug mode.
         data_dir: Directory to store data. Default is OS specific.
         huggingface_token: User Access Token to authenticate to the Hugging Face Hub.
 
-        host: Host to bind the server to.
-        port: Port to bind the server to.
+        api_port: Port to bind the gpustack server to.
         metrics_port: Port to expose metrics on.
         disable_metrics: Disable server metrics.
         ssl_keyfile: Path to the SSL key file.
@@ -61,7 +74,7 @@ class Config(BaseSettings):
 
         token: Shared secret used to register worker.
         server_url: URL of the server.
-        worker_ip: IP address of the worker node. Auto-detected by default.
+        worker_ip: Deprecated, use advertise_address instead.
         worker_ifname: Network interface name of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
         disable_worker_metrics: Disable worker metrics.
@@ -91,9 +104,18 @@ class Config(BaseSettings):
         system_default_container_registry: Default registry for container images.
         image_name_override: Force override of the image name.
         image_repo: Repository for the container images.
+        service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
+        gateway_mode: Gateway deployment mode. Options are 'auto', 'embedded', 'incluster', 'external', 'disabled'. Default is 'auto'.
+        gateway_kubeconfig: Path to the kubeconfig file for Gateway. Only used when gateway_mode is 'external'.
+        gateway_concurrency: Number of concurrent connections for the Gateway. Default is 16.
+        namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
     """
 
     # Common options
+    # The port and tls_port are used in gateway configuration.
+    port: Optional[int] = 80
+    tls_port: Optional[int] = 443
+    advertise_address: Optional[str] = None
     debug: bool = False
     data_dir: Optional[str] = None
     cache_dir: Optional[str] = None
@@ -107,10 +129,17 @@ class Config(BaseSettings):
     system_default_container_registry: Optional[str] = None
     image_name_override: Optional[str] = None
     image_repo: str = "gpustack/gpustack"
+    gateway_mode: GatewayModeEnum = GatewayModeEnum.auto
+    gateway_kubeconfig: Optional[str] = None
+    gateway_concurrency: int = 16
+    service_discovery_name: Optional[str] = None
+    namespace: Optional[str] = None
 
     # Server options
-    host: Optional[str] = "0.0.0.0"
-    port: Optional[int] = None
+    # Deprecated, as we using docker image to run the server, host is not used.
+    host: Optional[str] = None
+    # The api_port is used in gpustack server serving API requests.
+    api_port: Optional[int] = 8080
     database_url: Optional[str] = None
     disable_worker: bool = False
     bootstrap_password: Optional[str] = None
@@ -176,26 +205,16 @@ class Config(BaseSettings):
     def __init__(self, **values):
         super().__init__(**values)
 
+        def prepare_dir(dir_path: Optional[str], default: str) -> str:
+            return default if dir_path is None else os.path.abspath(dir_path)
+
         # common options
-        if self.data_dir is None:
-            self.data_dir = self.get_data_dir()
-        else:
-            self.data_dir = os.path.abspath(self.data_dir)
-
-        if self.cache_dir is None:
-            self.cache_dir = os.path.join(self.data_dir, "cache")
-        else:
-            self.cache_dir = os.path.abspath(self.cache_dir)
-
-        if self.bin_dir is None:
-            self.bin_dir = os.path.join(self.data_dir, "bin")
-        else:
-            self.bin_dir = os.path.abspath(self.bin_dir)
-
-        if self.log_dir is None:
-            self.log_dir = os.path.join(self.data_dir, "log")
-        else:
-            self.log_dir = os.path.abspath(self.log_dir)
+        self.data_dir = prepare_dir(self.data_dir, self.get_data_dir())
+        self.cache_dir = prepare_dir(
+            self.cache_dir, os.path.join(self.data_dir, "cache")
+        )
+        self.bin_dir = prepare_dir(self.bin_dir, os.path.join(self.data_dir, "bin"))
+        self.log_dir = prepare_dir(self.log_dir, os.path.join(self.data_dir, "log"))
 
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
@@ -216,7 +235,11 @@ class Config(BaseSettings):
         if self.system_reserved is None:
             self.system_reserved = {"ram": 2, "vram": 1}
 
+        if self.service_discovery_name is None:
+            self.service_discovery_name = "server" if self._is_server() else "worker"
+
         self.make_dirs()
+        self.prepare_gateway_config()
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901
@@ -262,6 +285,13 @@ class Config(BaseSettings):
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
+        # prepare gateway dirs
+        os.makedirs(
+            os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),
+            exist_ok=True,
+        )
+        # ensure higress data dir exists
+        os.makedirs(self.higress_base_dir(), exist_ok=True)
 
     def get_system_info(self) -> SystemInfo:  # noqa: C901
         """get system info from resources
@@ -567,6 +597,105 @@ class Config(BaseSettings):
             else ""
         )
         return f"{prefix}{self.image_repo}:{version}"
+
+    def higress_base_dir(self) -> str:
+        return os.path.join(self.data_dir, "higress")
+
+    def prepare_gateway_config(self):
+        config_path = os.path.join(self.higress_base_dir(), ".env")
+        higress_embedded_kubeconfig = os.path.join(
+            self.higress_base_dir(), "kubeconfig"
+        )
+
+        if self.gateway_mode == GatewayModeEnum.auto:
+            is_embedded = self.gateway_kubeconfig is None
+            in_cluster = platform.is_inside_kubernetes()
+            if in_cluster and platform.is_supported_higress():
+                self.gateway_mode = GatewayModeEnum.incluster
+            elif is_embedded:
+                # in cluster but not supported higress will fallback to embedded
+                self.gateway_mode = GatewayModeEnum.embedded
+                # path to embed kubeconfig
+                self.gateway_kubeconfig = higress_embedded_kubeconfig
+            else:
+                self.gateway_mode = GatewayModeEnum.external
+
+        if (
+            self.gateway_mode == GatewayModeEnum.external
+            and not platform.is_supported_higress(self.gateway_kubeconfig)
+        ):
+            raise Exception("The k8s cluster for gpustack does not support Higress.")
+
+        if self.gateway_mode == GatewayModeEnum.embedded:
+            with open(config_path, "w") as f:
+                f.write(f"DATA_DIR={self.data_dir}\n")
+                f.write(f"LOG_DIR={self.log_dir}\n")
+                f.write(f"GATEWAY_HTTP_PORT={self.port}\n")
+                f.write(f"GATEWAY_HTTPS_PORT={self.tls_port}\n")
+                f.write(f"GATEWAY_CONCURRENCY={self.gateway_concurrency}\n")
+                f.write(f"GPUSTACK_API_PORT={self.api_port}\n")
+            with open(higress_embedded_kubeconfig, "w") as f:
+                f.write(
+                    f"""apiVersion: v1
+kind: Config
+clusters:
+  - name: higress
+    cluster:
+      server: https://localhost:{os.getenv('APISERVER_PORT', '18443')}
+      insecure-skip-tls-verify: true
+users:
+  - name: higress-admin
+    user: {{}}
+contexts:
+  - name: higress
+    context:
+      cluster: higress
+      user: higress-admin
+current-context: higress
+"""
+                )
+        else:
+            # disabled gateway will clean up the embedded kubeconfig and config file
+            for file in [higress_embedded_kubeconfig, config_path]:
+                if os.path.exists(file):
+                    os.remove(file)
+        # loading kubeconfig will be done in initializing gateway
+
+    class ServerRole(Enum):
+        SERVER = "server"
+        WORKER = "worker"
+        BOTH = "both"
+
+    def server_role(self) -> ServerRole:
+        if self._is_server() and not self.disable_worker:
+            return self.ServerRole.BOTH
+        elif self._is_server():
+            return self.ServerRole.SERVER
+        else:
+            return self.ServerRole.WORKER
+
+    def set_async_k8s_config(self, config):
+        if getattr(self, '_k8s_async_config', None) is not None:
+            # ignore setting config if config is set
+            return
+        self._k8s_async_config = config
+
+    def get_async_k8s_config(self):
+        rtn = getattr(self, '_k8s_async_config', None)
+        return rtn
+
+    def get_advertise_address(self) -> str:
+        if self.advertise_address is None:
+            address, _ = get_first_non_loopback_ip()
+            return address
+        else:
+            return self.advertise_address
+
+    def get_gateway_namespace(self) -> str:
+        default_gateway_namespace = "higress-system"
+        if self.gateway_mode == GatewayModeEnum.embedded:
+            return default_gateway_namespace
+        return self.namespace if self.namespace else default_gateway_namespace
 
 
 def get_openid_configuration(issuer: str) -> dict:

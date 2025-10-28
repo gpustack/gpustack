@@ -43,7 +43,6 @@ api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(
     router=token.router,
     prefix="/token-auth",
-    dependencies=[Depends(get_current_user)],
     include_in_schema=False,
 )
 

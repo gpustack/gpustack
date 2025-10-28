@@ -13,6 +13,7 @@ from gpustack.config.envs import (
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
+from gpustack.gateway.plugins import register as register_plugins
 
 
 def create_app(cfg: Config) -> FastAPI:
@@ -44,6 +45,7 @@ def create_app(cfg: Config) -> FastAPI:
     app.add_middleware(middlewares.RefreshTokenMiddleware)
     app.include_router(api_router)
     ui.register(app)
+    register_plugins(cfg=cfg, app=app)
     exceptions.register_handlers(app)
 
     return app
