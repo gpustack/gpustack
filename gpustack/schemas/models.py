@@ -290,6 +290,9 @@ class ModelInstanceStateEnum(str, Enum):
     ANALYZING = "analyzing"
     UNREACHABLE = "unreachable"
 
+    def __str__(self):
+        return self.value
+
 
 class ComputedResourceClaim(BaseModel):
     is_unified_memory: Optional[bool] = False

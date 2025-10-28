@@ -4,7 +4,6 @@ import string
 import asyncio
 from typing import Any, Dict, List, Tuple, Optional, Set
 import httpx
-from gpustack_runtime.deployer import get_workload, WorkloadStatusStateEnum
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
@@ -546,10 +545,6 @@ class WorkerController:
                 or event.type == EventType.DELETED
             ):
                 for instance in instances:
-                    workload = get_workload(instance.name)
-                    if workload and workload.state == WorkloadStatusStateEnum.RUNNING:
-                        # container is still running, need not delete
-                        continue
                     instance_names.append(instance.name)
                     await ModelInstanceService(session).delete(instance)
 

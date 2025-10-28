@@ -24,6 +24,7 @@ from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
 from gpustack.worker.serve_manager import ServeManager
@@ -194,25 +195,25 @@ class Worker:
         # Start the worker server to expose APIs.
         self._create_async_task(self._serve_apis())
 
+        inference_backend_manager = InferenceBackendManager(self._clientset)
+        # Start InferenceBackend listener to cache backend data
+        self._create_async_task(inference_backend_manager.start_listener())
+
         serve_manager = ServeManager(
             worker_id=self._worker_id,
             clientset=self._clientset,
             cfg=self._config,
+            inference_backend_manager=inference_backend_manager,
         )
         # Check serving model instances' health every 3 seconds.
-        run_periodically_in_thread(serve_manager.health_check_serving_instances, 3)
+        run_periodically_in_thread(serve_manager.sync_model_instances_state, 3)
+        self._create_async_task(serve_manager.watch_model_instances_event())
         self._create_async_task(serve_manager.watch_model_instances())
-        self._create_async_task(serve_manager.monitor_error_instances())
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
         )
         self._create_async_task(model_file_manager.watch_model_files())
-
-        # Start InferenceBackend listener to cache backend data
-        self._create_async_task(
-            serve_manager.inference_backend_manager.start_listener()
-        )
 
         await asyncio.gather(*self._async_tasks)
 
