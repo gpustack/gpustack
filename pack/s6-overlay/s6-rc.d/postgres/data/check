@@ -1,4 +1,6 @@
 #!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+
 ROLE_FILE="/var/lib/gpustack/run/role"
 FLAG_POSTGRES_FLAG_FILE="/var/lib/gpustack/run/flag_should_start_postgres"
 

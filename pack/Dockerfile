@@ -9,6 +9,7 @@
 #    - Install S6-overlay.
 # 2. gpustack target.
 #    - Install PostgreSQL.
+#    - Install Higress standalone components.
 #    - Install gpustack package from the mounted source code.
 #    - Setup entrypoint to gpustack command.
 
@@ -16,9 +17,13 @@
 # - PYTHON_VERSION: Version of Python to use.
 # - GPUSTACK_BASE_IMAGE: Base image for the gpustack stage.
 # - GPUSTACK_RUNTIME_ROCM_VERSION: Version of ROCm detection library for gpustack-runtime, update this if project dependencies has changed.
+# - HIGRESS_VERSION: Version of Higress to use.
+# - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=6.2.4
+ARG HIGRESS_VERSION=2.1.8
+ARG HIGRESS_APISERVER_VERSION=0.0.25
 
 # Stage Base
 #
@@ -26,6 +31,10 @@ ARG GPUSTACK_RUNTIME_ROCM_VERSION=6.2.4
 #   docker build --tag=gpustack/gpustack:base --file=pack/Dockerfile --target=base --progress=plain .
 #
 
+FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/api-server:${HIGRESS_APISERVER_VERSION} AS apiserver
+FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/higress:${HIGRESS_VERSION} AS controller
+FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/pilot:${HIGRESS_VERSION} AS pilot
+FROM higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/gateway:${HIGRESS_VERSION} AS gateway
 FROM ubuntu:22.04@sha256:3c61d3759c2639d4b836d32a2d3c83fa0214e36f195a3421018dbaaf79cbe37f AS base
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
@@ -60,7 +69,8 @@ RUN <<EOF
         tzdata locales \
         iproute2 iputils-ping ifstat net-tools dnsutils pciutils ipmitool \
         procps sysstat htop \
-        tini vim jq bc tree
+        vim jq bc tree \
+        logrotate cron netcat
 
     # Update locale
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
@@ -263,8 +273,6 @@ ENV S6_KEEP_ENV=1 \
     S6_KILL_GRACETIME=3000 \
     S6_VERBOSITY=1
 
-COPY pack/s6-overlay /etc/s6-overlay
-
 #
 # Stage GPUStack
 #
@@ -348,10 +356,52 @@ RUN <<EOF
 
 EOF
 
+
+## Install Higress standalone components
+
+RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
+    --mount=type=bind,from=controller,source=/usr/local/bin/higress,dst=/mnt/higress,rw \
+    --mount=type=bind,from=pilot,source=/usr/local/bin,dst=/mnt/pilot,rw \
+    --mount=type=bind,from=gateway,source=/,dst=/mnt/gateway,rw <<EOF
+    # Prepare Higress standalone components
+
+    set -eux;
+    # Install API server
+    cp /mnt/apiserver /usr/local/bin/apiserver;
+
+    # Install controller
+    cp /mnt/higress /usr/local/bin/higress;
+
+    # Install pilot
+    cp /mnt/pilot/pilot-discovery /usr/local/bin/pilot-discovery;
+    cp /mnt/pilot/higress-pilot-start.sh /usr/local/bin/higress-pilot-start.sh;
+
+    # Install gateway
+    mkdir -p /var/lib/istio/envoy/
+    cp /mnt/gateway/var/lib/istio/envoy/*.json /var/lib/istio/envoy/;
+    cp /mnt/gateway/var/lib/istio/envoy/*.so /var/lib/istio/envoy/;
+    cp /mnt/gateway/usr/local/bin/pilot-agent /usr/local/bin/pilot-agent;
+    cp /mnt/gateway/usr/local/bin/envoy /usr/local/bin/envoy;
+    cp /mnt/gateway/usr/local/bin/higress-proxy-container-init.sh /usr/local/bin/;
+    cp /mnt/gateway/usr/local/bin/supercronic-linux-${TARGETARCH} /usr/local/bin/;
+    ln -s supercronic-linux-${TARGETARCH} supercronic && mv supercronic /usr/local/bin/;
+
+    # Prepare Higress
+    chmod a+x /usr/local/bin/higress-proxy-container-init.sh; \
+    sed -i 's/1337/0/g' /usr/local/bin/higress-proxy-container-init.sh; \
+    /usr/local/bin/higress-proxy-container-init.sh
+
+EOF
+# Initialize configurations
+COPY pack/higress-configs/ /
+ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/opt/data/plugins
+## END Install Higress standalone components
+
 ## Install
 
 RUN --mount=type=cache,target=/root/.cache \
-    --mount=type=bind,target=/workspace/gpustack,rw <<EOF
+    --mount=type=bind,target=/workspace/gpustack,rw \
+    --mount=type=bind,from=ghcr.io/oras-project/oras:v1.3.0,source=/bin/oras,dst=/bin/oras <<EOF
     # Install GPUStack
 
     export POETRY_NO_CACHE=0
@@ -390,6 +440,9 @@ RUN --mount=type=cache,target=/root/.cache \
         --package gpustack
     gpustack version
 
+    # Download wasm-plugins
+    python gpustack/gateway/pull_plugins.py
+
     # Cleanup
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
@@ -398,6 +451,7 @@ EOF
 ## Disable gpustack-runtime auto image correction,
 ## let GPUStack to configure the correct runner image.
 ENV GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=0
+COPY pack/s6-overlay /etc/s6-overlay
 
 ## Entrypoint
 
