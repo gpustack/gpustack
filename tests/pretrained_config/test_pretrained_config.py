@@ -1,5 +1,6 @@
-from gpustack.worker.backends.vllm import get_hf_text_config, get_max_model_len
 from transformers import AutoConfig
+
+from gpustack.utils.hub import get_hf_text_config, get_max_model_len
 
 
 def test_get_max_model_len():

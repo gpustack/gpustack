@@ -13,14 +13,9 @@ from gpustack_runtime.deployer import (
     ContainerPort,
 )
 
-from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
+from gpustack.schemas.models import ModelInstance
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
-from gpustack.utils.hub import (
-    get_hf_text_config,
-    get_max_model_len,
-    get_pretrained_config,
-)
 from gpustack.worker.backends.base import (
     InferenceServer,
     is_ascend_310p,
@@ -51,18 +46,9 @@ class VLLMServer(InferenceServer):
         logger.info(f"Starting vLLM model instance: {self._model_instance.name}")
 
         # Prepare distributed information.
-        minstance = self._model_instance
-        dservers = minstance.distributed_servers
-        subworkers = (
-            dservers.subordinate_workers
-            if dservers and dservers.subordinate_workers
-            else []
+        is_distributed, is_distributed_leader, is_distributed_follower = (
+            self.is_distributed()
         )
-        is_distributed = bool(subworkers)
-        is_distributed_leader = (
-            is_distributed and minstance.worker_id == self._worker.id
-        )
-        is_distributed_follower = is_distributed and not is_distributed_leader
 
         env = self._get_configured_env(
             is_distributed=is_distributed,
@@ -353,39 +339,6 @@ class VLLMServer(InferenceServer):
         ]
 
         return arguments, None
-
-    def _derive_max_model_len(self) -> Optional[int]:
-        """
-        Derive max model length from model config.
-        Returns None if unavailable.
-        """
-        try:
-            pretrained_config = get_pretrained_config(self._model)
-            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
-        except Exception as e:
-            logger.error(f"Failed to derive max model length: {e}")
-
-        return None
-
-    def _handle_error(self, error: Exception):
-        """
-        Handle errors during server startup.
-        """
-        cause = getattr(error, "__cause__", None)
-        cause_text = f": {cause}" if cause else ""
-        error_message = f"Failed to run vLLM: {error}{cause_text}"
-
-        try:
-            patch_dict = {
-                "state_message": error_message,
-                "state": ModelInstanceStateEnum.ERROR,
-            }
-            self._update_model_instance(self._model_instance.id, **patch_dict)
-        except Exception as ue:
-            logger.error(f"Failed to update model instance: {ue}")
-
-        raise error
 
 
 def get_auto_parallelism_arguments(

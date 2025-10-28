@@ -33,6 +33,11 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.server.bus import Event
 from gpustack.utils.gpu import parse_gpu_id
+from gpustack.utils.hub import (
+    get_pretrained_config,
+    get_hf_text_config,
+    get_max_model_len,
+)
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 
@@ -146,6 +151,64 @@ class InferenceServer(ABC):
             setattr(mi, key, value)
 
         self._clientset.model_instances.update(id=id, model_update=mi)
+
+    def _handle_error(self, error: Exception):
+        """
+        Handle errors during backend server startup in a unified way.
+        Updates model instance state and re-raises the original error.
+        """
+        cause = getattr(error, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        error_message = f"Failed to run {self._model.backend}: {error}{cause_text}"
+
+        try:
+            patch_dict = {
+                "state_message": error_message,
+                "state": ModelInstanceStateEnum.ERROR,
+            }
+            self._update_model_instance(self._model_instance.id, **patch_dict)
+        except Exception as ue:
+            logger.error(f"Failed to update model instance: {ue}")
+
+        raise error
+
+    def is_distributed(self) -> tuple[bool, bool, bool]:
+        """
+        Check if the model instance requires to be distributed SGLang setup.
+        Returns:
+            A tuple indicating (
+                is_distributed,
+                is_distributed_leader,
+                is_distributed_follower
+            ).
+        """
+        model_instance = self._model_instance
+        dservers = model_instance.distributed_servers
+        subworkers = (
+            dservers.subordinate_workers
+            if dservers and dservers.subordinate_workers
+            else []
+        )
+        is_distributed = bool(subworkers)
+        is_distributed_leader = (
+            is_distributed and model_instance.worker_id == self._worker.id
+        )
+        is_distributed_follower = is_distributed and not is_distributed_leader
+        return is_distributed, is_distributed_leader, is_distributed_follower
+
+    def _derive_max_model_len(self) -> Optional[int]:
+        """
+        Derive max model length from model config.
+        Returns None if unavailable.
+        """
+        try:
+            pretrained_config = get_pretrained_config(self._model)
+            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
+            return get_max_model_len(pretrained_or_hf_text_config)
+        except Exception as e:
+            logger.error(f"Failed to derive max model length: {e}")
+
+        return None
 
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """

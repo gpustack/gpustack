@@ -17,7 +17,6 @@ from gpustack_runtime.deployer import (
     ContainerFile,
 )
 
-from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 from gpustack.utils.hub import (
@@ -1423,25 +1422,6 @@ class AscendMindIEServer(InferenceServer):
         create_workload(workload_plan)
 
         logger.info(f"Created Ascend MindIE container workload {self._workload_name}")
-
-    def _handle_error(self, error: Exception):
-        """
-        Handle errors during server startup.
-        """
-        cause = getattr(error, "__cause__", None)
-        cause_text = f": {cause}" if cause else ""
-        error_message = f"Failed to run Ascend MindIE: {error}{cause_text}"
-
-        try:
-            patch_dict = {
-                "state_message": error_message,
-                "state": ModelInstanceStateEnum.ERROR,
-            }
-            self._update_model_instance(self._model_instance.id, **patch_dict)
-        except Exception as ue:
-            logger.error(f"Failed to update model instance state: {ue}")
-
-        raise error
 
     def _get_model_max_seq_len(self) -> Optional[int]:
         """
