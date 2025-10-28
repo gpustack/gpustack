@@ -12,6 +12,9 @@ class EventType(Enum):
     UNKNOWN = 4
     HEARTBEAT = 5
 
+    def __str__(self):
+        return self.name
+
 
 @dataclass
 class Event:
