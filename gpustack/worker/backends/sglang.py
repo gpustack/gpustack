@@ -208,8 +208,8 @@ class SGLangServer(InferenceServer):
                     node_rank = idx + 1  # Subordinate workers start from rank 1
                     break
 
-        # Get or allocate distributed communication port
-        dist_init_port = get_free_port(port_range=self._config.ray_worker_port_range)
+        dist_port_range = getattr(self._config, "distributed_worker_port_range", None)
+        dist_init_port = get_free_port(port_range=dist_port_range)
 
         # Add multi-node parameters
         arguments.extend(
@@ -244,9 +244,10 @@ class SGLangServer(InferenceServer):
             if subordinate_workers:
                 master_worker = subordinate_workers[0]
                 env["MASTER_ADDR"] = master_worker.worker_ip or "localhost"
-                env["MASTER_PORT"] = str(
-                    get_free_port(port_range=self._config.ray_worker_port_range)
+                dist_port_range = getattr(
+                    self._config, "distributed_worker_port_range", None
                 )
+                env["MASTER_PORT"] = str(get_free_port(port_range=dist_port_range))
 
 
 def get_auto_parallelism_arguments(

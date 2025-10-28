@@ -74,7 +74,7 @@ class Config(BaseSettings):
         ray_dashboard_agent_grpc_port: Port for Ray Dashboard Agent gRPC. Used when Ray is enabled. Default is 40101.
         ray_dashboard_agent_listen_port: Port for Ray Dashboard Agent to listen on. Used when Ray is enabled. Default is 52365.
         ray_metrics_export_port: Port for Ray Metrics Exporter. Used when Ray is enabled. Default is 40103.
-        ray_worker_port_range: Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40200-40999'.
+        distributed_worker_port_range: Generic port range for distributed worker processes (e.g., NCCL/TCP communication), specified as a string in the form 'N1-N2'. Both ends inclusive. Default is '40200-40999'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
         pipx_path: Path to the pipx executable, used to install versioned backends.
@@ -164,7 +164,7 @@ class Config(BaseSettings):
     worker_port: int = 10150
     worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
-    ray_worker_port_range: Optional[str] = "40200-40999"
+    distributed_worker_port_range: Optional[str] = "40200-40999"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None
@@ -243,8 +243,8 @@ class Config(BaseSettings):
         if self.service_port_range:
             self.check_port_range(self.service_port_range)
 
-        if self.ray_worker_port_range:
-            self.check_port_range(self.ray_worker_port_range)
+        if self.distributed_worker_port_range:
+            self.check_port_range(self.distributed_worker_port_range)
 
         return self
 
