@@ -2,64 +2,23 @@
 
 GPUStack supports the following inference backends:
 
-- [llama-box](#llama-box)
 - [vLLM](#vllm)
+- [SGLang](#sglang)
 - [vox-box](#vox-box)
 - [Ascend MindIE](#ascend-mindie-experimental)
+- [llama-box](#llama-box)(deprecated, using custom backend)
 
-When users deploy a model, the backend is selected automatically based on the following criteria:
+When initiating a model deployment, the UI will automatically pre-select a backend based on the following criteria:
 
 - If the model is a [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) model, `llama-box` is used.
 - If the model is a known `Text-to-Speech` or `Speech-to-Text` model, `vox-box` is used.
 - Otherwise, `vLLM` is used.
 
-## llama-box
-
-[llama-box](https://github.com/gpustack/llama-box) is a LM inference server based on [llama.cpp](https://github.com/ggml-org/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp).
-
-### Supported Platforms
-
-The llama-box backend supports Linux, macOS and Windows (with CPU offloading only on Windows ARM architecture) platforms.
-
-### Supported Models
-
-- LLMs: For supported LLMs, refer to the llama.cpp [README](https://github.com/ggml-org/llama.cpp#description).
-- Diffussion Models: Supported models are listed in this [Hugging Face collection](https://huggingface.co/collections/gpustack/image-672dafeb2fa0d02dbe2539a9) or this [ModelScope collection](https://modelscope.cn/collections/Image-fab3d241f8a641).
-- Reranker Models: Supported models can be found in this [Hugging Face collection](https://huggingface.co/collections/gpustack/reranker-6721a234527f6fcd90deedc4) or this [ModelScope collection](https://modelscope.cn/collections/Reranker-7576210e79de4a).
-
-### Supported Features
-
-#### Allow CPU Offloading
-
-After enabling CPU offloading, GPUStack prioritizes loading as many layers as possible onto the GPU to optimize performance. If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
-
-#### Allow Distributed Inference Across Workers
-
-Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more others workers, offloading computation tasks to them.
-
-#### Multimodal Language Models
-
-Llama-box supports the following vision language models. When using a vision language model, image inputs are supported in the chat completion API.
-
-- LLaVA Series
-- MiniCPM VL Series
-- Qwen2 VL Series
-- GLM-Edge-V Series
-- Granite VL Series
-- Gemma3 VL Series
-- SmolVLM Series
-- Pixtral Series
-- MobileVLM Series
-- Mistral Small 3.1
-- Qwen2.5 VL Series
+This pre-selection only populates the default value in the deployment form. The actual backend used for deployment will be the one explicitly selected by the user when submitting the deployment request. Users can select from the list of supported backends provided above.
 
 !!! Note
 
-    When deploying a vision language model, GPUStack downloads and uses the multimodal projector file with the pattern `*mmproj*.gguf` by default. If multiple files match the pattern, GPUStack selects the file with higher precision (e.g., `f32` over `f16`). If the default pattern does not match the projector file or you want to use a specific one, you can customize the multimodal projector file by setting the `--mmproj` parameter in the model configuration. You can specify the relative path to the projector file in the model source. This syntax acts as shorthand, and GPUStack will download the file from the source and normalize the path when using it.
-
-### Parameters Reference
-
-See the full list of supported parameters for llama-box [here](https://github.com/gpustack/llama-box#usage).
+    For all supported inference backends, we have pre-built Docker images available at [DockerHub](https://hub.docker.com/r/gpustack/runner). When users deploy models, the system will automatically pull and run the corresponding images.
 
 ## vLLM
 
@@ -79,8 +38,7 @@ The vLLM backend works on Linux.
 
 !!! Note
 
-    1. When users install GPUStack on amd64 Linux using the installation script, vLLM is automatically installed.
-    2. When users deploy a model using the vLLM backend, GPUStack sets worker label selectors to `{"os": "linux"}` by default to ensure the model instance is scheduled to proper workers. You can customize the worker label selectors in the model configuration.
+    When users deploy a model using the vLLM backend, GPUStack sets worker label selectors to `{"os": "linux"}` by default to ensure the model instance is scheduled to proper workers. You can customize the worker label selectors in the model configuration.
 
 ### Supported Models
 
@@ -116,6 +74,61 @@ If the above conditions are not met, the model instance will not be scheduled au
 ### Parameters Reference
 
 See the full list of supported parameters for vLLM [here](https://docs.vllm.ai/en/stable/cli/serve.html).
+
+## SGLang
+
+[SGLang](https://github.com/sgl-project/sglang) is a high-performance serving framework for large language models and vision-language models. It is designed to deliver low-latency and high-throughput inference across a wide range of setups, from a single GPU to large distributed clusters
+
+By default, GPUStack estimates the VRAM requirement for the model instance based on model metadata. When needed, GPUStack also sets several parameters automatically for large-context models. Common SGLang parameters include:
+
+- `--mem-fraction-static` (default: `0.9`): The per-GPU allocatable VRAM fraction. The scheduler uses this value for resource matching and candidate selection. You can override it via the model's `backend_parameters`.
+- `--context-length`: Model context length. For large-context models, if the automatically estimated context length exceeds device capability, GPUStack sets this parameter to `8192` to simplify deployment in resource-constrained environments. You can customize this parameter as needed.
+- `--tp-size`: Tensor parallel size. When not explicitly provided, GPUStack infers and sets this parameter based on the selected GPUs.
+- `--pp-size`: Pipeline parallel size. In multi-node deployments, GPUStack determines a combination of `--tp-size` and `--pp-size` according to the model and cluster configuration.
+- Multi-node arguments: `--nnodes`, `--node-rank`, `--dist-init-addr`. When distributed inference is enabled, GPUStack injects these arguments to initialize multi-node communication.
+
+For more details, please refer to [SGLang documentation](https://docs.sglang.ai/index.html).
+
+### Supported Platforms
+
+The SGLang backend currently supports Linux.
+
+### Supported Models
+
+Please refer to the SGLang [documentation](https://docs.sglang.ai/supported_models/generative_models.html) for supported models.
+
+### Supported Features
+
+#### Distributed Inference Across Workers (Experimental)
+
+You can enable distributed SGLang inference across multiple workers in GPUStack.
+
+!!! warning "Known Limitations"
+
+    1. All participating nodes must run Linux, and images/environments should be compatible in Python version and communication libraries (e.g., NCCL).
+    2. Model files must be accessible at the same path on all nodes. Use a shared file system or download the model to the same path on each node.
+    3. When running in containers, host network mode is recommended to ensure cross-node connectivity and RDMA/InfiniBand availability.
+
+Auto-scheduling candidate selection considers the following conditions:
+
+- Participating GPUs satisfy the `--mem-fraction-static` requirement (default 0.9).
+- In single-node multi-GPU or multi-node multi-GPU scenarios, the total effective allocatable VRAM must meet the model's requirement.
+- Model parallelism requirements must be met (e.g., total number of attention heads divisible by the tensor parallel size), otherwise the candidate is rejected.
+
+If the above conditions are not met, you can still manually schedule the model instance by selecting workers/GPUs in the configuration, though overcommit risk may be indicated.
+
+#### Other Advanced Features
+
+Additional advanced features are available, such as: 
+
+- [Speculative Decoding](https://docs.sglang.ai/advanced_features/speculative_decoding.html)
+- [Hierarchical KV Caching](https://docs.sglang.ai/advanced_features/hicache.html)
+
+Please refer to the official documentation for usage instructions.
+
+### Parameters Reference
+
+See the full list of supported parameters for SGLang [here](https://docs.sglang.ai/advanced_features/server_arguments.html).
 
 ## vox-box
 
@@ -276,3 +289,52 @@ To avoid directly configuring JSON, GPUStack provides a set of command line para
     however, some variables may be conflicted with GPUStack managment.
     Hence, GPUStack will override/prevent those variables.
     Please compare the model instance logs' output with your expectations.
+
+
+## llama-box (deprecated, using custom backend)
+
+[llama-box](https://github.com/gpustack/llama-box) is a LM inference server based on [llama.cpp](https://github.com/ggml-org/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp).
+
+### Supported Platforms
+
+The llama-box backend supports Linux, macOS and Windows (with CPU offloading only on Windows ARM architecture) platforms.
+
+### Supported Models
+
+- LLMs: For supported LLMs, refer to the llama.cpp [README](https://github.com/ggml-org/llama.cpp#description).
+- Diffussion Models: Supported models are listed in this [Hugging Face collection](https://huggingface.co/collections/gpustack/image-672dafeb2fa0d02dbe2539a9) or this [ModelScope collection](https://modelscope.cn/collections/Image-fab3d241f8a641).
+- Reranker Models: Supported models can be found in this [Hugging Face collection](https://huggingface.co/collections/gpustack/reranker-6721a234527f6fcd90deedc4) or this [ModelScope collection](https://modelscope.cn/collections/Reranker-7576210e79de4a).
+
+### Supported Features
+
+#### Allow CPU Offloading
+
+After enabling CPU offloading, GPUStack prioritizes loading as many layers as possible onto the GPU to optimize performance. If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
+
+#### Allow Distributed Inference Across Workers
+
+Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more others workers, offloading computation tasks to them.
+
+#### Multimodal Language Models
+
+Llama-box supports the following vision language models. When using a vision language model, image inputs are supported in the chat completion API.
+
+- LLaVA Series
+- MiniCPM VL Series
+- Qwen2 VL Series
+- GLM-Edge-V Series
+- Granite VL Series
+- Gemma3 VL Series
+- SmolVLM Series
+- Pixtral Series
+- MobileVLM Series
+- Mistral Small 3.1
+- Qwen2.5 VL Series
+
+!!! Note
+
+    When deploying a vision language model, GPUStack downloads and uses the multimodal projector file with the pattern `*mmproj*.gguf` by default. If multiple files match the pattern, GPUStack selects the file with higher precision (e.g., `f32` over `f16`). If the default pattern does not match the projector file or you want to use a specific one, you can customize the multimodal projector file by setting the `--mmproj` parameter in the model configuration. You can specify the relative path to the projector file in the model source. This syntax acts as shorthand, and GPUStack will download the file from the source and normalize the path when using it.
+
+### Parameters Reference
+
+See the full list of supported parameters for llama-box [here](https://github.com/gpustack/llama-box#usage).
