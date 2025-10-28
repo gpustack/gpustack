@@ -41,7 +41,11 @@ function pack() {
         --platform "${PACKAGE_OS}/${PACKAGE_ARCH}" \
         --tag "${TAG}" \
         --file "${ROOT_DIR}/pack/Dockerfile" \
+        --attest "type=provenance,disabled=true" \
+        --attest "type=sbom,disabled=true" \
+        --ulimit nofile=65536:65536 \
         --progress plain \
+        --cache-from "type=registry,ref=gpustack/build-cache:gpustack-main" \
         "${ROOT_DIR}"
 }
 

@@ -8,8 +8,8 @@
 #    - Install Platform toolkit.
 #    - Install S6-overlay.
 # 2. gpustack target.
-#    - Install gpustack package from the mounted source code.
 #    - Install PostgreSQL.
+#    - Install gpustack package from the mounted source code.
 #    - Setup entrypoint to gpustack command.
 
 # Argument usage:
@@ -294,6 +294,59 @@ RUN <<EOF
     curl -o /usr/share/misc/pci.ids https://pci-ids.ucw.cz/v2.2/pci.ids
 EOF
 
+## Install PostgreSQL
+
+ENV PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf \
+    POSTGRES_DB=gpustack
+
+RUN set -eux; \
+	groupadd -r postgres --gid=9999; \
+	useradd -r -g postgres --uid=9999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres; \
+	mkdir -p /var/lib/postgresql; \
+	chown -R postgres:postgres /var/lib/postgresql
+
+RUN <<EOF
+    set -eux
+
+    # Add PostgreSQL APT repository
+    wget -O /tmp/ACCC4CF8.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        && gpg --dearmor /tmp/ACCC4CF8.asc \
+        && mv /tmp/ACCC4CF8.asc.gpg /usr/share/keyrings/postgresql-archive-keyring.gpg \
+        && echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+
+    # Install
+    apt-get update -y && apt-get install -y --no-install-recommends \
+        postgresql-17 \
+        gosu
+
+    # Create symlinks for PostgreSQL 17 to simplify usage
+    ln -s /usr/lib/postgresql/17/bin /usr/lib/postgresql/bin \
+        && ln -s /etc/postgresql/17/main /etc/postgresql/main \
+        && ln -s /var/lib/postgresql/17/main /var/lib/postgresql/main \
+        && ls -1 /usr/lib/postgresql/bin/ | xargs -I @ ln -sf /usr/lib/postgresql/bin/@ /usr/bin/@
+
+    gosu postgres echo "listen_addresses='*'" >> "$PGCONFIG_FILE" \
+        && gosu postgres echo "local all  postgres            peer" > /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  root  127.0.0.1/32  trust" >> /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  root  ::1/128       trust" >> /etc/postgresql/main/pg_hba.conf \
+        && gosu postgres echo "host  all  all   0.0.0.0/0     scram-sha-256" >> /etc/postgresql/main/pg_hba.conf
+
+    gosu postgres sed -i "s/^data_directory/#data_directory/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^hba_file/#hba_file/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_destination/log_destination/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_min_messages = warning/log_min_messages = info/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i 's/^#log_directory = '\''log'\''/log_directory = '\''\/var\/lib\/gpustack\/log\/postgresql'\''/g' "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
+
+EOF
+
 ## Install
 
 RUN --mount=type=cache,target=/root/.cache \
@@ -344,59 +397,6 @@ EOF
 ## Disable gpustack-runtime auto image correction,
 ## let GPUStack to configure the correct runner image.
 ENV GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=0
-
-## Install PostgreSQL
-
-ENV PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf
-ENV POSTGRES_DB=gpustack
-
-RUN set -eux; \
-	groupadd -r postgres --gid=9999; \
-	useradd -r -g postgres --uid=9999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres; \
-	mkdir -p /var/lib/postgresql; \
-	chown -R postgres:postgres /var/lib/postgresql
-
-RUN <<EOF
-    set -eux
-
-    # Add PostgreSQL APT repository
-    wget -O /tmp/ACCC4CF8.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-        && gpg --dearmor /tmp/ACCC4CF8.asc \
-        && mv /tmp/ACCC4CF8.asc.gpg /usr/share/keyrings/postgresql-archive-keyring.gpg \
-        && echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-    
-    # Install
-    apt-get update -y && apt-get install -y --no-install-recommends \
-        postgresql-17 \
-        gosu
-
-    # Create symlinks for PostgreSQL 17 to simplify usage
-    ln -s /usr/lib/postgresql/17/bin /usr/lib/postgresql/bin \
-        && ln -s /etc/postgresql/17/main /etc/postgresql/main \
-        && ln -s /var/lib/postgresql/17/main /var/lib/postgresql/main \
-        && ls -1 /usr/lib/postgresql/bin/ | xargs -I @ ln -sf /usr/lib/postgresql/bin/@ /usr/bin/@
-
-    gosu postgres echo "listen_addresses='*'" >> "$PGCONFIG_FILE" \
-        && gosu postgres echo "local all  postgres            peer" > /etc/postgresql/main/pg_hba.conf \
-        && gosu postgres echo "host  all  root  127.0.0.1/32  trust" >> /etc/postgresql/main/pg_hba.conf \
-        && gosu postgres echo "host  all  root  ::1/128       trust" >> /etc/postgresql/main/pg_hba.conf \
-        && gosu postgres echo "host  all  all   0.0.0.0/0     scram-sha-256" >> /etc/postgresql/main/pg_hba.conf
-
-    gosu postgres sed -i "s/^data_directory/#data_directory/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^hba_file/#hba_file/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_destination/log_destination/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_min_messages = warning/log_min_messages = info/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i 's/^#log_directory = '\''log'\''/log_directory = '\''\/var\/lib\/gpustack\/log\/postgresql'\''/g' "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
-
-    # Cleanup
-    rm -rf /var/tmp/* \
-        && rm -rf /tmp/* \
-        && rm -rf /var/cache/apt
-
-EOF
 
 ## Entrypoint
 
@@ -495,9 +495,7 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
     NVIDIA_VISIBLE_DEVICES="0" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
-COPY pack/entrypoint.sh /usr/bin/entrypoint.sh
-
-RUN chmod +x /usr/bin/entrypoint.sh
+COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
 
 WORKDIR /
 ENTRYPOINT [ "/usr/bin/entrypoint.sh" ]
