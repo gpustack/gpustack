@@ -5,12 +5,14 @@ import re
 from typing import List
 import uvicorn
 import logging
+import secrets
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
-from gpustack.schemas.users import User
+from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
+from gpustack.schemas.clusters import Cluster
 from gpustack.security import (
     JWTManager,
     generate_secure_password,
@@ -37,7 +39,7 @@ from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.task import run_periodically_in_thread
-from gpustack.worker.registration import write_registration_token
+from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
 
 logger = logging.getLogger(__name__)
@@ -240,7 +242,7 @@ class Server:
         init_data_funcs = [
             self._init_user,
             self._migrate_legacy_token,
-            self._init_default_cluster_token,
+            self._migrate_legacy_workers,
             self._ensure_registration_token,
         ]
         for init_data_func in init_data_funcs:
@@ -282,59 +284,114 @@ class Server:
         """
         if not self._config.token or self._config.token.startswith(API_KEY_PREFIX):
             return
-        default_worker = await User.first_by_field(
-            session=session, field="username", value="system/worker-0"
-        )
-        existing_key = await ApiKey.first_by_field(
-            session=session, field="user_id", value=default_worker.id
-        )
-        if existing_key:
-            logger.info("Legacy token already migrated.")
-        else:
+        default_cluster = await Cluster.one_by_id(session=session, id=1)
+        if not default_cluster:
+            logger.debug(
+                "Default cluster does not exist, skipping legacy token migration."
+            )
+            return
+        if default_cluster.registration_token != "":
+            return
+        try:
+            default_cluster.registration_token = self._config.token
+            await default_cluster.update(session=session, auto_commit=False)
+
+            default_cluster_user = await User.one_by_fields(
+                session=session,
+                fields={
+                    "cluster_id": default_cluster.id,
+                    "is_system": True,
+                    "role": UserRole.Cluster,
+                },
+            )
+            if default_cluster_user is None:
+                raise RuntimeError("Default cluster user does not exist.")
+            if len(default_cluster_user.api_keys) > 0:
+                raise RuntimeError(
+                    "Default cluster user already has API keys, cannot migrate legacy token."
+                )
+
             new_key = ApiKey(
-                name="Legacy Worker Token",
+                name="Legacy Cluster Token",
                 access_key="",
                 hashed_secret_key=get_secret_hash(self._config.token),
-                user_id=default_worker.id,
-                user=default_worker,
+                user_id=default_cluster_user.id,
+                user=default_cluster_user,
             )
-            await ApiKey.create(session, new_key)
-        fields = {
-            "deleted_at": None,
-            "token": None,
-        }
-        legacy_workers = await Worker.all_by_fields(session, fields)
-        for worker in legacy_workers:
-            worker.token = self._config.token
-            await worker.update(session)
+            await ApiKey.create(session, new_key, auto_commit=False)
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Failed to migrate legacy token: {e}")
+            session.rollback()
+            raise e
 
-    async def _init_default_cluster_token(self, session: AsyncSession):
-        """
-        Initialize the default cluster token.
-        """
-        cluster_user = await User.first_by_field(
-            session=session, field="username", value="system/cluster-1"
-        )
-        # the cluster_user is created in the migration, so it should always exist
-        if not cluster_user or not cluster_user.cluster_id:
+    async def _migrate_legacy_workers(self, session: AsyncSession):
+        default_cluster = await Cluster.one_by_id(session=session, id=1)
+        if not default_cluster:
+            logger.debug(
+                "Default cluster does not exist, skipping legacy worker migration."
+            )
             return
-        existing_key = await ApiKey.first_by_field(
-            session=session, field="user_id", value=cluster_user.id
+        workers = await Worker.all_by_fields(
+            session=session,
+            fields={
+                "cluster_id": default_cluster.id,
+                "token": None,
+            },
         )
-        if existing_key:
-            logger.info("Default cluster token already exists.")
+        if len(workers) == 0:
             return
-        tokens = cluster_user.cluster.registration_token.split("_", 2)
-        access_key = tokens[1]
-        secret_key = tokens[2]
-        new_key = ApiKey(
-            name="Default Cluster Token",
-            access_key=access_key,
-            hashed_secret_key=get_secret_hash(secret_key),
-            user=cluster_user,
-            user_id=cluster_user.id,
+        system_name_prefix = "system/worker"
+        worker_ids = [worker.id for worker in workers]
+        worker_users = await User.all_by_fields(
+            session=session,
+            fields={
+                "cluster_id": default_cluster.id,
+                "is_system": True,
+                "role": UserRole.Worker,
+            },
+            extra_conditions=[User.worker_id.in_(worker_ids)],
         )
-        await ApiKey.create(session, new_key)
+        user_by_worker_id = {user.worker_id: user for user in worker_users}
+        for worker in workers:
+            try:
+                worker_user = user_by_worker_id.get(worker.id, None)
+                if not worker_user:
+                    to_create_user = User(
+                        username=f'{system_name_prefix}-{worker.id}',
+                        is_system=True,
+                        role=UserRole.Worker,
+                        hashed_password="",
+                        cluster=default_cluster,
+                        cluster_id=default_cluster.id,
+                        worker=worker,
+                        worker_id=worker.id,
+                    )
+                    worker_user = await User.create(
+                        session=session, source=to_create_user, auto_commit=False
+                    )
+                    access_key = secrets.token_hex(8)
+                    secret_key = secrets.token_hex(16)
+                    to_create_apikey = ApiKey(
+                        name=worker_user.username,
+                        access_key=access_key,
+                        hashed_secret_key=get_secret_hash(secret_key),
+                        user=worker_user,
+                        user_id=worker_user.id,
+                    )
+                    await ApiKey.create(session, to_create_apikey, auto_commit=False)
+                    await worker.update(
+                        session=session,
+                        source={"token": f"{API_KEY_PREFIX}_{access_key}_{secret_key}"},
+                        auto_commit=False,
+                    )
+                    await session.commit()
+            except Exception as e:
+                logger.error(
+                    f"Failed to migrate worker {worker.id} ({worker.name}): {e}"
+                )
+                session.rollback()
+                raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
         cluster_user = await User.first_by_field(

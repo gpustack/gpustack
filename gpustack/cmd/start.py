@@ -79,13 +79,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("PIPX_PATH"),
     )
     group.add_argument(
-        "-t",
-        "--token",
-        type=str,
-        help="Shared secret used to add a worker.",
-        default=get_gpustack_env("TOKEN"),
-    )
-    group.add_argument(
         "--huggingface-token",
         type=str,
         help="User Access Token to authenticate to the Hugging Face Hub.",
@@ -260,6 +253,13 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     )
 
     group = parser_server.add_argument_group("Worker settings")
+    group.add_argument(
+        "-t",
+        "--token",
+        type=str,
+        help="Shared secret used to add a worker.",
+        default=get_gpustack_env("TOKEN"),
+    )
     group.add_argument(
         "-s",
         "--server-url",
@@ -482,12 +482,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="SAML security settings in JSON.",
         default=get_gpustack_env("SAML_SECURITY"),
     )
-    group.add_argument(
-        "--registration-token",
-        type=str,
-        help="Registration token for the cluster. Used to register the worker with the cluster.",
-        default=get_gpustack_env("REGISTRATION_TOKEN"),
-    )
 
     parser_server.set_defaults(func=run)
 
@@ -580,7 +574,6 @@ def set_common_options(args, config_data: dict):
         "cache_dir",
         "bin_dir",
         "pipx_path",
-        "token",
         "huggingface_token",
         "ray_node_manager_port",
         "ray_object_manager_port",
@@ -641,6 +634,7 @@ def set_server_options(args, config_data: dict):
 
 def set_worker_options(args, config_data: dict):
     options = [
+        "token",
         "server_url",
         "worker_ip",
         "worker_ifname",
@@ -656,7 +650,6 @@ def set_worker_options(args, config_data: dict):
         "ray_worker_port_range",
         "enable_hf_transfer",
         "enable_hf_xet",
-        "registration_token",
     ]
 
     for option in options:

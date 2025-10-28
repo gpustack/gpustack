@@ -3,9 +3,8 @@ import logging
 import functools
 from typing import Any, Callable, Dict, List, Optional, Union, Set
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel, bindparam, cast, select
+from sqlmodel import SQLModel, bindparam, cast
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.orm import selectinload
 from sqlalchemy.dialects.postgresql import JSONB
 
 from gpustack.schemas.api_keys import ApiKey
@@ -93,28 +92,12 @@ class UserService:
         self.session = session
 
     @locked_cached(ttl=60)
-    async def get_by_id(
-        self, user_id: int, worker_uuid: Optional[str] = None
-    ) -> Optional[User]:
-        result = await self.session.exec(
-            select(User).options(selectinload(User.worker)).where(User.id == user_id)
-        )
-        user = result.one_or_none()
-        if user is None:
+    async def get_by_id(self, user_id: int) -> Optional[User]:
+        result = await User.one_by_id(self.session, user_id)
+        if result is None:
             return None
-        if user.worker is None and worker_uuid is not None:
-            user.worker = await Worker.one_by_fields(
-                self.session,
-                {
-                    "worker_uuid": worker_uuid,
-                    "cluster_id": user.cluster_id,
-                    "deleted_at": None,
-                },
-            )
-            if user.worker is not None:
-                self.session.expunge(user.worker)
-        self.session.expunge(user)
-        return user
+        self.session.expunge(result)
+        return result
 
     @locked_cached(ttl=60)
     async def get_by_username(self, username: str) -> Optional[User]:

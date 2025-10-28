@@ -27,6 +27,7 @@ from gpustack.schemas.workers import (
 )
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack import __version__
+from gpustack.config.registration import read_registration_token, read_worker_token
 
 _config = None
 
@@ -37,7 +38,6 @@ class Config(BaseSettings):
     Attributes:
         debug: Enable debug mode.
         data_dir: Directory to store data. Default is OS specific.
-        token: Shared secret used to add a worker.
         huggingface_token: User Access Token to authenticate to the Hugging Face Hub.
 
         host: Host to bind the server to.
@@ -59,6 +59,7 @@ class Config(BaseSettings):
         ray_port: Port of Ray (GCS server). Used when Ray is enabled. Default is 40096.
         ray_client_server_port: Port of Ray Client Server. Used when Ray is enabled. Default is 40097.
 
+        token: Shared secret used to register worker.
         server_url: URL of the server.
         worker_ip: IP address of the worker node. Auto-detected by default.
         worker_ifname: Network interface name of the worker node. Auto-detected by default.
@@ -87,7 +88,6 @@ class Config(BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
-        registration_token: Cluster token for worker registration.
         system_default_container_registry: Default registry for container images.
         image_name_override: Force override of the image name.
         image_repo: Repository for the container images.
@@ -97,7 +97,6 @@ class Config(BaseSettings):
     debug: bool = False
     data_dir: Optional[str] = None
     cache_dir: Optional[str] = None
-    token: Optional[str] = None
     huggingface_token: Optional[str] = None
     ray_node_manager_port: int = 40098
     ray_object_manager_port: int = 40099
@@ -156,8 +155,8 @@ class Config(BaseSettings):
     server_external_url: Optional[str] = None
 
     # Worker options
+    token: Optional[str] = None
     server_url: Optional[str] = None
-    registration_token: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     worker_name: Optional[str] = None
@@ -198,15 +197,15 @@ class Config(BaseSettings):
         else:
             self.log_dir = os.path.abspath(self.log_dir)
 
-        self.token = self.read_token()
+        if self.token is None:
+            self.token = read_registration_token(self.data_dir)
+
         if (
             not self._is_server()
             and self.token is None
-            and self.registration_token is None
+            and read_worker_token(self.data_dir) is None
         ):
-            raise Exception(
-                "Token or registration token is required when running as worker"
-            )
+            raise Exception("Token is required when running as worker")
 
         self.prepare_jwt_secret_key()
 
@@ -536,16 +535,6 @@ class Config(BaseSettings):
     class Config:
         env_prefix = "GPU_STACK_"
         protected_namespaces = ('settings_',)
-
-    def read_token(self) -> Optional[str]:
-        if self.token is not None:
-            return self.token
-
-        token_path = os.path.join(self.data_dir, "token")
-        if os.path.exists(token_path):
-            with open(token_path, "r") as file:
-                return file.read().strip()
-        return None
 
     def prepare_jwt_secret_key(self):
         if self.jwt_secret_key is not None:
