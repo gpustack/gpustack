@@ -9,7 +9,7 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from gpustack.config.config import Config
+from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
@@ -61,6 +61,13 @@ from gpustack.cloud_providers.abstract import (
     CloudInstance,
     InstanceState,
 )
+from kubernetes_asyncio import client as k8s_client
+from kubernetes_asyncio.client.rest import ApiException
+from gpustack.gateway.client.networking_higress_io_v1_api import (
+    NetworkingHigressIoV1Api,
+    McpBridgeRegistry,
+)
+from gpustack.gateway import utils as mcp_handler
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +76,9 @@ class ModelController:
     def __init__(self, cfg: Config):
         self._engine = get_engine()
         self._config = cfg
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+        self._k8s_config = cfg.get_async_k8s_config()
+        self.instance_ip = cfg.get_advertise_address()
 
         pass
 
@@ -76,6 +86,10 @@ class ModelController:
         """
         Start the controller.
         """
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
+            self._networking_api = k8s_client.NetworkingV1Api(api_client=base_client)
 
         async for event in Model.subscribe(self._engine):
             if event.type == EventType.HEARTBEAT:
@@ -94,6 +108,21 @@ class ModelController:
                 await set_default_worker_selector(session, model)
                 await sync_replicas(session, model, self._config)
                 await distribute_models_to_user(session, model, event)
+                if self._disable_gateway:
+                    return
+                if event.type != EventType.DELETED:
+                    destinations = await calculate_destinations(
+                        session, self.instance_ip, model
+                    )
+                else:
+                    destinations = []
+                await mcp_handler.ensure_model_ingress(
+                    event_type=event.type,
+                    namespace=self._config.get_gateway_namespace(),
+                    model=model,
+                    destinations=destinations,
+                    networking_api=self._networking_api,
+                )
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
 
@@ -493,6 +522,67 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
     if model.ready_replicas != ready_replicas:
         model.ready_replicas = ready_replicas
         await ModelService(session).update(model)
+
+
+async def get_cluster_registry(
+    session: AsyncSession, server_ip: str, cluster_id: int
+) -> Optional[McpBridgeRegistry]:
+    worker: Worker = await Worker.one_by_field(session, "ip", server_ip)
+    model_cluster: Cluster = await Cluster.one_by_id(session, cluster_id)
+    is_default_cluster = False
+    if worker is not None and worker.cluster_id == model_cluster.id:
+        is_default_cluster = True
+    if not is_default_cluster:
+        cluster_registry = mcp_handler.cluster_registry(model_cluster)
+        if cluster_registry is not None:
+            return {100: cluster_registry}
+    return None
+
+
+async def calculate_destinations(
+    session: AsyncSession,
+    server_ip: str,
+    model: Model,
+) -> List[Tuple[int, McpBridgeRegistry]]:
+    """
+    return persentage dict for each registry
+    """
+    # find out is handling default cluster's model
+    cluster_registry = await get_cluster_registry(session, server_ip, model.cluster_id)
+    if cluster_registry is not None:
+        return cluster_registry
+
+    instances = await ModelInstance.all_by_field(session, "model_id", model.id)
+    # registry_dict is ip to instances
+    instances_by_worker_id: Dict[int, List[ModelInstance]] = {}
+    for instance in instances:
+        if (
+            instance.worker_ip is None
+            or instance.worker_ip == ""
+            or instance.port is None
+        ):
+            continue
+        if instance.worker_id not in instances_by_worker_id:
+            instances_by_worker_id[instance.worker_id] = []
+        instances_by_worker_id[instance.worker_id].append(instance)
+
+    instances_related_workers = await Worker.all_by_fields(
+        session=session,
+        extra_conditions=[Worker.id.in_(list(instances_by_worker_id.keys()))],
+    )
+
+    registry_list: List[Tuple[int, McpBridgeRegistry]] = []
+    for worker in instances_related_workers:
+        instances = instances_by_worker_id.get(worker.id, [])
+        if worker.ip != server_ip:
+            registry = mcp_handler.worker_registry(worker)
+            if registry is not None:
+                registry_list.append((len(instances), registry))
+        else:
+            registry_list.extend(mcp_handler.model_instances_registry_list(instances))
+
+    mcp_handler.replace_registry_weight(registry_list)
+    return registry_list
 
 
 class WorkerController:
@@ -1213,25 +1303,82 @@ class WorkerProvisioningController:
 
 
 class ClusterController:
-    def __init__(self):
+    def __init__(self, cfg: Config):
         self._engine = get_engine()
+        self._cfg = cfg
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+        self._namespace = cfg.get_gateway_namespace()
+        self._k8s_config = cfg.get_async_k8s_config()
         pass
 
     async def start(self):
         """
         Start the controller.
         """
+        if self._cfg.gateway_mode != GatewayModeEnum.disabled:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in Cluster.subscribe(self._engine):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
-                await self._reconcile(event)
+                if self._disable_gateway:
+                    return
+                await self._ensure_worker_mcp_bridge(event)
             except Exception as e:
                 logger.error(f"Failed to reconcile cluster: {e}")
 
-    async def _reconcile(self, event: Event):
-        """
-        Reconcile the cluster state with the current event.
-        """
-        logger.info(f"Reconcile cluster {event.data.name} with event {event.type}")
+    async def _get_worker_registries(
+        self, session: AsyncSession, cluster_id: int
+    ) -> List[McpBridgeRegistry]:
+        workers = await Worker.all_by_field(
+            session,
+            "cluster_id",
+            cluster_id,
+        )
+        workers = [
+            worker
+            for worker in workers
+            if worker.deleted_at is None
+            and worker.ip != ""
+            and worker.ip != self._cfg.get_advertise_address()
+            and worker.gateway_port is not None
+        ]
+        worker_registry_list = [
+            mcp_handler.worker_registry(worker)
+            for worker in workers
+            if mcp_handler.worker_registry(worker) is not None
+        ]
+        worker_registry_list.sort(key=lambda r: r.name or "")
+        return worker_registry_list
+
+    async def _ensure_worker_mcp_bridge(self, event: Event):
+        if self._cfg.gateway_mode == GatewayModeEnum.disabled:
+            return
+        cluster: Cluster = event.data
+        mcp_resource_name = mcp_handler.cluster_mcp_bridge_name(cluster.id)
+        if event.type == EventType.DELETED:
+            try:
+                await self._higress_network_api.delete_mcpbridge(
+                    self._namespace, mcp_resource_name
+                )
+            except ApiException as e:
+                if e.status != 404:
+                    logger.error(f"Failed to delete MCPBridge {mcp_resource_name}: {e}")
+            return
+        desired_registries = []
+        to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
+        async with AsyncSession(self._engine) as session:
+            desired_registries = await self._get_worker_registries(session, cluster.id)
+        try:
+            await mcp_handler.ensure_mcp_bridge(
+                client=self._higress_network_api,
+                namespace=self._namespace,
+                mcp_bridge_name=mcp_resource_name,
+                desired_registries=desired_registries,
+                to_delete_prefix=to_delete_prefix,
+            )
+        except Exception as e:
+            logger.error(f"Failed to ensure MCPBridge for cluster {cluster.name}: {e}")
+            raise

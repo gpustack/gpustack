@@ -211,6 +211,7 @@ class ClusterStateEnum(str, Enum):
 class ClusterUpdate(SQLModel):
     name: str
     description: Optional[str] = None
+    gateway_endpoint: Optional[str] = None
 
 
 class ClusterCreateBase(ClusterUpdate):
@@ -230,6 +231,7 @@ class ClusterBase(ClusterCreateBase):
     state_message: Optional[str] = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
+    reported_gateway_endpoint: Optional[str] = None
 
 
 class Cluster(ClusterBase, BaseModelMixin, table=True):

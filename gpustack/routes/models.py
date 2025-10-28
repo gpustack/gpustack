@@ -67,6 +67,7 @@ async def get_models(
         return StreamingResponse(
             Model.streaming(
                 engine,
+                fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
             ),
