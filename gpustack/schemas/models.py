@@ -262,6 +262,23 @@ ModelsPublic = PaginatedList[ModelPublic]
 
 
 class ModelInstanceStateEnum(str, Enum):
+    r"""
+    Enum for Model Instance State
+
+    Transitions:
+
+       |- - - - - Scheduler - - - - |- - ServeManager - -|- - - - Controller - - - -|- ServeManager -|
+       |                            |                    |                          |                |
+    PENDING ---> ANALYZING ---> SCHEDULED ---> INITIALIZING ---> DOWNLOADING ---> STARTING ---> RUNNING
+                     |            ^  |               |                |               |          ^
+                     |            |  |               |                |               |          |(Worker ready)
+                     |------------|--|---------------|----------------|---------------|----------|
+                     \____________|_____________________________________________________________/|
+                                  |                  ERROR                                       |(Worker unreachable)
+                                  └--------------------┘                                         v
+                                    (Restart on Error)                                       UNREACHABLE
+    """
+
     INITIALIZING = "initializing"
     PENDING = "pending"
     STARTING = "starting"
