@@ -298,9 +298,15 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("SERVICE_PORT_RANGE"),
     )
     group.add_argument(
+        "--distributed-worker-port-range",
+        type=str,
+        help="Generic port range for distributed worker processes (e.g., NCCL/TCP communication), specified as 'N1-N2'. Both ends inclusive. The default is '40200-40999'.",
+        default=get_gpustack_env("DISTRIBUTED_WORKER_PORT_RANGE"),
+    )
+    group.add_argument(
         "--ray-worker-port-range",
         type=str,
-        help="Port range for Ray worker processes, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40200-40999'.",
+        help="[Deprecated] Port range for Ray worker processes. Use --distributed-worker-port-range instead. If provided, this value will be mapped to --distributed-worker-port-range.",
         default=get_gpustack_env("RAY_WORKER_PORT_RANGE"),
     )
     group.add_argument(
@@ -643,17 +649,29 @@ def set_worker_options(args, config_data: dict):
         "disable_worker_metrics",
         "worker_metrics_port",
         "service_port_range",
+        "distributed_worker_port_range",
         "log_dir",
         "system_reserved",
         "tools_download_base_url",
         "ray_metrics_export_port",
-        "ray_worker_port_range",
         "enable_hf_transfer",
         "enable_hf_xet",
     ]
 
     for option in options:
         set_config_option(args, config_data, option)
+
+    # Backward compatibility mapping for deprecated --ray-worker-port-range
+    # Map CLI arg or YAML config value to distributed_worker_port_range if not provided
+    legacy_ray_range = getattr(args, "ray_worker_port_range", None)
+    yaml_legacy_ray_range = config_data.get("ray_worker_port_range")
+    if config_data.get("distributed_worker_port_range") is None:
+        config_data["distributed_worker_port_range"] = (
+            legacy_ray_range or yaml_legacy_ray_range
+        )
+    # Remove deprecated key to avoid passing unknown field to Config
+    if "ray_worker_port_range" in config_data:
+        del config_data["ray_worker_port_range"]
 
 
 def debug_env_info():
