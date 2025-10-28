@@ -518,6 +518,9 @@ async def create_inference_backend(
             message=f"Inference backend with name '{backend_in.backend_name}' already exists",
         )
 
+    # Validate version names for custom backends before creating
+    backend_in.version_configs = validate_versions_suffix(backend_in.version_configs)
+
     try:
         backend = InferenceBackend(**backend_in.model_dump())
         backend = await InferenceBackend.create(session, backend)
@@ -599,6 +602,9 @@ async def update_inference_backend(
                 raise BadRequestException(
                     message=f"Cannot {action} version '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
                 )
+
+    # Validate version names for custom backends before updating
+    backend_in.version_configs = validate_versions_suffix(backend_in.version_configs)
 
     try:
         await backend.update(session, backend_in)
@@ -707,6 +713,11 @@ async def create_inference_backend_from_yaml(
                 version_configs_dict[version] = VersionConfig(**config)
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
+        # Validate version names for custom backends
+        yaml_data['version_configs'] = validate_versions_suffix(
+            yaml_data['version_configs']
+        )
+
         # Create the backend
         backend = InferenceBackend(**yaml_data)
         backend = await InferenceBackend.create(session, backend)
@@ -780,9 +791,6 @@ async def update_inference_backend_from_yaml(  # noqa: C901
                 version_configs_dict[version] = VersionConfig(**config)
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
-        # Create InferenceBackendUpdate object from YAML data
-        backend_data = InferenceBackendUpdate(**yaml_data)
-
         # Check if any versions are being removed or modified that are currently in use
         if 'version_configs' in yaml_data:
             current_versions = {}
@@ -833,6 +841,14 @@ async def update_inference_backend_from_yaml(  # noqa: C901
                         message=f"Cannot {action} version '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
                     )
 
+        # Validate version names
+        yaml_data['version_configs'] = validate_versions_suffix(
+            yaml_data['version_configs']
+        )
+
+        # Create InferenceBackendUpdate object from YAML data (after normalization)
+        backend_data = InferenceBackendUpdate(**yaml_data)
+
         # Update the backend
         await backend.update(session, backend_data)
 
@@ -846,3 +862,22 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         raise InternalServerErrorException(
             message=f"Failed to update inference backend from YAML: {e}"
         )
+
+
+def validate_versions_suffix(
+    version_configs: Optional[VersionConfigDict],
+) -> Optional[VersionConfigDict]:
+    """
+    Validate version keys for custom backends: ensure each key already ends with
+    "-custom". If any version key does not have the "-custom" suffix, raise a
+    BadRequestException.
+    """
+    if not version_configs or not version_configs.root:
+        return version_configs
+    for version in list(version_configs.root.keys()):
+        if not isinstance(version, str) or not version.endswith("-custom"):
+            raise BadRequestException(
+                message=f"Custom backend version '{version}' must end with '-custom'",
+            )
+    # Return as-is since we no longer modify/normalize keys
+    return version_configs
