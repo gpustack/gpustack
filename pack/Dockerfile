@@ -338,7 +338,8 @@ RUN <<EOF
         && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i 's/^#log_directory = '\''log'\''/log_directory = '\''\/var\/lib\/gpustack\/log\/postgresql'\''/g' "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
+        && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE" \
+        && gosu postgres sed -i "s/^port[[:space:]]*=[[:space:]]*[0-9]\+/port = 5432/" "$PGCONFIG_FILE"
 
     # Cleanup
     rm -rf /var/tmp/* \
