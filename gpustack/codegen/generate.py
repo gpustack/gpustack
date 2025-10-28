@@ -90,7 +90,8 @@ def reset(cfg: Config):
     output_dir = cfg.output_dir
     if os.path.exists(output_dir):
         for file in os.listdir(output_dir):
-            os.remove(os.path.join(output_dir, file))
+            if file == "__init__.py" or file.startswith("generated_"):
+                os.remove(os.path.join(output_dir, file))
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)

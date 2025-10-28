@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union, Awaitable
 
 import httpx
 from gpustack.api.exceptions import raise_if_response_error
@@ -49,7 +49,9 @@ class UserClient:
 
     async def awatch(
         self,
-        callback: Optional[Callable[[Event], None]] = None,
+        callback: Optional[
+            Union[Callable[[Event], None], Callable[[Event], Awaitable[Any]]]
+        ] = None,
         stop_condition: Optional[Callable[[Event], bool]] = None,
         params: Optional[Dict[str, Any]] = None,
     ):
@@ -75,7 +77,10 @@ class UserClient:
                         event_data = json.loads(line)
                         event = Event(**event_data)
                         if callback:
-                            callback(event)
+                            if asyncio.iscoroutinefunction(callback):
+                                await callback(event)
+                            else:
+                                callback(event)
                         if stop_condition(event):
                             break
                 except asyncio.TimeoutError:
