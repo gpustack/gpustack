@@ -75,9 +75,7 @@ class CustomServer(InferenceServer):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
 
-        image_name = self._model.image_name or self.inference_backend.get_image_name(
-            self._model.backend_version
-        )
+        image_name = self._get_configured_image()
         if not image_name:
             raise ValueError("Failed to get Custom backend image name")
 

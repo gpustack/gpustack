@@ -453,9 +453,7 @@ class InferenceServer(ABC):
             return self._model.image_name
 
         # 2) Configuration takes priority when backend_version is set
-        if getattr(self._model, "backend_version", None) and getattr(
-            self, "inference_backend", None
-        ):
+        if self._model and self._model.backend_version and self.inference_backend:
             if image_name := self.inference_backend.get_image_name(
                 self._model.backend_version
             ):

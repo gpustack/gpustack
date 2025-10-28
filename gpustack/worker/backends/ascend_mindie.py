@@ -1374,9 +1374,7 @@ class AscendMindIEServer(InferenceServer):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
 
-        image = self._get_configured_image(
-            backend="cann"
-        ) or self.inference_backend.get_image_name(self._model.backend_version)
+        image = self._get_configured_image(backend="cann")
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
