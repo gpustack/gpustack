@@ -14,10 +14,12 @@ from gpustack.schemas.workers import (
 )
 from gpustack.utils import platform
 from gpustack.worker.collector import WorkerStatusCollector
-from gpustack.worker.registration import registration_client
+from gpustack.config.registration import (
+    registration_client,
+    read_worker_token,
+    write_worker_token,
+)
 from gpustack.utils.profiling import time_decorator
-from gpustack.security import API_KEY_PREFIX
-from gpustack.utils.uuid import get_legacy_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +44,13 @@ class WorkerManager:
         self._cfg = cfg
         self._collector = collector
         self._worker_name = worker_name
-
-        if self._cfg.token and self._cfg.server_url:
-            self._prepare_clients(self._cfg.token)
+        worker_token = read_worker_token(self._cfg.data_dir)
+        if worker_token and self._cfg.server_url:
+            self._prepare_clients(worker_token)
 
     def _prepare_clients(self, token: str):
         if self._clientset is not None and self._status_client is not None:
             return
-        if not token.startswith(API_KEY_PREFIX):
-            legacy_uuid = get_legacy_uuid(self._cfg.data_dir)
-            if not legacy_uuid:
-                raise ValueError(
-                    "Legacy UUID not found, please re-register the worker."
-                )
-            token = f"{API_KEY_PREFIX}_{legacy_uuid}_{token}"
         self._clientset = ClientSet(
             base_url=self._cfg.server_url,
             api_key=token,
@@ -81,13 +76,12 @@ class WorkerManager:
 
     def register_with_server(self) -> ClientSet:
         # If the worker has been registered, self._clientset should be valid.
-        # the clientset is built in WorkerManager.__init__ if cfg.token is set.
+        # the clientset is built in WorkerManager.__init__ if cfg._worker_token is stored.
         if self._clientset:
             return self._clientset
         try:
             token = self._register_worker()
-            with open(os.path.join(self._cfg.data_dir, 'token'), 'w') as f:
-                f.write(token + "\n")
+            write_worker_token(self._cfg.data_dir, token)
             self._prepare_clients(token)
             return self._clientset
         except Exception as e:
@@ -98,7 +92,12 @@ class WorkerManager:
         logger.info(
             f"Registering worker: {self._worker_name}",
         )
-        self._registration_client = registration_client(self._cfg, self._is_embedded)
+        self._registration_client = registration_client(
+            data_dir=self._cfg.data_dir,
+            server_url=self._cfg.server_url,
+            registration_token=self._cfg.token,
+            wait_token_file=self._is_embedded,
+        )
         external_id = None
         external_id_path = os.path.join(self._cfg.data_dir, 'external_id')
         if os.path.exists(external_id_path):

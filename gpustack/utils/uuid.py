@@ -29,7 +29,7 @@ def write_legacy_uuid(data_dir: str) -> str:
         raise RuntimeError("Failed to write legacy UUID") from e
 
 
-def get_system_uuid(data_dir: str) -> str:
+def get_system_uuid(data_dir: str, write: bool = True) -> str:
     system = sys.platform
     try:
         if system == 'linux':
@@ -54,7 +54,8 @@ def get_system_uuid(data_dir: str) -> str:
     except Exception as e:
         logger.warning(f"Failed to retrieve system UUID: {e}")
         logger.info("try to create legacy uuid for worker")
-        return write_legacy_uuid(data_dir)
+        if write:
+            return write_legacy_uuid(data_dir)
     raise RuntimeError("Not supported OS")
 
 

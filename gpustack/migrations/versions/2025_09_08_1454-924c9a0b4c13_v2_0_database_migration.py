@@ -85,7 +85,7 @@ def upgrade() -> None:
     # stat == 3 means PROVISIONED and READY
     op.execute(f"""
         INSERT INTO clusters (name, description, provider, state, hashed_suffix, registration_token, created_at, updated_at)
-        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', 'gpustack_{secrets.token_hex(8)}_{secrets.token_hex(16)}', {now_sql_func()}, {now_sql_func()})
+        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', '', {now_sql_func()}, {now_sql_func()})
     """)
 
     op.create_table(
@@ -178,8 +178,7 @@ def upgrade() -> None:
     op.execute(f"""
         INSERT INTO users (username, is_admin, require_password_change, hashed_password, is_system, role, cluster_id, created_at, updated_at)
         VALUES
-            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()}),
-            ('system/worker-0', false, false, '', true, 'Worker', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()});
+            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()})
     """)
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.drop_constraint('uix_name_user_id', type_='unique')

@@ -201,6 +201,7 @@ async def get_user_from_bearer_token(
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
+            # if access_key is a valid uuid, it's legacy worker re-registering with legacy token
             worker_uuid = parse_uuid(access_key)
             if worker_uuid is not None:
                 access_key = ""
@@ -216,7 +217,6 @@ async def get_user_from_bearer_token(
             ):
                 user: Optional[User] = await UserService(session).get_by_id(
                     user_id=api_key.user_id,
-                    worker_uuid=worker_uuid,
                 )
                 if user is not None:
                     return user, api_key

@@ -31,6 +31,7 @@ from gpustack.worker.exporter import MetricExporter
 from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.collector import WorkerStatusCollector
+from gpustack.config.registration import read_worker_token
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ class Worker:
             lifespan=lifespan,
         )
         app.state.config = self._config
-        app.state.token = self._config.read_token()
+        app.state.token = read_worker_token(self._config.data_dir)
 
         app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)

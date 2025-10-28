@@ -55,9 +55,7 @@ def construct_cloud_instance(
     )
 
 
-def construct_docker_run_script(
-    image_name: str, registration_token: str, server_url: str
-) -> str:
+def construct_docker_run_script(image_name: str, token: str, server_url: str) -> str:
     return f"""#!/bin/bash
 set -e
 echo "$(date): trying to bring up gpustack worker container..." >> /var/log/post-reboot.log
@@ -67,7 +65,7 @@ docker run -d --name gpustack-worker \
 --privileged --net=host \
 -v /var/lib/gpustack:/var/lib/gpustack \
 -v /var/run/docker.sock:/var/run/docker.sock \
-{image_name} --server-url {server_url} --registration-token {registration_token}
+{image_name} --server-url {server_url} --token {token}
 
 echo "$(date): gpustack worker container started" >> /var/log/post-reboot.log
 """
@@ -90,7 +88,7 @@ def construct_user_data(
         raise ValueError("server_external_url is not set in the config")
     script = construct_docker_run_script(
         image_name=image_name,
-        registration_token=worker.cluster.registration_token,
+        token=worker.cluster.registration_token,
         server_url=server_url,
     )
     user_data = user_data_distribution(public=public, distribution=distribution)

@@ -26,6 +26,7 @@ from gpustack.server.bus import Event, EventType
 from gpustack.utils import hub
 from gpustack.utils.file import delete_path
 from gpustack.worker import downloaders
+from gpustack.config.registration import read_worker_token
 
 
 logger = logging.getLogger(__name__)
@@ -311,7 +312,8 @@ class ModelFileDownloadTask:
     def prerun(self):
         setup_logging(self._config.debug)
         self._clientset = ClientSet(
-            base_url=self._config.server_url, api_key=self._config.read_token()
+            base_url=self._config.server_url,
+            api_key=read_worker_token(self._config.data_dir),
         )
         self._download_start_time = time.time()
         self._ensure_model_file_size_and_paths()
