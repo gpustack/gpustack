@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Dict, List, Optional, Iterator
+from typing import Dict, List, Optional
 
 from gpustack_runtime.deployer import (
     Container,
@@ -8,20 +8,12 @@ from gpustack_runtime.deployer import (
     ContainerExecution,
     ContainerProfileEnum,
     WorkloadPlan,
-    WorkloadStatus,
     create_workload,
-    delete_workload,
-    get_workload,
-    logs_workload,
 )
 
-from gpustack.schemas.models import ModelInstance, ModelInstanceStateEnum
+from gpustack.schemas.models import ModelInstance
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
-from gpustack.utils.hub import (
-    get_max_model_len,
-    get_pretrained_config,
-)
 from gpustack.utils.network import get_free_port
 from gpustack.worker.backends.base import (
     InferenceServer,
@@ -50,7 +42,7 @@ class SGLangServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
 
-        is_distributed, _, _ = self.is_distributed_sglang()
+        is_distributed, _, _ = self.is_distributed()
 
         # Setup environment variables
         envs = self._get_configured_env(is_distributed)
@@ -154,6 +146,10 @@ class SGLangServer(InferenceServer):
         # Allow version-specific command override if configured (before appending extra args)
         arguments = self.build_versioned_command_args(arguments)
 
+        derived_max_model_len = self._derive_max_model_len()
+        if derived_max_model_len and derived_max_model_len > 8192:
+            arguments.extend(["--context-length", "8192"])
+
         # Add auto parallelism arguments if needed
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters, self._model_instance, is_distributed
@@ -229,48 +225,6 @@ class SGLangServer(InferenceServer):
 
         return arguments
 
-    def _handle_error(self, error: Exception):
-        """
-        Handle errors during SGLang server startup.
-        """
-        cause = getattr(error, "__cause__", None)
-        cause_text = f": {cause}" if cause else ""
-        error_message = f"Failed to run the vLLM container server: {error}{cause_text}"
-        logger.exception(error_message)
-
-        try:
-            self._update_model_instance(
-                self._model_instance.id,
-                state=ModelInstanceStateEnum.ERROR,
-                state_message=str(error),
-            )
-        except Exception as e:
-            logger.error(f"Failed to update model instance: {e}")
-
-    def is_distributed_sglang(self) -> tuple[bool, bool, bool]:
-        """
-        Check if the model instance requires to be distributed SGLang setup.
-        Returns:
-            A tuple indicating (
-                is_distributed,
-                is_distributed_leader,
-                is_distributed_follower
-            ).
-        """
-        model_instance = self._model_instance
-        dservers = model_instance.distributed_servers
-        subworkers = (
-            dservers.subordinate_workers
-            if dservers and dservers.subordinate_workers
-            else []
-        )
-        is_distributed = bool(subworkers)
-        is_distributed_leader = (
-            is_distributed and model_instance.worker_id == self._worker.id
-        )
-        is_distributed_follower = is_distributed and not is_distributed_leader
-        return is_distributed, is_distributed_leader, is_distributed_follower
-
     def set_sglang_distributed_env(self, env: Dict[str, str]):
         """
         Set up distributed environment variables for SGLang.
@@ -293,89 +247,6 @@ class SGLangServer(InferenceServer):
                 env["MASTER_PORT"] = str(
                     get_free_port(port_range=self._config.ray_worker_port_range)
                 )
-
-    def _derive_max_model_len(self) -> Optional[int]:
-        """
-        Derive maximum model length from model configuration.
-        """
-        try:
-            config = get_pretrained_config(self._model_path)
-            return get_max_model_len(config)
-        except Exception as e:
-            logger.warning(f"Failed to derive max model length: {e}")
-            return None
-
-    def get_container_logs(
-        self,
-        tail: Optional[int] = 100,
-        follow: bool = False,
-        timestamps: bool = True,
-        since: Optional[int] = None,
-    ) -> Iterator[str]:
-        """
-        Get container logs for the SGLang workload.
-        """
-        if not self._workload_name:
-            logger.warning("No workload name available for log retrieval")
-            return iter([])
-
-        try:
-            return logs_workload(
-                name=self._workload_name,
-                tail=tail,
-                follow=follow,
-                timestamps=timestamps,
-                since=since,
-            )
-        except Exception as e:
-            logger.error(f"Failed to get container logs: {e}")
-            return iter([])
-
-    def get_container_status(self) -> Optional[WorkloadStatus]:
-        """
-        Get the status of the SGLang container workload.
-        """
-        if not self._workload_name:
-            return None
-
-        try:
-            workload = get_workload(self._workload_name)
-            return workload.status if workload else None
-        except Exception as e:
-            logger.error(f"Failed to get container status: {e}")
-            return None
-
-    def stop_container(self) -> bool:
-        """
-        Stop the SGLang container workload.
-        """
-        if not self._workload_name:
-            logger.warning("No workload name available for stopping")
-            return False
-
-        try:
-            delete_workload(self._workload_name)
-            logger.info(f"SGLang container workload {self._workload_name} stopped")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to stop container: {e}")
-            return False
-
-    def restart_container(self) -> bool:
-        """
-        Restart the SGLang container workload.
-        """
-        try:
-            # Stop the current container
-            if not self.stop_container():
-                return False
-
-            # Start a new container
-            self.start()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to restart container: {e}")
-            return False
 
 
 def get_auto_parallelism_arguments(

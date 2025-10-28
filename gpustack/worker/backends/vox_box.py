@@ -2,7 +2,6 @@ import logging
 import os
 from typing import Optional, List, Dict
 
-from gpustack.schemas.models import ModelInstanceStateEnum
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -135,24 +134,3 @@ class VoxBoxServer(InferenceServer):
         arguments.extend(immutable_arguments)
 
         return arguments
-
-    def _handle_error(self, error: Exception):
-        """
-        Handle errors during vox-box container server startup.
-        """
-        cause = getattr(error, "__cause__", None)
-        cause_text = f": {cause}" if cause else ""
-        error_message = (
-            f"Failed to run the vox-box container server: {error}{cause_text}"
-        )
-
-        try:
-            patch_dict = {
-                "state_message": error_message,
-                "state": ModelInstanceStateEnum.ERROR,
-            }
-            self._update_model_instance(self._model_instance.id, **patch_dict)
-        except Exception as ue:
-            logger.error(f"Failed to update model instance: {ue}")
-
-        raise error
