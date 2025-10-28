@@ -176,7 +176,7 @@ class ModelInstanceController:
                 url = f"http://{w.ip}:{w.port}/proxy/v1/models"
                 headers = {
                     "X-Target-Port": str(mi.port),
-                    "Authorization": f"Bearer {self._config.token}",
+                    "Authorization": f"Bearer {w.token}",
                 }
                 response = await client.get(
                     url=url,
