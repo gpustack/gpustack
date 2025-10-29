@@ -8,12 +8,19 @@ from prometheus_client.core import (  # noqa: F401
 )
 from prometheus_client import CollectorRegistry
 from gpustack.client.generated_clientset import ClientSet
-from gpustack.utils.metrics import get_builtin_metrics_config
+from gpustack.utils.command import find_parameter
+from gpustack.utils.metrics import (
+    get_builtin_metrics_config,
+    get_runtime_metrics_config,
+)
 from gpustack.worker.runtime_metrics_client import (
     Config as RunTimeMetricsClientConfig,
 )
 from gpustack.worker.runtime_metrics_client import Client as RuntimeMetricsClient
 from gpustack.schemas.models import (
+    BackendEnum,
+    Model,
+    ModelInstance,
     ModelInstanceStateEnum,
     get_backend,
 )
@@ -56,8 +63,12 @@ class RuntimeMetricsAggregator:
             logger.trace("Worker ID is not set. Skipping runtime metrics fetch.")
             return
 
+        # 1. Get metrics config
+        metrics_config = self._get_metrics_config()
+
+        # 2. Get active model endpoints
         endpoints, endpoint_to_instance, instance_id_to_model = (
-            self._find_active_model_endpoints(worker_id)
+            self._find_active_model_endpoints(worker_id, metrics_config)
         )
         if not endpoints:
             logger.trace(
@@ -70,13 +81,12 @@ class RuntimeMetricsAggregator:
             f"trace_id: {trace_id}, fetching runtime metrics from {len(endpoints)} endpoints"
         )
 
+        # 3. Batch fetch metrics from all endpoints
+        endpoint_metrics = self._metrics_client.fetch_from_endpoints(endpoints)
+
+        # 4. Unified and raw aggregation
         unified_metrics = {}
         raw_metrics = {}
-        # 1. Batch fetch metrics from all endpoints
-        endpoint_metrics = self._metrics_client.fetch_from_endpoints(endpoints)
-        metrics_config = self._get_metrics_config()
-
-        # 2. Unified and raw aggregation
         for ep, metrics in endpoint_metrics.items():
             if not metrics:
                 continue
@@ -99,7 +109,7 @@ class RuntimeMetricsAggregator:
         self._cache["raw"] = raw_metrics
         logger.trace(f"trace_id: {trace_id}, completed fetching runtime metrics.")
 
-    def _find_active_model_endpoints(self, worker_id: int):
+    def _find_active_model_endpoints(self, worker_id: int, metrics_config: dict):
         """
         Get all endpoints and related mappings for RUNNING model instances on this worker.
         Returns: (endpoints, endpoint->instance, instance_id->model)
@@ -113,15 +123,21 @@ class RuntimeMetricsAggregator:
         endpoint_to_instance = {}
         instance_id_to_model = {}
         for mi in model_instances.items:
-            if mi.state == ModelInstanceStateEnum.RUNNING and mi.worker_ip and mi.ports:
-                endpoint = f"{mi.worker_ip}:{mi.ports[0]}"
-                endpoints.add(endpoint)
-                endpoint_to_instance[endpoint] = mi
-                instance_id_to_model[mi.id] = model_id_to_model.get(mi.model_id)
-            else:
-                logger.trace(
-                    f"Skipping model instance {mi.id} in state {mi.state} without worker_ip or ports."
-                )
+            model = model_id_to_model.get(mi.model_id)
+
+            if self._should_skip_endpoint(
+                model=model,
+                model_instance=mi,
+                metrics_config=metrics_config,
+            ):
+                logger.trace(f"Skipping model instance {mi.id} in metrics aggregation.")
+                continue
+
+            endpoint = f"{mi.worker_ip}:{mi.ports[0]}"
+            endpoints.add(endpoint)
+            endpoint_to_instance[endpoint] = mi
+            instance_id_to_model[mi.id] = model
+
         return endpoints, endpoint_to_instance, instance_id_to_model
 
     def _list_worker_models(self, worker_id: int):
@@ -244,6 +260,51 @@ class RuntimeMetricsAggregator:
                             timestamp=sample.timestamp,
                         )
 
+    def _should_skip_endpoint(
+        self, model: Model, model_instance: ModelInstance, metrics_config: dict
+    ) -> bool:
+        # model and model instance must be valid
+        if (
+            model_instance.state != ModelInstanceStateEnum.RUNNING
+            or model_instance.worker_ip is None
+            or not model_instance.ports
+        ):
+            return True
+
+        if not model:
+            return True
+
+        runtime = model.backend
+        if not runtime:
+            return True
+
+        # check runtime metrics config
+        runtime_cfg = get_runtime_metrics_config(metrics_config, runtime)
+        if not runtime_cfg:
+            return True
+
+        # check runtime-specific metrics flags
+        if runtime == BackendEnum.VLLM:
+            disable_metrics = find_parameter(
+                model.backend_parameters, ["disable-log-stats"]
+            )
+            if disable_metrics:
+                return True
+
+        if runtime == BackendEnum.SGLANG:
+            enable_metrics = find_parameter(
+                model.backend_parameters, ["enable-metrics"]
+            )
+            if (enable_metrics is None) or enable_metrics.lower() != "true":
+                return True
+
+        if runtime == BackendEnum.ASCEND_MINDIE:
+            enable_metrics = find_parameter(model.backend_parameters, ["metrics"])
+            if enable_metrics is None:
+                return True
+
+        return False
+
     def _get_online_metrics_config(self):
         try:
             resp = self._clientset.http_client.get_httpx_client().get(
@@ -301,14 +362,16 @@ def get_unified_metric_family_name(
     source_metric_family_name: str,
     runtime: str,
     runtime_version: Optional[str],
-) -> str:
+) -> Optional[str]:
     """
     Return the unified (normalized) metric family name as a string. If not found, return an empty string.
     Prefer version-specific mapping if matched, otherwise use the default '*'.
     """
-    runtime_mapping_config = config.get("runtime_mapping", {})
-    runtime_cfg = runtime_mapping_config.get(runtime, {})
-    name = runtime_cfg.get("*", {}).get(source_metric_family_name, "")
+    runtime_cfg = get_runtime_metrics_config(config, runtime)
+    if not runtime_cfg:
+        return None
+
+    name = runtime_cfg.get("*", {}).get(source_metric_family_name, None)
     if runtime_version:
         for ver_range, mapping in runtime_cfg.items():
             if ver_range == "*":
