@@ -47,7 +47,7 @@ class VLLMServer(InferenceServer):
 
         # Prepare distributed information.
         is_distributed, is_distributed_leader, is_distributed_follower = (
-            self.is_distributed()
+            self._get_distributed_metadata()
         )
 
         env = self._get_configured_env(
