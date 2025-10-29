@@ -6,7 +6,7 @@ import multiprocessing
 import requests
 import setproctitle
 import os
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, List
 import logging
 
 from gpustack_runtime.deployer import (
@@ -157,12 +157,27 @@ class ServeManager:
         - If everything is fine, update the model instance state to RUNNING.
         """
 
-        model_instances = self._clientset.model_instances.list(
-            params={
-                "work_id": self._worker_id,
-            }
-        )
-        for model_instance in model_instances.items:
+        # Get all model instances assigned to this worker.
+        #
+        # FIXME(thxCode): This may cause performance issues when there are many model instances in the system.
+        #                 A mechanism is needed to improve efficiency here.
+        model_instances_page = self._clientset.model_instances.list()
+        if not model_instances_page.items:
+            return
+        model_instances: List[ModelInstance] = []
+        for model_instance in model_instances_page.items:
+            if model_instance.worker_id == self._worker_id:
+                model_instances.append(model_instance)
+            if (
+                model_instance.distributed_servers
+                and model_instance.distributed_servers.subordinate_workers
+            ):
+                for sw in model_instance.distributed_servers.subordinate_workers:
+                    if sw.worker_id == self._worker_id:
+                        model_instances.append(model_instance)
+                        break
+
+        for model_instance in model_instances:
             # Skip if the provision process has not exited yet.
             if self._is_provisioning(model_instance):
                 logger.trace(
