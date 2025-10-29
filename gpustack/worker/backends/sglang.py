@@ -42,15 +42,14 @@ class SGLangServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
 
-        is_distributed, _, _ = self.is_distributed()
+        is_distributed, _, _ = self._get_distributed_metadata()
 
         # Setup environment variables
         envs = self._get_configured_env(is_distributed)
 
         # Build SGLang command arguments
-        arguments = self._build_sglang_arguments(
-            port=self._get_serving_port(),
-            is_distributed=is_distributed,
+        arguments = self._build_command_args(
+            port=self._get_serving_port(), is_distributed=is_distributed
         )
 
         self._create_workload(
@@ -126,12 +125,12 @@ class SGLangServer(InferenceServer):
         env = super()._get_configured_env()
 
         # Apply SGLang distributed environment setup
-        if is_distributed:
-            self.set_sglang_distributed_env(env)
+        if is_distributed and "NCCL_SOCKET_IFNAME" not in env:
+            env["NCCL_SOCKET_IFNAME"] = self._worker.ifname
 
         return env
 
-    def _build_sglang_arguments(self, port: int, is_distributed: bool) -> List[str]:
+    def _build_command_args(self, port: int, is_distributed: bool) -> List[str]:
         """
         Build SGLang command arguments for container execution.
         """
@@ -185,8 +184,7 @@ class SGLangServer(InferenceServer):
 
         # Check if this is a multi-node deployment
         if not (
-            hasattr(self._model_instance, 'distributed_servers')
-            and self._model_instance.distributed_servers
+            self._model_instance.distributed_servers
             and self._model_instance.distributed_servers.subordinate_workers
         ):
             return []
@@ -208,7 +206,7 @@ class SGLangServer(InferenceServer):
                     node_rank = idx + 1  # Subordinate workers start from rank 1
                     break
 
-        dist_port_range = getattr(self._config, "distributed_worker_port_range", None)
+        dist_port_range = self._config.distributed_worker_port_range
         dist_init_port = get_free_port(port_range=dist_port_range)
 
         # Add multi-node parameters
@@ -224,30 +222,6 @@ class SGLangServer(InferenceServer):
         )
 
         return arguments
-
-    def set_sglang_distributed_env(self, env: Dict[str, str]):
-        """
-        Set up distributed environment variables for SGLang.
-        """
-        # Set up distributed training environment
-        env["NCCL_DEBUG"] = "INFO"
-        env["NCCL_SOCKET_IFNAME"] = "^lo,docker0"
-
-        # Set master address and port for distributed training
-        if (
-            hasattr(self._model_instance, 'distributed_servers')
-            and self._model_instance.distributed_servers
-        ):
-            subordinate_workers = (
-                self._model_instance.distributed_servers.subordinate_workers
-            )
-            if subordinate_workers:
-                master_worker = subordinate_workers[0]
-                env["MASTER_ADDR"] = master_worker.worker_ip or "localhost"
-                dist_port_range = getattr(
-                    self._config, "distributed_worker_port_range", None
-                )
-                env["MASTER_PORT"] = str(get_free_port(port_range=dist_port_range))
 
 
 def get_auto_parallelism_arguments(

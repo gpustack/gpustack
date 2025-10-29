@@ -172,9 +172,10 @@ class InferenceServer(ABC):
 
         raise error
 
-    def is_distributed(self) -> tuple[bool, bool, bool]:
+    def _get_distributed_metadata(self) -> tuple[bool, bool, bool]:
         """
-        Check if the model instance requires to be distributed SGLang setup.
+        Return distributed deployment status and role flags.
+
         Returns:
             A tuple indicating (
                 is_distributed,

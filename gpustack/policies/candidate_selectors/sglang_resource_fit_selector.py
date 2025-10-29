@@ -467,9 +467,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 largest_single_gpu_vram = allocatable_vram
                 largest_single_gpu_utilization = allocatable_gpu_utilization
 
-            if gpu.memory is None or gpu.memory.total == 0:
-                continue
-
             overcommit = False
             exceeds_vram = (
                 self._vram_claim > gpu.memory.total * self._mem_fraction_static
@@ -837,12 +834,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             for worker in worker_group:
                 allocatable = await self._get_worker_allocatable_resource(worker)
                 if any(
-                    gpu.memory is None
-                    or gpu.memory.total is None
-                    or (
-                        allocatable.vram.get(gpu.index, 0) / gpu.memory.total
-                        < self._mem_fraction_static
-                    )
+                    allocatable.vram.get(gpu.index, 0) / gpu.memory.total
+                    < self._mem_fraction_static
                     for gpu in worker.status.gpu_devices
                 ):
                     continue

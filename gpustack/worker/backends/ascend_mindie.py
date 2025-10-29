@@ -844,20 +844,16 @@ class AscendMindIEServer(InferenceServer):
         logger.info(
             f"Starting Ascend MindIE model instance: {self._model_instance.name}"
         )
-
         # Prepare distributed information.
-        minstance = self._model_instance
-        dservers = minstance.distributed_servers
+        dservers = self._model_instance.distributed_servers
         subworkers = (
             dservers.subordinate_workers
             if dservers and dservers.subordinate_workers
             else []
         )
-        is_distributed = bool(subworkers)
-        is_distributed_leader = (
-            is_distributed and minstance.worker_id == self._worker.id
+        is_distributed, is_distributed_leader, is_distributed_follower = (
+            self._get_distributed_metadata()
         )
-        is_distributed_follower = is_distributed and not is_distributed_leader
 
         # Root path is defined by in Dockerfile ENV
         # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
@@ -1009,12 +1005,16 @@ class AscendMindIEServer(InferenceServer):
 
         # - Device config
         backend_config["interNodeTLSEnabled"] = False
-        backend_config["npuDeviceIds"] = [minstance.gpu_indexes]
-        model_config["worldSize"] = len(minstance.gpu_indexes)
+        backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
+        model_config["worldSize"] = len(self._model_instance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
         if is_distributed:
             # Add distributed config if in distributed mode.
-            connecting_port = minstance.ports[1] if len(minstance.ports) > 1 else None
+            connecting_port = (
+                self._model_instance.ports[1]
+                if len(self._model_instance.ports) > 1
+                else None
+            )
             backend_config["multiNodesInferEnabled"] = True
             backend_config["multiNodesInferPort"] = connecting_port
         if is_distributed_follower:
@@ -1053,7 +1053,7 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0009.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0300.html,
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
-        local_world_size = len(minstance.gpu_indexes)
+        local_world_size = len(self._model_instance.gpu_indexes)
         world_size = local_world_size
         if is_distributed:
             world_size = local_world_size * (len(subworkers) + 1)
@@ -1268,15 +1268,15 @@ class AscendMindIEServer(InferenceServer):
             server_count = f"{len(subworkers) + 1}"
             server_list = [
                 {
-                    "server_id": minstance.worker_ip,
-                    "container_ip": minstance.worker_ip,
+                    "server_id": self._model_instance.worker_ip,
+                    "container_ip": self._model_instance.worker_ip,
                     "device": [
                         {
-                            "device_id": str(minstance.gpu_indexes[i]),
-                            "device_ip": minstance.gpu_addresses[i],
+                            "device_id": str(self._model_instance.gpu_indexes[i]),
+                            "device_ip": self._model_instance.gpu_addresses[i],
                             "rank_id": str(i),
                         }
-                        for i in range(len(minstance.gpu_indexes))
+                        for i in range(len(self._model_instance.gpu_indexes))
                     ],
                 },
             ]
@@ -1312,7 +1312,9 @@ class AscendMindIEServer(InferenceServer):
                 )
             )
             # - Set environment variables.
-            env["WORLD_SIZE"] = str(len(minstance.gpu_indexes) * (len(subworkers) + 1))
+            env["WORLD_SIZE"] = str(
+                len(self._model_instance.gpu_indexes) * (len(subworkers) + 1)
+            )
             env["RANKTABLEFILE"] = str(rank_table_path)
             env["RANK_TABLE_FILE"] = str(rank_table_path)
             env["MIES_CONTAINER_IP"] = env.pop("MIES_CONTAINER_IP", self._worker.ip)
@@ -1338,7 +1340,9 @@ class AscendMindIEServer(InferenceServer):
             )
 
         # Generate JSON configuration file by model instance id.
-        config_path = str(install_path.joinpath("conf", f"config-{minstance.id}.json"))
+        config_path = str(
+            install_path.joinpath("conf", f"config-{self._model_instance.id}.json")
+        )
         config_str = json.dumps(config, indent=4, ensure_ascii=False)
         config_files.append(
             ContainerFile(
