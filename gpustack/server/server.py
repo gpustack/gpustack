@@ -400,7 +400,33 @@ class Server:
         if not cluster_user or not cluster_user.cluster:
             logger.info("Cluster doesn't exist, skipping writing registration token.")
             return
+        token = cluster_user.cluster.registration_token
+        if token == "":
+            try:
+                access_key = secrets.token_hex(8)
+                secret_key = secrets.token_hex(16)
+                new_key = ApiKey(
+                    name="Default Cluster Token",
+                    access_key=access_key,
+                    hashed_secret_key=get_secret_hash(secret_key),
+                    user_id=cluster_user.id,
+                    user=cluster_user,
+                )
+                await ApiKey.create(session, new_key, auto_commit=False)
+                token = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
+                cluster = cluster_user.cluster
+                await cluster.update(
+                    session=session,
+                    source={"registration_token": token},
+                    auto_commit=False,
+                )
+                await session.commit()
+            except Exception as e:
+                logger.error(f"Failed to ensure registration token: {e}")
+                session.rollback()
+                raise e
+
         write_registration_token(
             data_dir=self._config.data_dir,
-            token=cluster_user.cluster.registration_token,
+            token=token,
         )
