@@ -47,7 +47,6 @@ class InferenceBackendBase(SQLModel):
         default_run_command: Default command to run the inference server
         description: Backend description
         health_check_path: Path for health check endpoint
-        allowed_proxy_uris: List of URIs that are allowed to be proxied
 
     """
 
