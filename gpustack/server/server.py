@@ -38,7 +38,6 @@ from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.utils.process import add_signal_handlers_in_loop
-from gpustack.utils.task import run_periodically_in_thread
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
 
@@ -229,9 +228,7 @@ class Server:
 
         exporter = MetricExporter(cfg=self._config)
         self._create_async_task(exporter.generate_metrics_cache())
-
-        # Start the metric exporter with retry.
-        run_periodically_in_thread(exporter.start, 15, 5)
+        self._create_async_task(exporter.start())
 
     @staticmethod
     def _setup_data_dir(data_dir: str):

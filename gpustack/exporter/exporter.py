@@ -39,10 +39,11 @@ class MetricExporter(Collector):
 
     async def generate_metrics_cache(self):
         while True:
-            self._cache_metrics = await self._collect_metrics()
+            async with AsyncSession(self._engine) as session:
+                self._cache_metrics = await self._collect_metrics(session)
             await asyncio.sleep(3)
 
-    async def _collect_metrics(self):
+    async def _collect_metrics(self, session: AsyncSession):
         cluster_labels = ["cluster_id", "cluster_name"]
         worker_labels = cluster_labels + ["worker_id", "worker_name"]
         model_labels = cluster_labels + ["model_id", "model_name"]
@@ -97,121 +98,120 @@ class MetricExporter(Collector):
             model_instance_status,
         ]
 
-        async with AsyncSession(self._engine) as session:
-            # cluster metrics
-            cluster_id_to_name = {}
-            model_id_to_name = {}
-            model_id_to_cluster_id = {}
-            clusters = await Cluster.all(session)
+        # cluster metrics
+        cluster_id_to_name = {}
+        model_id_to_name = {}
+        model_id_to_cluster_id = {}
+        clusters = await Cluster.all(session)
 
-            for cluster in clusters:
-                cluster_id_to_name[str(cluster.id)] = cluster.name
-                cluster_label_values = [str(cluster.id), cluster.name]
+        for cluster in clusters:
+            cluster_id_to_name[str(cluster.id)] = cluster.name
+            cluster_label_values = [str(cluster.id), cluster.name]
 
-                cluster_info.add_metric(
-                    cluster_labels + ["provider"],
-                    {
-                        "cluster_id": str(cluster.id),
-                        "cluster_name": cluster.name,
-                        "provider": str(cluster.provider),
-                    },
+            cluster_info.add_metric(
+                cluster_labels + ["provider"],
+                {
+                    "cluster_id": str(cluster.id),
+                    "cluster_name": cluster.name,
+                    "provider": str(cluster.provider),
+                },
+            )
+
+            cluster_status.add_metric(
+                cluster_label_values + [cluster.state],
+                1,
+            )
+
+            # worker metrics
+            workers = cluster.cluster_workers
+            for worker in workers:
+                worker_label_values = cluster_label_values + [
+                    str(worker.id),
+                    worker.name,
+                    worker.state,
+                ]
+
+                worker_dynamic_label_keys = []
+                worker_info_metric_values = {
+                    "cluster_id": str(cluster.id),
+                    "cluster_name": cluster.name,
+                    "worker_id": str(worker.id),
+                    "worker_name": worker.name,
+                }
+                for k, v in (worker.labels or {}).items():
+                    if not re.match(label_name_pattern, k):
+                        continue
+                    worker_dynamic_label_keys.append(k)
+                    worker_info_metric_values[k] = v
+
+                worker_info.add_metric(
+                    worker_labels + worker_dynamic_label_keys,
+                    worker_info_metric_values,
                 )
 
-                cluster_status.add_metric(
-                    cluster_label_values + [cluster.state],
+                worker_status.add_metric(
+                    worker_label_values,
                     1,
                 )
 
-                # worker metrics
-                workers = cluster.cluster_workers
-                for worker in workers:
-                    worker_label_values = cluster_label_values + [
-                        str(worker.id),
-                        worker.name,
-                        worker.state,
-                    ]
+            # model metrics
+            models = cluster.cluster_models
+            for model in models:
+                model_id_to_name[str(model.id)] = model.name
+                model_id_to_cluster_id[str(model.id)] = str(cluster.id)
 
-                    worker_dynamic_label_keys = []
-                    worker_info_metric_values = {
+                model_label_values = cluster_label_values + [
+                    str(model.id),
+                    model.name,
+                ]
+
+                model_info.add_metric(
+                    model_labels
+                    + ["runtime", "runtime_version", "source", "source_key"],
+                    {
                         "cluster_id": str(cluster.id),
                         "cluster_name": cluster.name,
-                        "worker_id": str(worker.id),
-                        "worker_name": worker.name,
-                    }
-                    for k, v in (worker.labels or {}).items():
-                        if not re.match(label_name_pattern, k):
-                            continue
-                        worker_dynamic_label_keys.append(k)
-                        worker_info_metric_values[k] = v
+                        "model_id": str(model.id),
+                        "model_name": model.name,
+                        "runtime": model.backend,
+                        "runtime_version": model.backend_version or "unknown",
+                        "source": model.source,
+                        "source_key": model.model_source_key,
+                    },
+                )
 
-                    worker_info.add_metric(
-                        worker_labels + worker_dynamic_label_keys,
-                        worker_info_metric_values,
-                    )
+                model_desired_instances.add_metric(
+                    model_label_values,
+                    model.replicas,
+                )
 
-                    worker_status.add_metric(
-                        worker_label_values,
-                        1,
-                    )
+                model_running_instances.add_metric(
+                    model_label_values,
+                    model.ready_replicas,
+                )
 
-                # model metrics
-                models = cluster.cluster_models
-                for model in models:
-                    model_id_to_name[str(model.id)] = model.name
-                    model_id_to_cluster_id[str(model.id)] = str(cluster.id)
-
-                    model_label_values = cluster_label_values + [
+                # instance metrics
+                instances = model.instances
+                for mi in instances:
+                    worker_id = str(mi.worker_id) if mi.worker_id else "unknown"
+                    worker_name = mi.worker_name if mi.worker_name else "unknown"
+                    mi_label_values = cluster_label_values + [
+                        worker_id,
+                        worker_name,
                         str(model.id),
                         model.name,
+                        mi.name,
+                        mi.state,
                     ]
-
-                    model_info.add_metric(
-                        model_labels
-                        + ["runtime", "runtime_version", "source", "source_key"],
-                        {
-                            "cluster_id": str(cluster.id),
-                            "cluster_name": cluster.name,
-                            "model_id": str(model.id),
-                            "model_name": model.name,
-                            "runtime": model.backend,
-                            "runtime_version": model.backend_version or "unknown",
-                            "source": model.source,
-                            "source_key": model.model_source_key,
-                        },
+                    model_instance_status.add_metric(
+                        mi_label_values,
+                        1,
                     )
-
-                    model_desired_instances.add_metric(
-                        model_label_values,
-                        model.replicas,
-                    )
-
-                    model_running_instances.add_metric(
-                        model_label_values,
-                        model.ready_replicas,
-                    )
-
-                    # instance metrics
-                    instances = model.instances
-                    for mi in instances:
-                        worker_id = str(mi.worker_id) if mi.worker_id else "unknown"
-                        worker_name = mi.worker_name if mi.worker_name else "unknown"
-                        mi_label_values = cluster_label_values + [
-                            worker_id,
-                            worker_name,
-                            str(model.id),
-                            model.name,
-                            mi.name,
-                            mi.state,
-                        ]
-                        model_instance_status.add_metric(
-                            mi_label_values,
-                            1,
-                        )
 
         # return all metrics
         return metrics
 
-    def start(self):
+    async def start(self):
         try:
             REGISTRY.register(self)
 
@@ -267,6 +267,6 @@ class MetricExporter(Collector):
             setup_logging()
             logger.info(f"Serving metric exporter on {config.host}:{config.port}.")
             server = uvicorn.Server(config)
-            server.run()
+            await server.serve()
         except Exception as e:
             logger.error(f"Failed to start metric exporter: {e}")
