@@ -1,3 +1,4 @@
+from typing import Optional
 from gpustack.utils.compat_importlib import pkg_resources
 import yaml
 
@@ -17,3 +18,7 @@ def get_builtin_metrics_config_file_path() -> str:
         )
     )
     return metrics_config_file_path
+
+
+def get_runtime_metrics_config(metrics_config: dict, runtime: str) -> Optional[dict]:
+    return metrics_config.get("runtime_mapping", {}).get(runtime)
