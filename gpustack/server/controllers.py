@@ -540,23 +540,15 @@ class WorkerController:
                 )
                 return
 
-            if (
-                worker.state == WorkerStateEnum.NOT_READY
-                or event.type == EventType.DELETED
-            ):
+            if event.type == EventType.DELETED:
                 for instance in instances:
                     instance_names.append(instance.name)
                     await ModelInstanceService(session).delete(instance)
 
                 if instance_names:
-                    state = (
-                        worker.state
-                        if worker.state == WorkerStateEnum.NOT_READY
-                        else "deleted"
-                    )
                     logger.debug(
                         f"Delete instance {', '.join(instance_names)} "
-                        f"since worker {worker.name} is {state}"
+                        f"since worker {worker.name} is deleted"
                     )
 
             if worker.state == WorkerStateEnum.READY:
