@@ -328,19 +328,13 @@ class ModelInstanceSubordinateWorker(BaseModel):
 
 class DistributedServerCoordinateModeEnum(Enum):
     # DELEGATED means that the subordinate workers' coordinate is by-pass to other framework.
-    # For example, vLLM instance passes its distribution deployment to the underlay RAY service.
     DELEGATED = "delegated"
     # INITIALIZE_LATER means that the subordinate workers' coordinate is handled by GPUStack,
-    # the subordinate workers should start after the main worker initializes.
-    # For example, Ascend MindIE instance needs to start its subordinate workers after the main worker initializes.
+    # all subordinate workers belong to one model instance SHOULD start after the main worker initializes.
+    # For example, Ascend MindIE/vLLM/SGLang instances need to start their subordinate workers after the main worker initializes.
     INITIALIZE_LATER = "initialize_later"
     # RUN_FIRST means that the subordinate workers' coordinate is handled by GPUStack,
-    # the subordinate workers must get ready before the main worker starts.
-    # TODO: The situation of llama-box model instance and its subordinate workers(RPC servers) is more like this,
-    #       the RPC servers must get ready before the main server starts.
-    #       But, currently, we have started the RPC servers at beginning of the model instance start,
-    #       so llama-box model instances treat as DELEGATED.
-    #       We can refactor this in the future for supporting https://github.com/gpustack/gpustack/issues/1788.
+    # all subordinate workers belong to one model instance MUST get ready before the main worker starts.
     RUN_FIRST = "run_first"
 
 
