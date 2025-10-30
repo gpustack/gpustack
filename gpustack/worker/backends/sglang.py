@@ -162,6 +162,10 @@ class SGLangServer(InferenceServer):
             multinode_arguments = self._get_multinode_arguments()
             arguments.extend(multinode_arguments)
 
+        # Add hierarchical cache arguments if needed
+        hicache_arguments = self._get_hicache_arguments()
+        arguments.extend(hicache_arguments)
+
         # Add user-defined backend parameters
         if self._model.backend_parameters:
             arguments.extend(self._model.backend_parameters)
@@ -175,6 +179,51 @@ class SGLangServer(InferenceServer):
                 str(port),
             ]
         )
+
+        return arguments
+
+    def _get_hicache_arguments(self) -> List[str]:
+        """
+        Get hierarchical KV cache arguments for SGLang.
+        """
+        if not (
+            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
+        ):
+            return []
+
+        arguments = ["--enable-hierarchical-cache"]
+        if (
+            self._model.extended_kv_cache.chunk_size
+            and self._model.extended_kv_cache.chunk_size > 0
+        ):
+            arguments.extend(
+                [
+                    "--page-size",
+                    str(self._model.extended_kv_cache.chunk_size),
+                ]
+            )
+
+        if (
+            self._model.extended_kv_cache.ram_size
+            and self._model.extended_kv_cache.ram_size > 0
+        ):
+            arguments.extend(
+                [
+                    "--hicache-size",
+                    str(self._model.extended_kv_cache.ram_size),
+                ]
+            )
+
+        if (
+            self._model.extended_kv_cache.ram_ratio
+            and self._model.extended_kv_cache.ram_ratio > 0
+        ):
+            arguments.extend(
+                [
+                    "--hicache-ratio",
+                    str(self._model.extended_kv_cache.ram_ratio),
+                ]
+            )
 
         return arguments
 

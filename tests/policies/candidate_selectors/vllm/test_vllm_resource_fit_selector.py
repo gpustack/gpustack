@@ -53,8 +53,10 @@ def make_model(gpus_per_replica=2, gpu_ids=None, repo_id="Qwen/Qwen2.5-7B-Instru
     )
 
 
-def expected_candidate(worker_id, worker_name, gpu_indexes, vram, subworkers=None):
-    return {
+def expected_candidate(
+    worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
+):
+    candidate = {
         "worker_id": worker_id,
         "worker_name": worker_name,
         "gpu_indexes": gpu_indexes,
@@ -62,6 +64,9 @@ def expected_candidate(worker_id, worker_name, gpu_indexes, vram, subworkers=Non
         "vram": vram,
         "subordinate_workers": subworkers or [],
     }
+    if ram is not None:
+        candidate["ram"] = ram
+    return candidate
 
 
 @pytest.mark.parametrize(
@@ -316,11 +321,30 @@ def expected_candidate(worker_id, worker_name, gpu_indexes, vram, subworkers=Non
                 cpu_offloading=False,
                 extended_kv_cache=ExtendedKVCacheConfig(
                     enabled=True,
-                    max_local_cpu_size=8.0,  # 8GiB
+                    ram_size=8.0,  # 8GiB
                 ),
             ),
             [linux_nvidia_1_4090_24gx1()],
-            [expected_candidate(2, "host4090", [0], {0: 23413653504})],
+            [expected_candidate(2, "host4090", [0], {0: 23413653504}, ram=8589934592)],
+            0,
+        ),
+        (
+            # Auto schedule model with extended kv cache and ram ratio.
+            # Check point:
+            # - Candidate selection correctness.
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen3-0.6B",
+                cpu_offloading=False,
+                extended_kv_cache=ExtendedKVCacheConfig(
+                    enabled=True,
+                    ram_ratio=2.0,  # 2x of vram
+                ),
+            ),
+            [linux_nvidia_1_4090_24gx1()],
+            [expected_candidate(2, "host4090", [0], {0: 23413653504}, ram=46827307008)],
             0,
         ),
     ],

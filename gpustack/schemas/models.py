@@ -71,14 +71,14 @@ class ExtendedKVCacheConfig(BaseModel):
     enabled: bool = False
     """ Enable extended KV cache for the model."""
 
-    chunk_size: Optional[int] = None
-    """ Chunk size for each KV cache chunk (unit: number of tokens). """
+    ram_ratio: float = 1.2
+    """ RAM-to-VRAM ratio for KV cache. For example, 2.0 means the RAM is twice the size of the VRAM. """
 
-    max_local_cpu_size: Optional[float] = None
-    """ Maximum size of the KV cache to be stored in local CPU memory (unit: GiB). """
+    ram_size: int = 0
+    """ Maximum size of the KV cache to be stored in local CPU memory (unit: GiB). Overrides ram_ratio if both are set. """
 
-    remote_url: Optional[str] = None
-    """ Remote storage URL for offloading KV cache. Format: "protocol://host:port". """
+    chunk_size: int = 0
+    """ Size for each KV cache chunk (unit: number of tokens). """
 
 
 class ModelSource(BaseModel):

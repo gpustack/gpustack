@@ -17,6 +17,7 @@ from gpustack_runtime.deployer import (
 from gpustack.schemas.models import ModelInstance
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
+from gpustack.utils.unit import byte_to_gib
 from gpustack.worker.backends.base import (
     InferenceServer,
     is_ascend_310p,
@@ -202,20 +203,20 @@ class VLLMServer(InferenceServer):
             env["LMCACHE_CHUNK_SIZE"] = str(self._model.extended_kv_cache.chunk_size)
 
         if (
-            self._model.extended_kv_cache.max_local_cpu_size
-            and self._model.extended_kv_cache.max_local_cpu_size > 0
+            self._model.extended_kv_cache.ram_size
+            and self._model.extended_kv_cache.ram_size > 0
         ):
+            # Explicitly specified RAM size for KV cache
             env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
-                self._model.extended_kv_cache.max_local_cpu_size
+                self._model.extended_kv_cache.ram_size
             )
-        else:
-            env["LMCACHE_LOCAL_CPU"] = str(False).lower()
-
-        if self._model.extended_kv_cache.remote_url:
-            env["LMCACHE_REMOTE_URL"] = self._model.extended_kv_cache.remote_url
-            # This is the claimed default value from LMCache docs
-            # However, an assertion fails in LMCache if not explicitly set
-            env["LMCACHE_REMOTE_SERDE"] = "naive"
+        elif (
+            self._model.extended_kv_cache.ram_ratio
+            and self._model.extended_kv_cache.ram_ratio > 0
+        ):
+            # Calculate RAM size based on ratio of total VRAM claim
+            vram_claim = self._get_total_vram_claim()
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(vram_claim))
 
     def _set_distributed_env(self, env: Dict[str, str]):
         """
@@ -233,6 +234,32 @@ class VLLMServer(InferenceServer):
         if "NCCL_SOCKET_IFNAME" not in env:
             env["NCCL_SOCKET_IFNAME"] = self._worker.ifname
             env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+
+    def _get_total_vram_claim(self) -> int:
+        """
+        Calculate total VRAM claim for the model instance on current worker.
+        """
+        vram = 0
+        computed_resource_claim = self._model_instance.computed_resource_claim
+        if self._worker.id != self._model_instance.worker_id:
+            dservers = self._model_instance.distributed_servers
+            subworkers = (
+                dservers.subordinate_workers
+                if dservers and dservers.subordinate_workers
+                else []
+            )
+            for subworker in subworkers:
+                if subworker.worker_id == self._worker.id:
+                    computed_resource_claim = subworker.computed_resource_claim
+                    break
+
+        if not computed_resource_claim:
+            return vram
+
+        for _, vram_claim in computed_resource_claim.vram.items():
+            vram += vram_claim
+
+        return vram
 
     def _build_command_args(
         self,
