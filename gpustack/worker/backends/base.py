@@ -226,7 +226,7 @@ class InferenceServer(ABC):
             env = {
                 # Exclude the following env vars,
                 # which are reserved for gpustack internal use.
-                # - start with GPUSTACK_, PIP_, PIPX_, UV_.
+                # - start with GPUSTACK_, PIP_, PIPX_, UV_, POETRY_, S6_, PGCONFIG_, POSTGRES_.
                 # - end with _VISIBLE_DEVICES, _DISABLE_REQUIRE, _DRIVER_CAPABILITIES, _PATH.
                 # - miscellaneous item.
                 #
@@ -241,6 +241,9 @@ class InferenceServer(ABC):
                             "PIPX_",
                             "POETRY_",
                             "UV_",
+                            "S6_",
+                            "PGCONFIG_",
+                            "POSTGRES_",
                         )
                     )
                     or k.endswith(
