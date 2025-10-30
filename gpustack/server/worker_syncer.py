@@ -62,7 +62,7 @@ class WorkerSyncer:
 
             for state, worker_names in state_to_worker_name.items():
                 if worker_names:
-                    logger.debug(f"Marked worker {', '.join(worker_names)} as {state}")
+                    logger.info(f"Marked worker {', '.join(worker_names)} as {state}")
 
     async def _check_worker_connectivity(self, worker: Worker, session: AsyncSession):
         original_worker_unreachable = worker.unreachable

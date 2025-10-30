@@ -550,7 +550,7 @@ class WorkerController:
                     instances
                 )
                 if instance_names:
-                    logger.debug(
+                    logger.info(
                         f"Delete instance {', '.join(instance_names)} "
                         f"since worker {worker.name} is deleted"
                     )
@@ -589,7 +589,7 @@ class WorkerController:
             )
 
         if instance_names:
-            logger.debug(
+            logger.info(
                 f"Marked instance {', '.join(instance_names)} {new_state} "
                 f"since {log_update_reason}"
             )
