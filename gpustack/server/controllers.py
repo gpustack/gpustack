@@ -256,10 +256,15 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
 
         scale_down_count = len(candidates) - model.replicas
         if scale_down_count > 0:
+            scale_down_instances = []
             for candidate in candidates[:scale_down_count]:
-                instance = candidate.model_instance
-                await ModelInstanceService(session).delete(instance)
-                logger.debug(f"Deleted model instance {instance.name}")
+                scale_down_instances.append(candidate.model_instance)
+
+            scale_down_instance_names = await ModelInstanceService(
+                session
+            ).batch_delete(scale_down_instances)
+            if scale_down_instance_names:
+                logger.debug(f"Deleted model instances: {scale_down_instance_names}")
 
 
 async def distribute_models_to_user(session: AsyncSession, model: Model, event: Event):
@@ -541,10 +546,9 @@ class WorkerController:
                 return
 
             if event.type == EventType.DELETED:
-                for instance in instances:
-                    instance_names.append(instance.name)
-                    await ModelInstanceService(session).delete(instance)
-
+                instance_names = await ModelInstanceService(session).batch_delete(
+                    instances
+                )
                 if instance_names:
                     logger.debug(
                         f"Delete instance {', '.join(instance_names)} "
@@ -572,13 +576,18 @@ class WorkerController:
         log_update_reason,
     ):
         instance_names = []
+        update_instances = []
+
         for instance in instances:
             if instance.state == old_state:
-                instance_names.append(instance.name)
+                update_instances.append(instance)
 
-                instance.state = new_state
-                instance.state_message = new_state_message
-                await ModelInstanceService(session).update(instance)
+        if update_instances:
+            patch = {"state": new_state, "state_message": new_state_message}
+            instance_names = await ModelInstanceService(session).batch_update(
+                update_instances, patch
+            )
+
         if instance_names:
             logger.debug(
                 f"Marked instance {', '.join(instance_names)} {new_state} "

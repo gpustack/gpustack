@@ -7,6 +7,7 @@ from sqlmodel import SQLModel, bindparam, cast
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.dialects.postgresql import JSONB
 
+from gpustack.api.exceptions import InternalServerErrorException
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.model_files import ModelFile
 from gpustack.schemas.model_usage import ModelUsage
@@ -284,6 +285,51 @@ class ModelInstanceService:
         result = await model_instance.delete(self.session)
         await delete_cache_by_key(self.get_running_instances, model_instance.model_id)
         return result
+
+    async def batch_delete(self, model_instances: List[ModelInstance]):
+        if not model_instances:
+            return []
+
+        names = [mi.name for mi in model_instances]
+        ids = set()
+        try:
+            for m in model_instances:
+                await m.delete(self.session, auto_commit=False)
+                ids.add(m.model_id)
+            await self.session.commit()
+
+            for id in ids:
+                await delete_cache_by_key(self.get_running_instances, id)
+
+            return names
+        except Exception as e:
+            await self.session.rollback()
+            raise InternalServerErrorException(
+                message=f"Failed to delete model instances {names}: {e}"
+            )
+
+    async def batch_update(
+        self,
+        model_instances: List[ModelInstance],
+        source: Union[dict, SQLModel, None] = None,
+    ):
+        names = [mi.name for mi in model_instances]
+        ids = set()
+        try:
+            for m in model_instances:
+                await m.update(self.session, source, auto_commit=False)
+                ids.add(m.model_id)
+            await self.session.commit()
+
+            for id in ids:
+                await delete_cache_by_key(self.get_running_instances, id)
+
+            return names
+        except Exception as e:
+            await self.session.rollback()
+            raise InternalServerErrorException(
+                message=f"Failed to update model instances {names}: {e}"
+            )
 
 
 class ModelUsageService:
