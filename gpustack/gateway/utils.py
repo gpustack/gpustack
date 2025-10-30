@@ -377,7 +377,7 @@ async def ensure_model_ingress(
                 metadata.annotations[key] = expected_ingress.metadata.annotations.get(
                     key
                 )
-            await networking_api.patch_namespaced_ingress(
+            await networking_api.replace_namespaced_ingress(
                 name=ingress_name,
                 namespace=namespace,
                 body=existing_ingress,

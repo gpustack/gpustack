@@ -95,7 +95,9 @@ class WorkerGatewayController:
         if event.type == EventType.DELETED:
             to_delete_prefix = mcp_handler.model_instance_prefix(model_instance)
         else:
-            desired_registry = [mcp_handler.model_instance_registry(model_instance)]
+            registry = mcp_handler.model_instance_registry(model_instance)
+            if registry is not None:
+                desired_registry.append(registry)
         await mcp_handler.ensure_mcp_bridge(
             client=self._networking_hisgress_api,
             namespace=self._namespace,
