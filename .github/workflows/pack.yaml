@@ -41,6 +41,9 @@ env:
   INPUT_PASSWORD: ${{ secrets.CI_DOCKERHUB_PASSWORD }}
   INPUT_NAMESPACE: gpustack
   INPUT_REPOSITORY: gpustack
+  INPUT_ACR_USERNAME: ${{ secrets.CI_ACR_USERNAME }}
+  INPUT_ACR_PASSWORD: ${{ secrets.CI_ACR_PASSWORD }}
+  INPUT_ACR_REGISTRY: gpustack-registry.cn-hangzhou.cr.aliyuncs.com
 
 jobs:
   pack:
@@ -89,11 +92,20 @@ jobs:
         with:
           username: ${{ env.INPUT_USERNAME }}
           password: ${{ env.INPUT_PASSWORD }}
+      - name: Login Aliyun Container Registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.INPUT_ACR_USERNAME }}
+          password: ${{ env.INPUT_ACR_PASSWORD }}
+          registry: ${{ env.INPUT_ACR_REGISTRY }}
       - name: Get Metadata
         id: metadata
         uses: docker/metadata-action@v5
         with:
-          images: "${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}"
+          images: |
+            "${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}"
+            "${{ env.INPUT_ACR_REGISTRY }}/${{ env.INPUT_NAMESPACE }}/${{ env.INPUT_REPOSITORY }}"
       - name: Get Cache Ref
         run: |
           #
