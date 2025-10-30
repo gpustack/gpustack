@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from tenacity import RetryError
@@ -13,6 +14,7 @@ from gpustack.api.exceptions import NotFoundException
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
 from gpustack.utils import file
 from gpustack.server.deps import SessionDep
+from gpustack.config.envs import PROXY_TIMEOUT
 
 
 router = APIRouter()
@@ -20,7 +22,58 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def merge_async_generators(*generators):  # noqa: C901
+def is_container_logs_ready(model_instance_name: str) -> bool:
+    """Probe whether container logs have any content available to output."""
+    try:
+        probe_stream = logs_workload(
+            name=model_instance_name,
+            tail=1,
+            follow=False,
+        )
+        if isinstance(probe_stream, bytes):
+            return bool(probe_stream.strip())
+        return bool(str(probe_stream).strip())
+    except Exception:
+        return False
+
+
+async def wait_for_container_generator(
+    model_instance_name: str,
+    options: LogOptionsDep,
+    poll_interval: float = 5,
+    timeout: float = PROXY_TIMEOUT,
+):
+    """Wait until container logs are ready, then return the async generator.
+
+    Keeps probing until logs are ready and the container_log_generator can be constructed.
+    """
+    gen = None
+    start_time = time.monotonic()
+    while gen is None and (time.monotonic() - start_time) < timeout:
+        if is_container_logs_ready(model_instance_name):
+            try:
+                gen = container_log_generator(model_instance_name, options)
+            except Exception as e:
+                logger.error(
+                    f"Failed to initialize container logs for {model_instance_name}: {e}"
+                )
+                gen = None
+        if gen is None:
+            await asyncio.sleep(poll_interval)
+    if gen is None:
+        elapsed = time.monotonic() - start_time
+        logger.warning(
+            f"Waiting for container logs timed out after {elapsed:.0f}s for {model_instance_name}."
+        )
+        raise asyncio.TimeoutError(
+            f"Timed out waiting for container logs for {model_instance_name} after {elapsed:.0f}s"
+        )
+    return gen
+
+
+async def merge_async_generators(
+    *generators, stop_event: Optional[asyncio.Event] = None
+):  # noqa: C901
     """
     Merge multiple async generators into a single stream
     e.g:
@@ -58,9 +111,19 @@ async def merge_async_generators(*generators):  # noqa: C901
 
     try:
         while pending_tasks:
-            done, pending = await asyncio.wait(
-                pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-            )
+            # Allow external preemption of the merge loop
+            if stop_event is not None and stop_event.is_set():
+                # If any task has already produced a result, flush it before preempting
+                immediate_done = [t for t in list(pending_tasks.keys()) if t.done()]
+                if immediate_done:
+                    done = set(immediate_done)
+                    pending = set(k for k in pending_tasks.keys() if k not in done)
+                else:
+                    break
+            else:
+                done, pending = await asyncio.wait(
+                    pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+                )
 
             for task in done:
                 gen = pending_tasks.pop(task)
@@ -84,7 +147,7 @@ async def merge_async_generators(*generators):  # noqa: C901
             await asyncio.gather(*pending_tasks.keys(), return_exceptions=True)
 
 
-async def container_log_generator(model_instance_name: str, options):
+async def container_log_generator(model_instance_name: str, options: LogOptionsDep):
     """
     Generate logs from CustomServer Docker container.
 
@@ -141,22 +204,130 @@ async def container_log_generator(model_instance_name: str, options):
         logger.error(f"Failed to get container logs for {model_instance_name}: {e}")
 
 
+async def _stream_file_logs_preempt_to_container(
+    file_tasks,
+    options,
+    model_instance_name: str,
+):
+    """
+    Stream file logs (download + main) in follow mode until the container produces
+    its first log line, then preempt and switch to container logs.
+    """
+    preempt_event = asyncio.Event()
+    container_queue: asyncio.Queue = asyncio.Queue()
+
+    async def pump_container_logs():
+        first_item_emitted = False
+        try:
+            gen = await wait_for_container_generator(
+                model_instance_name, options, poll_interval=5, timeout=PROXY_TIMEOUT
+            )
+            async for cline in gen:
+                if not first_item_emitted:
+                    first_item_emitted = True
+                    preempt_event.set()
+                await container_queue.put(cline)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Pump container logs timed out for {model_instance_name} after {PROXY_TIMEOUT}s"
+            )
+        except Exception as e:
+            logger.error(f"Error streaming container logs: {e}")
+        finally:
+            await container_queue.put(None)
+
+    # Start container pumping concurrently
+    pump_task = asyncio.create_task(pump_container_logs())
+
+    try:
+        # Emit file logs until preempted
+        async for line in merge_async_generators(*file_tasks, stop_event=preempt_event):
+            yield line
+
+        # Now switch to container logs (if any)
+        while True:
+            item = await container_queue.get()
+            if item is None:
+                break
+            yield item
+    finally:
+        # Cancel the container pump task
+        pump_task.cancel()
+
+
+async def _emit_file_then_container_logs(
+    file_tasks,
+    options,
+    container_ready: bool,
+    model_instance_name: str,
+):
+    """
+    Emit file logs first, then stream or snapshot container logs depending on options.follow.
+    """
+    if file_tasks:
+        async for line in merge_async_generators(*file_tasks):
+            yield line
+
+    try:
+        if options.follow:
+            gen = await wait_for_container_generator(
+                model_instance_name, options, timeout=PROXY_TIMEOUT
+            )
+            async for line in gen:
+                yield line
+        else:
+            if container_ready:
+                async for line in container_log_generator(model_instance_name, options):
+                    yield line
+    except Exception as e:
+        logger.error(f"Failed to stream container logs: {e}")
+
+
 async def combined_log_generator(
     main_log_path: str,
     download_log_path: str,
-    options,
+    options: LogOptionsDep,
     model_instance_name: str,
     file_log_exists: bool = True,
 ):
-    """Generate logs with optional download logs prepended"""
+    """Unified log streaming across three startup phases.
+
+    Behavior:
+    1) main_log and download_log are interleaved and emitted first.
+       - If follow=True and container logs are not yet available, file logs are streamed in follow mode.
+       - When container logs produce the first line, file log streaming is preempted:
+         any already-ready file lines are flushed, then following is stopped and we switch to container logs.
+
+    2) If the request arrives after container logs are already available and follow=True:
+       - Emit main_log and download_log non-streaming (follow=False) first (respecting tail).
+       - Then stream container_log.
+
+    3) If follow=False:
+       - Emit file logs non-streaming.
+       - Emit container logs as a single snapshot (non-streaming) if available.
+
+    Additional notes:
+    - Container readiness is probed via logs_workload(name, tail=1, follow=False).
+    - Preemption only happens when file log merge is waiting for new content (no immediate line ready),
+      ensuring newly produced file lines are not discarded.
+    - If the workload isn't ready at request time, a background probe keeps checking and starts
+      streaming container logs once content becomes available, without requiring the client to reconnect.
+    - If neither file logs nor container logs are available, NotFoundException is raised.
+    """
 
     # Phase 1: file logs (download + main) merged together
     file_tasks = []
 
-    # If follow=True, don't follow file logs to avoid indefinite merging; only emit existing file content
+    # Decide how to handle file logs based on whether container logs are already available
     file_options = options
+    container_ready = False
     try:
-        if getattr(options, "follow", False):
+        # Quick probe: check if container logs have content available now
+        container_ready = is_container_logs_ready(model_instance_name)
+
+        # If the client requested follow but container logs are already available,
+        # emit file logs non-streaming first, then stream container logs.
+        if options and options.follow and container_ready:
             file_options = LogOptions(tail=options.tail, follow=False)
     except Exception:
         file_options = options
@@ -169,26 +340,25 @@ async def combined_log_generator(
         file_tasks.append(log_generator(main_log_path, file_options))
 
     # Prepare container logs (Phase 2)
-    container_gen = None
-    try:
-        container_gen = container_log_generator(model_instance_name, options)
-    except Exception as e:
-        logger.error(f"Failed to get workload: {e}")
-
     if (
-        not file_tasks and container_gen is None
+        not file_tasks and not container_ready
     ):  # No download/main logs and no container logs
         raise NotFoundException(message="Log file not found")
 
-    # Emit file logs first
-    if file_tasks:
-        async for line in merge_async_generators(*file_tasks):
+    # If following and container not yet ready, allow interleaved streaming of file logs,
+    # but preempt as soon as container produces any output.
+    if options and options.follow and not container_ready and file_tasks:
+        async for line in _stream_file_logs_preempt_to_container(
+            file_tasks, options, model_instance_name
+        ):
             yield line
+        return
 
-    # Then emit container logs separately
-    if container_gen is not None:
-        async for line in container_gen:
-            yield line
+    # Default behavior: emit file logs first (non-follow if configured), then container logs
+    async for line in _emit_file_then_container_logs(
+        file_tasks, options, container_ready, model_instance_name
+    ):
+        yield line
 
 
 @router.get("/serveLogs/{id}")
