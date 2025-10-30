@@ -205,6 +205,14 @@ class ServeManager:
                 WorkloadStatusStateEnum.INACTIVE,
                 WorkloadStatusStateEnum.FAILED,
             ]:
+                # NB(thxCode): Since the `sync_model_instances_state` and `watch_model_instances_event` are in different loops,
+                # subordinate workers haven't had time to create the workload yet even though the model instance's state is expected.
+                # So we skip if the subordinate worker didn't have workload yet.
+                #
+                # FIXME(thxCode): Another problem caused by skipping this check is that if we actively delete the workload on the subordinate worker,
+                #                 we may not be able to correct the state of the subordinate worker.
+                if not is_main_worker and not workload:
+                    return
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
                     with contextlib.suppress(NotFoundException):
@@ -461,6 +469,16 @@ class ServeManager:
                 logger.trace(
                     f"UPDATED event: restarted scheduled model instance {mi.name}."
                 )
+
+            # Start on subordinate worker if not started yet.
+            if not is_main_worker:
+                workload = get_workload(mi.name)
+                if not workload:
+                    self._start_model_instance(mi)
+                    logger.trace(
+                        f"UPDATED event: started model instance {mi.name} on subordinate worker."
+                    )
+
             return
 
         if event.type == EventType.CREATED:
