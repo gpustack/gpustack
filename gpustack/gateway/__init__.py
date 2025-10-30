@@ -1,5 +1,7 @@
 import time
 import asyncio
+import base64
+import os
 from typing import Any, Dict
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
@@ -149,6 +151,8 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
     Ensure the ingress resources to route traffic to mcpbridge are created.
     """
     gateway_namespace = cfg.get_gateway_namespace()
+    hostname = cfg.get_external_hostname()
+    tls_secret_name = cfg.get_tls_secret_name()
     network_v1_client = k8s_client.NetworkingV1Api(api_client=api_client)
     ingress_name = "gpustack"
     try:
@@ -176,6 +180,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             ingress_class_name='higress',
             rules=[
                 k8s_client.V1IngressRule(
+                    host=hostname,
                     http=k8s_client.V1HTTPIngressRuleValue(
                         paths=[
                             k8s_client.V1HTTPIngressPath(
@@ -186,11 +191,19 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
                                 ),
                             )
                         ]
-                    )
+                    ),
                 )
             ],
         ),
     )
+    if tls_secret_name is not None:
+        expected_ingress.spec.tls = [
+            k8s_client.V1IngressTLS(
+                hosts=[hostname] if hostname is not None else None,
+                secret_name=tls_secret_name,
+            )
+        ]
+        expected_ingress.metadata.annotations["higress.io/ssl-redirect"] = 'true'
     if not ingress:
         await network_v1_client.create_namespaced_ingress(
             namespace=gateway_namespace, body=expected_ingress
@@ -395,6 +408,64 @@ async def ensure_model_router(cfg: Config, api_client: k8s_client.ApiClient):
     # no dynamic data, skip updating for now
 
 
+async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
+    """
+    Ensure the TLS secret if ssl key pair is provided.
+    """
+    ssl_keyfile = cfg.ssl_keyfile
+    ssl_certfile = cfg.ssl_certfile
+    if not ssl_keyfile or not ssl_certfile:
+        return
+    if not (os.path.isfile(ssl_keyfile) and os.path.isfile(ssl_certfile)):
+        raise RuntimeError(
+            f"SSL keyfile {ssl_keyfile} or certfile {ssl_certfile} does not exist"
+        )
+
+    # read key and cert files and encode into base64
+    with open(ssl_keyfile, 'rb') as f:
+        ssl_key_bytes = f.read()
+    with open(ssl_certfile, 'rb') as f:
+        ssl_cert_bytes = f.read()
+    ssl_key_data = base64.b64encode(ssl_key_bytes).decode()
+    ssl_cert_data = base64.b64encode(ssl_cert_bytes).decode()
+
+    gateway_namespace = cfg.get_gateway_namespace()
+    core_v1_client = k8s_client.CoreV1Api(api_client=api_client)
+    secret_name = cfg.get_tls_secret_name()
+    to_create_tls_secret = k8s_client.V1Secret(
+        metadata=k8s_client.V1ObjectMeta(
+            name=secret_name,
+            namespace=gateway_namespace,
+            labels=managed_labels,
+        ),
+        type="kubernetes.io/tls",
+        data={
+            "tls.key": ssl_key_data,
+            "tls.crt": ssl_cert_data,
+        },
+    )
+    try:
+        existing_secret: k8s_client.V1Secret = (
+            await core_v1_client.read_namespaced_secret(
+                name=secret_name, namespace=gateway_namespace
+            )
+        )
+    except ApiException as e:
+        if e.status == 404:
+            existing_secret = None
+        else:
+            raise
+    if not existing_secret:
+        await core_v1_client.create_namespaced_secret(
+            namespace=gateway_namespace, body=to_create_tls_secret
+        )
+    elif match_labels(getattr(existing_secret.metadata, 'labels', {}), managed_labels):
+        if existing_secret.data != to_create_tls_secret.data:
+            await core_v1_client.replace_namespaced_secret(
+                name=secret_name, namespace=gateway_namespace, body=to_create_tls_secret
+            )
+
+
 def set_async_k8s_config(cfg: Config):
     configuration = Configuration()
     if cfg.gateway_mode == GatewayModeEnum.incluster:
@@ -428,6 +499,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
 
         async def prepare():
             api_client = k8s_client.ApiClient(configuration=cfg.get_async_k8s_config())
+            await ensure_tls_secret(cfg=cfg, api_client=api_client)
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             await ensure_ext_auth(cfg=cfg, api_client=api_client)
