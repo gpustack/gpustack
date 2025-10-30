@@ -326,16 +326,11 @@ class ModelFileDownloadTask:
 
         self._setup_instance_log_files()
 
-        self._model_downloaded_size = 0
-        self._last_download_update_time = 0
-        self._last_downloaded_size = 0
-
         logger.debug(f"Initializing task for {self._model_file.readable_source}")
         self._update_progress_func = partial(
             self._update_model_file_progress, self._model_file.id
         )
         self._model_file_size = self._model_file.size
-        self._model_downloaded_size = 0
         self.hijack_tqdm_progress()
 
     def _setup_instance_log_files(self):
@@ -600,7 +595,6 @@ class ModelFileDownloadTask:
         try:
             # Update overall progress
             progress = round((downloaded_size / total_size) * 100, 2)
-            self._update_progress_func(progress)
 
             # Update individual file progress using ANSI cursor positioning
             current_time = time.time()
@@ -618,11 +612,9 @@ class ModelFileDownloadTask:
 
             # Check if we should log based on time (2 seconds) or progress change (1%)
             time_elapsed = current_time - file_tracking['last_update_time']
-            progress_change = abs(file_progress - file_tracking['last_progress'])
 
             should_log = (
                 time_elapsed >= self._log_update_interval  # 2 seconds elapsed
-                or progress_change >= 1.0  # 1% progress change
                 or file_progress >= 100.0  # Always log when complete
                 or (
                     tqdm_instance.total is not None
@@ -631,6 +623,9 @@ class ModelFileDownloadTask:
             )
 
             if should_log:
+                # Update progress to server
+                self._update_progress_func(progress)
+
                 # Format progress message using tqdm's string representation
                 progress_str = str(tqdm_instance)
                 self._write_progress_with_cursor_positioning(
