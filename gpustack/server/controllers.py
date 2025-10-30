@@ -112,18 +112,13 @@ class ModelController:
                 await distribute_models_to_user(session, model, event)
                 if self._disable_gateway:
                     return
-                if event.type != EventType.DELETED:
-                    destinations = await calculate_destinations(
-                        session, self.instance_ip, model
-                    )
-                else:
-                    destinations = []
-                await mcp_handler.ensure_model_ingress(
-                    event_type=event.type,
-                    namespace=self._config.get_gateway_namespace(),
-                    model=model,
-                    destinations=destinations,
-                    networking_api=self._networking_api,
+                await sync_gateway(
+                    session,
+                    event,
+                    self._config,
+                    model,
+                    self.instance_ip,
+                    self._networking_api,
                 )
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
@@ -593,6 +588,29 @@ async def get_cluster_registry(
         if cluster_registry is not None:
             return {100: cluster_registry}
     return None
+
+
+async def sync_gateway(
+    session: AsyncSession,
+    event: Event,
+    cfg: Config,
+    model: Model,
+    instance_ip: str,
+    networking_api: k8s_client.NetworkingV1Api,
+):
+    if event.type != EventType.DELETED:
+        destinations = await calculate_destinations(session, instance_ip, model)
+    else:
+        destinations = []
+    await mcp_handler.ensure_model_ingress(
+        event_type=event.type,
+        namespace=cfg.get_gateway_namespace(),
+        model=model,
+        destinations=destinations,
+        networking_api=networking_api,
+        hostname=cfg.get_external_hostname(),
+        tls_secret_name=cfg.get_tls_secret_name(),
+    )
 
 
 async def calculate_destinations(

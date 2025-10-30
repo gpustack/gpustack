@@ -2,6 +2,8 @@ import os
 import secrets
 from enum import Enum
 from typing import List, Optional
+from urllib.parse import urlparse
+import ipaddress
 
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
@@ -701,6 +703,28 @@ current-context: higress
         if self.gateway_mode == GatewayModeEnum.embedded:
             return default_gateway_namespace
         return self.namespace if self.namespace else default_gateway_namespace
+
+    def get_external_hostname(self) -> Optional[str]:
+        hostname = None
+        if self.server_external_url:
+            parsed_url = urlparse(self.server_external_url)
+            hostname = parsed_url.hostname
+        if not hostname:
+            return None
+        try:
+            ipaddress.ip_address(hostname)
+            return None
+        except Exception:
+            return hostname
+
+    def get_tls_secret_name(self) -> Optional[str]:
+        if not self.ssl_certfile or not self.ssl_keyfile:
+            return None
+        hostname = self.get_external_hostname()
+        if hostname:
+            return f"gpustack-tls-{hostname.replace('.', '-')}"
+        else:
+            return "gpustack-tls-default"
 
     def get_server_url(self) -> str:
         # returns server if not None else returns embedded server url

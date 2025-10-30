@@ -219,7 +219,11 @@ async def ensure_mcp_bridge(
 
 
 def generate_model_ingress(
-    namespace: str, model: Model, destinations: str
+    namespace: str,
+    model: Model,
+    destinations: str,
+    hostname: Optional[str] = None,
+    tls_secret_name: Optional[str] = None,
 ) -> k8s_client.V1Ingress:
     ingress_name = model_ingress_name(model.id)
     namespace = namespace
@@ -236,7 +240,16 @@ def generate_model_ingress(
         mcp_bridge_name=model_mcp_bridge_name(model.cluster_id),
         model=model,
     )
+    expected_rule.host = hostname
     spec = k8s_client.V1IngressSpec(ingress_class_name="higress", rules=[expected_rule])
+    if tls_secret_name is not None:
+        spec.tls = [
+            k8s_client.V1IngressTLS(
+                hosts=[hostname] if hostname is not None else None,
+                secret_name=tls_secret_name,
+            )
+        ]
+        metadata.annotations["higress.io/ssl-redirect"] = 'true'
     ingress = k8s_client.V1Ingress(
         api_version="networking.k8s.io/v1",
         kind="Ingress",
@@ -246,11 +259,12 @@ def generate_model_ingress(
     return ingress
 
 
-def mcp_ingress_equal(
-    existing: k8s_client.V1Ingress, expected: k8s_client.V1Ingress
+def higress_metadata_equal(
+    existing_metadata: Optional[k8s_client.V1ObjectMeta],
+    expected_metadata: Optional[k8s_client.V1ObjectMeta],
 ) -> bool:
-    existing_metadata = existing.metadata or k8s_client.V1ObjectMeta()
-    expected_metadata = expected.metadata or k8s_client.V1ObjectMeta()
+    existing_metadata = existing_metadata or k8s_client.V1ObjectMeta()
+    expected_metadata = expected_metadata or k8s_client.V1ObjectMeta()
     if existing_metadata.annotations is None:
         existing_metadata.annotations = {}
     if expected_metadata.annotations is None:
@@ -262,13 +276,49 @@ def mcp_ingress_equal(
             key
         ):
             return False
+    return True
+
+
+def ingress_tls_equal(
+    existing: Optional[k8s_client.V1IngressTLS],
+    expected: Optional[k8s_client.V1IngressTLS],
+) -> bool:
+    if (existing is None) != (expected is None):
+        return False
+    if existing and expected:
+        if len(existing) != len(expected):
+            return False
+        for etls, xtls in zip(existing, expected):
+            # only compares hosts and secret_name for tls equal
+            if getattr(etls, 'hosts', None) != getattr(xtls, 'hosts', None):
+                return False
+            if getattr(etls, 'secret_name', None) != getattr(xtls, 'secret_name', None):
+                return False
+    return True
+
+
+def mcp_ingress_equal(
+    existing: k8s_client.V1Ingress, expected: k8s_client.V1Ingress
+) -> bool:
+    if not higress_metadata_equal(
+        existing_metadata=existing.metadata, expected_metadata=expected.metadata
+    ):
+        return False
     if existing.spec is None or expected.spec is None:
+        return False
+    if not ingress_tls_equal(
+        existing=getattr(existing.spec, 'tls', None),
+        expected=getattr(expected.spec, 'tls', None),
+    ):
         return False
     if len(existing.spec.rules or []) != len(expected.spec.rules or []):
         return False
+
     for existing_rule, expected_rule in zip(
         existing.spec.rules or [], expected.spec.rules or []
     ):
+        if getattr(existing_rule, 'host', None) != getattr(expected_rule, 'host', None):
+            return False
         if existing_rule.http is None or expected_rule.http is None:
             return False
         if len(existing_rule.http.paths or []) != len(expected_rule.http.paths or []):
@@ -321,6 +371,8 @@ async def ensure_model_ingress(
     model: Union[Model, ModelPublic],
     event_type: EventType,
     networking_api: k8s_client.NetworkingV1Api,
+    hostname: Optional[str] = None,
+    tls_secret_name: Optional[str] = None,
 ):
     ingress_name = model_ingress_name(model.id)
     if event_type == EventType.DELETED:
@@ -355,6 +407,8 @@ async def ensure_model_ingress(
         namespace=namespace,
         model=model,
         destinations=expected_destinations,
+        hostname=hostname,
+        tls_secret_name=tls_secret_name,
     )
     if existing_ingress is None:
         await networking_api.create_namespaced_ingress(

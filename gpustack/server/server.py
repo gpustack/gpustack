@@ -20,7 +20,7 @@ from gpustack.security import (
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
-from gpustack.config import Config
+from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
     ModelController,
@@ -95,14 +95,20 @@ class Server:
                 allow_methods=self._config.allow_methods,
                 allow_headers=self._config.allow_headers,
             )
+        ssl_keyfile = None
+        ssl_certfile = None
+        if self._config.gateway_mode == GatewayModeEnum.disabled:
+            ssl_keyfile = self._config.ssl_keyfile
+            ssl_certfile = self._config.ssl_certfile
+
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
             port=self._config.api_port,
             access_log=False,
             log_level="error",
-            ssl_certfile=self._config.ssl_certfile,
-            ssl_keyfile=self._config.ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
         )
 
         setup_logging()
