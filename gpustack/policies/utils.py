@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 from gpustack.policies.base import (
     Allocatable,
     Allocated,
@@ -332,7 +332,7 @@ def get_local_model_weight_size(local_path: str) -> int:
 
 
 async def group_worker_gpu_by_memory(
-    engine: AsyncEngine, workers: List[Worker]
+    engine: AsyncEngine, workers: List[Worker], ram_claim: int = 0
 ) -> List[List[WorkerGPUInfo]]:
     """
     Group GPU devices from multiple workers by allocatable memory size with the constraint
@@ -342,6 +342,7 @@ async def group_worker_gpu_by_memory(
     Args:
         engine: Database engine for calculating allocatable resources
         workers: List of workers containing GPU devices
+        ram_claim: RAM claim in bytes to filter out workers that do not have enough RAM
 
     Returns:
         List of GPU device groups, where each group is a list of WorkerGPUInfo objects
@@ -366,6 +367,9 @@ async def group_worker_gpu_by_memory(
 
         # Get allocatable resources for this worker
         allocatable = await get_worker_allocatable_resource(engine, worker)
+
+        if ram_not_enough(ram_claim, allocatable):
+            continue
 
         for gpu_device in worker.status.gpu_devices:
             if gpu_device.index is None:
@@ -421,3 +425,50 @@ async def group_worker_gpu_by_memory(
         groups.append(current_group)
 
     return groups
+
+
+def ram_not_enough(ram_claim: int, allocatable: Allocatable) -> bool:
+    """
+    Check if the allocatable RAM is not enough for the claimed RAM.
+    """
+    if ram_claim <= 0:
+        return False
+    return allocatable.ram < ram_claim
+
+
+def get_model_ram_claim(model: Model) -> int:
+    """
+    Get the RAM requirement for the model in bytes.
+    """
+    if (
+        model.extended_kv_cache
+        and model.extended_kv_cache.enabled
+        and model.extended_kv_cache.ram_size > 0
+    ):
+        # When extended kv cache is enabled, reserve the ram for KV cache.
+        return model.extended_kv_cache.ram_size * 1024**3
+    return 0
+
+
+def get_computed_ram_claim(model: Model, vram_claim: Dict[int, int]) -> Optional[int]:
+    """
+    Get the computed RAM claim for the model based on the provided model and vram_claim.
+    The priority is as follows:
+    1. If ram size is available, use it as the static RAM size.
+    2. If ram ratio for extended KV cache is set and vram_claim is available, calculate RAM as ram_ratio * total_vram_claim.
+    3. If neither is available, return None.
+    """
+
+    if not model.extended_kv_cache or not model.extended_kv_cache.enabled:
+        return None
+
+    if model.extended_kv_cache.ram_size > 0:
+        # static ram size
+        return model.extended_kv_cache.ram_size * 1024**3
+
+    if model.extended_kv_cache.ram_ratio > 0 and vram_claim:
+        # ram ratio to vram
+        total_vram_claim = sum(vram_claim.values())
+        return int(total_vram_claim * model.extended_kv_cache.ram_ratio)
+
+    return None

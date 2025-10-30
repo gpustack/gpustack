@@ -12,12 +12,15 @@ from gpustack.policies.base import (
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.policies.utils import (
+    get_computed_ram_claim,
     get_worker_allocatable_resource,
     ListMessageBuilder,
     get_model_num_attention_heads,
     group_worker_gpu_by_memory,
     WorkerGPUInfo,
     estimate_model_vram,
+    get_model_ram_claim,
+    ram_not_enough,
 )
 from gpustack.schemas.models import (
     ComputedResourceClaim,
@@ -54,6 +57,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._cfg = cfg
         self._model = model
         self._vram_claim = 0
+        self._ram_claim = 0
         self._mem_fraction_static = 0.9  # SGLang default
         self._set_mem_fraction_static()
         self._pretrained_config: Optional[PretrainedConfig] = None
@@ -276,14 +280,16 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._vram_claim = await estimate_model_vram(
             self._model, self._cfg.huggingface_token
         )
+        self._ram_claim = get_model_ram_claim(self._model)
         self._effective_vram = self._cal_effective_vram()
         logger.info(
             f"Calculated SGLang resource claim for model {self._model.readable_source}, "
-            f"claim: {self._vram_claim}"
+            f"VRAM claim: {self._vram_claim}, RAM claim: {self._ram_claim}"
         )
 
         default_msg_list = ListMessageBuilder(
-            f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM."
+            f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM"
+            f"{f' and {byte_to_gib(self._ram_claim)} GiB of RAM' if self._ram_claim > 0 else ''}."
         )
         if self._mem_fraction_static != 0:
             default_msg_list.append(
@@ -450,6 +456,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
+        if ram_not_enough(self._ram_claim, allocatable):
+            return []
+
         if not worker.status.gpu_devices:
             return []
 
@@ -480,16 +489,15 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 else:
                     continue
 
-            vram_claim = int(gpu.memory.total * self._mem_fraction_static)
-
+            vram_claim_bytes = int(gpu.memory.total * self._mem_fraction_static)
+            vram_claim = {gpu_index: vram_claim_bytes}
             candidates.append(
                 ModelInstanceScheduleCandidate(
                     worker=worker,
                     gpu_indexes=[gpu_index],
                     computed_resource_claim=ComputedResourceClaim(
-                        vram={
-                            gpu_index: vram_claim,
-                        },
+                        vram=vram_claim,
+                        ram=get_computed_ram_claim(self._model, vram_claim),
                     ),
                     overcommit=overcommit,
                 )
@@ -541,7 +549,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             return []
 
         # SGLang performs VRAM balancing checks. We group all GPUs based on available VRAM capacity
-        gpu_group = await group_worker_gpu_by_memory(self._engine, [worker])
+        gpu_group = await group_worker_gpu_by_memory(
+            self._engine, [worker], ram_claim=self._ram_claim
+        )
 
         for info in gpu_group:
             gpu_list = info
@@ -608,6 +618,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                         gpu_indexes=gpu_indexes,
                         computed_resource_claim=ComputedResourceClaim(
                             vram=vram_claim,
+                            ram=get_computed_ram_claim(self._model, vram_claim),
                         ),
                     )
                 ]
@@ -733,7 +744,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
 
         if self._model.distributed_inference_across_workers:
-            gpu_group = await group_worker_gpu_by_memory(self._engine, workers)
+            gpu_group = await group_worker_gpu_by_memory(
+                self._engine, workers, ram_claim=self._ram_claim
+            )
             for gpu_list in gpu_group:
                 if len(gpu_list) <= 1:
                     continue
@@ -833,6 +846,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             vram_sum = 0
             for worker in worker_group:
                 allocatable = await self._get_worker_allocatable_resource(worker)
+
+                if ram_not_enough(self._ram_claim, allocatable):
+                    # The RAM resource(for extended KV cache) is required per worker.
+                    # Skip the worker if it does not satisfy the RAM requirement.
+                    continue
+
                 if any(
                     allocatable.vram.get(gpu.index, 0) / gpu.memory.total
                     < self._mem_fraction_static
@@ -851,7 +870,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     and self._num_attention_heads % gpu_sum == 0
                 ) and (vram_sum >= self._vram_claim):
                     return [
-                        _create_candidate(selected_workers, self._mem_fraction_static)
+                        _create_candidate(
+                            self._model,
+                            selected_workers,
+                            self._mem_fraction_static,
+                        )
                     ]
             if vram_sum > largest_vram:
                 workers_combination = selected_workers
@@ -932,6 +955,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=gpu_indexes,
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
+                        ram=get_computed_ram_claim(self._model, vram_claim),
                     ),
                 )
             )
@@ -992,7 +1016,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
 
 def _create_candidate(
-    selected_workers: List[Worker], mem_fraction_static: float = 0.9
+    model: Model,
+    selected_workers: List[Worker],
+    mem_fraction_static: float = 0.9,
 ) -> ModelInstanceScheduleCandidate:
     """Create a candidate with SGLang-specific parameters and primary node confirmation."""
     if not selected_workers:
@@ -1030,13 +1056,14 @@ def _create_candidate(
                 gpu_indexes=gpu_indexes,
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claim,
+                    ram=get_computed_ram_claim(model, vram_claim),
                 ),
             )
             subordinate_workers.append(subordinate_worker)
 
     computed_resource_claim = ComputedResourceClaim(
-        ram=0,
         vram=primary_vram_claim,
+        ram=get_computed_ram_claim(model, primary_vram_claim),
     )
 
     return ModelInstanceScheduleCandidate(

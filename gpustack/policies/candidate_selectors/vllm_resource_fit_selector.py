@@ -18,6 +18,9 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     get_model_num_attention_heads,
     estimate_model_vram,
+    ram_not_enough,
+    get_model_ram_claim,
+    get_computed_ram_claim,
 )
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -45,20 +48,6 @@ EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
 EVENT_ACTION_AUTO_SINGLE_GPU = "auto_single_gpu_scheduling_msg"
 
 
-def get_model_ram(model: Model) -> int:
-    """
-    Get the RAM requirement for the model in bytes.
-    """
-    if (
-        model.extended_kv_cache
-        and model.extended_kv_cache.enabled
-        and model.extended_kv_cache.max_local_cpu_size > 0
-    ):
-        # When extended kv cache is enabled, reserve the max_local_cpu_size for RAM.
-        return model.extended_kv_cache.max_local_cpu_size * 1024**3
-    return 0
-
-
 def parse_model_size_by_name(model_name: str) -> int:
     """
     Parse the model size from the model name.
@@ -82,6 +71,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._gpu_count = None
         self._vram_claim = 0
+        self._ram_claim = 0
         self._largest_single_gpu_vram = 0
         self._largest_single_gpu_vram_utilization = 0
         self._largest_multi_gpu_vram = 0
@@ -284,7 +274,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._vram_claim = await estimate_model_vram(
             self._model, self._cfg.huggingface_token
         )
-        self._ram_claim = get_model_ram(self._model)
+        self._ram_claim = get_model_ram_claim(self._model)
         logger.info(
             f"Calculated resource claim for model {self._model.readable_source}, "
             f"VRAM claim: {self._vram_claim}, RAM claim: {self._ram_claim}"
@@ -397,7 +387,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
-        if self._ram_claim > 0 and allocatable.ram < self._ram_claim:
+        if ram_not_enough(self._ram_claim, allocatable):
             return []
 
         if not worker.status.gpu_devices:
@@ -434,21 +424,20 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 else:
                     continue
 
-            vram_claim = (
+            vram_claim_bytes = (
                 int(gpu.memory.total * self._gpu_memory_utilization)
                 if self._gpu_memory_utilization > 0  # LLMs
                 else int(self._vram_claim)  # non LLMs
             )
 
+            vram_claim = {gpu_index: vram_claim_bytes}
             candidates.append(
                 ModelInstanceScheduleCandidate(
                     worker=worker,
                     gpu_indexes=[gpu_index],
                     computed_resource_claim=ComputedResourceClaim(
-                        vram={
-                            gpu_index: vram_claim,
-                        },
-                        ram=self._ram_claim if self._ram_claim > 0 else None,
+                        vram=vram_claim,
+                        ram=get_computed_ram_claim(self._model, vram_claim),
                     ),
                     overcommit=overcommit,
                 )
@@ -531,7 +520,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         allocatable = await self._get_worker_allocatable_resource(worker)
 
-        if self._ram_claim > 0 and allocatable.ram < self._ram_claim:
+        if ram_not_enough(self._ram_claim, allocatable):
             return []
 
         gpu_list = []
@@ -596,7 +585,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=gpu_indexes,
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
-                        ram=self._ram_claim if self._ram_claim > 0 else None,
+                        ram=get_computed_ram_claim(self._model, vram_claim),
                     ),
                 )
             ]
@@ -784,7 +773,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             for worker in worker_group:
                 allocatable = await self._get_worker_allocatable_resource(worker)
 
-                if self._ram_claim > 0 and allocatable.ram < self._ram_claim:
+                if ram_not_enough(self._ram_claim, allocatable):
                     # The RAM resource(for extended KV cache) is required per worker.
                     # Skip the worker if it does not satisfy the RAM requirement.
                     continue
@@ -813,9 +802,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 ) and (vram_sum >= self._vram_claim):
                     return [
                         _create_candidate(
+                            self._model,
                             selected_workers,
                             self._gpu_memory_utilization,
-                            self._ram_claim,
                         )
                     ]
             if vram_sum > largest_vram:
@@ -930,7 +919,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     gpu_indexes=gpu_indexes,
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
-                        ram=self._ram_claim if self._ram_claim > 0 else None,
+                        ram=get_computed_ram_claim(self._model, vram_claim),
                     ),
                 )
             )
@@ -980,7 +969,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 gpu_indexes=main_gpu_indexes,
                 computed_resource_claim=ComputedResourceClaim(
                     vram=main_vram_claim,
-                    ram=self._ram_claim if self._ram_claim > 0 else None,
+                    ram=get_computed_ram_claim(self._model, main_vram_claim),
                 ),
                 subordinate_workers=subordinate_workers,
                 overcommit=overcommit,
@@ -1039,43 +1028,47 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
 
 def _create_candidate(
+    model: Model,
     selected_workers: List[Worker],
     gpu_memory_utilization: float = 0.9,
-    ram_claim: int = 0,
 ) -> ModelInstanceScheduleCandidate:
     """
     Create a candidate with all GPUs from the selected workers.
     """
     main_worker = selected_workers[0]
+    vram_claim_main = {
+        gpu.index: int(gpu.memory.total * gpu_memory_utilization)
+        for gpu in main_worker.status.gpu_devices
+    }
     candidate = ModelInstanceScheduleCandidate(
         worker=main_worker,
         gpu_indexes=[gpu.index for gpu in main_worker.status.gpu_devices],
         computed_resource_claim=ComputedResourceClaim(
-            vram={
-                gpu.index: int(gpu.memory.total * gpu_memory_utilization)
-                for gpu in main_worker.status.gpu_devices
-            },
-            ram=ram_claim if ram_claim > 0 else None,
+            vram=vram_claim_main,
+            ram=get_computed_ram_claim(model, vram_claim_main),
         ),
     )
-    candidate.subordinate_workers = [
-        ModelInstanceSubordinateWorker(
-            worker_id=worker.id,
-            worker_name=worker.name,
-            worker_ip=worker.ip,
-            worker_ifname=worker.ifname,
-            total_gpus=len(worker.status.gpu_devices),
-            gpu_indexes=[gpu.index for gpu in worker.status.gpu_devices],
-            computed_resource_claim=ComputedResourceClaim(
-                vram={
-                    gpu.index: int(gpu.memory.total * gpu_memory_utilization)
-                    for gpu in worker.status.gpu_devices
-                },
-                ram=ram_claim if ram_claim > 0 else None,
-            ),
+    candidate.subordinate_workers = []
+    for worker in selected_workers[1:]:
+        vram_claim_subworker = {
+            gpu.index: int(gpu.memory.total * gpu_memory_utilization)
+            for gpu in worker.status.gpu_devices
+        }
+        candidate.subordinate_workers.append(
+            ModelInstanceSubordinateWorker(
+                worker_id=worker.id,
+                worker_name=worker.name,
+                worker_ip=worker.ip,
+                worker_ifname=worker.ifname,
+                total_gpus=len(worker.status.gpu_devices),
+                gpu_indexes=[gpu.index for gpu in worker.status.gpu_devices],
+                computed_resource_claim=ComputedResourceClaim(
+                    vram=vram_claim_subworker,
+                    ram=get_computed_ram_claim(model, vram_claim_subworker),
+                ),
+            )
         )
-        for worker in selected_workers[1:]
-    ]
+
     return candidate
 
 

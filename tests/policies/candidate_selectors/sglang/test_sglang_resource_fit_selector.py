@@ -8,6 +8,7 @@ from gpustack.scheduler import scheduler
 from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
+    ExtendedKVCacheConfig,
     GPUSelector,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
@@ -867,3 +868,117 @@ async def test_sglang_memory_fraction_static(config):
 
         # Should handle custom memory fraction
         assert len(candidates) >= 0
+
+
+@pytest.mark.asyncio
+async def test_auto_schedule_extended_kv_cache_ram_size(config):
+    workers = [
+        linux_nvidia_1_4090_24gx1(),
+    ]
+
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-0.6B",
+        cpu_offloading=False,
+        extended_kv_cache=ExtendedKVCacheConfig(
+            enabled=True,
+            ram_size=8.0,  # 8GiB
+        ),
+    )
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        expected_candidates = [
+            {
+                "worker_id": 2,
+                "worker_name": "host4090",
+                "gpu_indexes": [0],
+                "is_unified_memory": False,
+                "vram": {
+                    0: 23413653504,
+                },
+                "ram": 8589934592,
+            },
+        ]
+
+        assert len(candidates) == 1
+        compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.asyncio
+async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
+    workers = [
+        linux_nvidia_1_4090_24gx1(),
+    ]
+
+    m = new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id="Qwen/Qwen3-0.6B",
+        cpu_offloading=False,
+        extended_kv_cache=ExtendedKVCacheConfig(
+            enabled=True,
+            ram_ratio=2.0,  # 2x of VRAM
+        ),
+    )
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        candidates = await placement_scorer.score(candidates)
+
+        expected_candidates = [
+            {
+                "worker_id": 2,
+                "worker_name": "host4090",
+                "gpu_indexes": [0],
+                "is_unified_memory": False,
+                "vram": {
+                    0: 23413653504,
+                },
+                "ram": 46827307008,
+            },
+        ]
+
+        assert len(candidates) == 1
+        compare_candidates(candidates, expected_candidates)
