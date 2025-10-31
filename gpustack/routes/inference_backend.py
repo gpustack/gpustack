@@ -521,8 +521,19 @@ async def create_inference_backend(
     # Validate version names for custom backends before creating
     backend_in.version_configs = validate_versions_suffix(backend_in.version_configs)
 
+    for version in backend_in.version_configs.root.keys():
+        backend_in.version_configs.root[version].built_in_frameworks = None
+
     try:
-        backend = InferenceBackend(**backend_in.model_dump())
+        backend = InferenceBackend(
+            backend_name=backend_in.backend_name,
+            version_configs=backend_in.version_configs,
+            default_version=backend_in.default_version,
+            default_backend_param=backend_in.default_backend_param,
+            default_run_command=backend_in.default_run_command,
+            health_check_path=backend_in.health_check_path,
+            description=backend_in.description,
+        )
         backend = await InferenceBackend.create(session, backend)
     except Exception as e:
         raise InternalServerErrorException(
@@ -606,8 +617,20 @@ async def update_inference_backend(
     # Validate version names for custom backends before updating
     backend_in.version_configs = validate_versions_suffix(backend_in.version_configs)
 
+    for version in backend_in.version_configs.root.keys():
+        backend_in.version_configs.root[version].built_in_frameworks = None
+
     try:
-        await backend.update(session, backend_in)
+        update_backend = InferenceBackend(
+            backend_name=backend_in.backend_name,
+            version_configs=backend_in.version_configs,
+            default_version=backend_in.default_version,
+            default_backend_param=backend_in.default_backend_param,
+            default_run_command=backend_in.default_run_command,
+            health_check_path=backend_in.health_check_path,
+            description=backend_in.description,
+        )
+        await backend.update(session, update_backend)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update inference backend: {e}"
@@ -672,44 +695,46 @@ async def create_inference_backend_from_yaml(
             raise BadRequestException(message="Missing 'content' field in request body")
 
         # Parse YAML content
-        yaml_data = yaml.safe_load(yaml_content)
+        req_yaml_data = yaml.safe_load(yaml_content)
 
         # Validate required fields
-        if not yaml_data.get("backend_name"):
+        if not req_yaml_data.get("backend_name"):
             raise BadRequestException(message="backend_name is required in YAML")
 
         # Check if backend name duplicates with built-in backends (case-insensitive)
-        if is_built_in_backend(yaml_data["backend_name"]):
+        if is_built_in_backend(req_yaml_data["backend_name"]):
             raise BadRequestException(
                 message=(
-                    f"Backend name {yaml_data['backend_name']} duplicates with built-in backends (case-insensitive). Please use another name."
+                    f"Backend name {req_yaml_data['backend_name']} duplicates with built-in backends (case-insensitive). Please use another name."
                 ),
             )
 
         # Check if backend with same name already exists
         existing = await InferenceBackend.one_by_field(
-            session, "backend_name", yaml_data["backend_name"]
+            session, "backend_name", req_yaml_data["backend_name"]
         )
         if existing:
             raise BadRequestException(
-                message=f"Inference backend with name '{yaml_data['backend_name']}' already exists",
+                message=f"Inference backend with name '{req_yaml_data['backend_name']}' already exists",
             )
 
-        # Filter out fields users should not set
-        common_filter_keys = [
-            "id",
-            "created_at",
-            "updated_at",
-            "framework_index_map",
-            "built_in_version_configs",
+        allowed_keys = [
+            "backend_name",
+            "version_configs",
+            "default_version",
+            "default_backend_param",
+            "default_run_command",
+            "health_check_path",
+            "description",
         ]
-
-        yaml_data = filter_yaml_fields(yaml_data, common_filter_keys)
+        yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
         # Convert version_configs to VersionConfigDict if present
         if 'version_configs' in yaml_data and yaml_data['version_configs']:
             version_configs_dict = {}
             for version, config in yaml_data['version_configs'].items():
+                if config.get('built_in_frameworks'):
+                    config['built_in_frameworks'] = None
                 version_configs_dict[version] = VersionConfig(**config)
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
@@ -758,36 +783,44 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             raise BadRequestException(message="Missing 'content' field in request body")
 
         # Parse YAML content
-        yaml_data = yaml.safe_load(yaml_content)
+        req_yaml_data = yaml.safe_load(yaml_content)
 
         # Validate required fields
-        if not yaml_data.get("backend_name"):
+        if not req_yaml_data.get("backend_name"):
             raise BadRequestException(message="backend_name is required in YAML")
 
         # Check if updating to a name that already exists (excluding current backend)
-        if yaml_data["backend_name"] != backend.backend_name:
+        if req_yaml_data["backend_name"] != backend.backend_name:
             raise BadRequestException(
                 message="The name of inference-backend can not be modified",
             )
 
-        # Filter out fields users should not set
-        common_filter_keys = [
-            "id",
-            "created_at",
-            "updated_at",
-            "framework_index_map",
-            "built_in_version_configs",
+        allowed_keys = [
+            "backend_name",
+            "version_configs",
+            "default_version",
+            "default_backend_param",
+            "default_run_command",
+            "health_check_path",
+            "description",
         ]
-        if is_built_in_backend(backend.backend_name):
-            # Built-in backend default_version is managed automatically
-            common_filter_keys.append("default_version")
-
-        yaml_data = filter_yaml_fields(yaml_data, common_filter_keys)
+        if is_built_in_backend(backend.backend_name) and req_yaml_data.get(
+            "default_version"
+        ):
+            raise BadRequestException(
+                message=(
+                    f"Built-in backend '{backend.backend_name}' cannot have default_version set. "
+                    "Default version is managed automatically."
+                ),
+            )
+        yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
         # Convert version_configs to VersionConfigDict if present
         if 'version_configs' in yaml_data and yaml_data['version_configs']:
             version_configs_dict = {}
             for version, config in yaml_data['version_configs'].items():
+                if config.get('built_in_frameworks'):
+                    config['built_in_frameworks'] = None
                 version_configs_dict[version] = VersionConfig(**config)
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
@@ -798,9 +831,7 @@ async def update_inference_backend_from_yaml(  # noqa: C901
                 current_versions = backend.version_configs.root
 
             new_versions = {}
-            if yaml_data['version_configs'] and hasattr(
-                yaml_data['version_configs'], 'root'
-            ):
+            if yaml_data['version_configs'] and yaml_data['version_configs'].root:
                 new_versions = yaml_data['version_configs'].root
 
             # Find versions that are being removed
@@ -845,6 +876,10 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         yaml_data['version_configs'] = validate_versions_suffix(
             yaml_data['version_configs']
         )
+
+        if yaml_data.get('version_configs') and yaml_data['version_configs'].root:
+            for v in yaml_data['version_configs'].root.keys():
+                yaml_data['version_configs'].root[v].built_in_frameworks = None
 
         # Create InferenceBackendUpdate object from YAML data (after normalization)
         backend_data = InferenceBackendUpdate(**yaml_data)

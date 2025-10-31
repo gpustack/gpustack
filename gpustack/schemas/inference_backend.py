@@ -47,7 +47,6 @@ class InferenceBackendBase(SQLModel):
         default_run_command: Default command to run the inference server
         description: Backend description
         health_check_path: Path for health check endpoint
-        allowed_proxy_uris: List of URIs that are allowed to be proxied
 
     """
 
@@ -176,7 +175,7 @@ InferenceBackendsPublic = PaginatedList[InferenceBackendPublic]
 def get_built_in_backend() -> List[InferenceBackend]:
     return [
         InferenceBackend(backend_name=BackendEnum.VLLM.value, is_built_in=True),
-        InferenceBackend(backend_name=BackendEnum.SGLANG.value, is_build_in=True),
+        InferenceBackend(backend_name=BackendEnum.SGLANG.value, is_built_in=True),
         InferenceBackend(
             backend_name=BackendEnum.ASCEND_MINDIE.value, is_built_in=True
         ),
