@@ -1,0 +1,16 @@
+apiVersion: networking.higress.io/v1
+kind: McpBridge
+metadata:
+  name: default
+  namespace: higress-system
+  creationTimestamp: "2000-01-01T00:00:00Z"
+  resourceVersion: "1"
+spec:
+  registries:
+  - domain: 127.0.0.1:8001
+    name: gpustack
+    port: 80
+    type: static
+  # AI_REGISTRIES_START
+  # AI_REGISTRIES_END
+status: {}

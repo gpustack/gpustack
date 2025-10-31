@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gpustack
+  namespace: higress-system
+  creationTimestamp: "2000-01-01T00:00:00Z"
+  resourceVersion: "1"
+  annotations:
+    higress.io/destination: gpustack.static:80
+    higress.io/ignore-path-case: "false"
+spec:
+  rules:
+    - http:
+        paths:
+        - backend:
+            resource:
+              apiGroup: networking.higress.io
+              kind: McpBridge
+              name: default
+          path: /
+          pathType: Prefix
