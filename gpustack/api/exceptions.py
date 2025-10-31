@@ -17,6 +17,10 @@ class OpenAIAPIException(HTTPException):
     pass
 
 
+class AnthropicAPIException(HTTPException):
+    pass
+
+
 def http_exception_factory(
     status_code: int,
     reason: str,
@@ -24,9 +28,16 @@ def http_exception_factory(
 ):
     class_name = reason + "Exception"
 
-    def init(self, message=default_message, is_openai_exception=False):
+    def init(
+        self,
+        message=default_message,
+        is_openai_exception=False,
+        is_anthropic_exception=False,
+    ):
         if is_openai_exception:
             self.__class__.__bases__ = (OpenAIAPIException,)
+        elif is_anthropic_exception:
+            self.__class__.__bases__ = (AnthropicAPIException,)
         super(self.__class__, self).__init__(status_code, reason, message)
 
     return type(
@@ -159,6 +170,28 @@ openai_api_error_responses = {
 }
 
 
+class AnthropicAPIError(BaseModel):
+    type: str
+    message: str
+
+
+class AnthropicAPIErrorResponse(BaseModel):
+    type: str = "error"
+    error: AnthropicAPIError
+
+
+anthropic_error_responses = {
+    404: {"model": AnthropicAPIErrorResponse},
+    409: {"model": AnthropicAPIErrorResponse},
+    401: {"model": AnthropicAPIErrorResponse},
+    403: {"model": AnthropicAPIErrorResponse},
+    422: {"model": AnthropicAPIErrorResponse},
+    400: {"model": AnthropicAPIErrorResponse},
+    500: {"model": AnthropicAPIErrorResponse},
+    503: {"model": AnthropicAPIErrorResponse},
+}
+
+
 def register_handlers(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
@@ -184,6 +217,24 @@ def register_handlers(app: FastAPI):
                     "code": exc.status_code,
                     "type": exc.reason,
                 }
+            },
+        )
+
+    @app.exception_handler(AnthropicAPIException)
+    async def anthropic_api_exception_handler(
+        request: Request, exc: AnthropicAPIException
+    ):
+        """
+        This handler is used to return error response in Anthropic API format.
+        """
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "type": "error",
+                "error": {
+                    "type": exc.reason,
+                    "message": exc.message,
+                },
             },
         )
 
