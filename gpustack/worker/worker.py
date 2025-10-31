@@ -231,7 +231,6 @@ class Worker:
             cluster_id=self._cluster_id,
             clientset=self._clientset,
             cfg=self._config,
-            is_embedded_worker=self._is_embedded,
         )
         self._create_async_task(controller.sync_model_cache())
         self._create_async_task(controller.start_model_instance_controller())

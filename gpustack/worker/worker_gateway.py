@@ -7,7 +7,7 @@ from gpustack.schemas.models import (
     ModelInstancePublic,
     ModelPublic,
 )
-from gpustack.config.config import Config
+from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.client import ClientSet
 from gpustack.server.bus import Event, EventType
 from gpustack.gateway.client.networking_higress_io_v1_api import (
@@ -30,7 +30,6 @@ class WorkerGatewayController:
         cluster_id: int,
         clientset: ClientSet,
         cfg: Config,
-        is_embedded_worker: bool = False,
     ):
         self._worker_id = worker_id
         self._clientset = clientset
@@ -40,9 +39,12 @@ class WorkerGatewayController:
         self._async_k8s_config = cfg.get_async_k8s_config()
         self._lock = asyncio.Lock()
         self._model_cache = Cache(Cache.MEMORY)
-        self._is_embedded_worker = is_embedded_worker
+        self._disabled_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
     async def sync_model_cache(self):
+        if self._disabled_gateway:
+            return
+
         async def set_cache(event: Event):
             model = ModelPublic.model_validate(event.data)
             if event.type == EventType.DELETED:
@@ -130,6 +132,8 @@ class WorkerGatewayController:
                 )
 
     async def start_model_instance_controller(self):
+        if self._disabled_gateway:
+            return
         await self._prerun()
         # Implementation of start method
         while True:
@@ -141,5 +145,9 @@ class WorkerGatewayController:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                import traceback
+
+                tb = traceback.format_exc()
+                logger.error(tb)
                 logger.error(f"Failed to watch model instances: {e}")
                 await asyncio.sleep(5)
