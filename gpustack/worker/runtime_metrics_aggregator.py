@@ -82,18 +82,21 @@ class RuntimeMetricsAggregator:
         )
 
         # 3. Batch fetch metrics from all endpoints
-        endpoint_metrics = self._metrics_client.fetch_from_endpoints(endpoints)
+        endpoint_metrics = self._metrics_client.fetch_metrics_from_endpoints(endpoints)
 
         # 4. Unified and raw aggregation
         unified_metrics = {}
         raw_metrics = {}
+        model_runtime_version = {}
         for ep, metrics in endpoint_metrics.items():
             if not metrics:
                 continue
             mi = endpoint_to_instance[ep]
             m = instance_id_to_model.get(mi.id)
             runtime = get_backend(m)
-            runtime_version = m.backend_version
+            runtime_version = self._get_model_runtime_version(
+                m, ep, model_runtime_version
+            )
             base_labels = self._build_base_labels(mi, m, runtime)
             self._process_endpoint_metrics(
                 metrics,
@@ -108,6 +111,23 @@ class RuntimeMetricsAggregator:
         self._cache["unified"] = unified_metrics
         self._cache["raw"] = raw_metrics
         logger.trace(f"trace_id: {trace_id}, completed fetching runtime metrics.")
+
+    def _get_model_runtime_version(
+        self, model: Model, endpoint: str, model_runtime_version: dict
+    ) -> Optional[str]:
+        if model.id in model_runtime_version:
+            return model_runtime_version[model.id]
+
+        version = self._metrics_client.fetch_runtime_version_from_endpoint(
+            endpoint, model.backend
+        )
+        if version is not None:
+            model_runtime_version[model.id] = version
+            return version
+        elif model.backend_version is not None:
+            model_runtime_version[model.id] = model.backend_version
+            return model.backend_version
+        return None
 
     def _find_active_model_endpoints(self, worker_id: int, metrics_config: dict):
         """
@@ -376,10 +396,13 @@ def get_unified_metric_family_name(
 
     name = runtime_cfg.get("*", {}).get(source_metric_family_name, None)
     if runtime_version:
+        is_valid_version = version.is_valid_version_str(runtime_version)
         for ver_range, mapping in runtime_cfg.items():
             if ver_range == "*":
                 continue
-            if version.in_range(runtime_version, ver_range):
+            if (is_valid_version and version.in_range(runtime_version, ver_range)) or (
+                not is_valid_version and runtime_version == ver_range
+            ):
                 name = mapping.get(source_metric_family_name, name)
                 break
     return name

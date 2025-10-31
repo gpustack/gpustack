@@ -63,17 +63,22 @@ gpustack_metrics:
     type: Counter
     description: "Total number of successful requests."
 
+  gpustack:inter_token_latency_seconds:
+    type: Histogram
+    description: "Inter-token latency."
+
 
 # -----------------------------
 # Runtime Metrics Mapping (user-configurable)
 # -----------------------------
 runtime_mapping:
   vLLM:
-    "*": # 0.10.2
+    "*": # 0.11.0
       vllm:num_requests_running: gpustack:num_requests_running
       vllm:num_requests_waiting: gpustack:num_requests_waiting
       vllm:num_requests_swapped: gpustack:num_requests_swapped
-      vllm:prefix_cache_hits: gpustack:prefix_cache_hit_rate
+      vllm:prefix_cache_hits: gpustack:prefix_cache_hits
+      vllm:prefix_cache_queries: gpustack:prefix_cache_queries
       vllm:kv_cache_usage_perc: gpustack:kv_cache_usage_ratio
       vllm:prompt_tokens: gpustack:prompt_tokens
       vllm:generation_tokens: gpustack:generation_tokens
@@ -83,26 +88,29 @@ runtime_mapping:
       vllm:request_success: gpustack:request_success
       vllm:request_prompt_tokens: gpustack:request_prompt_tokens
       vllm:request_generation_tokens: gpustack:request_generation_tokens
-    ">=0.10.2":
-      vllm:inter_token_latency_seconds: gpustack:time_per_output_token_seconds # TODO(michelia): update to tpot after vllm updated
+      vllm:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
     "<0.9.2":
-       vllm:gpu_prefix_cache_hits: gpustack:prefix_cache_hit_rate
+       vllm:gpu_prefix_cache_hits: gpustack:prefix_cache_hits
+       vllm:gpu_prefix_cache_queries: gpustack:prefix_cache_queries
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
   SGLang:
-    "*":
+    "*": # 0.5.4
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
+      sglang:cached_tokens_total: gpustack:prefix_cache_hits
       sglang:cache_hit_rate: gpustack:prefix_cache_hit_rate
-      sglang:token_usage: gpustack:gpu_cache_usage_perc
-      sglang:prompt_tokens_total: gpustack:prompt_tokens_total
-      sglang:generation_tokens_total: gpustack:generation_tokens_total
+      sglang:token_usage: gpustack:kv_cache_usage_ratio
+      sglang:prompt_tokens: gpustack:prompt_tokens
+      sglang:generation_tokens: gpustack:generation_tokens
       sglang:time_to_first_token_seconds: gpustack:time_to_first_token_seconds
-      sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       sglang:e2e_request_latency_seconds: gpustack:e2e_request_latency_seconds
-
+      sglang:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
+    "<=0.4.4":
+      sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
+      
   MindIE:
-    "*":
+    "*": # 2.1.RC2
       num_requests_running: gpustack:num_requests_running
       num_requests_waiting: gpustack:num_requests_waiting
       num_requests_swapped: gpustack:num_requests_swapped
