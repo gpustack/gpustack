@@ -625,7 +625,11 @@ class Config(BaseSettings):
             and not platform.is_supported_higress(self.gateway_kubeconfig)
         ):
             raise Exception("The k8s cluster for gpustack does not support Higress.")
-
+        api_port = (
+            self.api_port
+            if self.server_role() != self.ServerRole.WORKER
+            else self.worker_port
+        )
         if self.gateway_mode == GatewayModeEnum.embedded:
             with open(config_path, "w") as f:
                 f.write(f"DATA_DIR={self.data_dir}\n")
@@ -633,7 +637,8 @@ class Config(BaseSettings):
                 f.write(f"GATEWAY_HTTP_PORT={self.port}\n")
                 f.write(f"GATEWAY_HTTPS_PORT={self.tls_port}\n")
                 f.write(f"GATEWAY_CONCURRENCY={self.gateway_concurrency}\n")
-                f.write(f"GPUSTACK_API_PORT={self.api_port}\n")
+                f.write(f"GPUSTACK_API_PORT={api_port}\n")
+                f.write(f"EMBEDDED_KUBECONFIG_PATH={higress_embedded_kubeconfig}\n")
             with open(higress_embedded_kubeconfig, "w") as f:
                 f.write(
                     f"""apiVersion: v1

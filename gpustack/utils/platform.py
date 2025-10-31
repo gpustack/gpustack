@@ -2,8 +2,15 @@ import platform
 import os
 import logging
 from typing import Optional
-from kubernetes import client, config
+from kubernetes import client
+from kubernetes.client import Configuration
+from kubernetes.config.kube_config import KubeConfigLoader, KubeConfigMerger
 from kubernetes.client.exceptions import ApiException
+from kubernetes.config.incluster_config import (
+    InClusterConfigLoader,
+    SERVICE_TOKEN_FILENAME,
+    SERVICE_CERT_FILENAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,20 +67,24 @@ def is_inside_kubernetes() -> bool:
 
 
 def is_supported_higress(kubeconfig: Optional[str] = None) -> bool:
-    api_client = None
+    configuration = Configuration()
     if kubeconfig and os.path.exists(kubeconfig):
-        api_client = config.new_client_from_config(config_file=kubeconfig)
+        cfg_loader = KubeConfigLoader(config_dict=KubeConfigMerger(kubeconfig).config)
+        if not cfg_loader._load_user_token():
+            cfg_loader._load_user_pass_token()
+        cfg_loader._load_cluster_info()
+        cfg_loader._set_config(configuration)
+    elif is_inside_kubernetes():
+        cfg_loader = InClusterConfigLoader(
+            token_filename=SERVICE_TOKEN_FILENAME,
+            cert_filename=SERVICE_CERT_FILENAME,
+        )
+        cfg_loader.load_and_set(configuration)
     else:
-        if is_inside_kubernetes():
-            api_client = config.new_client_from_config(
-                config_file=None,
-                context=None,
-                persist_config=False,
-                use_incluster_config=True,
-            )
-        else:
-            return False
+        return False
+
     try:
+        api_client = client.ApiClient(configuration=configuration)
         networking_client = client.NetworkingV1Api(api_client=api_client)
         networking_client.read_ingress_class(name="higress")
         return True
