@@ -755,6 +755,29 @@ class InferenceBackendController:
                     logger.info(
                         f"Init built-in backend {built_in_backend.backend_name} in database"
                     )
+                elif not backend.is_built_in:
+                    # Prevent conflicts between newly added built-in backend and user custom ones after updates.
+                    backend.is_built_in = True
+                    backend.default_version = built_in_backend.default_version
+                    backend.default_backend_param = (
+                        built_in_backend.default_backend_param
+                    )
+                    if backend.default_run_command:
+                        for version, config in backend.version_configs.root.items():
+                            if config.run_command:
+                                continue
+                            backend.version_configs.root[version].run_command = (
+                                backend.default_run_command
+                            )
+                        # Mark JSON field as modified so SQLAlchemy persists in-place changes
+                        flag_modified(backend, "version_configs")
+                    backend.default_run_command = built_in_backend.default_run_command
+                    backend.description = built_in_backend.description
+                    backend.health_check_path = built_in_backend.health_check_path
+                    await backend.update(session)
+                    logger.info(
+                        f"Mark backend {backend.backend_name} as built-in in database"
+                    )
 
 
 class ModelFileController:
