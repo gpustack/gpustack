@@ -18,6 +18,7 @@ from gpustack.routes import (
     users,
     models,
     openai,
+    anthropic,
     voice,
     workers,
     cloud_credentials,
@@ -175,6 +176,18 @@ api_router.include_router(
     prefix="/v1",
     responses=openai_api_error_responses,
     tags=["OpenAI-Compatible APIs using the /v1 alias"],
+)
+api_router.include_router(
+    anthropic.router,
+    dependencies=[Depends(get_current_user)],
+    prefix="/v1-anthropic",
+    tags=["Anthropic Claude-Compatible APIs"],
+)
+api_router.include_router(
+    anthropic.router,
+    dependencies=[Depends(get_current_user)],
+    prefix="/v1",
+    tags=["Anthropic Claude-Compatible APIs (SDK Default Path)"],
 )
 api_router.include_router(
     rerank.router,

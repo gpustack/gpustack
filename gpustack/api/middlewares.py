@@ -99,6 +99,12 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
                     Transcription,
                     OperationEnum.AUDIO_TRANSCRIPTION,
                 )
+            elif path == "/v1-anthropic/messages":
+                return await process_anthropic_request(
+                    request,
+                    response,
+                    OperationEnum.ANTHROPIC_MESSAGES,
+                )
             elif request.url.path == "/v1/rerank":
                 return await process_request(
                     request,
@@ -155,6 +161,134 @@ async def process_request(
         response = Response(content=response_body, headers=dict(response.headers))
 
     return response
+
+
+async def process_anthropic_request(
+        request: Request,
+        response: StreamingResponse,
+        operation: OperationEnum,
+):
+    """
+    Process usage records for Anthropic API requests.
+    Special handling is required due to different Anthropic response format.
+    """
+    stream: bool = getattr(request.state, "stream", False)
+    if stream:
+        return await handle_anthropic_streaming_response(
+            request, response, operation
+        )
+    else:
+        response_body = b"".join(
+            [chunk async for chunk in response.body_iterator])
+        try:
+            usage = None
+            if (
+                    response.headers.get("content-type")
+                            .lower()
+                            .startswith("application/json")
+            ):
+                response_dict = json.loads(response_body)
+                # Anthropic format usage
+                anthropic_usage = response_dict.get("usage")
+                if anthropic_usage:
+                    # Convert Anthropic usage to unified format
+                    usage = CompletionUsage(
+                        prompt_tokens=anthropic_usage.get("input_tokens", 0),
+                        completion_tokens=anthropic_usage.get(
+                            "output_tokens", 0
+                        ),
+                        total_tokens=(
+                                anthropic_usage.get("input_tokens", 0)
+                                + anthropic_usage.get("output_tokens", 0)
+                        ),
+                    )
+
+            await record_model_usage(request, usage, operation)
+        except Exception as e:
+            logger.error(f"Error processing Anthropic model usage: {e}")
+        response = Response(content=response_body,
+                            headers=dict(response.headers))
+
+    return response
+
+
+async def handle_anthropic_streaming_response(
+        request: Request,
+        response: StreamingResponse,
+        operation: OperationEnum,
+):
+    """
+    Process usage records for Anthropic streaming responses.
+    """
+
+    async def streaming_generator():
+        async for chunk in response.body_iterator:
+            try:
+                async for processed_chunk in process_anthropic_chunk(
+                        chunk, request, operation
+                ):
+                    yield processed_chunk
+            except Exception as e:
+                logger.error(
+                    f"Error processing Anthropic streaming response: {e}")
+                yield chunk
+
+    return StreamingResponse(streaming_generator(), headers=response.headers)
+
+
+async def process_anthropic_chunk(
+        chunk,
+        request,
+        operation: OperationEnum,
+):
+    """
+    Process Anthropic SSE event chunks.
+    """
+    if not hasattr(request.state, 'first_token_time'):
+        request.state.first_token_time = datetime.now(timezone.utc)
+
+    # Anthropic uses different SSE event format
+    lines = chunk.decode("utf-8").split("\n\n")
+    for line in lines[:-1]:
+        if not line:
+            yield "\n\n".encode("utf-8")
+            continue
+
+        # Anthropic SSE format: event: xxx\ndata: {...}
+        if line.startswith("event: "):
+            event_parts = line.split("\n", 1)
+            if len(event_parts) == 2:
+                event_type = event_parts[0].split("event: ", 1)[1]
+                data_line = event_parts[1]
+
+                if data_line.startswith("data: "):
+                    data_str = data_line.split("data: ", 1)[1]
+
+                    # Check if it's a message_delta event containing usage
+                    if event_type == "message_delta":
+                        try:
+                            data = json.loads(data_str.strip())
+                            usage_data = data.get("usage")
+                            if usage_data:
+                                # Record usage information
+                                usage = CompletionUsage(
+                                    prompt_tokens=0,
+                                    # Anthropic does not provide in streaming
+                                    completion_tokens=usage_data.get(
+                                        "output_tokens", 0
+                                    ),
+                                    total_tokens=usage_data.get(
+                                        "output_tokens", 0
+                                    ),
+                                )
+                                await record_model_usage(request, usage,
+                                                         operation)
+                        except Exception as e:
+                            logger.error(f"Error parsing Anthropic usage: {e}")
+
+            yield f"{line}\n\n".encode("utf-8")
+        else:
+            yield f"{line}\n\n".encode("utf-8")
 
 
 async def record_model_usage(
