@@ -164,10 +164,17 @@ nav:
           - H100: performance-lab/gpt-oss-120b/h100.md
       - DeepSeek-R1:
           - H200: performance-lab/deepseek-r1/h200.md
-      - GLM-4.6:
+      - GLM-4.6/4.5:
           - A100: performance-lab/glm-4.6/a100.md
           - H100: performance-lab/glm-4.6/h100.md
           - H200: performance-lab/glm-4.6/h200.md
+      - GLM-4.6/4.5-Air:
+          - A100: performance-lab/glm-4.5-air/a100.md
+          - H100: performance-lab/glm-4.5-air/h100.md
+      - Qwen3-30B-A3B:
+          - 910B: performance-lab/qwen3-30b-a3b/910b.md
+      - Qwen3-8B:
+          - 910B: performance-lab/qwen3-8b/910b.md
     - Optimizing Latency:
       - Qwen3-8B:
           - H100: performance-lab/qwen3-8b/h100-latency.md
