@@ -227,5 +227,5 @@ async def get_serve_logs(
             model_instance_name,
             file_log_exists,
         ),
-        media_type="text/plain",
+        media_type="application/octet-stream",
     )
