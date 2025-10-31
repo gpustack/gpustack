@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Dict, List, Optional
@@ -14,7 +15,11 @@ from gpustack_runtime.deployer import (
     ContainerRestartPolicyEnum,
 )
 
-from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.models import (
+    ModelInstance,
+    SpeculativeAlgorithmEnum,
+    SpeculativeConfig,
+)
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import (
@@ -217,6 +222,42 @@ class VLLMServer(InferenceServer):
             # However, an assertion fails in LMCache if not explicitly set
             env["LMCACHE_REMOTE_SERDE"] = "naive"
 
+    def _get_speculative_arguments(self) -> List[str]:
+        """
+        Get speculative arguments for vLLM.
+        """
+
+        speculative_config: SpeculativeConfig = self._model.speculative_config
+        if not speculative_config or not speculative_config.enabled:
+            return []
+
+        vllm_speculative_algorithm_mapping = {
+            SpeculativeAlgorithmEnum.EAGLE3: "eagle3",
+            SpeculativeAlgorithmEnum.MTP: "deepseek_mtp",
+            SpeculativeAlgorithmEnum.NGRAM: "ngram",
+        }
+
+        method = vllm_speculative_algorithm_mapping.get(
+            speculative_config.algorithm, None
+        )
+        if method:
+            sp_dict = {
+                "method": method,
+            }
+            if speculative_config.num_draft_tokens:
+                sp_dict["num_speculative_tokens"] = speculative_config.num_draft_tokens
+            if speculative_config.ngram_max_match_length:
+                sp_dict["prompt_lookup_max"] = speculative_config.ngram_max_match_length
+            if speculative_config.ngram_min_match_length:
+                sp_dict["prompt_lookup_min"] = speculative_config.ngram_min_match_length
+            if speculative_config.draft_model and self._draft_model_path:
+                sp_dict["model"] = self._draft_model_path
+            return [
+                "--speculative-config",
+                json.dumps(sp_dict),
+            ]
+        return []
+
     def _set_distributed_env(self, env: Dict[str, str]):
         """
         Set up environment variables for distributed execution.
@@ -261,6 +302,10 @@ class VLLMServer(InferenceServer):
             is_distributed,
         )
         arguments.extend(auto_parallelism_arguments)
+
+        # Add speculative config arguments if needed
+        speculative_config_arguments = self._get_speculative_arguments()
+        arguments.extend(speculative_config_arguments)
 
         if is_distributed:
             arguments.extend(["--distributed-executor-backend", "ray"])

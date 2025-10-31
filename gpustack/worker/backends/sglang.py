@@ -12,7 +12,7 @@ from gpustack_runtime.deployer import (
     ContainerRestartPolicyEnum,
 )
 
-from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.models import ModelInstance, SpeculativeAlgorithmEnum
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.network import get_free_port
@@ -157,6 +157,10 @@ class SGLangServer(InferenceServer):
         )
         arguments.extend(auto_parallelism_arguments)
 
+        # Add speculative config arguments if needed
+        speculative_config_arguments = self._get_speculative_arguments()
+        arguments.extend(speculative_config_arguments)
+
         # Add multi-node deployment parameters if needed
         if is_distributed:
             multinode_arguments = self._get_multinode_arguments()
@@ -222,6 +226,67 @@ class SGLangServer(InferenceServer):
                 f"{self._model_instance.worker_ip}:{dist_init_port}",
             ]
         )
+
+        return arguments
+
+    def _get_speculative_arguments(self) -> List[str]:
+        """
+        Get speculative arguments for SGLang.
+        """
+
+        speculative_config = self._model.speculative_config
+        if not speculative_config or not speculative_config.enabled:
+            return []
+
+        sglang_speculative_algorithm_mapping = {
+            SpeculativeAlgorithmEnum.EAGLE3: "EAGLE3",
+            SpeculativeAlgorithmEnum.MTP: "EAGLE",  # SGLang uses "EAGLE" for MTP
+            SpeculativeAlgorithmEnum.NGRAM: "NGRAM",
+        }
+
+        arguments = []
+        method = sglang_speculative_algorithm_mapping.get(
+            speculative_config.algorithm, None
+        )
+        if method:
+            arguments.extend(
+                [
+                    "--speculative-algorithm",
+                    method,
+                ]
+            )
+
+            if speculative_config.num_draft_tokens:
+                arguments.extend(
+                    [
+                        "--speculative-num-draft-tokens",
+                        str(speculative_config.num_draft_tokens),
+                    ]
+                )
+
+            if speculative_config.ngram_max_match_length:
+                arguments.extend(
+                    [
+                        "--speculative-ngram-max-match-window-size",
+                        str(speculative_config.ngram_max_match_length),
+                    ]
+                )
+
+            if speculative_config.ngram_min_match_length:
+                arguments.extend(
+                    [
+                        "--speculative-ngram-min-match-window-size",
+                        str(speculative_config.ngram_min_match_length),
+                    ]
+                )
+
+            if speculative_config.draft_model and self._draft_model_path:
+                arguments.extend(
+                    [
+                        "--speculative-draft-model",
+                        self._draft_model_path,
+                    ]
+                )
 
         return arguments
 

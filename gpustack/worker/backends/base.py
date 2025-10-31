@@ -51,6 +51,7 @@ class ModelInstanceStateError(Exception):
 
 class InferenceServer(ABC):
     _model_path: Optional[str] = None
+    _draft_model_path: Optional[str] = None
     """
     The absolute path to the model files.
     This is set when the model instance state changes to STARTING.
@@ -114,6 +115,10 @@ class InferenceServer(ABC):
             raise ModelInstanceStateError()
         elif event.data["state"] == ModelInstanceStateEnum.STARTING:
             self._model_path = str(Path(event.data["resolved_path"]).absolute())
+            if event.data["draft_model_resolved_path"]:
+                self._draft_model_path = str(
+                    Path(event.data["draft_model_resolved_path"]).absolute()
+                )
             return True
 
         return False

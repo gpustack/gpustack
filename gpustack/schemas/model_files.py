@@ -5,7 +5,10 @@ from sqlmodel import JSON, BigInteger, Column, Field, Relationship, SQLModel, Te
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList
-from gpustack.schemas.links import ModelInstanceModelFileLink
+from gpustack.schemas.links import (
+    ModelInstanceDraftModelFileLink,
+    ModelInstanceModelFileLink,
+)
 from gpustack.schemas.models import ModelSource, ModelInstance
 
 
@@ -40,6 +43,12 @@ class ModelFile(ModelFileBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "selectin"},
         back_populates="model_files",
         link_model=ModelInstanceModelFileLink,
+    )
+
+    draft_instances: list[ModelInstance] = Relationship(
+        back_populates="draft_model_files",
+        link_model=ModelInstanceDraftModelFileLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
     )
 
 
