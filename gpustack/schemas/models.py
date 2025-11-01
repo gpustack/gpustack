@@ -218,6 +218,9 @@ class ModelSpecBase(SQLModel, ModelSource):
         sa_type=pydantic_column_type(SpeculativeConfig), default=None
     )
 
+    # Enable generic proxy for model
+    generic_proxy: Optional[bool] = Field(default=False)
+
     @model_validator(mode="after")
     def set_defaults(self):
         backend = get_backend(self)
