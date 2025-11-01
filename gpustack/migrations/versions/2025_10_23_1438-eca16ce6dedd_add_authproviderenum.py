@@ -21,10 +21,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 auth_providerenum_enum = sa.Enum('Local', 'OIDC', 'SAML', name='authproviderenum')
-bind = op.get_bind()
-dialect = bind.dialect.name
+
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    dialect = bind.dialect.name
     if dialect == 'postgresql':
         auth_providerenum_enum.create(bind, checkfirst=True)
         op.execute("ALTER TABLE users ALTER COLUMN source DROP DEFAULT")
@@ -42,6 +43,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    dialect = bind.dialect.name
     with op.batch_alter_table('users', schema=None) as batch_op:
         batch_op.alter_column('source',
             existing_type=sa.Enum('Local', 'OIDC', 'SAML', name='authproviderenum'),

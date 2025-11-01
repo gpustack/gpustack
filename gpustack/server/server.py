@@ -37,6 +37,7 @@ from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_syncer import WorkerSyncer
+from gpustack.server.metrics_collector import GatewayMetricsCollector
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
@@ -81,6 +82,7 @@ class Server:
         self._start_update_checker()
         self._start_model_usage_flusher()
         self._start_metrics_exporter()
+        self._start_gateway_metrics_collector()
 
         jwt_manager = JWTManager(self._config.jwt_secret_key)
         # Start FastAPI server
@@ -205,6 +207,14 @@ class Server:
         self._create_async_task(flush_usage_to_db())
 
         logger.debug("Model usage flusher started.")
+
+    def _start_gateway_metrics_collector(self):
+        if self._config.gateway_mode != GatewayModeEnum.embedded:
+            return
+        collector = GatewayMetricsCollector(cfg=self._config)
+
+        self._create_async_task(collector.start())
+        logger.debug("Gateway metrics collector started.")
 
     def _start_update_checker(self):
         if self._config.disable_update_check:

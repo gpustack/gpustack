@@ -20,12 +20,13 @@ class OperationEnum(str, Enum):
 class ModelUsage(SQLModel, ActiveRecordMixin, table=True):
     __tablename__ = 'model_usages'
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(default=None, foreign_key="users.id")
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id")
     model_id: int = Field(default=None, foreign_key="models.id")
+    access_key: Optional[str] = Field(default=None)
     date: date
     prompt_token_count: int
     completion_token_count: int
     request_count: int
-    operation: OperationEnum
+    operation: Optional[OperationEnum] = Field(default=None)
 
     model_config = ConfigDict(protected_namespaces=())
