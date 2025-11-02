@@ -45,14 +45,14 @@ class WorkerManager:
         self._collector = collector
         self._worker_name = worker_name
         worker_token = read_worker_token(self._cfg.data_dir)
-        if worker_token and self._cfg.server_url:
+        if worker_token:
             self._prepare_clients(worker_token)
 
     def _prepare_clients(self, token: str):
         if self._clientset is not None and self._status_client is not None:
             return
         self._clientset = ClientSet(
-            base_url=self._cfg.server_url,
+            base_url=self._cfg.get_server_url(),
             api_key=token,
         )
         self._status_client = WorkerStatusClient(self._clientset.http_client)
@@ -94,7 +94,7 @@ class WorkerManager:
         )
         self._registration_client = registration_client(
             data_dir=self._cfg.data_dir,
-            server_url=self._cfg.server_url,
+            server_url=self._cfg.get_server_url(),
             registration_token=self._cfg.token,
             wait_token_file=self._is_embedded,
         )

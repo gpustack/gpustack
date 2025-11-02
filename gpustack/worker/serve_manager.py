@@ -341,7 +341,7 @@ class ServeManager:
         add_signal_handlers()
 
         clientset = ClientSet(
-            base_url=cfg.server_url,
+            base_url=cfg.get_server_url(),
             headers=client_headers,
         )
 
