@@ -231,16 +231,25 @@ async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
         else:
             raise
     registry = get_gpustack_higress_registry(cfg=cfg)
+    match_list = [
+        {"match_rule_path": route, "match_rule_type": "exact"}
+        for route in supported_openai_routes
+    ]
+    match_list.append({"match_rule_path": "/model/proxy", "match_rule_type": "prefix"})
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "http_service": {
                 "authorization_request": {
-                    "allowed_headers": [{"exact": "x-higress-llm-model"}]
+                    "allowed_headers": [
+                        {"exact": "x-higress-llm-model"},
+                        {"exact": "x-gpustack-model"},
+                    ]
                 },
                 "authorization_response": {
                     "allowed_upstream_headers": [
                         {"exact": "X-Mse-Consumer"},
                         {"exact": "Authentication"},
+                        {"exact": "x-higress-llm-model"},
                     ]
                 },
                 "endpoint": {
@@ -252,10 +261,7 @@ async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
                 "endpoint_mode": "forward_auth",
                 "timeout": 1000,
             },
-            "match_list": [
-                {"match_rule_path": route, "match_rule_type": "exact"}
-                for route in supported_openai_routes
-            ],
+            "match_list": match_list,
             "match_type": "blacklist",
         },
         defaultConfigDisable=False,
@@ -384,7 +390,10 @@ async def ensure_model_router(cfg: Config, api_client: k8s_client.ApiClient):
         else:
             raise
     expected_spec = WasmPluginSpec(
-        defaultConfig={'modelToHeader': 'x-higress-llm-model'},
+        defaultConfig={
+            'modelToHeader': 'x-higress-llm-model',
+            'enableOnPathSuffix': ['/model/proxy'],
+        },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",

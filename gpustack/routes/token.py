@@ -21,12 +21,14 @@ async def server_auth(
     request: Request,
     session: SessionDep,
 ):
-    model_name = request.headers.get("X-Higress-Llm-Model")
-    if model_name is None:
+    gpustack_model_name = request.headers.get("X-Gpustack-Model")
+    higress_model_name = request.headers.get("X-Higress-Llm-Model")
+    if higress_model_name is None or gpustack_model_name is None:
         logger.warning(
-            "Missing X-Higress-Llm-Model header for token authentication",
+            "Missing X-Higress-Llm-Model or X-Gpustack-Model header for token authentication",
         )
         raise credentials_exception
+    model_name = higress_model_name or gpustack_model_name
     pair = await ModelService(session=session).get_model_auth_info_by_name(
         name=model_name
     )
@@ -59,6 +61,8 @@ async def server_auth(
         "X-Mse-Consumer": consumer,
         "Authentication": f"Bearer {registration_token}",
     }
+    if higress_model_name is None:
+        headers["X-Higress-Llm-Model"] = gpustack_model_name
     return Response(
         status_code=200,
         headers=headers,
