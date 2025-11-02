@@ -312,7 +312,7 @@ class ModelFileDownloadTask:
     def prerun(self):
         setup_logging(self._config.debug)
         self._clientset = ClientSet(
-            base_url=self._config.server_url,
+            base_url=self._config.get_server_url(),
             api_key=read_worker_token(self._config.data_dir),
         )
         self._download_start_time = time.time()

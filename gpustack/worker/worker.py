@@ -69,9 +69,9 @@ class Worker:
     def cluster_id(self) -> Optional[int]:
         return self._cluster_id
 
-    def __init__(self, cfg: Config, is_embedded: bool = False):
+    def __init__(self, cfg: Config):
         self._config = cfg
-        self._is_embedded = is_embedded
+        self._is_embedded = cfg.server_role() == Config.ServerRole.BOTH
         self._log_dir = cfg.log_dir
         self._address = "0.0.0.0"
         self._exporter_enabled = not cfg.disable_worker_metrics
@@ -92,7 +92,7 @@ class Worker:
 
         self._worker_manager = WorkerManager(
             cfg=cfg,
-            is_embedded=is_embedded,
+            is_embedded=self._is_embedded,
             collector=self._status_collector,
             worker_name=self._worker_name,
         )

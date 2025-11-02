@@ -702,6 +702,14 @@ current-context: higress
             return default_gateway_namespace
         return self.namespace if self.namespace else default_gateway_namespace
 
+    def get_server_url(self) -> str:
+        # returns server if not None else returns embedded server url
+        return (
+            self.server_url or f"http://127.0.0.1:{self.api_port}"
+            if self.api_port
+            else "http://127.0.0.1"
+        )
+
 
 def get_openid_configuration(issuer: str) -> dict:
     """Fetch OpenID configuration from the issuer."""
