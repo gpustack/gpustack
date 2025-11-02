@@ -443,6 +443,11 @@ RUN --mount=type=cache,target=/root/.cache \
     # Download wasm-plugins
     python gpustack/gateway/pull_plugins.py
 
+    # Try to update PCI IDs
+    if ! update-pciids; then
+        curl -o /usr/share/misc/pci.ids https://pci-ids.ucw.cz/v2.2/pci.ids || true
+    fi
+
     # Cleanup
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
@@ -458,10 +463,23 @@ COPY pack/s6-overlay /etc/s6-overlay
 ## Active all AMD devices detection,
 ## works with (default) ROCm container runtime and privileged mode.
 ## See https://rocm.docs.amd.com/projects/amdsmi/en/latest/reference/amdsmi-py-api.html.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## - Mount /opt/rocm from the host to detect the correct ROCm version, device architecture and compute_capability.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock gpustack/gpustack:main
+## Runs:
+## - With container runtime installed:
+##   + If installed AMD contaienr runtime as default runtime, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged ...
+##   + If there are mulitple container runtimes installed, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged --runtime amd ...
+##   + If failed to detect devices' name, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/share:/usr/share:ro ...
+##   + If want to detect the correct host ROCm version, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /opt/rocm:/opt/rocm:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock ...
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /opt/rocm:/opt/rocm:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro --group-add video -v /opt/rocm:/opt/rocm:ro ...
 RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/share,rw <<EOF
     # Reinstall amd-smi
 
@@ -471,18 +489,28 @@ RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/sha
         /opt/rocm/share/amd_smi
     uv pip tree
 EOF
-ENV AMD_VISIBLE_DEVICES="0" \
+ENV AMD_VISIBLE_DEVICES="all" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm"
 
 ## Active all Ascend devices detection,
 ## works with (default) Ascend container runtime and privileged mode.
 ## See https://gitcode.com/Ascend/mind-cluster/blob/master/component/ascend-common/devmanager/dcmi/dcmi_interface_api.h.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## - Mount /usr/local/Ascend/ascend-toolkit to detect the correct CANN version and SoC name.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock gpustack/gpustack:main
-ENV ASCEND_VISIBLE_DEVICES="0" \
-    ASCEND_HOME_PATH="/usr/local/Ascend/ascend-toolkit/latest" \
+## Runs:
+## - With container runtime installed:
+##   + If installed Ascend container runtime as default runtime, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged ...
+##   + If there are mulitple container runtimes installed, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged --runtime ascend ...
+##   + If want to detect the correct host CANN version and SoC name, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/local/Ascend/ascend-toolkit:/usr/local/Ascend/ascend-toolkit:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e ASCEND_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ...
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/local/dcmi:/usr/local/dcmi:ro -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v /etc/hccn.conf:/etc/hccn.conf:ro -v /etc/ascend_install.info:/etc/ascend_install.info:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /usr/local/dcmi:/usr/local/dcmi:ro -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v /etc/hccn.conf:/etc/hccn.conf:ro -v /etc/ascend_install.info:/etc/ascend_install.info:ro ...
+ENV ASCEND_HOME_PATH="/usr/local/Ascend/ascend-toolkit/latest" \
     LD_LIBRARY_PATH="/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64:${LD_LIBRARY_PATH}" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/usr/local/Ascend/ascend-toolkit;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
@@ -490,64 +518,85 @@ ENV ASCEND_VISIBLE_DEVICES="0" \
 ## works with (default) Cambricon container runtime and privileged mode.
 ## See https://github.com/Cambricon/cambricon-k8s-device-plugin/blob/master/device-plugin/pkg/cndev/include/cndev.h,
 ##     https://github.com/Cambricon/cambricon-k8s-device-plugin/blob/master/device-plugin/pkg/cntopo/include/cntopo.h.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## - Mount /usr/bin/cnmon to detect the correct devices. [TODO, TBD] maybe we can mount /usr/local/neuware to detect the correct Neuware version futher.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock gpustack/gpustack:main
-ENV CAMBRICON_VISIBLE_DEVICES="0"
+## Runs:
+## - With container runtime installed:
+##   [TODO, TBD]
+## - Without container runtime installed:
+##   [TODO, TBD]
+ENV CAMBRICON_VISIBLE_DEVICES="all"
 
 ## Active all Hygon devices detection,
 ## works with (default) Hygon container runtime and privileged mode.
 ## See https://github.com/Project-HAMi/dcu-dcgm/blob/master/pkg/dcgm/include/rocm_smi.h.
-## - Mount /opt/hyhal from the host to support device detecting.
-## - Mount /opt/dtk from the host to support device detecting.
-## - Configure ROCM_PATH environment variable to point to the mounted ROCm path.
-## Requireds:
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock -v /opt/hyhal:/opt/hyhal:ro -v /opt/dtk:/opt/dtk -e ROCM_PATH=/opt/dtk gpustack/gpustack:main
-ENV HYGON_VISIBLE_DEVICES="0" \
+## Runs:
+## - With container runtime installed:
+##   [TODO, TBD]
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /opt/hyhal:/opt/hyhal:ro -v /opt/dtk:/opt/dtk:ro -e ROCM_PATH=/opt/dtk ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro --group-add video -v /opt/hyhal:/opt/hyhal:ro -v /opt/dtk:/opt/dtk:ro -e ROCM_PATH=/opt/dtk ...
+ENV HYGON_VISIBLE_DEVICES="all" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/dtk;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
 ## Active all Iluvatar devices detection,
 ## works with (default) Iluvatar container runtime and privileged mode.
 ## See https://gitee.com/deep-spark/ix-device-plugin/blob/master/vendor/gitee.com/deep-spark/go-ixml/pkg/ixml/api.h.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## - Mount /run/udev from the host to detect the correct devices' udev info.
-## - Mount /usr/bin/ixsmi to detect the correct devices. [TODO, TBD] maybe we can mount /usr/local/corex to detect the correct CoreX version futher.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock gpustack/gpustack:main
-ENV ILUVATAR_VISIBLE_DEVICES="0"
+## Runs:
+## - With container runtime installed:
+##   [TODO, TBD]
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /run/udev:/run/udev:ro -v /usr/local/corex:/usr/local/corex:ro -v /usr/bin/ixsmi:/usr/bin/ixsmi ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /run/udev:/run/udev:ro -v /usr/local/corex:/usr/local/corex:ro -v /usr/bin/ixsmi:/usr/bin/ixsmi...
+ENV ILUVATAR_VISIBLE_DEVICES="all"
 
 ## Active all MetaX devices detection,
 ## works with (default) MetaX container runtime and privileged mode.
 ## See https://developer.metax-tech.com/api/client/document/preview/626/k8s/03_component.html#container-runtime.
-## Requireds:
-## - Mount /opt/mxdriver from the host to support device detecting.
-## - Mount /opt/maca from the host to support device detecting.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock -v /opt/mxdriver:/opt/mxdriver:ro -v /opt/maca:/opt/maca -e  gpustack/gpustack:main
+## Runs:
+## - With container runtime installed:
+##   [TODO, TBD]
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /opt/mxdriver:/opt/mxdriver:ro -v /opt/maca:/opt/maca:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /opt/mxdriver:/opt/mxdriver:ro -v /opt/maca:/opt/maca:ro ...
 ENV LD_LIBRARY_PATH="/opt/maca/lib:/opt/maca/ompi/lib:/opt/maca/ucx/lib:/opt/mxdriver/lib:${LD_LIBRARY_PATH}" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/maca;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
-## Active all MThread devices detection,
-## works with (default) MThread container runtime and privileged mode.
+## Active all MThreads devices detection,
+## works with (default) MThreads container runtime and privileged mode.
 ## See https://docs.mthreads.com/cloud-native/cloud-native-doc-online/install_guide.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock gpustack/gpustack:main
-ENV MTHREADS_VISIBLE_DEVICES="0" \
+## Runs:
+## - With container runtime installed:
+##   + If installed MThreads container runtime as default runtime, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged ...
+##   + If there are mulitple container runtimes installed, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged --runtime methreads ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock ...
+## - Without container runtime installed:
+##   [TODO, TBD]
+ENV MTHREADS_VISIBLE_DEVICES="all" \
     MTHREADS_DRIVER_CAPABILITIES="compute,utility"
 
 ## Active all NVIDIA devices detection,
 ## works with (default) NVIDIA container runtime and privileged mode.
 ## See https://docs.nvidia.com/deploy/nvml-api/nvml-api-reference.html#nvml-api-reference.
-## Options:
-## - Mount /sys from the host to detect the correct devices' PCI info.
-## E.g. docker run --rm -it --privileged -v /var/run/docker.sock:/var/run/docker.sock gpustack/gpustack:main
+## Runs:
+## - With container runtime installed:
+##   + If installed NVIDIA container runtime as default runtime, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged ...
+##   + If there are mulitple container runtimes installed, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged --runtime nvidia ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock ...
+## - Without container runtime installed:
+##   [TODO, TBD]
 ENV NVIDIA_DISABLE_REQUIRE="true" \
-    NVIDIA_VISIBLE_DEVICES="0" \
+    NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
