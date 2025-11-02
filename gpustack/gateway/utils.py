@@ -224,6 +224,8 @@ def generate_model_ingress(
     destinations: str,
     hostname: Optional[str] = None,
     tls_secret_name: Optional[str] = None,
+    included_generic_route: Optional[bool] = False,
+    included_proxy_route: Optional[bool] = False,
 ) -> k8s_client.V1Ingress:
     ingress_name = model_ingress_name(model.id)
     namespace = namespace
@@ -232,14 +234,41 @@ def generate_model_ingress(
         namespace=namespace,
         annotations={
             "higress.io/destination": destinations,
-            "higress.io/ignore-path-case": 'true',
             "higress.io/exact-match-header-x-higress-llm-model": model.name,
         },
     )
+    # when enabling proxy route, the route includes model name which is case sensitive
+    if included_proxy_route:
+        metadata.annotations["higress.io/rewrite-target"] = "/$2"
+    else:
+        metadata.annotations["higress.io/ignore-path-case"] = 'true'
+    bridge_name = model_mcp_bridge_name(model.cluster_id)
     expected_rule = ingress_rule_for_model(
-        mcp_bridge_name=model_mcp_bridge_name(model.cluster_id),
+        mcp_bridge_name=bridge_name,
         model=model,
     )
+
+    if included_proxy_route:
+        expected_rule.http.paths.append(
+            k8s_client.V1HTTPIngressPath(
+                path="/model/proxy(/|$)(.*)",
+                path_type="Prefix",
+                backend=k8s_client.V1IngressBackend(
+                    resource=get_default_mcpbridge_ref(mcp_bridge_name=bridge_name),
+                ),
+            )
+        )
+    if included_generic_route:
+        expected_rule.http.paths.append(
+            k8s_client.V1HTTPIngressPath(
+                path="/",
+                path_type="Prefix",
+                backend=k8s_client.V1IngressBackend(
+                    resource=get_default_mcpbridge_ref(mcp_bridge_name=bridge_name),
+                ),
+            )
+        )
+
     expected_rule.host = hostname
     spec = k8s_client.V1IngressSpec(ingress_class_name="higress", rules=[expected_rule])
     if tls_secret_name is not None:
@@ -373,7 +402,23 @@ async def ensure_model_ingress(
     networking_api: k8s_client.NetworkingV1Api,
     hostname: Optional[str] = None,
     tls_secret_name: Optional[str] = None,
+    included_generic_route: Optional[bool] = False,
+    included_proxy_route: Optional[bool] = False,
 ):
+    """
+    Ensure the model ingress resource in Kubernetes matches the desired state.
+
+    Parameters:
+        namespace (str): The Kubernetes namespace for the ingress resource.
+        destinations (List[Tuple[int, McpBridgeRegistry]]): Weighted list of MCP Bridge registries for traffic routing.
+        model (Union[Model, ModelPublic]): The model object for which ingress is managed.
+        event_type (EventType): The event type (CREATED, UPDATED, DELETED) triggering reconciliation.
+        networking_api (k8s_client.NetworkingV1Api): The Kubernetes networking API client.
+        hostname (Optional[str]): The external hostname for ingress routing.
+        tls_secret_name (Optional[str]): TLS secret name for HTTPS ingress.
+        included_generic_route (bool): Whether to include a generic '/' route for fallback traffic. Used in worker gateway.
+        included_proxy_route (bool): Whether to include a proxy route for model traffic (e.g., /model/proxy/{model_name}). Used in server gateway.
+    """
     ingress_name = model_ingress_name(model.id)
     if event_type == EventType.DELETED:
         try:
@@ -409,6 +454,8 @@ async def ensure_model_ingress(
         destinations=expected_destinations,
         hostname=hostname,
         tls_secret_name=tls_secret_name,
+        included_generic_route=included_generic_route,
+        included_proxy_route=included_proxy_route,
     )
     if existing_ingress is None:
         await networking_api.create_namespaced_ingress(

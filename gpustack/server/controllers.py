@@ -610,6 +610,8 @@ async def sync_gateway(
         networking_api=networking_api,
         hostname=cfg.get_external_hostname(),
         tls_secret_name=cfg.get_tls_secret_name(),
+        included_generic_route=False,
+        included_proxy_route=model.generic_proxy,
     )
 
 

@@ -129,6 +129,10 @@ class WorkerGatewayController:
                     model=model,
                     event_type=event.type,
                     networking_api=self._networking_api,
+                    hostname=None,
+                    tls_secret_name=None,
+                    included_generic_route=model.generic_proxy,
+                    included_proxy_route=False,
                 )
 
     async def start_model_instance_controller(self):
