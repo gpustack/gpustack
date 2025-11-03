@@ -596,7 +596,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 if self._gpu_memory_utilization > 0  # LLMs
                 else int(self._vram_claim / len(selected_gpu_indexes))  # non LLMs
             )
-            vram_claims[gpu.index] = vram_claim
 
             # Check if the GPU is overcommitted
             allocatable_vram = allocatable.vram.get(gpu.index, 0)
@@ -615,6 +614,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if allocatable_vram / gpu.memory.total > self._gpu_memory_utilization:
                 satisfied_gpu_count += 1
                 satisfied_gpu_indexes.append(gpu.index)
+                vram_claims[gpu.index] = vram_claim
 
             if self._gpu_count and satisfied_gpu_count >= self._gpu_count:
                 break
