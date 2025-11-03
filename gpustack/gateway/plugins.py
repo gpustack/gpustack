@@ -24,6 +24,12 @@ supported_plugins = {
             "sha256:4367cff0ce1349ea9885b7e80e495bcd443931d302b6dc804946ecda78545632",
         )
     ],
+    "transformer": [
+        (
+            "2.0.0",
+            "sha256:40ff2e000dcfd94da76c36593bdfd50f4d0f094309c013732da8e1c35171f321",
+        )
+    ],
 }
 
 oci_plugin_hostname_path = "higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins"

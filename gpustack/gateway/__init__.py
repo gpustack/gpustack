@@ -242,14 +242,12 @@ async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
                 "authorization_request": {
                     "allowed_headers": [
                         {"exact": "x-higress-llm-model"},
-                        {"exact": "x-gpustack-model"},
                     ]
                 },
                 "authorization_response": {
                     "allowed_upstream_headers": [
                         {"exact": "X-Mse-Consumer"},
                         {"exact": "Authentication"},
-                        {"exact": "x-higress-llm-model"},
                     ]
                 },
                 "endpoint": {
@@ -417,6 +415,57 @@ async def ensure_model_router(cfg: Config, api_client: k8s_client.ApiClient):
     # no dynamic data, skip updating for now
 
 
+async def ensure_transformer(cfg: Config, api_client: k8s_client.ApiClient):
+    resource_name = "gpustack-header-transformer"
+    gateway_namespace = cfg.get_gateway_namespace()
+    api = gw_client.ExtensionsHigressIoV1Api(api_client=api_client)
+    try:
+        data: Dict[str, Any] = await api.get_wasmplugin(
+            namespace=gateway_namespace, name=resource_name
+        )
+        transformer = WasmPlugin.model_validate(data)
+    except ApiException as e:
+        if e.status == 404:
+            transformer = None
+        else:
+            raise
+    expected_spec = WasmPluginSpec(
+        defaultConfig={
+            "reqRules": [
+                {
+                    "headers": [
+                        {
+                            "newKey": "x-higress-llm-model",
+                            "oldKey": "x-gpustack-model",
+                        }
+                    ],
+                    "operate": "rename",
+                }
+            ],
+        },
+        defaultConfigDisable=False,
+        failStrategy="FAIL_OPEN",
+        imagePullPolicy="UNSPECIFIED_POLICY",
+        matchRules=[],
+        phase="AUTHN",
+        priority=410,
+        url=get_plugin_url_with_name_and_version(
+            name="transformer", version="2.0.0", prefix=plugin_prefix
+        ),
+    )
+    if transformer is None:
+        transformer = WasmPlugin(
+            metadata={
+                "name": resource_name,
+                "namespace": gateway_namespace,
+                "labels": managed_labels,
+            },
+            spec=expected_spec,
+        )
+        await api.create_wasmplugin(namespace=gateway_namespace, body=transformer)
+    # no dynamic data, skip updating for now
+
+
 async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
     """
     Ensure the TLS secret if ssl key pair is provided.
@@ -514,6 +563,8 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             await ensure_ext_auth(cfg=cfg, api_client=api_client)
             await ensure_ai_statistics(cfg=cfg, api_client=api_client)
             await ensure_model_router(cfg=cfg, api_client=api_client)
+            if cfg.server_role() != Config.ServerRole.WORKER:
+                await ensure_transformer(cfg=cfg, api_client=api_client)
 
         try:
             asyncio.run(prepare())
