@@ -615,11 +615,11 @@ class Config(BaseSettings):
             elif is_embedded:
                 # in cluster but not supported higress will fallback to embedded
                 self.gateway_mode = GatewayModeEnum.embedded
-                # path to embed kubeconfig
-                self.gateway_kubeconfig = higress_embedded_kubeconfig
             else:
                 self.gateway_mode = GatewayModeEnum.external
-
+        if self.gateway_mode == GatewayModeEnum.embedded:
+            # path to embed kubeconfig
+            self.gateway_kubeconfig = higress_embedded_kubeconfig
         if (
             self.gateway_mode == GatewayModeEnum.external
             and not platform.is_supported_higress(self.gateway_kubeconfig)
