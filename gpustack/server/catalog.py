@@ -9,10 +9,11 @@ import requests
 import yaml
 
 from gpustack.schemas.model_sets import (
+    Catalog,
     ModelSet,
+    DraftModel,
     ModelSetPublic,
     ModelSpec,
-    ModelTemplate,
 )
 from gpustack.utils import file
 from gpustack.utils.compat_importlib import pkg_resources
@@ -22,13 +23,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-model_catalog: List[ModelSetPublic] = []
+model_catalog: Catalog = None
 model_set_specs: Dict[int, List[ModelSpec]] = {}
 model_set_specs_by_key: Dict[str, ModelSpec] = {}
 
 
-def get_model_catalog() -> List[ModelSet]:
-    return model_catalog
+def get_model_sets() -> List[ModelSet]:
+    return model_catalog.model_sets if model_catalog else []
+
+
+def get_catalog_draft_models() -> List[DraftModel]:
+    return model_catalog.draft_models if model_catalog else []
 
 
 def get_model_set_specs() -> Dict[int, List[ModelSpec]]:
@@ -48,7 +53,7 @@ def init_model_catalog(model_catalog_file: Optional[str] = None):
         if model_catalog_file is None:
             model_catalog_file = get_builtin_model_catalog_file()
 
-        raw_data = []
+        raw_data = None
         parsed_url = urlparse(model_catalog_file)
         if parsed_url.scheme in ("http", "https"):
             response = requests.get(model_catalog_file)
@@ -58,30 +63,30 @@ def init_model_catalog(model_catalog_file: Optional[str] = None):
             with open(model_catalog_file, "r") as f:
                 raw_data = yaml.safe_load(f)
 
-        model_sets = [ModelSet(**item) for item in raw_data]
+        global model_catalog
+        model_catalog = Catalog(**raw_data)
         logger.debug(
-            f"Loaded {len(model_sets)} model sets from model catalog: {model_catalog_file}"
+            f"Loaded {len(model_catalog.model_sets)} model sets from model catalog: {model_catalog_file}"
         )
+        model_sets = model_catalog.model_sets
 
         # Use index as the id for each model set
         for idx, model_set in enumerate(model_sets):
             model_set.id = idx + 1
 
         model_sets = sort_model_sets(model_sets)
-
-        global model_catalog
-        model_catalog = convert_to_public(model_sets)
+        model_catalog.model_sets = convert_to_public(model_sets)
         init_model_set_specs(model_sets)
     except Exception as e:
         raise Exception(f"Failed to load model catalog: {e}")
 
 
-def sort_model_sets(model_catalog: List[ModelSet]) -> List[ModelSet]:
+def sort_model_sets(model_sets: List[ModelSet]) -> List[ModelSet]:
     """
     Sort model sets by order asc, then by release_date desc
     """
     return sorted(
-        model_catalog,
+        model_sets,
         key=lambda x: (
             x.order if x.order is not None else float('inf'),
             -(x.release_date.toordinal() if x.release_date else date.min.toordinal()),
@@ -90,25 +95,16 @@ def sort_model_sets(model_catalog: List[ModelSet]) -> List[ModelSet]:
 
 
 def init_model_set_specs(model_sets: List[ModelSet]):
-    global model_set_specs
+    global model_set_specs, model_set_specs_by_key
     model_set_specs = {}
     for model_set in model_sets:
-        specs = []
-        for template in model_set.templates:
-            sizes = model_set.sizes or [None]
-            quantizations = model_set.quantizations or [None]
-            if template.sizes:
-                sizes = template.sizes
-            if template.quantizations:
-                quantizations = template.quantizations
+        model_set_specs[model_set.id] = model_set.specs
 
-            for size in sizes:
-                for quantization in quantizations:
-                    spec = resolve_model_template(template, size, quantization)
-                    specs.append(spec)
-                    if not model_set_specs_by_key.get(spec.model_source_key):
-                        model_set_specs_by_key[spec.model_source_key] = spec
-        model_set_specs[model_set.id] = specs
+        # Initialize specs by key for quick lookup.
+        # Later specs override earlier ones to prioritize standard specs.
+        for spec in reversed(model_set.specs):
+            if not model_set_specs_by_key.get(spec.model_source_key):
+                model_set_specs_by_key[spec.model_source_key] = spec
 
 
 def prepare_chat_templates(data_dir: str):
@@ -142,41 +138,3 @@ def can_access(url: str) -> bool:
         return response.status_code >= 200 and response.status_code < 300
     except requests.RequestException:
         return False
-
-
-def resolve_model_template(
-    model_template: ModelTemplate,
-    size: Optional[float],
-    quantization: Optional[str],
-) -> ModelSpec:
-    fields = model_template.model_dump(exclude={"sizes", "quantizations"})
-
-    # Interpolating the size and quantization into template fields
-    resolved_fields = {}
-    for key, value in fields.items():
-        if isinstance(value, str):
-            value = resolve_value(value, size, quantization)
-        if isinstance(value, list):
-            value = [resolve_value(v, size, quantization) for v in value]
-        resolved_fields[key] = value
-
-    return ModelSpec(**resolved_fields, size=size, quantization=quantization)
-
-
-def resolve_value(
-    value: str,
-    size: Optional[float],
-    quantization: Optional[str],
-) -> str:
-    if size is not None:
-        value = value.replace("{size}", format_size(size))
-    if quantization:
-        value = value.replace("{quantization}", quantization)
-    return value
-
-
-def format_size(size: Optional[float]) -> str:
-    if size is None:
-        return ""
-    # Remove decimal point if the size is an integer
-    return str(int(size)) if size.is_integer() else str(size)

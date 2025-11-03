@@ -17,6 +17,28 @@ data:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
+  name: ingressclass-viewer
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ingressclass-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: gpustack-worker
+    namespace: gpustack-system-{{ config.cluster_suffix }}
+roleRef:
+  kind: ClusterRole
+  name: ingressclass-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: pod-cm-creator
 rules:
   - apiGroups: [""]
@@ -97,7 +119,7 @@ spec:
     spec:
       containers:
         - env:
-            - name: GPUSTACK_REGISTRATION_TOKEN
+            - name: GPUSTACK_TOKEN
               valueFrom:
                 secretKeyRef:
                   key: token
@@ -106,6 +128,24 @@ spec:
               value: {{ config.server_url }}
             - name: GPUSTACK_PORT
               value: '8080'
+            - name: GPUSTACK_GATEWAY_MODE
+              value: 'embedded'
+            - name: GPUSTACK_RUNTIME_DEPLOY
+              value: "Kubernetes"
+            - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
+              value: "true"
+            - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           image: {{ config.image }}
           imagePullPolicy: IfNotPresent
           name: gpustack-worker

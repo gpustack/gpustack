@@ -18,6 +18,7 @@ from gpustack.schemas.inference_backend import InferenceBackend, get_built_in_ba
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import (
     BackendEnum,
+    ModelSource,
     MyModel,
     Model,
     ModelInstance,
@@ -43,6 +44,7 @@ from gpustack.schemas.clusters import (
 
 from gpustack.schemas.users import User
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.catalog import get_catalog_draft_models
 from gpustack.server.db import get_engine
 from gpustack.server.services import (
     ModelFileService,
@@ -275,6 +277,7 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 local_path=model.local_path,
                 state=ModelInstanceStateEnum.PENDING,
                 cluster_id=model.cluster_id,
+                draft_model_source=get_draft_model_source(model),
             )
 
             await ModelInstanceService(session).create(instance)
@@ -371,7 +374,12 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
 
     retry_model_files = []
     model_files = await get_or_create_model_files_for_instance(session, instance)
-    for model_file in model_files:
+    draft_model_files = []
+    if instance.draft_model_source:
+        draft_model_files = await get_or_create_model_files_for_instance(
+            session, instance, is_draft_model=True
+        )
+    for model_file in model_files + draft_model_files:
         if model_file.state == ModelFileStateEnum.ERROR:
             # Retry the download
             retry_model_files.append(model_file.readable_source)
@@ -389,20 +397,19 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
 
     instance = await ModelInstance.one_by_id(session, instance.id)
     instance.model_files = model_files
-    await sync_instance_files_state(session, instance, model_files)
-    logger.debug(
-        f"Associated model file {model_file.readable_source}(id: {model_file.id}) with model instance {instance.name}"
-    )
+    instance.draft_model_files = draft_model_files
+    await sync_instance_files_state(session, instance, model_files + draft_model_files)
 
 
 async def get_or_create_model_files_for_instance(
-    session: AsyncSession, instance: ModelInstance
+    session: AsyncSession, instance: ModelInstance, is_draft_model: bool = False
 ) -> List[ModelFile]:
     """
     Get or create model files for the given model instance.
+    If is_draft_model is True, get or create model files for the draft model.
     """
 
-    model_files = await get_model_files_for_instance(session, instance)
+    model_files = await get_model_files_for_instance(session, instance, is_draft_model)
     worker_ids = _get_worker_ids_for_file_download(instance)
 
     # Return early if all model files are already created for the workers
@@ -416,18 +423,21 @@ async def get_or_create_model_files_for_instance(
     if not missing_worker_ids:
         return model_files
 
+    model_source = instance
+    if is_draft_model:
+        model_source = instance.draft_model_source
     # Create model files for the missing worker IDs.
     for worker_id in missing_worker_ids:
         model_file = ModelFile(
-            source=instance.source,
-            huggingface_repo_id=instance.huggingface_repo_id,
-            huggingface_filename=instance.huggingface_filename,
-            model_scope_model_id=instance.model_scope_model_id,
-            model_scope_file_path=instance.model_scope_file_path,
-            local_path=instance.local_path,
+            source=model_source.source,
+            huggingface_repo_id=model_source.huggingface_repo_id,
+            huggingface_filename=model_source.huggingface_filename,
+            model_scope_model_id=model_source.model_scope_model_id,
+            model_scope_file_path=model_source.model_scope_file_path,
+            local_path=model_source.local_path,
             state=ModelFileStateEnum.DOWNLOADING,
             worker_id=worker_id,
-            source_index=instance.model_source_index,
+            source_index=model_source.model_source_index,
         )
         await ModelFile.create(session, model_file)
         logger.info(
@@ -435,25 +445,33 @@ async def get_or_create_model_files_for_instance(
         )
 
     # After creating the model files, fetch them again to return the complete list.
-    return await get_model_files_for_instance(session, instance)
+    return await get_model_files_for_instance(session, instance, is_draft_model)
 
 
 async def get_model_files_for_instance(
-    session: AsyncSession, instance: ModelInstance
+    session: AsyncSession, instance: ModelInstance, is_draft_model: bool = False
 ) -> List[ModelFile]:
+    """
+    Get the model files for the given model instance.
+    If draft_model is provided, get the model files for the draft model.
+    """
     worker_ids = _get_worker_ids_for_file_download(instance)
 
+    model_source: ModelSource = instance
+    if is_draft_model:
+        model_source = instance.draft_model_source
+
     model_files = await ModelFileService(session).get_by_source_index(
-        instance.model_source_index
+        model_source.model_source_index
     )
     model_files = [
         model_file for model_file in model_files if model_file.worker_id in worker_ids
     ]
 
-    if instance.source == SourceEnum.LOCAL_PATH and instance.local_path:
+    if model_source.source == SourceEnum.LOCAL_PATH and model_source.local_path:
         # If the source is local path, get the model files with the same local path.
         local_path_model_files = await ModelFileService(session).get_by_resolved_path(
-            instance.local_path
+            model_source.local_path
         )
         local_path_model_files = [
             model_file
@@ -469,6 +487,39 @@ async def get_model_files_for_instance(
         model_files.extend(additional_files)
 
     return model_files
+
+
+def get_draft_model_source(model: Model) -> Optional[ModelSource]:
+    """
+    Get the model source for the draft model.
+    First check the catalog for the draft model.
+    If not found, get the model source empirically to support custom draft models.
+    """
+    if model.speculative_config is None or not model.speculative_config.draft_model:
+        return None
+
+    draft_model = model.speculative_config.draft_model
+    catalog_draft_models = get_catalog_draft_models()
+    for catalog_draft_model in catalog_draft_models:
+        if catalog_draft_model.name == draft_model:
+            return catalog_draft_model
+
+    # If draft_model looks like a path, assume it's a local path.
+    if draft_model.startswith("/"):
+        return ModelSource(source=SourceEnum.LOCAL_PATH, local_path=draft_model)
+
+    # Otherwise, assume it comes from the same source as the main model.
+    if model.source == SourceEnum.HUGGING_FACE:
+        return ModelSource(
+            source=SourceEnum.HUGGING_FACE,
+            huggingface_repo_id=draft_model,
+        )
+    elif model.source == SourceEnum.MODEL_SCOPE:
+        return ModelSource(
+            source=SourceEnum.MODEL_SCOPE,
+            model_scope_model_id=draft_model,
+        )
+    return None
 
 
 async def find_scale_down_candidates(
@@ -788,7 +839,7 @@ class ModelFileController:
                 # In case the file is deleted
                 return
 
-            for instance in file.instances:
+            for instance in file.instances + file.draft_instances:
                 async with AsyncSession(self._engine) as session:
                     await sync_instance_files_state(session, instance, [file])
         except Exception as e:
@@ -800,13 +851,24 @@ async def sync_instance_files_state(
 ):
     for file in files:
         if file.worker_id == instance.worker_id:
-            await sync_main_model_file_state(session, file, instance)
+            if (
+                instance.draft_model_source
+                and file.source_index == instance.draft_model_source.model_source_index
+            ):
+                await sync_main_worker_model_file_state(
+                    session, file, instance, is_draft_model=True
+                )
+            else:
+                await sync_main_worker_model_file_state(session, file, instance)
         else:
             await sync_distributed_model_file_state(session, file, instance)
 
 
-async def sync_main_model_file_state(
-    session: AsyncSession, file: ModelFile, instance: ModelInstance
+async def sync_main_worker_model_file_state(
+    session: AsyncSession,
+    file: ModelFile,
+    instance: ModelInstance,
+    is_draft_model: bool = False,
 ):
     """
     Sync the model file state to the related model instance.
@@ -821,38 +883,58 @@ async def sync_main_model_file_state(
     )
 
     need_update = False
-    if (
-        file.state == ModelFileStateEnum.DOWNLOADING
-        and instance.state == ModelInstanceStateEnum.INITIALIZING
-    ):
-        # Download started
-        instance.state = ModelInstanceStateEnum.DOWNLOADING
-        instance.download_progress = 0
-        instance.state_message = ""
-        need_update = True
-    elif (
-        file.state == ModelFileStateEnum.DOWNLOADING
-        and instance.state == ModelInstanceStateEnum.DOWNLOADING
-        and file.download_progress != instance.download_progress
-    ):
-        # Update the download progress
-        instance.download_progress = file.download_progress
-        need_update = True
 
+    # Downloading
+    if file.state == ModelFileStateEnum.DOWNLOADING:
+        if instance.state == ModelInstanceStateEnum.INITIALIZING:
+            # Download started
+            instance.state = ModelInstanceStateEnum.DOWNLOADING
+            instance.download_progress = 0
+            instance.state_message = ""
+            need_update = True
+        elif instance.state == ModelInstanceStateEnum.DOWNLOADING:
+            # Update download progress
+            if (
+                is_draft_model
+                and file.download_progress != instance.draft_model_download_progress
+            ):
+                # For the draft model file
+                instance.draft_model_download_progress = file.download_progress
+                need_update = True
+            elif file.download_progress != instance.download_progress:
+                # For the main model file
+                instance.download_progress = file.download_progress
+                need_update = True
+
+    # Download completed
     elif file.state == ModelFileStateEnum.READY and (
         instance.state == ModelInstanceStateEnum.DOWNLOADING
         or instance.state == ModelInstanceStateEnum.INITIALIZING
     ):
-        # Download completed
-        instance.download_progress = 100
-        instance.resolved_path = file.resolved_paths[0]
+        if is_draft_model and (
+            instance.draft_model_download_progress != 100
+            or not instance.draft_model_resolved_path
+        ):
+            # Download completed for the draft model file
+            instance.draft_model_download_progress = 100
+            instance.draft_model_resolved_path = file.resolved_paths[0]
+            need_update = True
+        elif not is_draft_model and (
+            instance.download_progress != 100 or not instance.resolved_path
+        ):
+            # Download completed for the main model file
+            instance.download_progress = 100
+            instance.resolved_path = file.resolved_paths[0]
+            need_update = True
+
         if model_instance_download_completed(instance):
             # All files are downloaded
             instance.state = ModelInstanceStateEnum.STARTING
             instance.state_message = ""
-        need_update = True
+            need_update = True
+
+    # Download error
     elif file.state == ModelFileStateEnum.ERROR:
-        # Download failed
         instance.state = ModelInstanceStateEnum.ERROR
         instance.state_message = file.state_message
         need_update = True
@@ -913,6 +995,9 @@ async def sync_distributed_model_file_state(  # noqa: C901
 
 def model_instance_download_completed(instance: ModelInstance):
     if instance.download_progress != 100:
+        return False
+
+    if instance.draft_model_source and instance.draft_model_download_progress != 100:
         return False
 
     if (
