@@ -89,6 +89,10 @@ class InferenceServer(ABC):
                     backend_name=BackendEnum.CUSTOM.value,
                     run_command=self._model.run_command,
                 )
+            if not self.inference_backend:
+                raise KeyError(
+                    f"Inference backend {self._model.backend} not specified or not found"
+                )
 
             logger.info("Preparing model files...")
 
