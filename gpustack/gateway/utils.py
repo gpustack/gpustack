@@ -252,7 +252,7 @@ def generate_model_ingress(
         expected_rule.http.paths.append(
             k8s_client.V1HTTPIngressPath(
                 path="/model/proxy(/|$)(.*)",
-                path_type="Prefix",
+                path_type="ImplementationSpecific",
                 backend=k8s_client.V1IngressBackend(
                     resource=get_default_mcpbridge_ref(mcp_bridge_name=bridge_name),
                 ),
@@ -471,13 +471,19 @@ async def ensure_model_ingress(
             existing_ingress.spec = expected_ingress.spec
             metadata = existing_ingress.metadata or k8s_client.V1ObjectMeta()
             metadata.annotations = metadata.annotations or {}
-            for key in [
-                "higress.io/destination",
-                "higress.io/exact-match-header-x-higress-llm-model",
-            ]:
-                metadata.annotations[key] = expected_ingress.metadata.annotations.get(
-                    key
-                )
+            expected_higress_keys = set()
+            for key, value in (expected_ingress.metadata.annotations or {}).items():
+                if key.startswith("higress.io"):
+                    metadata.annotations[key] = value
+                    expected_higress_keys.add(key)
+            to_delete = [
+                key
+                for key in metadata.annotations.keys()
+                if key.startswith("higress.io") and key not in expected_higress_keys
+            ]
+            for key in to_delete:
+                del metadata.annotations[key]
+
             await networking_api.replace_namespaced_ingress(
                 name=ingress_name,
                 namespace=namespace,
