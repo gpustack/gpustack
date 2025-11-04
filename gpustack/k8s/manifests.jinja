@@ -41,18 +41,16 @@ kind: ClusterRole
 metadata:
   name: pod-cm-creator
 rules:
-  - apiGroups: [""]
-    resources: ["pods", "configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["*"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+  - apiGroups:
+    - ""
+  resources:
+    - "pods"
+    - "configmaps"
+    - "services"
+    - "pods/log"
+    - "pods/exec"
+  verbs:
+    - "*"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -161,6 +159,13 @@ spec:
           volumeMounts:
             - name: gpustack-data-dir
               mountPath: /var/lib/gpustack
+            #
+            # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
+            #
+            - name: gpustack-ascend-driver
+              mountPath: /usr/local/Ascend/driver
+            - name: gpustack-ascend-toolkit
+              mountPath: /usr/local/Ascend/ascend-toolkit
           ports:
             - name: gateway
               containerPort: 8080
@@ -193,6 +198,17 @@ spec:
         - name: gpustack-data-dir
           hostPath:
             path: /var/lib/gpustack
+            type: DirectoryOrCreate
+        #
+        # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
+        #
+        - name: gpustack-ascend-driver
+          hostPath:
+            path: /usr/local/Ascend/driver
+            type: DirectoryOrCreate
+        - name: gpustack-ascend-toolkit
+          hostPath:
+            path: /usr/local/Ascend/ascend-toolkit
             type: DirectoryOrCreate
       hostNetwork: true
       hostIPC: true
