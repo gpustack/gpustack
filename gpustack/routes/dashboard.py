@@ -23,7 +23,7 @@ from gpustack.schemas.models import Model, ModelInstance
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.users import User
 from gpustack.server.deps import SessionDep
-from gpustack.schemas import Worker
+from gpustack.schemas import Worker, Cluster
 from gpustack.server.system_load import compute_system_load
 
 router = APIRouter()
@@ -53,8 +53,12 @@ async def get_resource_counts(
     session: AsyncSession, cluster_id: Optional[int] = None
 ) -> ResourceCounts:
     fields = {}
+    cluster_count = None
     if cluster_id is not None:
         fields['cluster_id'] = cluster_id
+    else:
+        clusters = await Cluster.all_by_field(session, field="deleted_at", value=None)
+        cluster_count = len(clusters)
     workers = await Worker.all_by_fields(
         session,
         fields=fields,
@@ -68,6 +72,7 @@ async def get_resource_counts(
     model_instances = await ModelInstance.all_by_fields(session, fields=fields)
     model_instance_count = len(model_instances)
     return ResourceCounts(
+        cluster_count=cluster_count,
         worker_count=worker_count,
         gpu_count=gpu_count,
         model_count=model_count,

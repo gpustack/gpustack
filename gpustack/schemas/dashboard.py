@@ -62,6 +62,7 @@ class ResourceCounts(BaseModel):
     gpu_count: int
     model_count: int
     model_instance_count: int
+    cluster_count: Optional[int] = None
 
     model_config = ConfigDict(protected_namespaces=())
 
