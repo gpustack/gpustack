@@ -19,6 +19,7 @@ from gpustack.utils.network import get_free_port
 from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
+    get_workload_name_by_instance_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,14 @@ class SGLangServer(InferenceServer):
             self._handle_error(e)
 
     def _start(self):
-        logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
+        # Store workload name for management operations
+        self._workload_name = get_workload_name_by_instance_name(
+            self._model_instance.name
+        )
+
+        logger.info(
+            f"Starting SGLang model instance: {self._model_instance.name}, workload name: {self._workload_name}"
+        )
 
         is_distributed, _, _ = self._get_distributed_metadata()
 
@@ -63,9 +71,6 @@ class SGLangServer(InferenceServer):
         command_args: List[str],
         env: Dict[str, str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         # Get resources configuration
         resources = self._get_configured_resources()
 
@@ -82,7 +87,7 @@ class SGLangServer(InferenceServer):
         # Create container configuration
         run_container = Container(
             image=image_name,
-            name=self._model_instance.name,
+            name=self._workload_name,
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
@@ -93,9 +98,6 @@ class SGLangServer(InferenceServer):
             mounts=mounts,
             ports=ports,
         )
-
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
 
         workload_plan = WorkloadPlan(
             name=self._workload_name,

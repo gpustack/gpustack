@@ -19,7 +19,11 @@ from gpustack_runtime.deployer import (
 )
 
 from gpustack.utils.envs import sanitize_env
-from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
+from gpustack.worker.backends.base import (
+    InferenceServer,
+    is_ascend_310p,
+    get_workload_name_by_instance_name,
+)
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -842,8 +846,12 @@ class AscendMindIEServer(InferenceServer):
             self._handle_error(e)
 
     def _start(self):  # noqa: C901
+        # Store workload name for management operations
+        self._workload_name = get_workload_name_by_instance_name(
+            self._model_instance.name
+        )
         logger.info(
-            f"Starting Ascend MindIE model instance: {self._model_instance.name}"
+            f"Starting Ascend MindIE model instance: {self._model_instance.name}, workload name: {self._workload_name}"
         )
         # Prepare distributed information.
         dservers = self._model_instance.distributed_servers
@@ -1322,9 +1330,6 @@ class AscendMindIEServer(InferenceServer):
         config_files: List[ContainerFile],
         working_dir: Optional[str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image(backend="cann")
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
@@ -1337,7 +1342,7 @@ class AscendMindIEServer(InferenceServer):
 
         run_container = Container(
             image=image,
-            name=self._model_instance.name,
+            name=self._workload_name,
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(

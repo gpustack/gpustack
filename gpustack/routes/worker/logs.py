@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
 from gpustack_runtime.deployer import logs_workload
+from gpustack.worker.backends.base import get_workload_name_by_instance_name
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
@@ -22,11 +23,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def is_container_logs_ready(model_instance_name: str) -> bool:
+def is_container_logs_ready(workload_name: str) -> bool:
     """Probe whether container logs have any content available to output."""
     try:
         probe_stream = logs_workload(
-            name=model_instance_name,
+            name=workload_name,
             tail=1,
             follow=False,
         )
@@ -38,7 +39,7 @@ def is_container_logs_ready(model_instance_name: str) -> bool:
 
 
 async def wait_for_container_generator(
-    model_instance_name: str,
+    workload_name: str,
     options: LogOptionsDep,
     poll_interval: float = 5,
     timeout: float = PROXY_TIMEOUT,
@@ -50,12 +51,12 @@ async def wait_for_container_generator(
     gen = None
     start_time = time.monotonic()
     while gen is None and (time.monotonic() - start_time) < timeout:
-        if is_container_logs_ready(model_instance_name):
+        if is_container_logs_ready(workload_name):
             try:
-                gen = container_log_generator(model_instance_name, options)
+                gen = container_log_generator(workload_name, options)
             except Exception as e:
                 logger.error(
-                    f"Failed to initialize container logs for {model_instance_name}: {e}"
+                    f"Failed to initialize container logs for {workload_name}: {e}"
                 )
                 gen = None
         if gen is None:
@@ -63,10 +64,10 @@ async def wait_for_container_generator(
     if gen is None:
         elapsed = time.monotonic() - start_time
         logger.warning(
-            f"Waiting for container logs timed out after {elapsed:.0f}s for {model_instance_name}."
+            f"Waiting for container logs timed out after {elapsed:.0f}s for {workload_name}."
         )
         raise asyncio.TimeoutError(
-            f"Timed out waiting for container logs for {model_instance_name} after {elapsed:.0f}s"
+            f"Timed out waiting for container logs for {workload_name} after {elapsed:.0f}s"
         )
     return gen
 
@@ -147,12 +148,12 @@ async def merge_async_generators(
             await asyncio.gather(*pending_tasks.keys(), return_exceptions=True)
 
 
-async def container_log_generator(model_instance_name: str, options: LogOptionsDep):
+async def container_log_generator(workload_name: str, options: LogOptionsDep):
     """
     Generate logs from CustomServer Docker container.
 
     Args:
-        model_instance_name: Workload name
+        workload_name: Workload name
         options: Log options (tail, follow)
     """
     try:
@@ -162,7 +163,7 @@ async def container_log_generator(model_instance_name: str, options: LogOptionsD
 
         # Get logs from the workload
         log_stream = logs_workload(
-            name=model_instance_name,
+            name=workload_name,
             tail=tail,
             follow=follow,
         )
@@ -174,7 +175,7 @@ async def container_log_generator(model_instance_name: str, options: LogOptionsD
                 iterator = iter(log_stream)
             except Exception as e:
                 logger.error(
-                    f"logs_workload did not return an iterable for {model_instance_name}: {e}"
+                    f"logs_workload did not return an iterable for {workload_name}: {e}"
                 )
                 return
 
@@ -185,7 +186,7 @@ async def container_log_generator(model_instance_name: str, options: LogOptionsD
                     break
                 except Exception as e:
                     logger.error(
-                        f"Error reading container log for {model_instance_name}: {e}"
+                        f"Error reading container log for {workload_name}: {e}"
                     )
                     break
 
@@ -201,13 +202,13 @@ async def container_log_generator(model_instance_name: str, options: LogOptionsD
                 yield str(log_stream)
 
     except Exception as e:
-        logger.error(f"Failed to get container logs for {model_instance_name}: {e}")
+        logger.error(f"Failed to get container logs for {workload_name}: {e}")
 
 
 async def _stream_file_logs_preempt_to_container(
     file_tasks,
     options,
-    model_instance_name: str,
+    workload_name: str,
 ):
     """
     Stream file logs (download + main) in follow mode until the container produces
@@ -220,7 +221,7 @@ async def _stream_file_logs_preempt_to_container(
         first_item_emitted = False
         try:
             gen = await wait_for_container_generator(
-                model_instance_name, options, poll_interval=5, timeout=PROXY_TIMEOUT
+                workload_name, options, poll_interval=5, timeout=PROXY_TIMEOUT
             )
             async for cline in gen:
                 if not first_item_emitted:
@@ -229,7 +230,7 @@ async def _stream_file_logs_preempt_to_container(
                 await container_queue.put(cline)
         except asyncio.TimeoutError:
             logger.warning(
-                f"Pump container logs timed out for {model_instance_name} after {PROXY_TIMEOUT}s"
+                f"Pump container logs timed out for {workload_name} after {PROXY_TIMEOUT}s"
             )
         except Exception as e:
             logger.error(f"Error streaming container logs: {e}")
@@ -259,7 +260,7 @@ async def _emit_file_then_container_logs(
     file_tasks,
     options,
     container_ready: bool,
-    model_instance_name: str,
+    workload_name: str,
 ):
     """
     Emit file logs first, then stream or snapshot container logs depending on options.follow.
@@ -271,13 +272,13 @@ async def _emit_file_then_container_logs(
     try:
         if options.follow:
             gen = await wait_for_container_generator(
-                model_instance_name, options, timeout=PROXY_TIMEOUT
+                workload_name, options, timeout=PROXY_TIMEOUT
             )
             async for line in gen:
                 yield line
         else:
             if container_ready:
-                async for line in container_log_generator(model_instance_name, options):
+                async for line in container_log_generator(workload_name, options):
                     yield line
     except Exception as e:
         logger.error(f"Failed to stream container logs: {e}")
@@ -315,6 +316,8 @@ async def combined_log_generator(
     - If neither file logs nor container logs are available, NotFoundException is raised.
     """
 
+    workload_name = get_workload_name_by_instance_name(model_instance_name)
+
     # Phase 1: file logs (download + main) merged together
     file_tasks = []
 
@@ -323,7 +326,7 @@ async def combined_log_generator(
     container_ready = False
     try:
         # Quick probe: check if container logs have content available now
-        container_ready = is_container_logs_ready(model_instance_name)
+        container_ready = is_container_logs_ready(workload_name)
 
         # If the client requested follow but container logs are already available,
         # emit file logs non-streaming first, then stream container logs.
@@ -349,14 +352,14 @@ async def combined_log_generator(
     # but preempt as soon as container produces any output.
     if options and options.follow and not container_ready and file_tasks:
         async for line in _stream_file_logs_preempt_to_container(
-            file_tasks, options, model_instance_name
+            file_tasks, options, workload_name
         ):
             yield line
         return
 
     # Default behavior: emit file logs first (non-follow if configured), then container logs
     async for line in _emit_file_then_container_logs(
-        file_tasks, options, container_ready, model_instance_name
+        file_tasks, options, container_ready, workload_name
     ):
         yield line
 

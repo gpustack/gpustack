@@ -3,7 +3,10 @@ import os
 from typing import Optional, List, Dict
 
 from gpustack.utils.envs import sanitize_env
-from gpustack.worker.backends.base import InferenceServer
+from gpustack.worker.backends.base import (
+    InferenceServer,
+    get_workload_name_by_instance_name,
+)
 
 from gpustack_runtime.deployer import (
     Container,
@@ -28,7 +31,14 @@ class VoxBoxServer(InferenceServer):
             self._handle_error(e)
 
     def _start(self):
-        logger.info(f"Starting Vox-Box model instance: {self._model_instance.name}")
+        # Store workload name for management operations
+        self._workload_name = get_workload_name_by_instance_name(
+            self._model_instance.name
+        )
+
+        logger.info(
+            f"Starting Vox-Box model instance: {self._model_instance.name}, workload name: {self._workload_name}"
+        )
 
         env = self._get_configured_env()
 
@@ -46,9 +56,6 @@ class VoxBoxServer(InferenceServer):
         command_args: List[str],
         env: Dict[str, str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image()
         if not image:
             raise ValueError("Failed to get VoxBox backend image")
@@ -64,7 +71,7 @@ class VoxBoxServer(InferenceServer):
 
         run_container = Container(
             image=image,
-            name=self._model_instance.name,
+            name=self._workload_name,
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(

@@ -28,6 +28,7 @@ from gpustack.worker.backends.base import (
     is_ascend_310p,
     is_ascend,
     cal_distributed_parallelism_arguments,
+    get_workload_name_by_instance_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,14 @@ class VLLMServer(InferenceServer):
             self._handle_error(e)
 
     def _start(self):
-        logger.info(f"Starting vLLM model instance: {self._model_instance.name}")
+        # Store workload name for management operations
+        self._workload_name = get_workload_name_by_instance_name(
+            self._model_instance.name
+        )
+
+        logger.info(
+            f"Starting vLLM model instance: {self._model_instance.name}, workload name: {self._workload_name}"
+        )
 
         # Prepare distributed information.
         is_distributed, is_distributed_leader, is_distributed_follower = (
@@ -80,9 +88,6 @@ class VLLMServer(InferenceServer):
         is_distributed_leader: bool,
         is_distributed_follower: bool,
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image()
         if not image:
             raise ValueError("Failed to get vLLM backend image")
@@ -95,7 +100,7 @@ class VLLMServer(InferenceServer):
 
         run_container = Container(
             image=image,
-            name=self._model_instance.name,
+            name=self._workload_name,
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
@@ -139,7 +144,7 @@ class VLLMServer(InferenceServer):
 
             sidecar_container = Container(
                 image=image,
-                name=f"{self._model_instance.name}-ray",
+                name=f"{self._workload_name}-ray",
                 profile=ContainerProfileEnum.RUN,
                 restart_policy=ContainerRestartPolicyEnum.NEVER,
                 execution=ContainerExecution(

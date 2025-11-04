@@ -29,6 +29,7 @@ from gpustack.worker.backends.llama_box import LlamaBoxServer
 from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
+from gpustack.worker.backends.base import get_workload_name_by_instance_name
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
     BackendEnum,
@@ -186,7 +187,9 @@ class ServeManager:
                 continue
 
             # Skip if the workload is still launching.
-            workload = get_workload(model_instance.name)
+            workload = get_workload(
+                get_workload_name_by_instance_name(model_instance.name)
+            )
             if workload and workload.state in [
                 WorkloadStatusStateEnum.PENDING,
                 WorkloadStatusStateEnum.INITIALIZING,
@@ -472,7 +475,7 @@ class ServeManager:
 
             # Start on subordinate worker if not started yet.
             if not is_main_worker:
-                workload = get_workload(mi.name)
+                workload = get_workload(get_workload_name_by_instance_name(mi.name))
                 if not workload:
                     self._start_model_instance(mi)
                     logger.trace(
@@ -661,7 +664,7 @@ class ServeManager:
             terminate_process_tree(self._provisioning_processes[mi.id].pid)
 
         # Delete workload.
-        delete_workload(mi.name)
+        delete_workload(get_workload_name_by_instance_name(mi.name))
 
         # Cleanup internal states.
         self._provisioning_processes.pop(mi.id, None)

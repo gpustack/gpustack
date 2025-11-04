@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import threading
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List
@@ -706,3 +707,11 @@ def cal_distributed_parallelism_arguments(
             f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
         )
     return tp, pp
+
+
+def get_workload_name_by_instance_name(instance_name: str) -> str:
+    """
+    Generate a workload name based on the model instance name.
+    """
+    instance_name_hash = hashlib.md5(instance_name.encode()).hexdigest()[:10]
+    return f"mi-{instance_name_hash}"
