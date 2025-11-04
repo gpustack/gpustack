@@ -937,61 +937,6 @@ class AscendMindIEServer(InferenceServer):
             env.pop("MIES_CONTAINER_IP", "")
             env.pop("HOST_IP", "")
 
-        # - Logging config
-        # -- Ascend MindIE
-        env["MINDIE_LOG_LEVEL"] = "INFO"
-        env["MINDIE_LOG_TO_STDOUT"] = "1"
-        env["MINDIE_LOG_TO_FILE"] = "0"
-        # -- Ascend MindIE Service
-        env["MIES_CERTS_LOG_LEVEL"] = env.pop("MIES_CERTS_LOG_LEVEL", "INFO")
-        env["MIES_CERTS_LOG_TO_STDOUT"] = "1"
-        env["MIES_CERTS_LOG_TO_FILE"] = "0"
-        # -- Ascend MindIE LLM
-        env["MINDIE_LLM_LOG_LEVEL"] = env.pop("MINDIE_LLM_LOG_LEVEL", "WARN")
-        env["MINDIE_LLM_LOG_TO_STDOUT"] = "1"
-        env["MINDIE_LLM_LOG_TO_FILE"] = "0"
-        env["MINDIE_LLM_PYTHON_LOG_LEVEL"] = env.pop(
-            "MINDIE_LLM_PYTHON_LOG_LEVEL", "WARN"
-        )
-        env["MINDIE_LLM_PYTHON_LOG_TO_STDOUT"] = "1"
-        env["MINDIE_LLM_PYTHON_LOG_TO_FILE"] = "0"
-        # -- Ascend MindIE Runtime
-        env["ASCEND_GLOBAL_LOG_LEVEL"] = env.pop(
-            "ASCEND_GLOBAL_LOG_LEVEL", "3"
-        )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
-        env["ASCEND_SLOG_LEVEL"] = env.pop("ASCEND_SLOG_LEVEL", "WARN")
-        env["ASCEND_SLOG_PRINT_TO_STDOUT"] = "1"
-        env["ASCEND_SLOG_PRINT_TO_FILE"] = "0"
-        env["MINDIE_RT_LOG_LEVEL"] = env.pop(
-            "MINDIE_RT_LOG_LEVEL", "3"
-        )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
-        env["MINDIE_RT_LOG_PRINT_TO_STDOUT"] = "1"
-        env["MINDIE_RT_LOG_PRINT_TO_FILE"] = "0"
-        # -- Ascend MindIE ATB
-        env["ATB_LOG_LEVEL"] = env.pop("ATB_LOG_LEVEL", "ERROR")
-        env["ATB_LOG_TO_STDOUT"] = "1"
-        env["ATB_LOG_TO_FILE"] = "0"
-        env["ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE"] = env.pop(
-            "ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE", "0"
-        )
-        env["LOG_LEVEL"] = env.pop("LOG_LEVEL", "ERROR")
-        env["LOG_TO_STDOUT"] = "1"
-        env["LOG_TO_FILE"] = "0"
-        # -- Ascend MindIE Model
-        env["ASDOPS_LOG_LEVEL"] = env.pop("ASDOPS_LOG_LEVEL", "ERROR")
-        env["ASDOPS_LOG_TO_STDOUT"] = "1"
-        env["ASDOPS_LOG_TO_FILE"] = "0"
-        # -- Ascend MindIE OCK
-        env["OCK_LOG_LEVEL"] = env.pop("OCK_LOG_LEVEL", "ERROR")
-        env["OCK_LOG_TO_STDOUT"] = "1"
-        env["OCK_LOG_TO_FILE"] = "0"
-        # -- Ascend MindIE Torch
-        env["TORCH_AIE_LOG_LEVEL"] = env.pop(
-            "TORCH_AIE_LOG_LEVEL", "3"
-        )  # 0: DEBUG, 1: INFO, 2: WARN, 3: ERROR
-        env["TORCH_AIE_PRINT_TO_STDOUT"] = "1"
-        env["TORCH_AIE_PRINT_TO_FILE"] = "0"
-
         # - Listening config
         serving_port = self._get_serving_port()
         server_config["ipAddress"] = self._worker.ip
@@ -1151,6 +1096,7 @@ class AscendMindIEServer(InferenceServer):
                 ContainerFile(
                     path=str(model_config_path),
                     content=model_config_str,
+                    mode=0o750,
                 ),
             )
             # --- Mutating model generation config
@@ -1341,14 +1287,13 @@ class AscendMindIEServer(InferenceServer):
             )
 
         # Generate JSON configuration file by model instance id.
-        config_path = str(
-            install_path.joinpath("conf", f"config-{self._model_instance.id}.json")
-        )
+        config_path = str(install_path.joinpath("conf", "config.json"))
         config_str = json.dumps(config, indent=4, ensure_ascii=False)
         config_files.append(
             ContainerFile(
                 path=config_path,
                 content=config_str,
+                mode=0o640,
             ),
         )
         logger.info(
@@ -1367,6 +1312,7 @@ class AscendMindIEServer(InferenceServer):
             command_args,
             env,
             config_files,
+            str(install_path.joinpath("bin")),
         )
 
     def _create_workload(
@@ -1374,6 +1320,7 @@ class AscendMindIEServer(InferenceServer):
         command_args: List[str],
         env: Dict[str, str],
         config_files: List[ContainerFile],
+        working_dir: Optional[str],
     ):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
@@ -1396,6 +1343,7 @@ class AscendMindIEServer(InferenceServer):
             execution=ContainerExecution(
                 privileged=True,
                 command=command_args,
+                working_dir=working_dir,
             ),
             envs=[
                 ContainerEnv(
