@@ -318,11 +318,6 @@ class RuntimeMetricsAggregator:
             if enable_metrics is None:
                 return True
 
-        if runtime == BackendEnum.ASCEND_MINDIE:
-            enable_metrics = find_parameter(model.backend_parameters, ["metrics"])
-            if enable_metrics is None:
-                return True
-
         if model.env and model.env.get("GPUSTACK_SKIP_SCRAPE_METRICS"):
             return True
 
