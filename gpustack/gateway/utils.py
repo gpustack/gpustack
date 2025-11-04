@@ -1,5 +1,6 @@
 import logging
-from typing import List, Optional, Tuple, Union, Dict
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Union
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.client.networking_higress_io_v1_api import (
@@ -13,7 +14,6 @@ from gpustack.schemas.models import (
     ModelInstancePublic,
     Model,
     ModelPublic,
-    CategoryEnum,
 )
 from gpustack.server.bus import EventType
 from gpustack.schemas.workers import Worker
@@ -25,35 +25,45 @@ logger = logging.getLogger(__name__)
 
 default_mcp_bridge_name = "default"
 
-openai_model_prefixes: Dict[CategoryEnum, List[str]] = {
-    CategoryEnum.LLM: [
-        "/v1/chat/completions",
-        "/v1/completions",
-        "/v1-openai/chat/completions",
-        "/v1-openai/completions",
-    ],
-    CategoryEnum.EMBEDDING: [
-        "/v1/embeddings",
-        "/v1-openai/embeddings",
-    ],
-    CategoryEnum.SPEECH_TO_TEXT: [
-        "/v1/audio/transcriptions",
-        "/v1-openai/audio/transcriptions",
-    ],
-    CategoryEnum.TEXT_TO_SPEECH: [
-        "/v1/audio/speech",
-        "/v1-openai/audio/speech",
-    ],
-    CategoryEnum.RERANKER: [
-        "/v1/rerank",
-    ],
-    CategoryEnum.IMAGE: [
-        "/v1/images/generations",
-        "/v1/images/edits",
-        "/v1-openai/images/generations",
-        "/v1-openai/images/edits",
-    ],
-}
+
+@dataclass
+class RoutePrefix:
+    prefixes: List[str]
+    support_legacy: bool = True
+
+    def flattened_prefixes(self) -> List[str]:
+        versioned_prefixes = ["/v1"]
+        if self.support_legacy:
+            versioned_prefixes.append("/v1-openai")
+        flattened = []
+        for versioned_prefix in versioned_prefixes:
+            for prefix in self.prefixes:
+                flattened.append(f"{versioned_prefix}{prefix}")
+        return flattened
+
+    def regex_prefixes(self) -> List[str]:
+        """
+        Returns regex patterns for the prefixes, considering versioning and legacy support.
+        It supports removing -openai suffix from the versioned prefix with rewrite-target: /$1$3
+        """
+        versioned_prefix = f"/(v1){'(-openai)?' if self.support_legacy else '()'}"
+        return [f"{versioned_prefix}({prefix})" for prefix in self.prefixes]
+
+
+openai_model_prefixes: List[RoutePrefix] = [
+    RoutePrefix(
+        [
+            "/chat/completions",
+            "/completions",
+            "/embeddings",
+            "/audio/transcriptions",
+            "/audio/speech",
+            "/images/generations",
+            "/images/edits",
+        ]
+    ),
+    RoutePrefix(["/rerank"], False),
+]
 
 
 def get_default_mcpbridge_ref(
@@ -68,17 +78,15 @@ def get_default_mcpbridge_ref(
 
 
 def ingress_rule_for_model(
-    model: Union[Model, ModelPublic], mcp_bridge_name: str = default_mcp_bridge_name
+    mcp_bridge_name: str = default_mcp_bridge_name,
 ) -> k8s_client.V1IngressRule:
     paths: List[k8s_client.V1HTTPIngressPath] = []
-    for category, prefixes in openai_model_prefixes.items():
-        if category not in model.categories:
-            continue
-        for prefix in prefixes:
+    for route_prefix in openai_model_prefixes:
+        for prefix in route_prefix.regex_prefixes():
             paths.append(
                 k8s_client.V1HTTPIngressPath(
                     path=prefix,
-                    path_type="Exact",
+                    path_type="ImplementationSpecific",
                     backend=k8s_client.V1IngressBackend(
                         resource=get_default_mcpbridge_ref(mcp_bridge_name),
                     ),
@@ -255,25 +263,22 @@ def generate_model_ingress(
         name=ingress_name,
         namespace=namespace,
         annotations={
+            "higress.io/rewrite-target": "/$1$3",
             "higress.io/destination": destinations,
             "higress.io/exact-match-header-x-higress-llm-model": model.name,
+            "higress.io/ignore-path-case": 'true',
         },
     )
-    # when enabling proxy route, the route includes model name which is case sensitive
-    if included_proxy_route:
-        metadata.annotations["higress.io/rewrite-target"] = "/$2"
-    else:
-        metadata.annotations["higress.io/ignore-path-case"] = 'true'
     bridge_name = model_mcp_bridge_name(model.cluster_id)
     expected_rule = ingress_rule_for_model(
         mcp_bridge_name=bridge_name,
-        model=model,
     )
 
     if included_proxy_route:
+        # to compatible with rewrite-target /$1$3, the first capturing group is empty
         expected_rule.http.paths.append(
             k8s_client.V1HTTPIngressPath(
-                path="/model/proxy(/|$)(.*)",
+                path="/()model/proxy(/|$)(.*)",
                 path_type="ImplementationSpecific",
                 backend=k8s_client.V1IngressBackend(
                     resource=get_default_mcpbridge_ref(mcp_bridge_name=bridge_name),
