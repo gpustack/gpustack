@@ -71,80 +71,90 @@ async def wait_for_container_generator(
     return gen
 
 
+async def _await_next_or_preempt(
+    pending_tasks: dict, stop_event: Optional[asyncio.Event]
+):
+    """Wait for the next available task to complete, or preempt if stop_event is set.
+
+    Returns a tuple of (done_tasks, preempting_flag).
+    """
+    if stop_event is not None:
+        preempt_task = asyncio.create_task(stop_event.wait())
+        wait_set = set(pending_tasks.keys()) | {preempt_task}
+        done_set, _ = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+        preempting = preempt_task in done_set
+        if preempting:
+            done = set(
+                t for t in done_set if t is not preempt_task and t in pending_tasks
+            )
+        else:
+            done = set(done_set)
+        preempt_task.cancel()
+        return done, preempting
+    else:
+        done_set, _ = await asyncio.wait(
+            pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+        )
+        return set(done_set), False
+
+
+async def _cancel_all(pending_tasks: dict):
+    """Cancel all tasks in the pending_tasks dict and wait for cancellation."""
+    tasks = list(pending_tasks.keys())
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def merge_async_generators(
     *generators, stop_event: Optional[asyncio.Event] = None
-):  # noqa: C901
-    """
-    Merge multiple async generators into a single stream
-    e.g:
-    *generators = [download_log_generator, main_log_generator]
-    # Task is used for fetching the next line of the log file.
-    pending_tasks = {
-        Task_A: download_log_generator,
-        Task_B: main_log_generator
-    }
-    # while a task completes:
-    1. Pop from pending_tasks;
-    2. Yield the log line from the task result;
-    3. Push the new task for fetching the next line to pending_tasks
-    """
-    tasks = []
+):
+    """Merge multiple async generators into a single stream, with optional preemption."""
 
-    async def wrap_generator(index, gen):
-        """Wrap generator to include index for identification"""
-        try:
-            async for item in gen:
-                yield (index, item)
-        except Exception as e:
-            logger.error(f"Error in generator {index}: {e}")
+    # Wrap each generator to yield plain items (no index needed)
+    async def _wrap_gen(g):
+        async for item in g:
+            yield item
 
-    # Create tasks for each generator
-    for i, gen in enumerate(generators):
-        task = wrap_generator(i, gen)
-        tasks.append(task)
-
+    tasks = [_wrap_gen(gen) for gen in generators]
     if not tasks:
         return
 
-    # Use asyncio to handle multiple generators concurrently
     pending_tasks = {asyncio.create_task(gen.__anext__()): gen for gen in tasks}
 
     try:
         while pending_tasks:
-            # Allow external preemption of the merge loop
-            if stop_event is not None and stop_event.is_set():
-                # If any task has already produced a result, flush it before preempting
-                immediate_done = [t for t in list(pending_tasks.keys()) if t.done()]
-                if immediate_done:
-                    done = set(immediate_done)
-                    pending = set(k for k in pending_tasks.keys() if k not in done)
-                else:
+            # If already preempting, flush any completed tasks; otherwise wait
+            if stop_event and stop_event.is_set():
+                done = set(t for t in pending_tasks.keys() if t.done())
+                if not done:
+                    await _cancel_all(pending_tasks)
                     break
+                preempting = True
             else:
-                done, pending = await asyncio.wait(
-                    pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+                done, preempting = await _await_next_or_preempt(
+                    pending_tasks, stop_event
                 )
 
             for task in done:
                 gen = pending_tasks.pop(task)
                 try:
-                    index, result = task.result()
+                    result = task.result()
                     yield result
-                    # Schedule the next item from this generator
-                    new_task = asyncio.create_task(gen.__anext__())
-                    pending_tasks[new_task] = gen
+                    if not preempting:
+                        new_task = asyncio.create_task(gen.__anext__())
+                        pending_tasks[new_task] = gen
                 except StopAsyncIteration:
-                    # This generator is exhausted
                     pass
                 except Exception as e:
                     logger.error(f"Error processing generator output: {e}")
+
+            if preempting:
+                await _cancel_all(pending_tasks)
+                break
     finally:
-        # Cancel any remaining tasks
-        for task in pending_tasks.keys():
-            task.cancel()
-        # Wait for all tasks to complete cancellation
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks.keys(), return_exceptions=True)
+        await _cancel_all(pending_tasks)
 
 
 async def container_log_generator(model_instance_name: str, options: LogOptionsDep):
@@ -225,6 +235,7 @@ async def _stream_file_logs_preempt_to_container(
             async for cline in gen:
                 if not first_item_emitted:
                     first_item_emitted = True
+                    logger.info(f"Preempting file logs for {model_instance_name}")
                     preempt_event.set()
                 await container_queue.put(cline)
         except asyncio.TimeoutError:
@@ -245,6 +256,7 @@ async def _stream_file_logs_preempt_to_container(
             yield line
 
         # Now switch to container logs (if any)
+        logger.info(f"Switching to container logs for {model_instance_name}")
         while True:
             item = await container_queue.get()
             if item is None:
