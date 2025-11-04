@@ -38,7 +38,9 @@ plugin_prefix = ""
 mcp_registry_name = "gpustack"
 mcp_registry_port = 80
 
-supported_openai_routes = [route for v in openai_model_prefixes.values() for route in v]
+supported_openai_routes = [
+    route for v in openai_model_prefixes for route in v.flattened_prefixes()
+]
 
 
 def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
@@ -387,10 +389,12 @@ async def ensure_model_router(cfg: Config, api_client: k8s_client.ApiClient):
             model_router = None
         else:
             raise
+    enabled_paths = supported_openai_routes.copy()
+    enabled_paths.append("/model/proxy")
     expected_spec = WasmPluginSpec(
         defaultConfig={
             'modelToHeader': 'x-higress-llm-model',
-            'enableOnPathSuffix': ['/model/proxy'],
+            'enableOnPathSuffix': enabled_paths,
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
