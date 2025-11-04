@@ -81,13 +81,13 @@ class ExtendedKVCacheConfig(BaseModel):
     enabled: bool = False
     """ Enable extended KV cache for the model."""
 
-    ram_ratio: float = 1.2
+    ram_ratio: Optional[float] = 1.2
     """ RAM-to-VRAM ratio for KV cache. For example, 2.0 means the RAM is twice the size of the VRAM. """
 
-    ram_size: int = 0
+    ram_size: Optional[int] = None
     """ Maximum size of the KV cache to be stored in local CPU memory (unit: GiB). Overrides ram_ratio if both are set. """
 
-    chunk_size: int = 0
+    chunk_size: Optional[int] = None
     """ Size for each KV cache chunk (unit: number of tokens). """
 
 

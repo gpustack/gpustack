@@ -190,42 +190,32 @@ class SGLangServer(InferenceServer):
         """
         Get hierarchical KV cache arguments for SGLang.
         """
-        if not (
-            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
-        ):
+        extended_kv_cache = self._model.extended_kv_cache
+        if not (extended_kv_cache and extended_kv_cache.enabled):
             return []
 
         arguments = ["--enable-hierarchical-cache"]
-        if (
-            self._model.extended_kv_cache.chunk_size
-            and self._model.extended_kv_cache.chunk_size > 0
-        ):
+        if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
             arguments.extend(
                 [
                     "--page-size",
-                    str(self._model.extended_kv_cache.chunk_size),
+                    str(extended_kv_cache.chunk_size),
                 ]
             )
 
-        if (
-            self._model.extended_kv_cache.ram_size
-            and self._model.extended_kv_cache.ram_size > 0
-        ):
+        if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
             arguments.extend(
                 [
                     "--hicache-size",
-                    str(self._model.extended_kv_cache.ram_size),
+                    str(extended_kv_cache.ram_size),
                 ]
             )
 
-        if (
-            self._model.extended_kv_cache.ram_ratio
-            and self._model.extended_kv_cache.ram_ratio > 0
-        ):
+        if extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
             arguments.extend(
                 [
                     "--hicache-ratio",
-                    str(self._model.extended_kv_cache.ram_ratio),
+                    str(extended_kv_cache.ram_ratio),
                 ]
             )
 

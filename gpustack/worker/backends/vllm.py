@@ -196,29 +196,17 @@ class VLLMServer(InferenceServer):
         """
         Set up LMCache environment variables if extended KV cache is enabled.
         """
-        if not (
-            self._model.extended_kv_cache and self._model.extended_kv_cache.enabled
-        ):
+        extended_kv_cache = self._model.extended_kv_cache
+        if not (extended_kv_cache and extended_kv_cache.enabled):
             return
 
-        if (
-            self._model.extended_kv_cache.chunk_size
-            and self._model.extended_kv_cache.chunk_size > 0
-        ):
-            env["LMCACHE_CHUNK_SIZE"] = str(self._model.extended_kv_cache.chunk_size)
+        if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
+            env["LMCACHE_CHUNK_SIZE"] = str(extended_kv_cache.chunk_size)
 
-        if (
-            self._model.extended_kv_cache.ram_size
-            and self._model.extended_kv_cache.ram_size > 0
-        ):
+        if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
             # Explicitly specified RAM size for KV cache
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(
-                self._model.extended_kv_cache.ram_size
-            )
-        elif (
-            self._model.extended_kv_cache.ram_ratio
-            and self._model.extended_kv_cache.ram_ratio > 0
-        ):
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(extended_kv_cache.ram_size)
+        elif extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
             # Calculate RAM size based on ratio of total VRAM claim
             vram_claim = self._get_total_vram_claim()
             env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(vram_claim))

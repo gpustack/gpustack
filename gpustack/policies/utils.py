@@ -440,13 +440,15 @@ def get_model_ram_claim(model: Model) -> int:
     """
     Get the RAM requirement for the model in bytes.
     """
+    extended_kv_cache = model.extended_kv_cache
     if (
-        model.extended_kv_cache
-        and model.extended_kv_cache.enabled
-        and model.extended_kv_cache.ram_size > 0
+        extended_kv_cache
+        and extended_kv_cache.enabled
+        and extended_kv_cache.ram_size
+        and extended_kv_cache.ram_size > 0
     ):
         # When extended kv cache is enabled, reserve the ram for KV cache.
-        return model.extended_kv_cache.ram_size * 1024**3
+        return extended_kv_cache.ram_size * 1024**3
     return 0
 
 
@@ -459,16 +461,17 @@ def get_computed_ram_claim(model: Model, vram_claim: Dict[int, int]) -> Optional
     3. If neither is available, return None.
     """
 
-    if not model.extended_kv_cache or not model.extended_kv_cache.enabled:
+    extended_kv_cache = model.extended_kv_cache
+    if not extended_kv_cache or not extended_kv_cache.enabled:
         return None
 
-    if model.extended_kv_cache.ram_size > 0:
+    if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
         # static ram size
-        return model.extended_kv_cache.ram_size * 1024**3
+        return extended_kv_cache.ram_size * 1024**3
 
-    if model.extended_kv_cache.ram_ratio > 0 and vram_claim:
+    if extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0 and vram_claim:
         # ram ratio to vram
         total_vram_claim = sum(vram_claim.values())
-        return int(total_vram_claim * model.extended_kv_cache.ram_ratio)
+        return int(total_vram_claim * extended_kv_cache.ram_ratio)
 
     return None
