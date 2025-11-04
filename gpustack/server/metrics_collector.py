@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 
 gateway_metrics_port = 15020
@@ -228,16 +229,23 @@ class GatewayMetricsCollector:
     async def start(self):
         if self._disabled_collection:
             return
+
+        @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+        async def retry_connect() -> str:
+            async with self._client.get(self._embedded_gateway_metrics_url) as resp:
+                if resp.status != 200:
+                    raise ConnectionError(
+                        f"Failed to connect to gateway metrics endpoint, status: {resp.status}"
+                    )
+                return await resp.text()
+
         while True:
             try:
-                async with self._client.get(self._embedded_gateway_metrics_url) as resp:
-                    if resp.status != 200:
-                        continue
-                    text = await resp.text()
-                    metrics = parse_token_metrics(text)
-                    delta_metrics = self._metrics_delta(metrics)
-                    if len(delta_metrics) != 0:
-                        await self._store_metrics(delta_metrics)
+                text = await retry_connect()
+                metrics = parse_token_metrics(text)
+                delta_metrics = self._metrics_delta(metrics)
+                if len(delta_metrics) != 0:
+                    await self._store_metrics(delta_metrics)
             except Exception as e:
                 logger.exception(f"Error collecting gateway metrics: {e}")
             await asyncio.sleep(self._interval)
