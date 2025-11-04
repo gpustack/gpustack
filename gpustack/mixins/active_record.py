@@ -242,7 +242,7 @@ class ActiveRecordMixin:
                 asc(column) if direction.lower() == "asc" else desc(column)
             )
 
-        if page is not None and per_page is not None:
+        if page is not None and page > 0 and per_page is not None:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
         items = (await session.exec(statement)).all()
 
