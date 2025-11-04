@@ -450,6 +450,9 @@ EOF
 ## Disable gpustack-runtime auto image correction,
 ## let GPUStack to configure the correct runner image.
 ENV GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=0
+## Reduce log level for certain device detectors.
+ENV GPUSTACK_RUNTIME_LOG_LEVEL="INFO;detector.ascend.internal=ERROR"
+## Copy s6-overlay service scripts.
 COPY pack/s6-overlay /etc/s6-overlay
 
 ## Entrypoint
