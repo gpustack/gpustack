@@ -26,11 +26,33 @@ logger = logging.getLogger(__name__)
 default_mcp_bridge_name = "default"
 
 openai_model_prefixes: Dict[CategoryEnum, List[str]] = {
-    CategoryEnum.LLM: ["/v1/chat/completions", "/v1/completions"],
-    CategoryEnum.EMBEDDING: ["/v1/embeddings"],
-    CategoryEnum.SPEECH_TO_TEXT: ["/v1/audio/transcriptions"],
-    CategoryEnum.TEXT_TO_SPEECH: ["/v1/audio/speech"],
-    CategoryEnum.RERANKER: ["/v1/rerank"],
+    CategoryEnum.LLM: [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1-openai/chat/completions",
+        "/v1-openai/completions",
+    ],
+    CategoryEnum.EMBEDDING: [
+        "/v1/embeddings",
+        "/v1-openai/embeddings",
+    ],
+    CategoryEnum.SPEECH_TO_TEXT: [
+        "/v1/audio/transcriptions",
+        "/v1-openai/audio/transcriptions",
+    ],
+    CategoryEnum.TEXT_TO_SPEECH: [
+        "/v1/audio/speech",
+        "/v1-openai/audio/speech",
+    ],
+    CategoryEnum.RERANKER: [
+        "/v1/rerank",
+    ],
+    CategoryEnum.IMAGE: [
+        "/v1/images/generations",
+        "/v1/images/edits",
+        "/v1-openai/images/generations",
+        "/v1-openai/images/edits",
+    ],
 }
 
 
