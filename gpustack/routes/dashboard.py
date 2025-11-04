@@ -103,9 +103,10 @@ async def get_system_load(
 
     one_hour_ago = int((now - timedelta(hours=1)).timestamp())
 
-    statement = select(SystemLoad).where(
-        SystemLoad.cluster_id == cluster_id, SystemLoad.timestamp >= one_hour_ago
-    )
+    statement = select(SystemLoad)
+    if cluster_id is not None:
+        statement = statement.where(SystemLoad.cluster_id == cluster_id)
+    statement = statement.where(SystemLoad.timestamp >= one_hour_ago)
 
     system_loads = (await session.exec(statement)).all()
 
@@ -358,16 +359,18 @@ def active_model_statement(cluster_id: Optional[int]) -> select:
         .group_by(Model.id)
     ).alias('usage_sum')
 
+    statement = select(
+        Model.id,
+        Model.name,
+        Model.categories,
+        func.count(distinct(ModelInstance.id)).label('instance_count'),
+        usage_sum_query.c.total_token_count,
+    )
+    if cluster_id is not None:
+        statement = statement.where(Model.cluster_id == cluster_id)
+
     statement = (
-        select(
-            Model.id,
-            Model.name,
-            Model.categories,
-            func.count(distinct(ModelInstance.id)).label('instance_count'),
-            usage_sum_query.c.total_token_count,
-        )
-        .where(Model.cluster_id == cluster_id)
-        .join(ModelInstance, Model.id == ModelInstance.model_id)
+        statement.join(ModelInstance, Model.id == ModelInstance.model_id)
         .outerjoin(usage_sum_query, Model.id == usage_sum_query.c.model_id)
         .group_by(
             Model.id,
