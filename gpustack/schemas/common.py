@@ -19,8 +19,8 @@ class Pagination(BaseModel):
 
 
 class ListParams(BaseModel):
-    page: int = Query(default=1, ge=1)
-    perPage: int = Query(default=100, ge=1, le=100)
+    page: int = Query(default=1)
+    perPage: int = Query(default=100)
     watch: bool = Query(default=False)
 
 
