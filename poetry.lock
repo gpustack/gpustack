@@ -2770,13 +2770,13 @@ six = ">=1.9.0"
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.12"
+version = "0.1.13"
 description = "GPUStack Runner is library for registering runnable accelerated backends and services in GPUStack."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runner-0.1.12-py3-none-any.whl", hash = "sha256:aa50124d1fe0586b97a612cdc63ed98891154fc37f0ad32259ee5c719c62c6f0"},
-    {file = "gpustack_runner-0.1.12.tar.gz", hash = "sha256:3c90b65afb1a7994b41d443e2b97ba715839f493e3e109f52f2e3c316f3155e0"},
+    {file = "gpustack_runner-0.1.13-py3-none-any.whl", hash = "sha256:4fb2c42439e8a7f785f91cf1a495ba0848256e0e060e6e9a148aa5c9010f7ed4"},
+    {file = "gpustack_runner-0.1.13.tar.gz", hash = "sha256:aaf67de061bd41281128738aac3d691aea41d0b92848a6569561536719b3c34a"},
 ]
 
 [package.dependencies]
@@ -10692,4 +10692,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "6b4ab1b21a57c732de03c4663d2609aa92fd59089cbf36fbc5ed5a7b6c0013f9"
+content-hash = "dee347ff1d8d84be1c0291d6a377dbaa6e1f70e46a04b424a520cf7328e3aea0"
