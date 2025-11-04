@@ -951,7 +951,11 @@ class AscendMindIEServer(InferenceServer):
 
         # - Device config
         backend_config["interNodeTLSEnabled"] = False
-        backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
+        backend_config["npuDeviceIds"] = [
+            # Since we can reassemble the IDs of all visible devices through runtime,
+            # we can simply provide the count ID.
+            list(range(len(self._model_instance.gpu_indexes)))
+        ]
         model_config["worldSize"] = len(self._model_instance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
         if is_distributed:
@@ -973,7 +977,11 @@ class AscendMindIEServer(InferenceServer):
                 None,
             )
             # Override device config if is a subordinate worker.
-            backend_config["npuDeviceIds"] = [subworker.gpu_indexes]
+            backend_config["npuDeviceIds"] = [
+                # Since we can reassemble the IDs of all visible devices through runtime,
+                # we can simply provide the count ID.
+                list(range(len(subworker.gpu_indexes)))
+            ]
             model_config["worldSize"] = len(subworker.gpu_indexes)
 
         # - Model config
