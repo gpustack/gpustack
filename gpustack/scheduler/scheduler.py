@@ -698,14 +698,9 @@ def set_model_gpus_per_replica(model: Model) -> bool:
                 len(model.gpu_selector.gpu_ids) // model.replicas
             )
 
-        # GPUs are distributed in multiple workers.
-        if model.replicas == 1:
-            # Use as many GPUs as possible.
-            return largest_power_of_2_leq(len(model.gpu_selector.gpu_ids))
-        else:
-            # Each replica in a worker, use all GPUs in the worker.
-            min_gpus = min(len(gpu_ids) for gpu_ids in worker_gpu_ids.values())
-            return largest_power_of_2_leq(min_gpus)
+        # GPUs are distributed across multiple workers; use the largest power of 2 ≤ min GPUs per worker.
+        min_gpus = min(len(gpu_ids) for gpu_ids in worker_gpu_ids.values())
+        return largest_power_of_2_leq(min_gpus)
 
     if not model.gpu_selector or not model.gpu_selector.gpu_ids:
         return False
