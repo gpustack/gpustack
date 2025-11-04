@@ -799,21 +799,14 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         allowed_keys = [
             "backend_name",
             "version_configs",
-            "default_version",
             "default_backend_param",
             "default_run_command",
             "health_check_path",
             "description",
         ]
-        if is_built_in_backend(backend.backend_name) and req_yaml_data.get(
-            "default_version"
-        ):
-            raise BadRequestException(
-                message=(
-                    f"Built-in backend '{backend.backend_name}' cannot have default_version set. "
-                    "Default version is managed automatically."
-                ),
-            )
+        if not is_built_in_backend(backend.backend_name):
+            allowed_keys.append("default_version")
+
         yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
         # Convert version_configs to VersionConfigDict if present
