@@ -296,12 +296,6 @@ ARG TARGETARCH
 VOLUME /var/lib/gpustack
 ENV GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR="/var/lib/gpustack/cache/gpustack-runtime"
 
-## Update PCI ID database
-RUN <<EOF
-    # PCI ID database
-    curl -o /usr/share/misc/pci.ids https://pci-ids.ucw.cz/v2.2/pci.ids
-EOF
-
 ## Install PostgreSQL
 
 ENV PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf \
@@ -498,13 +492,13 @@ ENV AMD_VISIBLE_DEVICES="all" \
 ## Runs:
 ## - With container runtime installed:
 ##   + If installed Ascend container runtime as default runtime, try with:
-##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged ...
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -e "ASCEND_VISIBLE_DEVICES=$(npu-smi info -m | tail -n 1 | awk '{print $1}')" ...
 ##   + If there are mulitple container runtimes installed, try with:
-##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged --runtime ascend ...
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -e "ASCEND_VISIBLE_DEVICES=$(npu-smi info -m | tail -n 1 | awk '{print $1}')" --runtime ascend ...
 ##   + If want to detect the correct host CANN version and SoC name, try with:
-##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/local/Ascend/ascend-toolkit:/usr/local/Ascend/ascend-toolkit:ro ...
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -e "ASCEND_VISIBLE_DEVICES=$(npu-smi info -m | tail -n 1 | awk '{print $1}')" -v /usr/local/Ascend/ascend-toolkit:/usr/local/Ascend/ascend-toolkit:ro ...
 ##   + Disallowing privileged, try with:
-##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e ASCEND_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ...
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e "ASCEND_VISIBLE_DEVICES=$(npu-smi info -m | grep -v mcu | awk '{if(NR>1){print $1}}' | uniq | paste -sd ',')" ...
 ## - Without container runtime installed:
 ##   + Allowing privileged, try with:
 ##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/local/dcmi:/usr/local/dcmi:ro -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro -v /etc/hccn.conf:/etc/hccn.conf:ro -v /etc/ascend_install.info:/etc/ascend_install.info:ro ...
@@ -522,8 +516,13 @@ ENV ASCEND_HOME_PATH="/usr/local/Ascend/ascend-toolkit/latest" \
 ## - With container runtime installed:
 ##   [TODO, TBD]
 ## - Without container runtime installed:
-##   [TODO, TBD]
-ENV CAMBRICON_VISIBLE_DEVICES="all"
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/local/neuware:/usr/local/neuware:ro -v /usr/bin/cnmon:/usr/bin/cnmon ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /usr/local/neuware:/usr/local/neuware:ro -v /usr/bin/cnmon:/usr/bin/cnmon ...
+ENV CAMBRICON_VISIBLE_DEVICES="all" \
+    NEUWARE_HOME="/usr/local/neuware" \
+    LD_LIBRARY_PATH="/usr/local/neuware/lib64:${LD_LIBRARY_PATH}"
 
 ## Active all Hygon devices detection,
 ## works with (default) Hygon container runtime and privileged mode.
