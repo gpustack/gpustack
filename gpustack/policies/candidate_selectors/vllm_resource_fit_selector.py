@@ -687,7 +687,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             overcommit = True
             # Construct event collector.
             scheduling_msg = ListMessageBuilder([])
-            if self._gpu_memory_utilization != 0:
+            if self._gpu_memory_utilization == 0:
                 scheduling_msg.append(
                     f"Selected GPUs have {byte_to_gib(self._largest_multi_gpu_vram)} GiB of VRAM."
                 )
