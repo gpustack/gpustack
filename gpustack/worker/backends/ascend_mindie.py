@@ -1345,7 +1345,7 @@ class AscendMindIEServer(InferenceServer):
 
         run_container = Container(
             image=image,
-            name=self._model_instance.name,
+            name="default",
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(

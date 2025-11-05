@@ -82,20 +82,23 @@ class SGLangServer(InferenceServer):
         # Create container configuration
         run_container = Container(
             image=image_name,
-            name=self._model_instance.name,
+            name="default",
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 args=command_args,
             ),
-            envs=[ContainerEnv(name=name, value=value) for name, value in env.items()],
+            envs=[
+                ContainerEnv(
+                    name=name,
+                    value=value,
+                )
+                for name, value in env.items()
+            ],
             resources=resources,
             mounts=mounts,
             ports=ports,
         )
-
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
 
         workload_plan = WorkloadPlan(
             name=self._workload_name,

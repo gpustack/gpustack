@@ -87,7 +87,7 @@ class CustomServer(InferenceServer):
 
         run_container = Container(
             image=image_name,
-            name=self._model_instance.name,
+            name="default",
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
