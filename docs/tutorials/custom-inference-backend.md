@@ -1,6 +1,6 @@
 # Custom Inference Backend
 
-This article demonstrates how to add a custom inference backend that is not yet supported by GPUStack, using TensorRT-LLM as an example.
+This article demonstrates how to add a custom inference backend that is not yet supported by GPUStack, using TensorRT-LLM as an example, at the end of the article, configuration methods for common inference backends are also listed.
 
 ## Core Steps
 1. Prepare the Docker image for the required inference backend
@@ -21,7 +21,7 @@ default_version: 1.2.0rc0
 version_configs:
   1.2.0rc0:
     image_name: nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc0
-    run_command: 'trtllm-serve {{model_path}} --port {{port}}'
+    run_command: 'trtllm-serve {{model_path}} --host 0.0.0.0 --port {{port}}'
     custom_framework: cuda
 ```
 !!! note
@@ -64,3 +64,67 @@ Version Configs parameter description:
 ## Flexible Testing Deployment
 For quick and flexible verification or adjustment of the image and startup command, select `Custom` in the backend options on the deployment page. This will reveal two new input fields for specifying the custom `image_name` and `run_command` respectively.
 ![img.png](../assets/tutorials/custom-inference-backend/flexible-testing-deployment.png)
+
+## Typical Examples
+
+### Deploy GGUF Models with llama.cpp
+1. Find the image name in the [documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md): `ghcr.io/ggml-org/llama.cpp:server` (ensure you select the variant that matches your worker platform).
+2. Add the following backend configuration on the Inference Backend page:
+    ```yaml
+    backend_name: llama.cpp-custom
+    default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}}'
+    version_configs:
+      v1-custom:
+        image_name: ghcr.io/ggml-org/llama.cpp:server
+        custom_framework: cpu
+    default_version: v1-custom
+    ```
+3. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
+
+For more information, refer to the llama.cpp [GitHub repository](https://github.com/ggml-org/llama.cpp).
+
+Screenshots:
+![gguf-deploy.png](../assets/tutorials/custom-inference-backend/gguf-deploy.png)
+![gguf-resp.png](../assets/tutorials/custom-inference-backend/gguf-resp.png)
+
+### Use Kokoro-FastAPI
+1. Find the image name in the [documentation](https://github.com/remsky/Kokoro-FastAPI?tab=readme-ov-file#get-started), and choose the variant that matches your worker platform:
+   - `ghcr.io/remsky/kokoro-fastapi-cpu:latest`
+   - `ghcr.io/remsky/kokoro-fastapi-gpu:latest`
+
+!!! warning
+
+    This image includes a built-in model, so the model you select on the Deployment page may be ignored. To avoid unexpected errors, choose a model consistent with the one bundled in the image.
+    The kokoro-fastapi image uses the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model.
+
+2. Add the following backend configuration on the Inference Backend page:
+   ```yaml
+   backend_name: kokoro-custom
+   version_configs:
+     v1:
+       image_name: ghcr.io/remsky/kokoro-fastapi-gpu:latest
+       custom_framework: cuda
+   default_run_command: python -m uvicorn api.src.main:app --host 0.0.0.0 --port {{port}} --log-level debug
+   ```
+3. On the Deployment page, select the Kokoro-82M model, choose `kokoro` as the backend, and set `Name` to `kokoro`.
+
+
+!!! warning "Known Limitations for Name"
+
+    In kokoro-fastapi, the `model_name` is restricted to the keys below; other values will result in an "unsupported" error.
+
+    ```
+    "models": {
+        "tts-1": "kokoro-v1_0",
+        "tts-1-hd": "kokoro-v1_0",
+        "kokoro": "kokoro-v1_0"
+    }
+    ```
+
+    Therefore, restrict the `Name` during deployment to one of these supported keys.
+
+
+Screenshots:
+
+![kokoro-run2.png](../assets/tutorials/custom-inference-backend/kokoro-run2.png)
+![kokoro-run.png](../assets/tutorials/custom-inference-backend/kokoro-run-1.png)
