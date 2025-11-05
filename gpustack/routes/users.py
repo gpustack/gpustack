@@ -5,6 +5,7 @@ from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
     NotFoundException,
+    ConflictException,
 )
 from gpustack.security import get_secret_hash
 from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep, EngineDep
@@ -84,6 +85,13 @@ async def update_user(session: SessionDep, id: int, user_in: UserUpdate):
     if not user:
         raise NotFoundException(message="User not found")
 
+    if (
+        user.is_active
+        and user_in.is_active is False
+        and await is_only_admin_user(session, user)
+    ):
+        raise ConflictException(message="Cannot deactivate the only admin user")
+
     try:
         update_data = user_in.model_dump()
         if user_in.password:
@@ -110,6 +118,13 @@ async def update_user_activation(
     if not user:
         raise NotFoundException(message="User not found")
 
+    if (
+        user.is_active
+        and activation_data.is_active is False
+        and await is_only_admin_user(session, user)
+    ):
+        raise ConflictException(message="Cannot deactivate the only admin user")
+
     try:
         await user.update(session, {"is_active": activation_data.is_active})
     except Exception as e:
@@ -127,10 +142,22 @@ async def delete_user(session: SessionDep, id: int):
     if not user:
         raise NotFoundException(message="User not found")
 
+    if await is_only_admin_user(session, user):
+        raise ConflictException(message="Cannot delete the only admin user")
+
     try:
         await user_service.delete(user)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete user: {e}")
+
+
+async def is_only_admin_user(session: SessionDep, user: User) -> bool:
+    if not user.is_admin:
+        return False
+    admin_count = await User.count_by_fields(
+        session, {"is_admin": True, "is_active": True}
+    )
+    return admin_count == 1
 
 
 me_router = APIRouter()
