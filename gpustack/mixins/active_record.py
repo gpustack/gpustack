@@ -337,6 +337,33 @@ class ActiveRecordMixin:
 
         return len(await cls.all(session))
 
+    @classmethod
+    async def count_by_field(cls, session: AsyncSession, field: str, value: Any) -> int:
+        """Return the number of records matching the given field and value."""
+
+        return await cls.count_by_fields(session, {field: value})
+
+    @classmethod
+    async def count_by_fields(
+        cls,
+        session: AsyncSession,
+        fields: dict = {},
+        extra_conditions: Optional[List] = None,
+    ) -> int:
+        """
+        Return the number of records matching the given fields and conditions.
+        """
+
+        statement = select(func.count(cls.id))
+        for key, value in fields.items():
+            statement = statement.where(getattr(cls, key) == value)
+
+        if extra_conditions:
+            statement = statement.where(and_(*extra_conditions))
+
+        result = await session.exec(statement)
+        return result.one_or_none() or 0
+
     async def refresh(self, session: AsyncSession):
         """Refresh the object from the database."""
 
