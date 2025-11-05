@@ -50,12 +50,13 @@ async def get_worker_allocatable_resource(  # noqa: C901
     allocated = Allocated(ram=0, vram={})
 
     for model_instance in model_instances:
-        if model_instance.worker_id != worker.id:
-            continue
-        allocated.ram += model_instance.computed_resource_claim.ram or 0
-        if model_instance.gpu_indexes:
-            update_allocated_vram(allocated, model_instance.computed_resource_claim)
+        # Handle resource allocation for main worker
+        if model_instance.worker_id == worker.id:
+            allocated.ram += model_instance.computed_resource_claim.ram or 0
+            if model_instance.gpu_indexes:
+                update_allocated_vram(allocated, model_instance.computed_resource_claim)
 
+        # Handle resource allocation for subordinate workers
         if (
             model_instance.distributed_servers
             and model_instance.distributed_servers.subordinate_workers
@@ -244,11 +245,36 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
 async def get_worker_model_instances(
     engine: AsyncEngine, worker: Worker
 ) -> List[ModelInstance]:
+    """
+    Get all model instances related to the worker, including:
+    1. Model instances assigned to this worker (main worker)
+    2. Model instances that use this worker as a subordinate worker in distributed inference
+    """
     async with AsyncSession(engine) as session:
-        model_instances = await ModelInstance.all_by_field(
-            session, "worker_id", worker.id
-        )
-        return model_instances
+        # Get all model instances from the database
+        all_model_instances = await ModelInstance.all(session)
+
+        # Filter to get only the relevant instances:
+        # 1. Instances assigned to this worker (main worker)
+        # 2. Instances that use this worker as a subordinate worker
+        relevant_instances = []
+        for model_instance in all_model_instances:
+            # Check if this is a main worker instance
+            if model_instance.worker_id == worker.id:
+                relevant_instances.append(model_instance)
+            # Check if this worker is used as a subordinate worker
+            elif (
+                model_instance.distributed_servers
+                and model_instance.distributed_servers.subordinate_workers
+            ):
+                for (
+                    subordinate_worker
+                ) in model_instance.distributed_servers.subordinate_workers:
+                    if subordinate_worker.worker_id == worker.id:
+                        relevant_instances.append(model_instance)
+                        break
+
+        return relevant_instances
 
 
 class ListMessageBuilder:

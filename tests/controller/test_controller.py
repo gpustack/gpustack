@@ -84,6 +84,10 @@ async def test_find_scale_down_candidates():
             return_value=mis,
         ),
         patch(
+            'gpustack.schemas.models.ModelInstance.all',
+            return_value=mis,
+        ),
+        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
