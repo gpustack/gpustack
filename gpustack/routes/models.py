@@ -380,7 +380,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
     await validate_model_in(session, model_in)
 
     try:
-        await ModelService(session).update(model, model_in)
+        await ModelService(session).update(model, model_in, exclude_unset=False)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update model: {e}")
 
