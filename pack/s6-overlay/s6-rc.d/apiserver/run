@@ -26,7 +26,7 @@ cp -rn /opt/data/defaultConfig/* "${APISERVER_DATA_DIR}/"
 MESH_CONFIG_DIR='/etc/istio/config'
 mkdir -p "$MESH_CONFIG_DIR"
 HIGRESS_CONFIG_FILE="${APISERVER_DATA_DIR}/configmaps/higress-config.yaml"
-MESH_CONFIG_FILES=$(yq '.data | keys | .[]' "$HIGRESS_CONFIG_FILE")
+MESH_CONFIG_FILES=$(yq -r '.data | keys | .[]' "$HIGRESS_CONFIG_FILE")
 if [ -z "$MESH_CONFIG_FILES" ]; then
     echo "  Missing required files in higress-config ConfigMap."
     exit 255
@@ -36,7 +36,7 @@ for MESH_CONFIG_FILE in $MESH_CONFIG_FILES; do
     if [ -z "$MESH_CONFIG_FILE" ] || [ "$MESH_CONFIG_FILE" == "higress" ]; then
         continue
     fi
-    yq ".data.$MESH_CONFIG_FILE" "$HIGRESS_CONFIG_FILE" > "$MESH_CONFIG_DIR/$MESH_CONFIG_FILE"
+    yq -r ".data.$MESH_CONFIG_FILE" "$HIGRESS_CONFIG_FILE" > "$MESH_CONFIG_DIR/$MESH_CONFIG_FILE"
 done
 
 exec /usr/local/bin/apiserver --bind-address 127.0.0.1 --secure-port "${APISERVER_PORT}" --storage file --file-root-dir "${APISERVER_DATA_DIR}" --cert-dir /tmp
