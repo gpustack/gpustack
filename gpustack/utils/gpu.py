@@ -94,3 +94,31 @@ def any_gpu_match(
     if not worker.status or not worker.status.gpu_devices:
         return False
     return any(verify(gpu) for gpu in worker.status.gpu_devices)
+
+
+def abbreviate_gpu_indexes(indexes, max_show=3):
+    """Return abbreviated string of GPU indexes, e.g. [0,1,2...(more 4)]"""
+    if not indexes:
+        return "[]"
+    if len(indexes) <= max_show:
+        return str(indexes)
+
+    shown = indexes[:max_show]
+    hidden_count = len(indexes) - max_show
+    return f"[{','.join(map(str, shown))}...(more {hidden_count})]"
+
+
+def abbreviate_worker_gpu_indexes(
+    worker_name: str,
+    gpu_indexes: list[int],
+    other_worker_count: int,
+    other_gpu_count: int,
+    max_show_gpu=3,
+) -> str:
+    """Return abbreviated string of worker GPU indexes, e.g. worker1:[0,1,2...(more 4)]"""
+    abbreviated_indexes = abbreviate_gpu_indexes(gpu_indexes, max_show_gpu)
+    msg = f"worker {worker_name} GPU indexes {abbreviated_indexes}"
+    if other_gpu_count > 0 and other_worker_count > 0:
+        msg += f" and {other_gpu_count} {'GPUs' if other_gpu_count > 1 else 'GPU'}"
+        msg += f" from other {other_worker_count} {'workers' if other_worker_count > 1 else 'worker'}"
+    return msg

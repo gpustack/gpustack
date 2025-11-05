@@ -683,8 +683,7 @@ async def test_manual_schedule_multi_work_multi_gpu(config):
         expect_msg2 = [
             """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
-- Worker host4090 GPU indexes [0] and other 1 worker fail to meet the 90.00% allocatable VRAM ratio.
-- Selected GPUs have 25.87 GiB allocatable VRAM, 0/2 of GPUs meet the VRAM utilization ratio, providing 0.00 GiB of allocatable VRAM."""
+- Selected GPUs have 25.87 GiB allocatable VRAM, 0/2 of GPUs meet the VRAM utilization ratio, providing 23.28 GiB of allocatable VRAM."""
         ]
 
         assert resource_fit_selector2._messages == expect_msg2
