@@ -9,7 +9,13 @@ from gpustack.server.services import ModelService
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.models import AccessPolicyEnum
 from gpustack.server.deps import SessionDep
-from gpustack.api.auth import bearer_auth, get_current_user, credentials_exception
+from gpustack.api.auth import (
+    basic_auth,
+    cookie_auth,
+    bearer_auth,
+    get_current_user,
+    credentials_exception,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +45,9 @@ async def server_auth(
         user = await get_current_user(
             request=request,
             session=session,
-            basic_credentials=None,
+            basic_credentials=await basic_auth(request),
             bearer_token=await bearer_auth(request),
-            cookie_token=None,
+            cookie_token=await cookie_auth(request),
         )
         api_key: Optional[ApiKey] = getattr(request.state, "api_key", None)
         access_key = None if api_key is None else api_key.access_key
