@@ -29,6 +29,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
+    ModelUpdate,
 )
 from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.server.bus import Event
@@ -641,6 +642,21 @@ class InferenceServer(ABC):
         """
 
         backend_versioned_runners = runners[0].versions
+
+        try:
+            # Try to update backend version for server model.
+            service_version = (
+                backend_versioned_runners[0].variants[0].services[0].versions[0].version
+            )
+            if service_version and not self._model.backend_version:
+                self._model.backend_version = service_version
+                self._clientset.models.update(
+                    self._model.id, ModelUpdate(**self._model.model_dump())
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to update model service version {service_version}: {e}"
+            )
 
         # Return directly if there is only one versioned backend.
         if len(backend_versioned_runners) == 1:
