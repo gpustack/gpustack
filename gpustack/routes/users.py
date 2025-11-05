@@ -67,6 +67,7 @@ async def create_user(session: SessionDep, user_in: UserCreate):
             username=user_in.username,
             full_name=user_in.full_name,
             is_admin=user_in.is_admin,
+            is_active=user_in.is_active,
         )
         if user_in.password:
             to_create.hashed_password = get_secret_hash(user_in.password)
