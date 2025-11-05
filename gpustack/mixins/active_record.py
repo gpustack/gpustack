@@ -393,11 +393,12 @@ class ActiveRecordMixin:
         session: AsyncSession,
         source: Union[dict, SQLModel, None] = None,
         auto_commit=True,
+        exclude_unset=True,
     ):
         """Update the object with the source and save to the database."""
 
         if isinstance(source, SQLModel):
-            source = source.model_dump(exclude_unset=True)
+            source = source.model_dump(exclude_unset=exclude_unset)
         elif source is None:
             source = {}
 

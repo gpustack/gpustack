@@ -253,8 +253,13 @@ class ModelService:
             return None
         return model.access_policy, cluster.registration_token
 
-    async def update(self, model: Model, source: Union[dict, SQLModel, None] = None):
-        result = await model.update(self.session, source)
+    async def update(
+        self,
+        model: Model,
+        source: Union[dict, SQLModel, None] = None,
+        exclude_unset: bool = True,
+    ):
+        result = await model.update(self.session, source, exclude_unset=exclude_unset)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
         await delete_cache_by_key(self.get_model_auth_info_by_name, model.name)
