@@ -25,7 +25,6 @@ from gpustack.routes import (
     worker_pools,
     clusters,
     token,
-    my_models,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -56,7 +55,7 @@ v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
 )
 v1_base_router.include_router(
-    my_models.router,
+    models.my_models_router,
     dependencies=[Depends(get_current_user)],
     prefix="/my-models",
     tags=["My Models"],
