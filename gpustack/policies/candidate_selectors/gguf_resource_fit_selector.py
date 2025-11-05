@@ -17,6 +17,8 @@ from gpustack.scheduler.calculator import (
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
+)
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ScheduleCandidatesSelector,
 )
 from gpustack.schemas.models import (

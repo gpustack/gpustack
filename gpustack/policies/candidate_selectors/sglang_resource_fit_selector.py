@@ -1,13 +1,10 @@
-import json
 import logging
 from collections import defaultdict
 from typing import List, Optional, Dict
-
-from transformers import PretrainedConfig
 from transformers.utils import strtobool
 
-from gpustack.policies.base import (
-    ModelInstanceScheduleCandidate,
+from gpustack.policies.base import ModelInstanceScheduleCandidate
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -15,7 +12,6 @@ from gpustack.policies.utils import (
     get_computed_ram_claim,
     get_worker_allocatable_resource,
     ListMessageBuilder,
-    get_model_num_attention_heads,
     group_worker_gpu_by_memory,
     WorkerGPUInfo,
     estimate_model_vram,
@@ -29,11 +25,10 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
-from gpustack.server.db import get_engine
-from gpustack.utils.command import find_parameter
-from gpustack.utils.convert import safe_int
-from gpustack.utils.gpu import parse_gpu_ids_by_worker, parse_gpu_id
-from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.command import (
+    find_parameter,
+    find_int_parameter,
+)
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
@@ -53,57 +48,83 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         cfg: Config,
         model: Model,
     ):
-        self._engine = get_engine()
-        self._cfg = cfg
-        self._model = model
+        super().__init__(cfg, model)
+
         self._vram_claim = 0
         self._ram_claim = 0
         self._mem_fraction_static = 0.9  # SGLang default
         self._set_mem_fraction_static()
-        self._pretrained_config: Optional[PretrainedConfig] = None
-        self._num_attention_heads = 0
         self._effective_vram = 0
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
-        self._nnodes = 1
-        self._tp_size = 1
-        self._gpu_count = 0
 
         # for multi worker schedule
         self._largest_multi_gpu_vram: int = 0
         self._largest_multi_gpu_total = 0
         self._largest_multi_gpu_utilization_satisfied_count = 0
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
-
         self._per_gpu_vram = 0
-        self._selected_gpu_workers: Optional[List[str]] = None
-        self._selected_gpu_worker_count = 0
-        self._selected_gpu_indexes_by_worker: Dict[str, List[int]] = {}
 
-        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            gpu_ids_by_worker = parse_gpu_ids_by_worker(
-                self._model.gpu_selector.gpu_ids
+        tp_size = find_int_parameter(
+            model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+        )
+        pp_size = find_int_parameter(
+            model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
+        )
+        dp_size = find_int_parameter(
+            model.backend_parameters, ["dp-size", "data-parallel-size"]
+        )
+        dp_attention = find_parameter(model.backend_parameters, ["enable-dp-attention"])
+        if dp_attention:
+            # For DP attention, it's using the TP group GPUs for data parallelism.
+            # So we don't need to consider DP size for GPU count calculation.
+            dp_size = None
+        self._set_gpu_count(tp_size, pp_size, dp_size)
+        self._validate_arguments()
+
+    def _set_mem_fraction_static(self):
+        """Set memory fraction static parameter for SGLang."""
+        # SGLang's argument `--mem-fraction-static`, it may
+        if self._model.backend_parameters:
+            mem_fraction_static = find_parameter(
+                self._model.backend_parameters, ["mem-fraction-static"]
             )
-            self._selected_gpu_workers = list(gpu_ids_by_worker.keys())
-            self._selected_gpu_worker_count = len(self._selected_gpu_workers)
-            for worker_name, gpu_ids in gpu_ids_by_worker.items():
-                gpu_indexes = []
-                for gpu_id in gpu_ids:
-                    valid, matched = parse_gpu_id(gpu_id)
-                    if valid:
-                        gpu_index = safe_int(matched.get("gpu_index"))
-                        gpu_indexes.append(gpu_index)
-                self._selected_gpu_indexes_by_worker[worker_name] = gpu_indexes
+            if mem_fraction_static:
+                self._mem_fraction_static = float(mem_fraction_static)
 
-            # When user defined gpu selector, we use the gpu count from it.
-            self._gpu_count = len(self._model.gpu_selector.gpu_ids)
+    def _get_nnodes(self) -> int:
+        if (
+            self._model.gpu_selector
+            and self._model.gpu_selector.gpu_ids
+            and len(self._model.gpu_selector.gpu_ids) > 1
+        ):
+            return len(self._model.gpu_selector.gpu_ids)
+        if self._model.backend_parameters:
+            nnodes_param = find_parameter(self._model.backend_parameters, ["nnodes"])
+            if nnodes_param:
+                return int(nnodes_param)
 
-        self._set_nnodes()
+        return 1
 
-        tp_size = find_parameter(model.backend_parameters, ["tp-size", "tp"])
-        self._tp_size = int(tp_size or 1)
-        pp_size = find_parameter(model.backend_parameters, ["pp-size", "pp"])
-        dp_size = find_parameter(model.backend_parameters, ["dp-size", "dp"])
+    def _validate_arguments(self):
+        model = self._model
+        tp_size = find_int_parameter(
+            model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+        )
+        num_attention_heads = self._model_params.num_attention_heads
+        if tp_size and num_attention_heads and num_attention_heads % tp_size != 0:
+            raise ValueError(
+                f"Total number of attention heads ({num_attention_heads})"
+                " must be divisible by tp-size "
+                f"({tp_size})."
+            )
+
+        pp_size = find_int_parameter(
+            model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
+        )
+        dp_size = find_int_parameter(
+            model.backend_parameters, ["dp-size", "data-parallel-size"]
+        )
         speculative_algorithm = find_parameter(
             model.backend_parameters, ["speculative-algorithm"]
         )
@@ -115,18 +136,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if enable_mixed_chunk_param is not None
             else False
         )
+
+        nnodes = self._get_nnodes()
         if tp_size or pp_size:
             world_size = int(tp_size or 1) * int(pp_size or 1)
-            if world_size % self._nnodes != 0:
+            if world_size % nnodes != 0:
                 raise ValueError(f"tp-size {world_size} must be divisible by nnodes")
-            if self._gpu_count and self._gpu_count != world_size:
-                # Both gpu selector and tp/pp are set, validate they match.
-                raise ValueError(
-                    f"Model {model.name} has -tp/-pp set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."
-                )
-            else:
-                self._gpu_count = world_size
-                self._vram_claim = 0
 
         if pp_size and int(pp_size) > 1:
             disable_overlap_schedule_param = find_parameter(
@@ -146,7 +161,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )
 
-        if dp_size and int(dp_size) > 1 and self._nnodes != 1:
+        if dp_size and int(dp_size) > 1 and nnodes != 1:
             enable_dp_attention = find_parameter(
                 model.backend_parameters, ["enable-dp-attention"]
             )
@@ -157,75 +172,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         if speculative_algorithm is not None and enable_mixed_chunk:
             raise ValueError("enable_mixed_chunk is required for speculative decoding")
-
-        self._set_pretrained_config()
-        self._set_num_attention_heads()
-
-    def _set_mem_fraction_static(self):
-        """Set memory fraction static parameter for SGLang."""
-        # SGLang's argument `--mem-fraction-static`, it may
-        if self._model.backend_parameters:
-            mem_fraction_static = find_parameter(
-                self._model.backend_parameters, ["mem-fraction-static"]
-            )
-            if mem_fraction_static:
-                self._mem_fraction_static = float(mem_fraction_static)
-
-    def _set_nnodes(self):
-        if (
-            self._model.gpu_selector
-            and self._model.gpu_selector.gpu_ids
-            and len(self._model.gpu_selector.gpu_ids) > 1
-        ):
-            self._nnodes = len(self._model.gpu_selector.gpu_ids)
-        if self._model.backend_parameters:
-            nnodes_param = find_parameter(self._model.backend_parameters, ["nnodes"])
-            if nnodes_param:
-                self._nnodes = int(nnodes_param)
-
-    def _set_pretrained_config(self):
-        """Set pretrained config for the model."""
-        try:
-            self._pretrained_config = get_pretrained_config(
-                self._model, trust_remote_code=True
-            )
-        except ValueError as e:
-            if "architecture" in e.args[0] and self._model.backend_version:
-                # In the AutoConfig.from_pretrained method, the architecture field in config undergoes validation.
-                # For custom backend versions, exceptions caused by unrecognized architectures should be allowed
-                # to prevent startup failures of valid new models with properly customized versions.
-                self._pretrained_config = PretrainedConfig()
-
-                # We can also try to get the architectures from hf-overrides
-                hf_overrides = find_parameter(
-                    self._model.backend_parameters, ["hf-overrides"]
-                )
-                if hf_overrides:
-                    overrides_dict = json.loads(hf_overrides)
-                    self._pretrained_config.architectures = overrides_dict.get(
-                        "architectures", []
-                    )
-            else:
-                raise e
-        except Exception as e:
-            raise Exception(
-                f"Cannot get pretrained config for model {self._model.readable_source}: {e}"
-            ) from e
-
-    def _set_num_attention_heads(self):
-        self._num_attention_heads = get_model_num_attention_heads(
-            self._pretrained_config
-        )
-        if (
-            self._tp_size
-            and self._num_attention_heads
-            and self._num_attention_heads % self._tp_size != 0
-        ):
-            raise ValueError(
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by tp-size "
-                f"({self._tp_size})."
-            )
 
     def _cal_effective_vram(self) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
@@ -278,7 +224,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates that fit the GPU resources requirement for SGLang.
         """
         self._vram_claim = await estimate_model_vram(
-            self._model, self._cfg.huggingface_token
+            self._model, self._config.huggingface_token
         )
         self._ram_claim = get_model_ram_claim(self._model)
         self._effective_vram = self._cal_effective_vram()

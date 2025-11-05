@@ -80,11 +80,11 @@ async def test_schedule_single_work_multi_gpu(
 
 
 @pytest.mark.parametrize(
-    "workers, model_args, env_overrides, expect_msg",
+    "workers, model, env_overrides, expect_msg",
     [
         (
             [linux_nvidia_4_4080_16gx4()],
-            (1, None, "Qwen/Qwen2.5-Omni-7B"),
+            make_model(1, None, "Qwen/Qwen2.5-Omni-7B"),
             {"GPUSTACK_MODEL_VRAM_CLAIM": str(27 * 1024**3)},
             [
                 '- The model requires approximately 27.0 GiB of VRAM and 2.7 GiB of RAM.\n'
@@ -93,7 +93,7 @@ async def test_schedule_single_work_multi_gpu(
         ),
         (
             [linux_cpu_1()],
-            (1, None, "Qwen/Qwen2.5-7B-Instruct"),
+            make_model(1, None, "Qwen/Qwen2.5-7B-Instruct", cpu_offloading=True),
             {"GPUSTACK_MODEL_VRAM_CLAIM": str(700 * 1024**3)},
             [
                 '- The model requires approximately 700.0 GiB of VRAM and 70.0 GiB of RAM.\n'
@@ -104,13 +104,12 @@ async def test_schedule_single_work_multi_gpu(
 )
 @pytest.mark.asyncio
 async def test_failed_cases_auto_schedule(
-    config, workers, model_args, env_overrides, expect_msg
+    config, workers, model, env_overrides, expect_msg
 ):
-    m = make_model(*model_args)
-    m.env = env_overrides
+    model.env = env_overrides
 
-    resource_fit_selector = CustomBackendResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    resource_fit_selector = CustomBackendResourceFitSelector(config, model)
+    placement_scorer = PlacementScorer(model)
 
     with (
         patch(

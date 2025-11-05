@@ -1,21 +1,20 @@
 import asyncio
 import dataclasses
-import enum
 import logging
 import os
 from typing import Dict, List, Optional
 
-from sqlalchemy.ext.asyncio import AsyncEngine
-
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
+)
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    ModelAttentionTypeEnum,
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     ListMessageBuilder,
-    get_model_num_attention_heads,
     get_local_model_weight_size,
 )
 from gpustack.schemas.models import (
@@ -26,114 +25,15 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
 from gpustack.config import Config
-from gpustack.server.db import get_engine
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
 from gpustack.utils.hub import (
     get_model_weight_size,
-    get_pretrained_config,
-    get_hf_text_config,
-    get_max_model_len,
 )
 from gpustack.utils.unit import byte_to_gib
 from gpustack.worker.backends.ascend_mindie import AscendMindIEParameters
 
 logger = logging.getLogger(__name__)
-
-
-class ModelAttentionTypeEnum(enum.Enum):
-    UNK = "unknown"
-    MHA = "multi_head_attention"
-    GQA = "grouped_query_attention"
-    MQA = "multi_query_attention"
-    MLA = "multi_head_latent_attention"
-
-
-@dataclasses.dataclass
-class ModelParameters:
-    derived_max_seq_len: int = 0
-    num_hidden_layers: int = 0
-    hidden_size: Optional[int] = None
-    num_attention_heads: Optional[int] = None
-    num_key_value_heads: int = 1
-    n_group: Optional[int] = None
-    head_dim: Optional[int] = None
-    q_lora_rank: Optional[int] = None
-    kv_lora_rank: Optional[int] = None
-    qk_rope_head_dim: Optional[int] = None
-    qk_nope_head_dim: Optional[int] = None
-    v_head_dim: Optional[int] = None
-    torch_dtype: str = "bfloat16"
-    quantize: Optional[str] = None
-    quantization_config: Optional[Dict] = None
-    moe_num_experts: Optional[int] = None
-    moe_num_shared_experts: Optional[int] = None
-    moe_intermediate_size: Optional[int] = None
-
-    def from_model(self, model: Model):  # noqa: C901
-        """
-        Parse the model's (hyper)parameters from the model.
-        """
-
-        # Parse
-        pretrained_config = get_pretrained_config(model, trust_remote_code=True)
-        pretrained_config = get_hf_text_config(pretrained_config)
-        if pretrained_config is None:
-            # Exclude empty dict cases, as they indicate the locally-sourced model is not local to the server node.
-            raise ValueError(f"Failed to get model {model.name} pretrained config")
-        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
-            try:
-                attr_value = getattr(pretrained_config, attr_name, None)
-                if attr_value is not None:
-                    setattr(self, attr_name, attr_value)
-            except AttributeError:
-                # If reach here, that means the field is an internal property,
-                # which would not register in the argument parser.
-                pass
-
-        # Default
-        self.derived_max_seq_len = get_max_model_len(pretrained_config)
-        if not self.num_attention_heads:
-            # For backward compatibility, try to get num_attention_heads from llm_config.
-            self.num_attention_heads = get_model_num_attention_heads(pretrained_config)
-        if not self.head_dim and self.hidden_size and self.num_attention_heads:
-            self.head_dim = self.hidden_size // self.num_attention_heads
-        if not self.moe_num_experts:
-            for key in [
-                "n_routed_experts",
-                "num_local_experts",
-                "num_experts",
-            ]:
-                if value := getattr(pretrained_config, key, None):
-                    setattr(self, "moe_num_experts", value)
-                    break
-        if self.moe_num_experts and not self.moe_num_shared_experts:
-            for key in [
-                "n_shared_experts",
-                "num_shared_experts",
-            ]:
-                if value := getattr(pretrained_config, key, None):
-                    setattr(self, "moe_num_shared_experts", value)
-                    break
-
-    def get_attention_type(self) -> ModelAttentionTypeEnum:
-        """
-        Get the attention type based on the hyperparameters.
-        """
-
-        if self.num_attention_heads:
-            if self.num_key_value_heads == 1:
-                return ModelAttentionTypeEnum.MQA
-            elif (
-                1 < self.num_key_value_heads < self.num_attention_heads
-                and self.num_attention_heads % self.num_key_value_heads == 0
-            ):
-                return ModelAttentionTypeEnum.GQA
-            elif self.num_key_value_heads == self.num_attention_heads:
-                if self.q_lora_rank and self.kv_lora_rank:
-                    return ModelAttentionTypeEnum.MLA
-                return ModelAttentionTypeEnum.MHA
-        return ModelAttentionTypeEnum.UNK
 
 
 @dataclasses.dataclass
@@ -153,16 +53,10 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         config: Config,
         model: Model,
     ):
-        # GPUStack configuration.
-        self._config: Config = config
-        # Model instance.
-        self._model: Model = model
+        super().__init__(config, model)
+
         # Diagnostic message to be set to the model instance.
         self._diagnostic_messages: List[str] = []
-        # Database engine.
-        self._engine: AsyncEngine = get_engine()
-        # Model's hyperparameters.
-        self._model_params = ModelParameters()
         # Serving parameters.
         self._serving_params = AscendMindIEParameters()
         # Indexer of selected worker name and its device indexes: {Worker Name: [Device Index 0, Device Index 1, ...]}.
@@ -204,12 +98,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             # the parsing logic will raise an error.
             self._serving_params.local_world_size = selected_worker_devices_cnt
             self._serving_params.world_size = selected_devices_cnt
-
-        # Parse model config.
-        try:
-            self._model_params.from_model(model)
-        except Exception as e:
-            raise ValueError(f"Failed to parse model {model.name} hyperparameters: {e}")
 
         # Parse model params.
         if model.backend_parameters:

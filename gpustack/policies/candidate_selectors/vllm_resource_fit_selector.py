@@ -3,12 +3,11 @@ from collections import defaultdict
 import logging
 import re
 from typing import Dict, List
-
-from transformers import PretrainedConfig
-
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
+)
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -16,7 +15,6 @@ from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     get_worker_model_instances,
     ListMessageBuilder,
-    get_model_num_attention_heads,
     estimate_model_vram,
     ram_not_enough,
     get_model_ram_claim,
@@ -30,11 +28,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesInfo, Worker
 from gpustack.config import Config
-from gpustack.server.db import get_engine
-from gpustack.utils.command import find_parameter
-from gpustack.utils.convert import safe_int
-from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
-from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.command import find_parameter, find_int_parameter
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
@@ -66,10 +60,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         cfg: Config,
         model: Model,
     ):
-        self._engine = get_engine()
-        self._cfg = cfg
-        self._model = model
-        self._gpu_count = None
+        super().__init__(cfg, model)
+
         self._vram_claim = 0
         self._ram_claim = 0
         self._largest_single_gpu_vram = 0
@@ -78,56 +70,34 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._largest_multi_gpu_total = 0
         self._largest_multi_gpu_utilization_satisfied_count = 0
 
-        self._num_attention_heads = None
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
         self._workers_allocatable_resource: Dict[int, Allocatable] = {}
-
-        self._selected_gpu_workers: List[str] = None
-        self._selected_gpu_worker_count = 0
-        self._selected_gpu_indexes_by_worker: Dict[str, List[int]] = {}
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
 
-        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            gpu_ids_by_worker = parse_gpu_ids_by_worker(
-                self._model.gpu_selector.gpu_ids
-            )
-            self._selected_gpu_workers = list(gpu_ids_by_worker.keys())
-            self._selected_gpu_worker_count = len(self._selected_gpu_workers)
-            for worker_name, gpu_ids in gpu_ids_by_worker.items():
-                gpu_indexes = []
-                for gpu_id in gpu_ids:
-                    valid, matched = parse_gpu_id(gpu_id)
-                    if valid:
-                        gpu_index = safe_int(matched.get("gpu_index"))
-                        gpu_indexes.append(gpu_index)
-                self._selected_gpu_indexes_by_worker[worker_name] = gpu_indexes
-
-            self._gpu_count = self._model.gpu_selector.gpus_per_replica or len(
-                self._model.gpu_selector.gpu_ids
-            )
-
-        # When tp/pp is set, the gpu count is calculated by tp * pp.
-        # Pick the candidate with satisfied gpu count.
-        # Otherwise, estimate gpu count by vram requirement heuristically.
-        tp = find_parameter(model.backend_parameters, ["tensor-parallel-size", "tp"])
-        pp = find_parameter(model.backend_parameters, ["pipeline-parallel-size", "pp"])
-        if tp or pp:
-            world_size = int(tp or 1) * int(pp or 1)
-
-            if self._gpu_count and self._gpu_count != world_size:
-                # Both gpu selector and tp/pp are set, validate they match.
-                raise ValueError(
-                    f"Model {model.name} has -tp/-pp set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."
-                )
-            else:
-                self._gpu_count = world_size
-                self._vram_claim = 0
-
-        self._set_pretrained_config()
-        # _pretrained_config may be None or an empty dictionary, but subsequent methods are designed to handle this case.
+        tp_size = find_int_parameter(
+            model.backend_parameters, ["tensor-parallel-size", "tp"]
+        )
+        pp_size = find_int_parameter(
+            model.backend_parameters, ["pipeline-parallel-size", "pp"]
+        )
+        dp_size = find_int_parameter(
+            model.backend_parameters, ["data-parallel-size", "dp"]
+        )
+        self._set_gpu_count(tp_size, pp_size, dp_size)
         self._set_gpu_memory_utilization()
-        self._set_num_attention_heads()
+
+        # Validate attention heads divisibility
+        if (
+            tp_size
+            and self._num_attention_heads
+            and self._num_attention_heads % tp_size != 0
+        ):
+            raise ValueError(
+                f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
+            )
 
     def _set_gpu_memory_utilization(self):
         self._gpu_memory_utilization = 0.9
@@ -155,7 +125,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if not self._model.categories:
             return False
 
-        architectures = getattr(self._pretrained_config, "architectures", []) or []
+        architectures = self._model_params.architectures or []
 
         # Non-LLM models that vLLM still uses GPU memory utilization
         NON_LLM_GMU_EXCEPTIONS = {
@@ -169,48 +139,18 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return False
 
-    def _set_pretrained_config(self):
-        try:
-            self._pretrained_config = get_pretrained_config(
-                self._model, trust_remote_code=True
-            )
-        except ValueError as e:
-            if "architecture" in e.args[0] and self._model.backend_version:
-                # In the AutoConfig.from_pretrained method, the architecture field in config undergoes validation.
-                # For custom backend versions, exceptions caused by unrecognized architectures should be allowed
-                # to prevent startup failures of valid new models with properly customized versions.
-                self._pretrained_config = PretrainedConfig()
+    def _set_model_parameters(self):
+        super()._set_model_parameters()
 
-                # We can also try to get the architectures from hf-overrides
-                hf_overrides = find_parameter(
-                    self._model.backend_parameters, ["hf-overrides"]
-                )
-                if hf_overrides:
-                    overrides_dict = json.loads(hf_overrides)
-                    self._pretrained_config.architectures = overrides_dict.get(
-                        "architectures", []
-                    )
-            else:
-                raise e
-        except Exception as e:
-            raise Exception(
-                f"Cannot get pretrained config for model {self._model.readable_source}: {e}"
-            ) from e
+        # Get the architectures from hf-overrides. This helps make resource allocation
+        # decisions for specific models like Qwen3-Embedding and Qwen3-Reranker.
+        hf_overrides = find_parameter(self._model.backend_parameters, ["hf-overrides"])
+        if hf_overrides:
+            overrides_dict = json.loads(hf_overrides)
+            if isinstance(overrides_dict, dict) and "architectures" in overrides_dict:
+                self._model_params.architectures = overrides_dict["architectures"]
 
-    def _set_num_attention_heads(self):
-        self._num_attention_heads = get_model_num_attention_heads(
-            self._pretrained_config
-        )
-        if (
-            self._gpu_count
-            and self._num_attention_heads
-            and self._num_attention_heads % self._gpu_count != 0
-        ):
-            raise ValueError(
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by gpu count "
-                f"({self._gpu_count})."
-            )
+        self._num_attention_heads = self._model_params.num_attention_heads
 
     def _cal_effective_vram(self) -> float:
         if self._largest_multi_gpu_total == 0:
@@ -272,7 +212,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         """
 
         self._vram_claim = await estimate_model_vram(
-            self._model, self._cfg.huggingface_token
+            self._model, self._config.huggingface_token
         )
         self._ram_claim = get_model_ram_claim(self._model)
         logger.info(
@@ -740,8 +680,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         Currently, a candidate should match the following conditions:
         1. Workers in the candidate have the same number of GPUs.
         2. All GPUs in the worker satisfy the gpu_memory_utilization requirement.
-        3. The total number of GPUs can be divided by the number of attention heads.
+        3. TP size can be divided by the number of attention heads.
         4. The total VRAM claim is greater than the estimated VRAM claim.
+        5. If gpu_count is set via parallelism, the total GPU count should be equal to gpu_count.
         """
 
         if not workers or len(workers) < 2:
@@ -762,9 +703,20 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         worker_count = 0
         device_count_per_worker = 0
 
+        tp_size = find_int_parameter(
+            self._model.backend_parameters, ["tensor-parallel-size", "tp"]
+        )
         # Loop through worker groups with the same number of GPUs.
         for gpu_count, worker_group in workers_by_gpu_count_dict.items():
             if len(worker_group) < 2:
+                continue
+
+            if (
+                self._num_attention_heads
+                and self._num_attention_heads % (tp_size or gpu_count) != 0
+            ):
+                # Skip this group if attention heads cannot be divided by TP size or GPU count.
+                # In TP is not specified, GPU count per worker is considered as tensor parallel size.
                 continue
 
             selected_workers: List[Worker] = []
@@ -796,10 +748,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     for gpu in worker.status.gpu_devices
                 )
 
-                if (
-                    self._num_attention_heads
-                    and self._num_attention_heads % gpu_sum == 0
-                ) and (vram_sum >= self._vram_claim):
+                if self._gpu_count:
+                    # Parallelism is set. Proceed until we match the exact GPU count.
+                    if gpu_sum < self._gpu_count:
+                        continue
+                    elif gpu_sum > self._gpu_count:
+                        break
+
+                if vram_sum >= self._vram_claim:
                     return [
                         _create_candidate(
                             self._model,

@@ -167,6 +167,10 @@ def linux_huawei_4_910b_64gx8(
     return worker
 
 
+def linux_nvidia_0_4090_24gx1(reserved=False):
+    return load_from_file("linux_nvidia_0_4090_24gx1.json", reserved=reserved)
+
+
 def linux_nvidia_1_4090_24gx1(reserved=False):
     return load_from_file("linux_nvidia_1_4090_24gx1.json", reserved=reserved)
 
