@@ -470,8 +470,8 @@ class InferenceServer(ABC):
         """
 
         # if no version or inference backend is available, return default_args
-        version = getattr(self._model, "backend_version", None)
-        if not version or not getattr(self, "inference_backend", None):
+        version = self._model.backend_version
+        if not version or not self.inference_backend:
             return default_args
 
         # Load version configuration
@@ -484,20 +484,14 @@ class InferenceServer(ABC):
         # Only perform replacement when the version uses non-built-in version and defines run_command
         if (
             version_config
-            and getattr(version_config, "built_in_frameworks", None) is None
-            and getattr(version_config, "run_command", None)
+            and version_config.built_in_frameworks is None
+            and version_config.run_command
         ):
             resolved_model_path = (
-                model_path
-                if model_path is not None
-                else getattr(self, "_model_path", None)
+                model_path if model_path is not None else self._model_path
             )
-            resolved_port = (
-                port
-                if port is not None
-                else getattr(self._model_instance, "port", None)
-            )
-            resolved_model_name = getattr(self._model_instance, "model_name", None)
+            resolved_port = port if port is not None else self._model_instance.port
+            resolved_model_name = self._model_instance.model_name
 
             command = self.inference_backend.replace_command_param(
                 version,
@@ -530,7 +524,7 @@ class InferenceServer(ABC):
             return self._model.image_name
 
         # 2) Configuration takes priority when backend_version is set
-        if self._model and self._model.backend_version and self.inference_backend:
+        if self._model and self.inference_backend:
             if image_name := self.inference_backend.get_image_name(
                 self._model.backend_version
             ):
