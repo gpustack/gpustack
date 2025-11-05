@@ -1,5 +1,7 @@
 from datetime import datetime
 from typing import Dict, List, Optional
+
+from gpustack_runtime.deployer.__utils__ import compare_versions
 from pydantic import BaseModel, Field, RootModel
 from sqlalchemy import JSON, Column, Text
 from sqlmodel import SQLModel, Field as SQLField
@@ -84,6 +86,28 @@ class InferenceBackendBase(SQLModel):
         version_configs_dict = self.version_configs.root
 
         if target_version not in version_configs_dict:
+            # if no version or default_version is specified,
+            # automatically select the latest version from the available versions
+            if version_configs_dict:
+                # Get the latest version from the available versions
+                # Sort using the same logic as compare_versions function from gpustack_runtime
+                try:
+                    # Find the highest version by comparing all versions
+                    version_list = list(version_configs_dict.keys())
+                    latest_version = version_list[0]
+                    for ver in version_list[1:]:
+                        if (
+                            compare_versions(ver, latest_version) > 0
+                        ):  # ver > latest_version
+                            latest_version = ver
+                    target_version = latest_version
+                except Exception:
+                    # Fallback to simple string sorting if compare_versions is not available
+                    sorted_versions = sorted(version_configs_dict.keys())
+                    target_version = sorted_versions[-1]
+
+                return version_configs_dict[target_version]
+
             raise KeyError(
                 f"Version '{target_version}' not found in backend '{self.backend_name}'"
             )
