@@ -14,6 +14,8 @@ import logging
 
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
+)
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.utils import (
@@ -24,8 +26,6 @@ from gpustack.schemas.models import (
     Model,
 )
 from gpustack.schemas.workers import Worker
-
-from gpustack.server.db import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +40,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         model: Model,
         cache_dir: str,
     ):
-        self._cfg = config
-        self._engine = get_engine()
-        self._model = model
+        super().__init__(config, model, parse_model_params=False)
         self._cache_dir = os.path.join(cache_dir, "vox-box")
         self._messages = []
 
@@ -75,7 +73,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         timeout_in_seconds = 15
         resource_claim = await asyncio.wait_for(
             asyncio.to_thread(
-                estimate_model_resource, self._cfg, self._model, self._cache_dir
+                estimate_model_resource, self._config, self._model, self._cache_dir
             ),
             timeout=timeout_in_seconds,
         )

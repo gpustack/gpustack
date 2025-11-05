@@ -5,6 +5,8 @@ from typing import Dict, List, Optional
 
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
+)
+from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -21,11 +23,8 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
-from gpustack.server.db import get_engine
 from gpustack.utils.hub import get_model_weight_size
 from gpustack.utils.unit import byte_to_gib
-from gpustack.utils.convert import safe_int
-from gpustack.utils.gpu import parse_gpu_ids_by_worker, parse_gpu_id
 
 logger = logging.getLogger(__name__)
 
@@ -96,39 +95,15 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
     """
 
     def __init__(self, cfg: Config, model: Model):
-        self._cfg = cfg
-        self._model = model
+        super().__init__(cfg, model, parse_model_params=False)
         self._event_collector = EventCollector(model, logger)
         self._messages = []
-        self._engine = get_engine()
 
         # Estimated resource requirements
         self._vram_claim = 0
         self._ram_claim = 0
 
-        # Whether the backend supports CPU-only inference
-        self._supports_cpu_only = getattr(model, 'supports_cpu_only', True)
-
-        # Manual GPU selection (worker -> [gpu_indexes])
-        self._selected_gpu_workers: Optional[List[str]] = None
-        self._selected_gpu_worker_count: int = 0
-        self._selected_gpu_indexes_by_worker: Dict[str, List[int]] = {}
-        # Multi-worker is not supported yet, but the code structure remains consistent with other backends for easier future adjustments.
-
-        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            gpu_ids_by_worker = parse_gpu_ids_by_worker(
-                self._model.gpu_selector.gpu_ids
-            )
-            self._selected_gpu_workers = list(gpu_ids_by_worker.keys())
-            self._selected_gpu_worker_count = len(self._selected_gpu_workers)
-            for worker_name, gpu_ids in gpu_ids_by_worker.items():
-                gpu_indexes: List[int] = []
-                for gpu_id in gpu_ids:
-                    valid, matched = parse_gpu_id(gpu_id)
-                    if valid:
-                        gpu_index = safe_int(matched.get("gpu_index"))
-                        gpu_indexes.append(gpu_index)
-                self._selected_gpu_indexes_by_worker[worker_name] = gpu_indexes
+        self._set_gpu_count()
 
     def get_messages(self) -> List[str]:
         """Get scheduling messages."""
@@ -175,7 +150,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         """
         # Estimate VRAM requirements using actual model weight
         self._vram_claim = await estimate_custom_backend_vram(
-            self._model, self._cfg.huggingface_token
+            self._model, self._config.huggingface_token
         )
 
         # Estimate RAM requirements (conservative estimate)
@@ -207,7 +182,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         ]
 
         # Add CPU-only candidates if supported
-        if self._supports_cpu_only:
+        if self._model.cpu_offloading:
             candidate_functions.append(self._find_cpu_only_candidates)
 
         for candidate_func in candidate_functions:

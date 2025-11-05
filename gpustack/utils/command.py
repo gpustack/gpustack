@@ -39,6 +39,20 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
     return None
 
 
+def find_int_parameter(parameters: List[str], param_names: List[str]) -> Optional[int]:
+    """
+    Find specified integer parameter by name from the parameters.
+    Return the integer value of the parameter if found, otherwise return None.
+    """
+    value = find_parameter(parameters, param_names)
+    if value is not None:
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
 def find_bool_parameter(parameters: List[str], param_names: List[str]) -> bool:
     """
     Find specified boolean parameter by name from the parameters.

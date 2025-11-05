@@ -114,27 +114,6 @@ class WorkerFilterChain:
         return workers, messages
 
 
-class ScheduleCandidatesSelector(ABC):
-    @abstractmethod
-    def get_messages(self) -> List[str]:
-        """
-        Get diagnostic messages from the selector.
-        :return: A list of diagnostic messages.
-        """
-        pass
-
-    @abstractmethod
-    async def select_candidates(
-        self, workers: List[Worker]
-    ) -> List[ModelInstanceScheduleCandidate]:
-        """
-        Get schedule candidates.
-        :param workers: The list of workers to select from.
-        :return: A list of schedule candidates.
-        """
-        pass
-
-
 class ModelInstanceScorer(ABC):
     @abstractmethod
     async def score_instances(

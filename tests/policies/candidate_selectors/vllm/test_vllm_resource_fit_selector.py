@@ -19,6 +19,7 @@ from gpustack.schemas.models import (
     BackendEnum,
 )
 from tests.fixtures.workers.fixtures import (
+    linux_nvidia_0_4090_24gx1,
     linux_nvidia_1_4090_24gx1,
     linux_nvidia_22_H100_80gx8,
     linux_nvidia_23_H100_80gx8,
@@ -34,7 +35,9 @@ from tests.fixtures.workers.fixtures import (
 from tests.utils.scheduler import compare_candidates
 
 
-def make_model(gpus_per_replica=2, gpu_ids=None, repo_id="Qwen/Qwen2.5-7B-Instruct"):
+def make_model(
+    gpus_per_replica=2, gpu_ids=None, repo_id="Qwen/Qwen2.5-7B-Instruct", **kwargs
+):
     gpu_selector = None
     if gpu_ids is not None:
         gpu_selector = GPUSelector(
@@ -47,9 +50,8 @@ def make_model(gpus_per_replica=2, gpu_ids=None, repo_id="Qwen/Qwen2.5-7B-Instru
         "test_name",
         1,
         huggingface_repo_id=repo_id,
-        cpu_offloading=False,
         gpu_selector=gpu_selector,
-        backend_parameters=[],
+        **kwargs,
     )
 
 
@@ -288,6 +290,54 @@ def expected_candidate(
                                     6: 77309411328,
                                     7: 77309411328,
                                 },
+                            ),
+                        ),
+                    ],
+                )
+            ],
+            0,
+        ),
+        # Auto select 3 GPUs distributedly from 3 worker for PP3.
+        # Check point:
+        # - Candidate selection correctness.
+        # - GPU count by PP size correctness.
+        (
+            make_model(
+                0,
+                None,
+                "Qwen/Qwen3-0.6B",
+                backend_parameters=["--pipeline-parallel-size=3"],
+            ),
+            [
+                linux_nvidia_0_4090_24gx1(),
+                linux_nvidia_1_4090_24gx1(),
+                linux_nvidia_3_4090_24gx1(),
+            ],
+            [
+                expected_candidate(
+                    103,
+                    "host4090-0",
+                    [0],
+                    {0: 23413653504},
+                    [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=2,
+                            worker_ip="192.168.50.3",
+                            total_gpus=1,
+                            gpu_indexes=[0],
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                vram={0: 23413653504},
+                            ),
+                        ),
+                        ModelInstanceSubordinateWorker(
+                            worker_id=12,
+                            worker_ip="192.168.50.4",
+                            total_gpus=1,
+                            gpu_indexes=[0],
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                vram={0: 23181498777},
                             ),
                         ),
                     ],
