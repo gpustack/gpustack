@@ -23,7 +23,7 @@ from gpustack.schemas.models import (
     BackendEnum,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -55,6 +55,26 @@ async def get_models(
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
 ):
+    return await _get_models(
+        engine=engine,
+        session=session,
+        params=params,
+        search=search,
+        categories=categories,
+        cluster_id=cluster_id,
+    )
+
+
+async def _get_models(
+    engine: EngineDep,
+    session: SessionDep,
+    params: ListParamsDep,
+    search: str = None,
+    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
+    cluster_id: int = None,
+    target_class: Union[Model, MyModel] = Model,
+    user_id: Optional[int] = None,
+):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
@@ -63,9 +83,12 @@ async def get_models(
     if cluster_id:
         fields["cluster_id"] = cluster_id
 
+    if user_id:
+        fields["user_id"] = user_id
+
     if params.watch:
         return StreamingResponse(
-            Model.streaming(
+            target_class.streaming(
                 engine,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
@@ -76,10 +99,10 @@ async def get_models(
 
     extra_conditions = []
     if categories:
-        conditions = build_category_conditions(session, categories)
+        conditions = build_category_conditions(session, target_class, categories)
         extra_conditions.append(or_(*conditions))
 
-    return await Model.paginated_by_query(
+    return await target_class.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
         extra_conditions=extra_conditions,
@@ -122,7 +145,7 @@ def build_category_conditions(session, target_class: Union[Model, MyModel], cate
         raise NotImplementedError(f'Unsupported database {dialect}')
 
 
-def categories_filter(data: Model, categories: Optional[List[str]]):
+def categories_filter(data: Union[Model, MyModel], categories: Optional[List[str]]):
     if not categories:
         return True
 
@@ -134,8 +157,25 @@ def categories_filter(data: Model, categories: Optional[List[str]]):
 
 
 @router.get("/{id}", response_model=ModelPublic)
-async def get_model(session: SessionDep, id: int):
-    model = await Model.one_by_id(session, id)
+async def get_model(
+    session: SessionDep,
+    id: int,
+):
+    return await _get_model(session=session, id=id)
+
+
+async def _get_model(
+    session: SessionDep,
+    id: int,
+    target_class: Union[Model, MyModel] = Model,
+    user_id: Optional[int] = None,
+):
+    fields = {
+        "id": id,
+    }
+    if user_id:
+        fields["user_id"] = user_id
+    model = await target_class.one_by_fields(session, fields=fields)
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -410,3 +450,54 @@ async def add_model_access(
         raise InternalServerErrorException(message=f"Failed to add model access: {e}")
     await session.refresh(model)
     return ModelAccessList(items=model_access_list(model))
+
+
+my_models_router = APIRouter()
+
+
+@my_models_router.get("", response_model=ModelsPublic)
+async def get_my_models(
+    user: CurrentUserDep,
+    engine: EngineDep,
+    session: SessionDep,
+    params: ListParamsDep,
+    search: str = None,
+    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
+    cluster_id: int = None,
+):
+    user_id = None
+    target_class = Model
+    if not user.is_admin:
+        target_class = MyModel
+        user_id = user.id
+
+    return await _get_models(
+        engine=engine,
+        session=session,
+        params=params,
+        search=search,
+        categories=categories,
+        cluster_id=cluster_id,
+        target_class=target_class,
+        user_id=user_id,
+    )
+
+
+@my_models_router.get("/{id}", response_model=ModelPublic)
+async def get_my_model(
+    session: SessionDep,
+    id: int,
+    user: CurrentUserDep,
+):
+    user_id = None
+    target_class = Model
+    if not user.is_admin:
+        target_class = MyModel
+        user_id = user.id
+
+    return await _get_model(
+        session=session,
+        id=id,
+        user_id=user_id,
+        target_class=target_class,
+    )
