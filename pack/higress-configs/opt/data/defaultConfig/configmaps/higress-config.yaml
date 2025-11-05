@@ -44,7 +44,6 @@ data:
       proxyStatsMatcher:
         inclusionRegexps:
         - .*
-      customConfigFile: /var/lib/istio/envoy/envoy_bootstrap_tmpl.json
     dnsRefreshRate: 200s
     enableAutoMtls: false
     enablePrometheusMerge: true
