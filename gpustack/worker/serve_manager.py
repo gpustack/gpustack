@@ -20,12 +20,12 @@ from gpustack.config.config import Config
 from gpustack.logging import (
     RedirectStdoutStderr,
 )
-from gpustack.schemas.inference_backend import InferenceBackend
+from gpustack.schemas.inference_backend import InferenceBackend, is_built_in_backend
 from gpustack.utils import network, platform
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
-from gpustack.worker.backends.llama_box import LlamaBoxServer
+from gpustack.worker.backends.sglang import SGLangServer
 from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
@@ -46,8 +46,8 @@ from gpustack.worker.inference_backend_manager import InferenceBackendManager
 logger = logging.getLogger(__name__)
 
 _SERVER_CLASS_MAPPING = {
-    BackendEnum.LLAMA_BOX: LlamaBoxServer,
     BackendEnum.VLLM: VLLMServer,
+    BackendEnum.SGLANG: SGLangServer,
     BackendEnum.VOX_BOX: VoxBoxServer,
     BackendEnum.ASCEND_MINDIE: AscendMindIEServer,
 }
@@ -248,9 +248,8 @@ class ServeManager:
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
             backend = get_backend(model)
-            inference_backend = self._inference_backend_manager.get_backend_by_name(
-                backend
-            )
+            health_check_path = self._get_health_check_path(backend)
+
             with contextlib.suppress(NotFoundException):
                 # Get patch dict for main worker.
                 if is_main_worker:
@@ -268,7 +267,7 @@ class ServeManager:
                     # If there is no error message from subordinate workers,
                     # check whether the main worker is healthy.
                     if not sw_error_msg:
-                        if not is_ready(backend, model_instance, inference_backend):
+                        if not is_ready(backend, model_instance, health_check_path):
                             continue
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             continue
@@ -743,15 +742,36 @@ class ServeManager:
                 return process.is_alive()
         return False
 
+    def _get_health_check_path(self, backend: str) -> Optional[str]:
+        """
+        Get health check path for the given backend.
+
+        Args:
+            backend: The backend name.
+        Returns:
+            The health check path if exists, else None.
+        """
+        inference_backend = self._inference_backend_manager.get_backend_by_name(backend)
+
+        return inference_backend.health_check_path if inference_backend else None
+
 
 def is_ready(
     backend: str,
     mi: ModelInstance,
-    inference_backend: Optional[InferenceBackend],
+    health_check_path: Optional[str] = None,
 ) -> bool:
     """
     Access the health endpoint of the given model instance to check if it is servable.
     """
+    is_built_in = is_built_in_backend(backend)
+    if (not is_built_in or backend == BackendEnum.CUSTOM) and (not health_check_path):
+        # If custom backend does not have health check path, consider it always ready.
+        return True
+
+    if is_built_in and backend != BackendEnum.CUSTOM:
+        # All built-in backends (vLLM, SGLang, MindIE, vox-box) except "custom" use /v1/models as health check path.
+        health_check_path = "/v1/models"
 
     try:
         hostname = "127.0.0.1"
@@ -760,18 +780,8 @@ def is_ready(
             # Use worker IP instead.
             hostname = mi.worker_ip
 
-        # Check /v1/models by default if dedicated health check endpoint is not available.
-        # This is served by all backends (llama-box, vox-box, vllm, mindIE)
-        health_check_domain = f"http://{hostname}:{mi.port}"
-        health_check_url = "/v1/models"
-        if backend == BackendEnum.LLAMA_BOX:
-            # For llama-box, use /health to avoid printing error logs.
-            health_check_url = "/health"
-        elif not any(b.value == backend for b in BackendEnum):
-            if inference_backend and inference_backend.health_check_path:
-                health_check_url = inference_backend.health_check_path
-
-        response = requests.get(health_check_domain + health_check_url, timeout=1)
+        health_check_url = f"http://{hostname}:{mi.port}{health_check_path}"
+        response = requests.get(health_check_url, timeout=1)
         if response.status_code == 200:
             return True
     except Exception as e:
