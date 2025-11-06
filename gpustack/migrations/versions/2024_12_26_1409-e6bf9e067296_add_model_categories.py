@@ -94,7 +94,6 @@ def upgrade() -> None:
                                         WHEN gpu_device->>'vendor' = 'NVIDIA' THEN '"cuda"'
                                         WHEN gpu_device->>'vendor' = 'Moore Threads' THEN '"musa"'
                                         WHEN gpu_device->>'vendor' = 'Apple' THEN '"mps"'
-                                        WHEN gpu_device->>'vendor' = 'Huawei' THEN '"npu"'
                                         WHEN gpu_device->>'vendor' = 'AMD' THEN '"rocm"'
                                         ELSE '"unknown"'::jsonb
                                     END
@@ -215,7 +214,6 @@ def upgrade() -> None:
                                     WHEN device.vendor = 'NVIDIA' THEN 'cuda'
                                     WHEN device.vendor = 'Moore Threads' THEN 'musa'
                                     WHEN device.vendor = 'Apple' THEN 'mps'
-                                    WHEN device.vendor = 'Huawei' THEN 'npu'
                                     WHEN device.vendor = 'AMD' THEN 'rocm'
                                     ELSE 'unknown'
                                 END,
@@ -248,8 +246,6 @@ def upgrade() -> None:
                         device['type'] = 'musa'
                     elif device.get('vendor') == 'Apple':
                         device['type'] = 'mps'
-                    elif device.get('vendor') == 'Huawei':
-                        device['type'] = 'npu'
                     elif device.get('vendor') == 'AMD':
                         device['type'] = 'rocm'
                     else:

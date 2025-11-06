@@ -10,10 +10,10 @@ from gpustack.schemas.models import (
     GPUSelector,
 )
 from tests.fixtures.workers.fixtures import (
-    linux_huawei_1_910b_64gx8,
-    linux_huawei_2_910b_64gx8,
-    linux_huawei_3_910b_64gx8,
-    linux_huawei_4_910b_64gx8,
+    linux_ascend_1_910b_64gx8,
+    linux_ascend_2_910b_64gx8,
+    linux_ascend_3_910b_64gx8,
+    linux_ascend_4_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -223,10 +223,10 @@ async def test_select_candidates_3x_64gx1_1x_64gx0(config, m, expected):
                 dev.memory.allocated = 21474836480
 
     workers = [
-        linux_huawei_1_910b_64gx8(return_device=1),
-        linux_huawei_2_910b_64gx8(return_device=1, callback=adjust_memory),
-        linux_huawei_3_910b_64gx8(return_device=1),
-        linux_huawei_4_910b_64gx8(return_device=0),  # No devices.
+        linux_ascend_1_910b_64gx8(return_device=1),
+        linux_ascend_2_910b_64gx8(return_device=1, callback=adjust_memory),
+        linux_ascend_3_910b_64gx8(return_device=1),
+        linux_ascend_4_910b_64gx8(return_device=0),  # No devices.
     ]
     model_instances = [
         ModelInstance(
@@ -349,10 +349,10 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                     dev.memory.allocated = 27487790695
 
     workers = [
-        linux_huawei_1_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_2_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_3_910b_64gx8(return_device=2),
-        linux_huawei_4_910b_64gx8(return_device=2),
+        linux_ascend_1_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_2_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_3_910b_64gx8(return_device=2),
+        linux_ascend_4_910b_64gx8(return_device=2),
     ]
     model_instances = [
         ModelInstance(
@@ -469,9 +469,9 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 dev.memory.allocated = 21474836480
 
     workers = [
-        linux_huawei_1_910b_64gx8(return_device=2),
-        linux_huawei_2_910b_64gx8(return_device=2, callback=adjust_memory),
-        linux_huawei_3_910b_64gx8(return_device=2),
+        linux_ascend_1_910b_64gx8(return_device=2),
+        linux_ascend_2_910b_64gx8(return_device=2, callback=adjust_memory),
+        linux_ascend_3_910b_64gx8(return_device=2),
     ]
     model_instances = [
         ModelInstance(
@@ -990,9 +990,9 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                 dev.memory.allocated = 21474836480
 
     workers = [
-        linux_huawei_1_910b_64gx8(callback=adjust_memory),
-        linux_huawei_2_910b_64gx8(callback=adjust_memory),
-        linux_huawei_3_910b_64gx8(),
+        linux_ascend_1_910b_64gx8(callback=adjust_memory),
+        linux_ascend_2_910b_64gx8(callback=adjust_memory),
+        linux_ascend_3_910b_64gx8(),
     ]
     model_instances = [
         ModelInstance(
@@ -1448,10 +1448,10 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
 @pytest.mark.asyncio
 async def test_select_candidates_4x_64gx8(config, m, expected):
     workers = [
-        linux_huawei_1_910b_64gx8(),
-        linux_huawei_2_910b_64gx8(),
-        linux_huawei_3_910b_64gx8(),
-        linux_huawei_4_910b_64gx8(),
+        linux_ascend_1_910b_64gx8(),
+        linux_ascend_2_910b_64gx8(),
+        linux_ascend_3_910b_64gx8(),
+        linux_ascend_4_910b_64gx8(),
     ]
     model_instances = [
         ModelInstance(
@@ -1574,10 +1574,10 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                     dev.memory.allocated = 27487790695
 
     workers = [
-        linux_huawei_1_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_2_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_3_910b_64gx8(return_device=2),
-        linux_huawei_4_910b_64gx8(return_device=2),
+        linux_ascend_1_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_2_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_3_910b_64gx8(return_device=2),
+        linux_ascend_4_910b_64gx8(return_device=2),
     ]
     model_instances = [
         ModelInstance(
@@ -1755,10 +1755,10 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
                     dev.memory.allocated = 27487790695
 
     workers = [
-        linux_huawei_1_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_2_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_3_910b_64gx8(return_device=4, callback=adjust_memory),
-        linux_huawei_4_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_1_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_2_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_3_910b_64gx8(return_device=4, callback=adjust_memory),
+        linux_ascend_4_910b_64gx8(return_device=4, callback=adjust_memory),
     ]
     model_instances = [
         ModelInstance(
