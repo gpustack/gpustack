@@ -400,6 +400,8 @@ async def group_worker_gpu_by_memory(
         for gpu_device in worker.status.gpu_devices:
             if gpu_device.index is None:
                 continue
+            if not gpu_device.memory or gpu_device.memory.total == 0:
+                continue
 
             # Get allocatable VRAM for this specific GPU
             gpu_index = gpu_device.index
