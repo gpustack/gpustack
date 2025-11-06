@@ -553,7 +553,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 # if self._gpu_count is set, cannot return more than gpu_count
                 break
 
-            if self._gpu_count is None and vram_sum >= self._vram_claim:
+            if (not self._gpu_count) and vram_sum >= self._vram_claim:
                 found_candidate = True
                 break
 
