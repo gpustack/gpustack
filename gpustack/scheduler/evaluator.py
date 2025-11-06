@@ -246,7 +246,7 @@ def summarize_candidate_resource_claim(
 async def set_gguf_model_file_path(config: Config, model: ModelSpec):
     if (
         model.source == SourceEnum.HUGGING_FACE
-        and model.backend == BackendEnum.LLAMA_BOX
+        and "gguf" in model.huggingface_repo_id.lower()
         and not model.huggingface_filename
     ):
         model.huggingface_filename = await run_in_thread(
@@ -257,7 +257,7 @@ async def set_gguf_model_file_path(config: Config, model: ModelSpec):
         )
     elif (
         model.source == SourceEnum.MODEL_SCOPE
-        and model.backend == BackendEnum.LLAMA_BOX
+        and "gguf" in model.model_scope_model_id.lower()
         and not model.model_scope_file_path
     ):
         model.model_scope_file_path = await run_in_thread(
@@ -274,9 +274,7 @@ async def evaluate_environment(
     backend = get_backend(model)
     has_linux_workers = any(worker.labels.get("os") == "linux" for worker in workers)
     if backend == BackendEnum.VLLM and not has_linux_workers:
-        return False, [
-            "The model requires Linux workers but none are available. Use GGUF models instead."
-        ]
+        return False, ["The model requires Linux workers but none are available."]
 
     only_windows_workers = all(
         worker.labels.get("os") == "windows" for worker in workers

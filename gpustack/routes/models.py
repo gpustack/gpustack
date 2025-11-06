@@ -309,13 +309,6 @@ async def validate_gpu_ids(  # noqa: C901
         if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
-    if model_backend == BackendEnum.LLAMA_BOX:
-        ts = find_parameter(model_in.backend_parameters, ["ts", "tensor-split"])
-        if ts:
-            raise BadRequestException(
-                message="Use tensor-split and gpu-selector at the same time is not allowed."
-            )
-
 
 def validate_gpu(
     gpu_device: GPUDeviceInfo, is_audio_model: bool = False, model_backend: str = ""

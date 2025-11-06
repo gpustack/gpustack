@@ -5,18 +5,17 @@ from pathlib import Path
 import shutil
 import stat
 import time
-from typing import Optional, Dict, Union
+from typing import Optional, Dict
 import zipfile
 import requests
 
 from gpustack.utils.compat_importlib import pkg_resources
-from gpustack.utils import platform, envs
+from gpustack.utils import platform
 from gpustack.worker.backend_dependency_manager import BackendDependencyManager
 
 logger = logging.getLogger(__name__)
 
 
-BUILTIN_LLAMA_BOX_VERSION = "v0.0.171"
 BUILTIN_GGUF_PARSER_VERSION = "v0.22.1"
 
 
@@ -336,28 +335,3 @@ class ToolsManager:
             raise Exception(f"error extracting {file_path}: {e}")
         except Exception as e:
             raise Exception(f"error extracting {file_path}: {e}")
-
-
-def get_llama_box_command(
-    base_path: Union[
-        str,
-        Path,
-    ],
-) -> Path:
-    command = "llama-box"
-    if platform.system() == "windows":
-        command += ".exe"
-    if isinstance(base_path, str):
-        base_path = Path(base_path)
-    return base_path.joinpath(command)
-
-
-def is_disabled_dynamic_link(version: Optional[str]) -> Optional[bool]:
-    if version is None:
-        version = BUILTIN_LLAMA_BOX_VERSION
-
-    # Support dynamic linking for llama-box after v0.0.157.
-    if version < "v0.0.157":
-        return True
-
-    return envs.get_gpustack_env_bool("DISABLE_DYNAMIC_LINK_LLAMA_BOX")

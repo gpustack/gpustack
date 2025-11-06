@@ -517,13 +517,6 @@ class GGUFParserCommandMutableParameters:
                 else:
                     command.append(f"--{attr_name.replace('_', '-')}={str(attr_value)}")
 
-        if self.backend_version:
-            # Parser v0.18.0+ supports estimating Sliding Window Attention (SWA) usage,
-            # however, llama-box treats `--batch-size` as the same as `--ctx-size` within [v0.0.140, v0.0.148],
-            # so we need to set `--batch-size` to `--ctx-size` to avoid wrong RAM/VRAM estimation.
-            if "v0.0.139" < self.backend_version < "v0.0.149":
-                command.append(f"--batch-size={self.ctx_size}")
-
 
 async def _gguf_parser_command(  # noqa: C901
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
