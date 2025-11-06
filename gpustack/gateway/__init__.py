@@ -32,10 +32,10 @@ from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
     get_plugin_url_prefix,
 )
+from gpustack.utils.network import get_first_non_loopback_ip
 
 # plugin_prefix is updated by get_plugin_url_prefix in initialize_gateway
 plugin_prefix = ""
-mcp_registry_name = "gpustack"
 mcp_registry_port = 80
 
 supported_openai_routes = [
@@ -67,10 +67,11 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
     registry_type = "static"
     if cfg.gateway_mode == GatewayModeEnum.external and cfg.gateway_kubeconfig is None:
         registry_type = "dns"
+    non_loopback_ip, _ = get_first_non_loopback_ip()
     address = (
         cfg.get_advertise_address()
         if cfg.gateway_mode != GatewayModeEnum.embedded
-        else "127.0.0.1"
+        else non_loopback_ip
     )
     port = (
         cfg.worker_port
@@ -81,6 +82,11 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
         f"{address}:{port}"
         if registry_type == "static"
         else f"{cfg.service_discovery_name}.{cfg.get_gateway_namespace()}.svc"
+    )
+    mcp_registry_name = (
+        "gpustack"
+        if cfg.server_role() != Config.ServerRole.WORKER
+        else "gpustack-worker"
     )
     registry = McpBridgeRegistry(
         type=registry_type,
