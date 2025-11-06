@@ -75,13 +75,13 @@ def macos_metal_3_m2ultra_192g(
     return worker
 
 
-def linux_huawei_1_910b_64gx8(
+def linux_ascend_1_910b_64gx8(
     reserved=False,
     return_device: Optional[int] = None,
     callback=None,
 ):
     """
-    Return a worker with 8 Huawei Ascend 910B devices, each with 64GB of memory.
+    Return a worker with 8 Ascend 910B devices, each with 64GB of memory.
     :param reserved: If True, the worker will have reserved system resources.
     :param return_device: The number of devices to return.
     :param callback: A callback function to be executed after loading the worker.
@@ -89,7 +89,7 @@ def linux_huawei_1_910b_64gx8(
     """
 
     worker = load_from_file(
-        "linux_huawei_1_910b_64gx8.json",
+        "linux_ascend_1_910b_64gx8.json",
         reserved=reserved,
         return_devices=return_device,
     )
@@ -98,13 +98,13 @@ def linux_huawei_1_910b_64gx8(
     return worker
 
 
-def linux_huawei_2_910b_64gx8(
+def linux_ascend_2_910b_64gx8(
     reserved=False,
     return_device: Optional[int] = None,
     callback=None,
 ):
     """
-    Return a worker with 8 Huawei Ascend 910B devices, each with 64GB of memory.
+    Return a worker with 8 Ascend 910B devices, each with 64GB of memory.
     :param reserved: If True, the worker will have reserved system resources.
     :param return_device:  The number of devices to return.
     :param callback: A callback function to be executed after loading the worker.
@@ -112,7 +112,7 @@ def linux_huawei_2_910b_64gx8(
     """
 
     worker = load_from_file(
-        "linux_huawei_2_910b_64gx8.json",
+        "linux_ascend_2_910b_64gx8.json",
         reserved=reserved,
         return_devices=return_device,
     )
@@ -121,13 +121,13 @@ def linux_huawei_2_910b_64gx8(
     return worker
 
 
-def linux_huawei_3_910b_64gx8(
+def linux_ascend_3_910b_64gx8(
     reserved=False,
     return_device: Optional[int] = None,
     callback=None,
 ):
     """
-    Return a worker with 8 Huawei Ascend 910B devices, each with 64GB of memory.
+    Return a worker with 8 Ascend 910B devices, each with 64GB of memory.
     :param reserved: If True, the worker will have reserved system resources.
     :param return_device: The number of devices to return.
     :param callback: A callback function to be executed after loading the worker.
@@ -135,7 +135,7 @@ def linux_huawei_3_910b_64gx8(
     """
 
     worker = load_from_file(
-        "linux_huawei_3_910b_64gx8.json",
+        "linux_ascend_3_910b_64gx8.json",
         reserved=reserved,
         return_devices=return_device,
     )
@@ -144,13 +144,13 @@ def linux_huawei_3_910b_64gx8(
     return worker
 
 
-def linux_huawei_4_910b_64gx8(
+def linux_ascend_4_910b_64gx8(
     reserved=False,
     return_device: Optional[int] = None,
     callback=None,
 ):
     """
-    Return a worker with 8 Huawei Ascend 910B devices, each with 64GB of memory.
+    Return a worker with 8 Ascend 910B devices, each with 64GB of memory.
     :param reserved: If True, the worker will have reserved system resources.
     :param return_device: The number of devices to return.
     :param callback: A callback function to be executed after loading the worker.
@@ -158,7 +158,7 @@ def linux_huawei_4_910b_64gx8(
     """
 
     worker = load_from_file(
-        "linux_huawei_4_910b_64gx8.json",
+        "linux_ascend_4_910b_64gx8.json",
         reserved=reserved,
         return_devices=return_device,
     )

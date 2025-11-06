@@ -31,6 +31,7 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_6_a100_80gx2,
     linux_nvidia_7_a100_80gx2,
     linux_nvidia_2_4080_16gx2,
+    linux_ascend_1_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -341,6 +342,30 @@ def expected_candidate(
                             ),
                         ),
                     ],
+                )
+            ],
+            0,
+        ),
+        # Auto select 2 NPUs from 1 worker.
+        # Check point:
+        # - Candidate selection correctness.
+        # - vLLM with NPUs.
+        (
+            make_model(
+                0,
+                None,
+                "Qwen/Qwen3-30B-A3B",
+            ),
+            [
+                linux_ascend_1_910b_64gx8(),
+            ],
+            [
+                expected_candidate(
+                    1,
+                    "ascend_0",
+                    [0, 1],
+                    {0: 61847529062, 1: 61847529062},
+                    [],
                 )
             ],
             0,
