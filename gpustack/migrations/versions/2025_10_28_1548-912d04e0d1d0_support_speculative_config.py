@@ -35,8 +35,8 @@ def upgrade() -> None:
         op.create_table('modelinstancedraftmodelfilelink',
         sa.Column('model_instance_id', sa.Integer(), nullable=False),
         sa.Column('model_file_id', sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(['model_file_id'], ['model_files.id'], name='fk_model_instance_model_file_link_model_files', ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['model_instance_id'], ['model_instances.id'], name='fk_model_instance_model_file_link_model_instances', ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['model_file_id'], ['model_files.id'], name='fk_model_instance_draft_model_file_link_model_files', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['model_instance_id'], ['model_instances.id'], name='fk_model_instance_draft_model_file_link_model_instances', ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('model_instance_id', 'model_file_id')
         )
 
