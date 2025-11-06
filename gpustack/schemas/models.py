@@ -51,7 +51,6 @@ class PlacementStrategyEnum(str, Enum):
 
 
 class BackendEnum(str, Enum):
-    LLAMA_BOX = "llama-box"
     VLLM = "vLLM"
     VOX_BOX = "VoxBox"
     ASCEND_MINDIE = "MindIE"
@@ -224,12 +223,12 @@ class ModelSpecBase(SQLModel, ModelSource):
     @model_validator(mode="after")
     def set_defaults(self):
         backend = get_backend(self)
-        if self.cpu_offloading is None:
-            self.cpu_offloading = True if backend == BackendEnum.LLAMA_BOX else False
-
         if self.distributed_inference_across_workers is None:
             self.distributed_inference_across_workers = (
-                True if backend in [BackendEnum.LLAMA_BOX, BackendEnum.VLLM] else False
+                True
+                if backend
+                in [BackendEnum.VLLM, BackendEnum.ASCEND_MINDIE, BackendEnum.SGLANG]
+                else False
             )
         return self
 
@@ -238,22 +237,21 @@ class ModelBase(ModelSpecBase):
     @model_validator(mode="after")
     def validate(self):
         backend = get_backend(self)
-        if backend == BackendEnum.LLAMA_BOX:
-            if self.source == SourceEnum.HUGGING_FACE and not self.huggingface_filename:
-                raise ValueError(
-                    "huggingface_filename must be provided when source is 'huggingface'"
-                )
-        elif backend == BackendEnum.VLLM:
-            if self.cpu_offloading:
-                raise ValueError("CPU offloading is only supported for GGUF models")
-        elif backend == BackendEnum.VOX_BOX:
+        if self.cpu_offloading and backend in [
+            BackendEnum.VLLM,
+            BackendEnum.SGLANG,
+            BackendEnum.ASCEND_MINDIE,
+        ]:
+            raise ValueError(
+                f"CPU offloading is not supported for the {backend} backend"
+            )
+
+        if backend == BackendEnum.VOX_BOX:
             if self.distributed_inference_across_workers:
                 raise ValueError(
                     "Distributed inference across workers is not supported for the vox-box backend"
                 )
-        elif backend == BackendEnum.ASCEND_MINDIE:
-            if self.cpu_offloading:
-                raise ValueError("CPU offloading is only supported for GGUF models")
+
         return self
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
@@ -501,7 +499,6 @@ def is_gguf_model(model: Union[Model, ModelSource]):
             and model.local_path
             and model.local_path.endswith(".gguf")
         )
-        or (hasattr(model, "backend") and model.backend == BackendEnum.LLAMA_BOX)
     )
 
 
@@ -554,7 +551,7 @@ def get_backend(model: Model) -> str:
         return model.backend
 
     if is_gguf_model(model):
-        return BackendEnum.LLAMA_BOX
+        return BackendEnum.CUSTOM
 
     if is_audio_model(model):
         return BackendEnum.VOX_BOX
