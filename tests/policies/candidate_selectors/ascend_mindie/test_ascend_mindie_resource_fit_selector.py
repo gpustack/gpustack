@@ -91,7 +91,7 @@ from tests.utils.scheduler import compare_candidates
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
                     "ram": 536870912,
-                    "vram": {0: 61847529062},
+                    "vram": {0: 54975581388},
                 },
             ],
         ),
@@ -120,7 +120,7 @@ from tests.utils.scheduler import compare_candidates
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
                     "ram": 536870912,
-                    "vram": {0: 61847529062},
+                    "vram": {0: 54975581388},
                     "subordinate_workers": [
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
@@ -130,7 +130,7 @@ from tests.utils.scheduler import compare_candidates
                             gpu_addresses=["29.17.48.41"],
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
-                                vram={0: 61847529062},
+                                vram={0: 54975581388},
                             ),
                         )
                     ],
@@ -411,7 +411,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
                     "ram": 536870912,
-                    "vram": {0: 61847529062},
+                    "vram": {0: 54975581388},
                 },
             ],
         ),
@@ -439,7 +439,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                     "gpu_indexes": [0, 1],
                     "gpu_addresses": ["29.17.48.39", "29.17.57.31"],
                     "ram": 536870912,
-                    "vram": {0: 61847529062, 1: 61847529062},
+                    "vram": {0: 54975581388, 1: 54975581388},
                     "subordinate_workers": [
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
@@ -449,7 +449,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                             gpu_addresses=["29.17.48.41", "29.17.57.32"],
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
-                                vram={0: 61847529062, 1: 61847529062},
+                                vram={0: 54975581388, 1: 54975581388},
                             ),
                         )
                     ],
@@ -534,7 +534,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,
-                    "vram": {0: 61847529062},
+                    "vram": {0: 54975581388},
                 },
             ],
         ),
@@ -598,7 +598,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_indexes": [1],
                     "gpu_addresses": ["29.17.57.31"],
                     "ram": 536870912,
-                    "vram": {1: 61847529062},
+                    "vram": {1: 54975581388},
                 },
             ],
         ),
@@ -630,7 +630,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_indexes": [1, 2],
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
-                    "vram": {1: 61847529062, 2: 61847529062},
+                    "vram": {1: 54975581388, 2: 54975581388},
                 },
             ],
         ),
@@ -662,7 +662,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_indexes": [1, 2],
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
-                    "vram": {1: 61847529062, 2: 61847529062},
+                    "vram": {1: 54975581388, 2: 54975581388},
                 },
             ],
         ),
@@ -696,7 +696,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_indexes": [1, 2],
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
-                    "vram": {1: 61847529062, 2: 61847529062},
+                    "vram": {1: 54975581388, 2: 54975581388},
                     "subordinate_workers": [
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
@@ -706,7 +706,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                             gpu_addresses=["29.17.49.41", "29.17.45.216"],
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
-                                vram={3: 61847529062, 4: 61847529062},
+                                vram={3: 54975581388, 4: 54975581388},
                             ),
                         ),
                     ],
@@ -790,7 +790,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_indexes": [1, 2],
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
-                    "vram": {1: 61847529062, 2: 61847529062},
+                    "vram": {1: 54975581388, 2: 54975581388},
                 }
             ],
         ),

@@ -51,7 +51,7 @@ class AscendMindIEParameters:
     # Model config
     #
     cpu_mem_size: int = 0
-    npu_memory_fraction: float = 0.9
+    npu_memory_fraction: float = 0.8
     trust_remote_code: bool = False
     #
     # Schedule config
