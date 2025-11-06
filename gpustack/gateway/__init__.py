@@ -250,6 +250,7 @@ async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
                 "authorization_request": {
                     "allowed_headers": [
                         {"exact": "x-higress-llm-model"},
+                        {"exact": "cookie"},
                     ]
                 },
                 "authorization_response": {
