@@ -277,7 +277,7 @@ class Worker:
         config = uvicorn.Config(
             app,
             host=self._address,
-            port=self._config.worker_port,
+            port=self._config.get_api_port(self._is_embedded),
             access_log=False,
             log_level="error",
         )

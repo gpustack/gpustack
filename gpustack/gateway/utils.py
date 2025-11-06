@@ -142,10 +142,10 @@ def model_instance_registry(
 
 
 def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
-    if worker.ip is None or worker.ip == "" or worker.gateway_port is None:
+    if worker.ip is None or worker.ip == "" or worker.port is None:
         return None
     return McpBridgeRegistry(
-        domain=f"{worker.ip}:{worker.gateway_port}",
+        domain=f"{worker.ip}:{worker.port}",
         port=80,
         name=f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
         protocol="http",

@@ -627,8 +627,8 @@ class Config(BaseSettings):
             and not platform.is_supported_higress(self.gateway_kubeconfig)
         ):
             raise Exception("The k8s cluster for gpustack does not support Higress.")
-        api_port = (
-            self.api_port
+        gateway_port = (
+            self.port
             if self.server_role() != self.ServerRole.WORKER
             else self.worker_port
         )
@@ -636,10 +636,10 @@ class Config(BaseSettings):
             with open(config_path, "w") as f:
                 f.write(f"DATA_DIR={self.data_dir}\n")
                 f.write(f"LOG_DIR={self.log_dir}\n")
-                f.write(f"GATEWAY_HTTP_PORT={self.port}\n")
+                f.write(f"GATEWAY_HTTP_PORT={gateway_port}\n")
                 f.write(f"GATEWAY_HTTPS_PORT={self.tls_port}\n")
                 f.write(f"GATEWAY_CONCURRENCY={self.gateway_concurrency}\n")
-                f.write(f"GPUSTACK_API_PORT={api_port}\n")
+                f.write(f"GPUSTACK_API_PORT={self.get_api_port()}\n")
                 f.write(f"EMBEDDED_KUBECONFIG_PATH={higress_embedded_kubeconfig}\n")
             with open(higress_embedded_kubeconfig, "w") as f:
                 f.write(
@@ -732,6 +732,17 @@ current-context: higress
             self.server_url or f"http://127.0.0.1:{self.api_port}"
             if self.api_port
             else "http://127.0.0.1"
+        )
+
+    def get_api_port(self, embedded_worker: bool = False) -> int:
+        if embedded_worker:
+            return self.worker_port
+        if self.server_role() != self.ServerRole.WORKER:
+            return self.api_port
+        return (
+            self.api_port
+            if self.gateway_mode == GatewayModeEnum.embedded
+            else self.worker_port
         )
 
 

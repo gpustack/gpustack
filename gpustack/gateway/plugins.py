@@ -64,16 +64,11 @@ def get_plugin_url_with_name_and_version(
 
 def get_plugin_url_prefix(cfg: Optional[Config] = None) -> str:
     plugin_dir = get_wasm_plugin_dir()
-    port = (
-        cfg.worker_port
-        if cfg and cfg.server_role() == Config.ServerRole.WORKER
-        else cfg.api_port if cfg else None
-    )
     address = "localhost"
     if cfg is not None and cfg.gateway_mode != GatewayModeEnum.embedded:
         address = cfg.get_advertise_address()
     if cfg is not None and plugin_dir is not None and os.path.isdir(plugin_dir):
-        return f"http://{address}:{port}/{http_path_prefix}"
+        return f"http://{address}:{cfg.get_api_port()}/{http_path_prefix}"
     return f"oci://{oci_plugin_hostname_path}"
 
 
