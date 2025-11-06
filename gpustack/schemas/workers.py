@@ -231,7 +231,6 @@ class WorkerStatusStored(BaseModel):
     ip: str
     ifname: str
     port: int
-    gateway_port: Optional[int] = None
     metrics_port: Optional[int] = None
 
     system_reserved: Optional[SystemReserved] = Field(

@@ -22,10 +22,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("workers", schema=None) as batch_op:
-        batch_op.add_column(
-            sa.Column('gateway_port', sa.Integer(), nullable=True)
-        )
     with op.batch_alter_table("clusters", schema=None) as batch_op:
         batch_op.add_column(
             sa.Column('gateway_endpoint', sa.String(length=255), nullable=True)
@@ -35,8 +31,6 @@ def upgrade() -> None:
         )
 
 def downgrade() -> None:
-    with op.batch_alter_table("workers", schema=None) as batch_op:
-        batch_op.drop_column('gateway_port')
     with op.batch_alter_table("clusters", schema=None) as batch_op:
         batch_op.drop_column('gateway_endpoint')
         batch_op.drop_column('reported_gateway_endpoint')

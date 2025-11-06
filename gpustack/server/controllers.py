@@ -1453,7 +1453,7 @@ class ClusterController:
             if worker.deleted_at is None
             and worker.ip != ""
             and worker.ip != self._cfg.get_advertise_address()
-            and worker.gateway_port is not None
+            and worker.port is not None
         ]
         worker_registry_list = [
             mcp_handler.worker_registry(worker)

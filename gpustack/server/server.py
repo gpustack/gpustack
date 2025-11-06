@@ -106,7 +106,7 @@ class Server:
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
-            port=self._config.api_port,
+            port=self._config.get_api_port(),
             access_log=False,
             log_level="error",
             ssl_certfile=ssl_certfile,

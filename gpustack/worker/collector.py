@@ -125,7 +125,6 @@ class WorkerStatusCollector:
             ip=self._worker_ip_getter(),
             ifname=self._worker_ifname_getter(),
             port=self._cfg.worker_port,
-            gateway_port=self._cfg.port,
             metrics_port=metrics_port,
             system_reserved=self._system_reserved,
             state_message=state_message,
