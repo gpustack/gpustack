@@ -22,8 +22,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     with op.batch_alter_table("model_usages", schema=None) as batch_op:
-        batch_op.alter_column('operation', nullable=True)
-        batch_op.alter_column('user_id', nullable=True)
+        batch_op.alter_column('operation',existing_type=sa.VARCHAR(length=16), nullable=True)
+        batch_op.alter_column('user_id', existing_type=sa.Integer(), nullable=True)
         batch_op.add_column(sa.Column('access_key', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
     with op.batch_alter_table("models", schema=None) as batch_op:
         batch_op.add_column(sa.Column('generic_proxy', sa.Boolean(), nullable=True, server_default=sa.sql.expression.false()))
@@ -34,7 +34,7 @@ def downgrade() -> None:
     )
     with op.batch_alter_table("model_usages", schema=None) as batch_op:
         batch_op.drop_column('access_key')
-        batch_op.alter_column('user_id', nullable=False)
-        batch_op.alter_column('operation', nullable=False)
+        batch_op.alter_column('user_id', existing_type=sa.Integer(), nullable=False)
+        batch_op.alter_column('operation', existing_type=sa.VARCHAR(length=16), nullable=False)
     with op.batch_alter_table("models", schema=None) as batch_op:
         batch_op.drop_column('generic_proxy')
