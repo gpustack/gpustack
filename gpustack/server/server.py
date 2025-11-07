@@ -116,6 +116,15 @@ class Server:
         setup_logging()
 
         logger.info(f"Serving on {config.host}:{config.port}.")
+        logger.info(f"Gateway mode: {self._config.gateway_mode.value}.")
+        if self._config.gateway_mode == GatewayModeEnum.embedded:
+            logger.info(
+                f"Embedded gateway will serve on {self._config.get_gateway_port()}."
+            )
+            if self._config.get_tls_secret_name() is not None:
+                logger.info(
+                    f"Embedded gateway will serve TLS on port {self._config.tls_port}."
+                )
         server = uvicorn.Server(config)
         self._create_async_task(server.serve())
 
