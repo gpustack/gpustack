@@ -13,7 +13,7 @@ import tenacity
 import uvicorn
 
 from gpustack.api import exceptions
-from gpustack.config import Config
+from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.config.envs import TCP_CONNECTOR_LIMIT
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
@@ -284,6 +284,12 @@ class Worker:
 
         setup_logging()
         logger.info(f"Serving worker APIs on {config.host}:{config.port}.")
+        if not self._is_embedded:
+            logger.info(f"Worker gateway mode: {self._config.gateway_mode.value}.")
+            if self._config.gateway_mode == GatewayModeEnum.embedded:
+                logger.info(
+                    f"Embedded gateway will serve on {self._config.get_gateway_port()}."
+                )
         server = uvicorn.Server(config)
 
         await server.serve()
