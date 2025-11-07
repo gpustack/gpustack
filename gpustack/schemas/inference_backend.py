@@ -88,7 +88,7 @@ class InferenceBackendBase(SQLModel):
         if target_version not in version_configs_dict:
             # if no version or default_version is specified,
             # automatically select the latest version from the available versions
-            if version_configs_dict:
+            if version_configs_dict and not self.is_built_in:
                 # Get the latest version from the available versions
                 # Sort using the same logic as compare_versions function from gpustack_runtime
                 try:
