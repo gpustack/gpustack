@@ -249,6 +249,10 @@ class ServeManager:
             model = self._get_model(model_instance)
             backend = get_backend(model)
             health_check_path = self._get_health_check_path(backend)
+            if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
+                # NOTE: There is no known use case for now. Keep this in case the built-in backends
+                # introduce breaking changes and the default health check path no longer works.
+                health_check_path = model.env['GPUSTACK_MODEL_HEALTH_CHECK_PATH']
 
             with contextlib.suppress(NotFoundException):
                 # Get patch dict for main worker.
@@ -769,8 +773,12 @@ def is_ready(
         # If custom backend does not have health check path, consider it always ready.
         return True
 
-    if is_built_in and backend != BackendEnum.CUSTOM:
-        # All built-in backends (vLLM, SGLang, MindIE, vox-box) except "custom" use /v1/models as health check path.
+    if backend == BackendEnum.ASCEND_MINDIE and not health_check_path:
+        # Ref: https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindieservice/servicedev/mindie_service0066.html
+        # /info provides metadata information and requires more time to respond. Use it for health check.
+        health_check_path = "/info"
+    elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
+        # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.
         health_check_path = "/v1/models"
 
     try:
