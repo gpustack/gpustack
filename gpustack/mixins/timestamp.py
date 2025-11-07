@@ -1,9 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import Field
-import sqlalchemy as sa
 
 from gpustack.schemas.common import UTCDateTime
+
+
+def _datetime_func():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class TimestampsMixin:
@@ -15,13 +18,12 @@ class TimestampsMixin:
     __created_at_name__ = "created_at"
     __updated_at_name__ = "updated_at"
     __deleted_at_name__ = "deleted_at"
-    __datetime_func__ = sa.func.now()
 
     created_at: Optional[datetime] = Field(
         sa_type=UTCDateTime,
         sa_column_kwargs={
             "name": __created_at_name__,
-            "default": __datetime_func__,
+            "default": _datetime_func,
             "nullable": False,
         },
         default=None,
@@ -31,8 +33,8 @@ class TimestampsMixin:
         sa_type=UTCDateTime,
         sa_column_kwargs={
             "name": __updated_at_name__,
-            "default": __datetime_func__,
-            "onupdate": __datetime_func__,
+            "default": _datetime_func,
+            "onupdate": _datetime_func,
             "nullable": False,
         },
         default=None,
