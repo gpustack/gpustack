@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, AsyncMock
 
-from tests.utils.model import new_model, new_model_instance
+from tests.utils.model import make_model, new_model, new_model_instance
 from gpustack.policies.candidate_selectors import SGLangResourceFitSelector
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.scheduler import scheduler
@@ -84,7 +84,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 11347227729,
+                    0: 23413653504,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -94,7 +94,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
-                            vram={0: 11347227729},
+                            vram={0: 23181498777},
                         ),
                     )
                 ],
@@ -164,9 +164,9 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                 "gpu_indexes": [0, 1, 2],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 5673613864,
-                    1: 5673613864,
-                    2: 5673613864,
+                    0: 15454332518,
+                    1: 15454332518,
+                    2: 15454332518,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -175,7 +175,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                         total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 5673613864},
+                            vram={0: 23413653504},
                         ),
                     )
                 ],
@@ -248,26 +248,26 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                 "gpu_indexes": [0, 1],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 5673613864,
-                    1: 5673613864,
+                    0: 77309411328,
+                    1: 77309411328,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
                         worker_id=9,
                         worker_ip="192.168.50.11",
-                        total_gpus=2,
+                        total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 5673613864},
+                            vram={0: 77309411328},
                         ),
                     ),
                     ModelInstanceSubordinateWorker(
                         worker_id=10,
                         worker_ip="192.168.50.12",
-                        total_gpus=2,
+                        total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 5673613864},
+                            vram={0: 77309411328},
                         ),
                     ),
                 ],
@@ -982,3 +982,73 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
 
         assert len(candidates) == 1
         compare_candidates(candidates, expected_candidates)
+
+
+@pytest.mark.parametrize(
+    "index, workers, model, expect_msg",
+    [
+        # Overcommit when used all selected GPUs
+        (
+            1,
+            [linux_nvidia_4_4080_16gx4()],
+            make_model(
+                2, ["host-4-4080:cuda:0", "host-4-4080:cuda:1"], "Qwen/Qwen3-32B"
+            ),
+            [
+                """- The model requires approximately 75.23 GiB of VRAM.
+- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
+- Manual GPU selection resulted in resource overcommit.
+- Selected GPUs have 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.79 GiB of allocatable VRAM."""
+            ],
+        ),
+        # Overcommit when partially used selected GPUs
+        (
+            2,
+            [linux_nvidia_4_4080_16gx4()],
+            make_model(
+                2,
+                [
+                    "host-4-4080:cuda:0",
+                    "host-4-4080:cuda:1",
+                    "host-4-4080:cuda:2",
+                    "host-4-4080:cuda:3",
+                ],
+                "Qwen/Qwen3-32B",
+            ),
+            [
+                """- The model requires approximately 75.23 GiB of VRAM.
+- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
+- Manual GPU selection resulted in resource overcommit.
+- Using worker host-4-4080 GPU indexes [0, 1] out of 4 selected devices.
+- Used GPUs provide 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.79 GiB of allocatable VRAM."""
+            ],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_output_schedule_msg(config, index, workers, model, expect_msg):
+    m = model
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m)
+    placement_scorer = PlacementScorer(m)
+
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+
+        candidates = await resource_fit_selector.select_candidates(workers)
+        _ = await placement_scorer.score(candidates)
+
+        assert resource_fit_selector._messages == expect_msg

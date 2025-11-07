@@ -1,5 +1,6 @@
 from gpustack.schemas.models import (
     CategoryEnum,
+    GPUSelector,
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
@@ -74,4 +75,24 @@ def new_model(
         backend_parameters=backend_parameters,
         categories=categories,
         extended_kv_cache=extended_kv_cache,
+    )
+
+
+def make_model(
+    gpus_per_replica=2, gpu_ids=None, repo_id="Qwen/Qwen2.5-7B-Instruct", **kwargs
+):
+    gpu_selector = None
+    if gpu_ids is not None:
+        gpu_selector = GPUSelector(
+            gpu_ids=gpu_ids,
+            gpus_per_replica=gpus_per_replica,
+        )
+
+    return new_model(
+        1,
+        "test_name",
+        1,
+        huggingface_repo_id=repo_id,
+        gpu_selector=gpu_selector,
+        **kwargs,
     )

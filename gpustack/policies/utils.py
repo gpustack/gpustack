@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 from gpustack.policies.base import (
     Allocatable,
     Allocated,
@@ -503,3 +503,83 @@ def get_computed_ram_claim(model: Model, vram_claim: Dict[int, int]) -> Optional
         return int(total_vram_claim * extended_kv_cache.ram_ratio)
 
     return None
+
+
+def sort_workers_by_gpu_count(workers: List[Worker]):
+    """
+    Sort workers by the number of GPUs.
+    """
+    workers.sort(
+        key=lambda worker: (
+            len(worker.status.gpu_devices)
+            if worker.status and worker.status.gpu_devices
+            else 0
+        ),
+        reverse=True,
+    )
+
+
+def sort_gpu_indexes_by_allocatable_rate(
+    worker: Worker, allocatable: dict
+) -> List[int]:
+    """
+    Sort GPU indexes of a worker by allocatable VRAM rate (allocatable_vram / total_vram), ascending.
+    """
+    allocatable_rate = {
+        gpu.index: (
+            allocatable.get(gpu.index, 0) / gpu.memory.total
+            if gpu.memory and gpu.memory.total
+            else 0
+        )
+        for gpu in worker.status.gpu_devices
+    }
+
+    # return a list of gpu indexes sorted by allocatable rate in ascending order
+    return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx])
+
+
+async def sort_selected_workers_by_resource(
+    workers: List[Worker],
+    selected_gpu_indexes_by_worker: Dict[str, List[int]],
+    get_worker_allocatable_resource: Callable[[Worker], Awaitable[Allocatable]],
+) -> List[Worker]:
+    """
+    Filter and sort selected workers by their GPU resource availability.
+
+    This function selects workers whose names are in `selected_gpu_workers`,
+    then sorts their GPU devices by allocatable VRAM rate (ascending),
+    and finally sorts the workers by the number of GPUs (descending).
+    """
+    selected_workers = []
+    for worker in workers:
+        # Skip invalid
+        selected_gpu_indexes = selected_gpu_indexes_by_worker.get(worker.name)
+        if (
+            not worker.status
+            or not worker.status.gpu_devices
+            or not selected_gpu_indexes
+        ):
+            continue
+
+        # Sort selected GPUs by allocatable rate
+        allocatable = await get_worker_allocatable_resource(worker)
+        sorted_gpu_indexes = [
+            idx
+            for idx in sort_gpu_indexes_by_allocatable_rate(worker, allocatable.vram)
+            if idx in selected_gpu_indexes
+        ]
+        sorted_gpus = [
+            gpu
+            for idx in sorted_gpu_indexes
+            for gpu in worker.status.gpu_devices
+            if gpu.index == idx
+        ]
+
+        # Create a copy of the worker with sorted GPUs
+        w = worker.model_copy()
+        w.status.gpu_devices = sorted_gpus
+        selected_workers.append(w)
+
+    # Sort workers by GPU count
+    sort_workers_by_gpu_count(selected_workers)
+    return selected_workers
