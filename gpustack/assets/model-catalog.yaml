@@ -105,7 +105,7 @@ model_sets:
       quantization: "MXFP4"
       source: huggingface
       huggingface_repo_id: openai/gpt-oss-120b
-      backend: vllm
+      backend: vLLM
       backend_parameters:
         - --max-model-len=32768
         - --tool-call-parser=openai
@@ -127,7 +127,7 @@ model_sets:
       quantization: "MXFP4"
       source: huggingface
       huggingface_repo_id: openai/gpt-oss-20b
-      backend: vllm
+      backend: vLLM
       backend_parameters:
         - --max-model-len=32768
         - --tool-call-parser=openai
