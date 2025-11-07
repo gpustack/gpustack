@@ -63,7 +63,7 @@ async def server_auth(
         )
     headers = {
         "X-Mse-Consumer": consumer,
-        "Authentication": f"Bearer {registration_token}",
+        "Authorization": f"Bearer {registration_token}",
     }
     return Response(
         status_code=200,
