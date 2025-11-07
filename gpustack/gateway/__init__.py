@@ -252,7 +252,7 @@ async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
                 "authorization_response": {
                     "allowed_upstream_headers": [
                         {"exact": "X-Mse-Consumer"},
-                        {"exact": "Authentication"},
+                        {"exact": "Authorization"},
                     ]
                 },
                 "endpoint": {
