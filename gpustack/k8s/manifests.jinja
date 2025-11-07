@@ -42,15 +42,15 @@ metadata:
   name: pod-cm-creator
 rules:
   - apiGroups:
-    - ""
-  resources:
-    - "pods"
-    - "configmaps"
-    - "services"
-    - "pods/log"
-    - "pods/exec"
-  verbs:
-    - "*"
+      - ""
+    resources:
+      - "pods"
+      - "configmaps"
+      - "services"
+      - "pods/log"
+      - "pods/exec"
+    verbs:
+      - "*"
 ---
 apiVersion: v1
 kind: ServiceAccount
