@@ -3,7 +3,6 @@ import random
 import string
 import asyncio
 from typing import Any, Dict, List, Tuple, Optional, Set
-import httpx
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
@@ -161,90 +160,12 @@ class ModelInstanceController:
                     await ensure_instance_model_file(session, model_instance)
 
                 await model.refresh(session)
-
-                if (
-                    event.type == EventType.UPDATED
-                    and model_instance.state == ModelInstanceStateEnum.RUNNING
-                ):
-                    worker = await Worker.one_by_id(session, model_instance.worker_id)
-                    if not worker:
-                        logger.error(
-                            f"Failed to find worker {model_instance.worker_id} for model instance {model_instance.name}"
-                        )
-                        return
-
-                    # fetch meta from running instance, if it's different from the model meta update it
-                    meta = await self.get_meta_from_running_instance(
-                        model, model_instance, worker
-                    )
-                    if meta and meta != model.meta:
-                        model.meta = meta
-
                 await sync_ready_replicas(session, model)
 
         except Exception as e:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
             )
-
-    async def get_meta_from_running_instance(
-        self, model: Model, mi: ModelInstance, w: Worker
-    ) -> Dict[str, Any]:
-        """
-        Get the meta information from the running instance.
-        """
-        if mi.state != ModelInstanceStateEnum.RUNNING:
-            return {}
-
-        meta_path = "/v1/models"
-        if model.backend == BackendEnum.ASCEND_MINDIE:
-            # Ref: https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindieservice/servicedev/mindie_service0066.html
-            meta_path = "/info"
-
-        async with httpx.AsyncClient() as client:
-            try:
-                url = f"http://{w.ip}:{w.port}/proxy{meta_path}"
-                headers = {
-                    "X-Target-Port": str(mi.port),
-                    "Authorization": f"Bearer {w.token}",
-                }
-                response = await client.get(
-                    url=url,
-                    headers=headers,
-                )
-                response.raise_for_status()
-
-                response_json = response.json()
-
-                if model.backend == BackendEnum.ASCEND_MINDIE:
-                    return parse_tgi_info_meta(response_json)
-
-                return parse_v1_models_meta(response_json)
-            except Exception as e:
-                logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
-                return {}
-
-
-def parse_v1_models_meta(response_json: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parse the meta information from the /v1/models response.
-    """
-    if "data" not in response_json or not response_json["data"]:
-        return {}
-
-    first_model = response_json["data"][0]
-    meta_info = first_model.get("meta", {})
-
-    # Optional keys from different backends
-    optional_keys = [
-        "voices",
-        "max_model_len",
-    ]
-    for key in optional_keys:
-        if key in first_model:
-            meta_info[key] = first_model[key]
-
-    return meta_info
 
 
 def parse_tgi_info_meta(response_json: Dict[str, Any]) -> Dict[str, Any]:

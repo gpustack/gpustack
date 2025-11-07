@@ -212,6 +212,7 @@ class Worker:
 
         serve_manager = ServeManager(
             worker_id=self._worker_id,
+            worker_ip=self._worker_ip,
             clientset=self._clientset,
             cfg=self._config,
             inference_backend_manager=inference_backend_manager,
