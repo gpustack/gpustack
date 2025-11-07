@@ -587,9 +587,39 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
             f"Unsupported architecture: {architectures}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
         )
 
+    check_known_limitations(model, architectures)
+
     categories_modified = set_model_categories(model, model_type)
     gpus_per_replica_modified = set_model_gpus_per_replica(model)
     return categories_modified or gpus_per_replica_modified
+
+
+def check_known_limitations(model: Model, architectures: List[str]):
+    """
+    Check known limitations for the given architectures.
+    Note that exceptions are meant for evaluation warnings and do not block deployment.
+    Expand the checks as needed.
+
+    Args:
+        model: Model to check.
+        architectures: List of architectures to check.
+
+    Raises:
+        ValueError: If any known limitations are found.
+    """
+
+    # REVIEW-BEFORE-RELEASE: Verify compatibility with the latest Ascend MindIE backend version.
+    if (
+        "Qwen2_5_VLForConditionalGeneration" in architectures
+        and model.backend == BackendEnum.ASCEND_MINDIE
+        and (model.backend_version in (None, "", "2.1.rc2"))
+    ):
+        # Mapping of empty version may change in the future, use default to make it readable.
+        mindie_version = model.backend_version or "default"
+        raise ValueError(
+            f"Qwen2.5-VL models are incompatible with the installed transformers when using the MindIE backend (version {mindie_version}). "
+            "Please use MindIE version 2.1.rc1 or other backends."
+        )
 
 
 def get_vllm_override_architectures(model: Model) -> List[str]:
