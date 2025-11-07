@@ -142,7 +142,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--system-default-container-registry",
         type=str,
-        help="Default container registry for GPUStack to pull system images. The default is 'docker.io'.",
+        help="Default container registry for GPUStack to pull system and inference images. The default is 'docker.io'.",
         default=get_gpustack_env("SYSTEM_DEFAULT_CONTAINER_REGISTRY"),
     )
     group.add_argument(

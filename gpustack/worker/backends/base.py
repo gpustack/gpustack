@@ -506,12 +506,30 @@ class InferenceServer(ABC):
         # Return original default_args by default
         return default_args
 
-    def _get_configured_image(  # noqa: C901
+    def _get_configured_image(
+        self,
+        backend: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Resolve the container image to use for the current backend, then apply
+        registry override once if needed.
+
+        See _resolve_image for resolution details.
+        """
+        image = self._resolve_image(backend)
+        if image is None:
+            return None
+        return self._apply_registry_override(image)
+
+    def _resolve_image(  # noqa: C901
         self,
         backend: Optional[str] = None,
     ) -> Optional[str]:
         """
         Resolve the container image to use for the current backend.
+
+        This method returns the raw image name without applying any registry
+        override. Callers should apply overrides as needed.
 
         Precedence:
         1) Explicitly configured image on the model (self._model.image_name)
@@ -674,6 +692,39 @@ class InferenceServer(ABC):
         # NB(thxCode): Not using the latest backend version is to keep backend version idempotence
         #              when the gpustack-runner adds new backend version.
         return get_docker_image(backend_versioned_runners[-1])
+
+    def _apply_registry_override(self, image: str) -> str:
+        """
+        Apply registry override rules to a resolved image name.
+
+        - If system_default_container_registry is set and the image does not
+          contain an explicit registry host, prefix it with the configured registry.
+
+        This helps enterprise/offline environments redirect image pulls to a mirror
+        or local registry.
+        """
+
+        registry = (self._config.system_default_container_registry or "").strip()
+        if not registry:
+            return image
+
+        # Normalize registry value (remove trailing slash if present)
+        registry = registry.rstrip("/")
+
+        def has_explicit_registry(img: str) -> bool:
+            # Detect if the image has an explicit registry host in its first segment.
+            image_split = img.split("/", 1)
+            if len(image_split) < 2:
+                return False
+            first = image_split[0]
+            return "." in first or ":" in first or first == "localhost"
+
+        if has_explicit_registry(image):
+            logger.debug(f"Docker pull command: docker pull {image}")
+            return image
+        final = f"{registry}/{image}"
+        logger.debug(f"Docker pull command: docker pull {final}")
+        return final
 
 
 def is_ascend_310p(devices: GPUDevicesInfo) -> bool:

@@ -103,7 +103,7 @@ class Config(BaseSettings):
         allow_methods: A list of HTTP methods that should be allowed for cross-origin requests.
         allow_headers: A list of HTTP request headers that should be supported for cross-origin requests.
         server_external_url: Specified external URL for the server.
-        system_default_container_registry: Default registry for container images.
+        system_default_container_registry: Default registry for container images (server and inference images).
         image_name_override: Force override of the image name.
         image_repo: Repository for the container images.
         service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
