@@ -29,10 +29,12 @@ from gpustack.worker.backends.sglang import SGLangServer
 from gpustack.worker.backends.vllm import VLLMServer
 from gpustack.worker.backends.vox_box import VoxBoxServer
 from gpustack.worker.backends.custom import CustomServer
+from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
+    ModelUpdate,
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
@@ -57,6 +59,10 @@ class ServeManager:
     _worker_id: int
     """
     The ID of current worker.
+    """
+    _worker_ip: str
+    """
+    The IP address of current worker.
     """
     _config: Config
     """
@@ -99,11 +105,13 @@ class ServeManager:
     def __init__(
         self,
         worker_id: int,
+        worker_ip: str,
         clientset: ClientSet,
         cfg: Config,
         inference_backend_manager: InferenceBackendManager,
     ):
         self._worker_id = worker_id
+        self._worker_ip = worker_ip
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._clientset = clientset
@@ -275,11 +283,20 @@ class ServeManager:
                             continue
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             continue
+
                         patch_dict = {
                             "state": ModelInstanceStateEnum.RUNNING,
                             "restart_count": 0,  # Reset restart count on successful run.
                             "state_message": "",
                         }
+
+                        # Fetch model meta once running.
+                        meta = get_meta_from_running_instance(
+                            model_instance, backend, self._worker_ip
+                        )
+                        if meta and meta != model.meta:
+                            model_patch_dict = {"meta": meta}
+                            self._update_model(model.id, **model_patch_dict)
                     # Otherwise, update the main worker state to ERROR.
                     else:
                         patch_dict = {
@@ -632,6 +649,23 @@ class ServeManager:
         self._stop_model_instance(mi)
         self._start_model_instance(mi)
 
+    def _update_model(self, id: int, **kwargs):
+        """
+        Update model instance with given fields.
+
+        Args:
+            id: The ID of the model instance to update.
+            **kwargs: The fields to update, group by field name and value.
+        """
+
+        m_public = self._clientset.models.get(id=id)
+
+        m = ModelUpdate(**m_public.model_dump())
+        for key, value in kwargs.items():
+            set_attr(m, key, value)
+
+        self._clientset.models.update(id=id, model_update=m)
+
     def _update_model_instance(self, id: int, **kwargs):
         """
         Update model instance with given fields.
@@ -782,13 +816,11 @@ def is_ready(
         health_check_path = "/v1/models"
 
     try:
-        hostname = "127.0.0.1"
-        if backend == BackendEnum.ASCEND_MINDIE:
-            # Connectivity to the loopback address does not work for Ascend MindIE.
-            # Use worker IP instead.
-            hostname = mi.worker_ip
-
-        health_check_url = f"http://{hostname}:{mi.port}{health_check_path}"
+        # Use the worker IP instead of localhost for health check.
+        # Reasons:
+        # 1. Connectivity to the loopback address does not work with Ascend MindIE.
+        # 2. More adaptable to container networks.
+        health_check_url = f"http://{mi.worker_ip}:{mi.port}{health_check_path}"
         response = requests.get(health_check_url, timeout=1)
         if response.status_code == 200:
             return True
