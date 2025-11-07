@@ -898,8 +898,8 @@ class AscendMindIEServer(InferenceServer):
         env["MINDIE_CHECK_INPUTFILES_PERMISSION"] = "0"
         # -- Enforce using ATB as backend
         env["MINDIE_LLM_FRAMEWORK_BACKEND"] = "ATB"
-        # -- Enforce using 90% of GPU memory
-        env["NPU_MEMORY_FRACTION"] = "0.9"
+        # -- Enforce using 80% of GPU memory
+        env["NPU_MEMORY_FRACTION"] = "0.8"
         # -- Disable OpenMP parallelism, speed up model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
         # -- Improve performance.
