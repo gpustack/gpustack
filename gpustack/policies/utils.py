@@ -480,7 +480,9 @@ def get_model_ram_claim(model: Model) -> int:
     return 0
 
 
-def get_computed_ram_claim(model: Model, vram_claim: Dict[int, int]) -> Optional[int]:
+def get_computed_ram_claim(
+    model: Model, vram_claim: Dict[int, int], static_ram: Optional[int] = None
+) -> Optional[int]:
     """
     Get the computed RAM claim for the model based on the provided model and vram_claim.
     The priority is as follows:
@@ -489,20 +491,24 @@ def get_computed_ram_claim(model: Model, vram_claim: Dict[int, int]) -> Optional
     3. If neither is available, return None.
     """
 
-    extended_kv_cache = model.extended_kv_cache
-    if not extended_kv_cache or not extended_kv_cache.enabled:
-        return None
+    ext = model.extended_kv_cache
+    if not ext or not ext.enabled:
+        return static_ram
 
-    if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
-        # static ram size
-        return extended_kv_cache.ram_size * 1024**3
+    claim = None
+    # static ram size
+    if ext.ram_size and ext.ram_size > 0:
+        claim = ext.ram_size * 1024**3
 
-    if extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0 and vram_claim:
-        # ram ratio to vram
+    # ram ratio to vram
+    elif ext.ram_ratio and ext.ram_ratio > 0 and vram_claim:
         total_vram_claim = sum(vram_claim.values())
-        return int(total_vram_claim * extended_kv_cache.ram_ratio)
+        claim = int(total_vram_claim * ext.ram_ratio)
 
-    return None
+    if static_ram and claim is not None:
+        claim += static_ram
+
+    return claim
 
 
 def sort_workers_by_gpu_count(workers: List[Worker]):

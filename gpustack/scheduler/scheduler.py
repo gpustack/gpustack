@@ -682,6 +682,9 @@ def set_model_gpus_per_replica(model: Model) -> bool:
     """
 
     def calculate_gpus_per_replica(model: Model) -> int:
+        if model.backend == BackendEnum.VOX_BOX.value:
+            return 1
+
         tp_param = safe_int(
             find_parameter(model.backend_parameters, ["tensor-parallel-size", "tp"])
         )

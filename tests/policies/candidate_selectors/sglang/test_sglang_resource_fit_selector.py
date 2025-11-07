@@ -59,6 +59,10 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
 
     with (
         patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
             'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
@@ -86,6 +90,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                 "vram": {
                     0: 23413653504,
                 },
+                "ram": 0,
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
                         worker_id=12,
@@ -95,6 +100,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             vram={0: 23181498777},
+                            ram=0,
                         ),
                     )
                 ],
@@ -139,6 +145,10 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
 
     with (
         patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
             'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
@@ -168,6 +178,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                     1: 15454332518,
                     2: 15454332518,
                 },
+                "ram": 0,
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
                         worker_id=2,
@@ -176,6 +187,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 23413653504},
+                            ram=0,
                         ),
                     )
                 ],
@@ -223,6 +235,10 @@ async def test_manual_schedule_to_3_workers_4_gpus(
 
     with (
         patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
             'gpustack.policies.utils.get_worker_model_instances',
             return_value=[],
         ),
@@ -259,6 +275,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 77309411328},
+                            ram=0,
                         ),
                     ),
                     ModelInstanceSubordinateWorker(
@@ -268,6 +285,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 77309411328},
+                            ram=0,
                         ),
                     ),
                 ],
