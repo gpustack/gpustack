@@ -175,7 +175,7 @@ class ModelInstanceController:
 
                     # fetch meta from running instance, if it's different from the model meta update it
                     meta = await self.get_meta_from_running_instance(
-                        model_instance, worker
+                        model, model_instance, worker
                     )
                     if meta and meta != model.meta:
                         model.meta = meta
@@ -188,7 +188,7 @@ class ModelInstanceController:
             )
 
     async def get_meta_from_running_instance(
-        self, mi: ModelInstance, w: Worker
+        self, model: Model, mi: ModelInstance, w: Worker
     ) -> Dict[str, Any]:
         """
         Get the meta information from the running instance.
@@ -196,9 +196,14 @@ class ModelInstanceController:
         if mi.state != ModelInstanceStateEnum.RUNNING:
             return {}
 
+        meta_path = "/v1/models"
+        if model.backend == BackendEnum.ASCEND_MINDIE:
+            # Ref: https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindieservice/servicedev/mindie_service0066.html
+            meta_path = "/info"
+
         async with httpx.AsyncClient() as client:
             try:
-                url = f"http://{w.ip}:{w.port}/proxy/v1/models"
+                url = f"http://{w.ip}:{w.port}/proxy{meta_path}"
                 headers = {
                     "X-Target-Port": str(mi.port),
                     "Authorization": f"Bearer {w.token}",
@@ -209,26 +214,88 @@ class ModelInstanceController:
                 )
                 response.raise_for_status()
 
-                models = response.json()
-                if "data" not in models or not models["data"]:
-                    return {}
+                response_json = response.json()
 
-                first_model = models["data"][0]
-                meta_info = first_model.get("meta", {})
+                if model.backend == BackendEnum.ASCEND_MINDIE:
+                    return parse_tgi_info_meta(response_json)
 
-                # Optional keys from different backends
-                optional_keys = [
-                    "voices",
-                    "max_model_len",
-                ]
-                for key in optional_keys:
-                    if key in first_model:
-                        meta_info[key] = first_model[key]
-
-                return meta_info
+                return parse_v1_models_meta(response_json)
             except Exception as e:
                 logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
                 return {}
+
+
+def parse_v1_models_meta(response_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parse the meta information from the /v1/models response.
+    """
+    if "data" not in response_json or not response_json["data"]:
+        return {}
+
+    first_model = response_json["data"][0]
+    meta_info = first_model.get("meta", {})
+
+    # Optional keys from different backends
+    optional_keys = [
+        "voices",
+        "max_model_len",
+    ]
+    for key in optional_keys:
+        if key in first_model:
+            meta_info[key] = first_model[key]
+
+    return meta_info
+
+
+def parse_tgi_info_meta(response_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parse the meta information from the TGI-like /info response.
+
+    Example:
+    {
+        "docker_label": null,
+        "max_batch_total_tokens": 8192,
+        "max_best_of": 1,
+        "max_concurrent_requests": 200,
+        "max_stop_sequences": null,
+        "max_waiting_tokens": null,
+        "sha": null,
+        "validation_workers": null,
+        "version": "1.0.0",
+        "waiting_served_ratio": null,
+        "models": [
+            {
+                "model_device_type": "npu",
+                "model_dtype": "float16",
+                "model_id": "deepseek",
+                "model_pipeline_tag": "text-generation",
+                "model_sha": null,
+                "max_total_tokens": 2560
+            }
+        ],
+        "max_input_length": 2048
+    }
+    """
+    meta_info = {}
+
+    if "models" in response_json and response_json["models"]:
+        first_model = response_json["models"][0]
+        meta_info.update(first_model)
+
+    # Optional keys from TGI-like backends
+    optional_keys = [
+        "max_batch_total_tokens",
+        "max_best_of",
+        "max_concurrent_requests",
+        "max_stop_sequences",
+        "max_waiting_tokens",
+        "max_input_length",
+    ]
+    for key in optional_keys:
+        if key in response_json:
+            meta_info[key] = response_json[key]
+
+    return meta_info
 
 
 async def set_default_worker_selector(session: AsyncSession, model: Model):
