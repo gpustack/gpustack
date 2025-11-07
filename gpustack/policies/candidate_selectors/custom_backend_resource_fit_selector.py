@@ -11,6 +11,7 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
     EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
     EVENT_ACTION_DEFAULT,
     EVENT_ACTION_MANUAL_MULTI,
+    RequestEstimateUsage,
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -174,9 +175,9 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
 
         # Try different candidate selection strategies
         candidate_functions = [
-            self._find_manual_gpu_selection_candidates,
-            self._find_single_worker_single_gpu_candidates,
-            self._find_single_worker_multi_gpu_candidates,
+            self.find_manual_gpu_selection_candidates,
+            self.find_single_worker_single_gpu_candidates,
+            self.find_single_worker_multi_gpu_candidates,
         ]
 
         # Add CPU-only candidates if supported
@@ -200,134 +201,18 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         self._set_messages()
         return []
 
-    async def _find_manual_gpu_selection_candidates(
+    async def find_manual_gpu_selection_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
-        """
-        Find candidates for manual GPU selection based on user-specified GPU IDs.
-        """
-        # Skip if no manual GPU selection is specified
-        if not self._selected_gpu_workers:
-            return []
-
-        logger.debug(
-            f"Custom backend manual GPU selection: workers={self._selected_gpu_workers}, "
-            f"worker_count={self._selected_gpu_worker_count}, "
-            f"gpu_indexes_by_worker={self._selected_gpu_indexes_by_worker}"
-        )
-
-        candidates: List[ModelInstanceScheduleCandidate] = []
-
-        # Handle single worker scenarios
+        # Single worker scenarios
         if self._selected_gpu_worker_count == 1:
-            selected_worker_name = self._selected_gpu_workers[0]
-            selected_gpu_indexes = self._selected_gpu_indexes_by_worker[
-                selected_worker_name
-            ]
-
-            # Find the worker
-            target_worker = None
-            for worker in workers:
-                if worker.name == selected_worker_name:
-                    target_worker = worker
-                    break
-
-            if not target_worker:
-                self._messages.append(
-                    f"Selected worker '{selected_worker_name}' not found."
-                )
-                return []
-
-            allocatable = await get_worker_allocatable_resource(
-                self._engine, target_worker
+            request = RequestEstimateUsage(
+                ram=self._ram_claim,
+                vram=self._vram_claim,
             )
-
-            # Single GPU selection
-            if len(selected_gpu_indexes) == 1:
-                gpu_index = selected_gpu_indexes[0]
-                available_vram = allocatable.vram.get(gpu_index, 0)
-
-                overcommit = False
-                if (
-                    available_vram < self._vram_claim
-                    or allocatable.ram < self._ram_claim
-                ):
-                    overcommit = True
-
-                vram_claim = {gpu_index: int(self._vram_claim)}
-                candidates.append(
-                    ModelInstanceScheduleCandidate(
-                        worker=target_worker,
-                        gpu_indexes=[gpu_index],
-                        computed_resource_claim=ComputedResourceClaim(
-                            vram=vram_claim,
-                            ram=self._ram_claim,
-                        ),
-                        overcommit=overcommit,
-                    )
-                )
-
-                # Add manual selection diagnostics
-                scheduling_msg = ListMessageBuilder(
-                    [
-                        f"Selected GPU {gpu_index} has {byte_to_gib(available_vram)} GiB allocatable VRAM.",
-                        f"Required VRAM {byte_to_gib(self._vram_claim)} GiB, RAM {byte_to_gib(self._ram_claim)} GiB.",
-                    ]
-                )
-                self._event_collector.add(
-                    EventLevelEnum.INFO,
-                    EVENT_ACTION_MANUAL_MULTI,
-                    str(scheduling_msg),
-                )
-
-            # Multi GPU selection on single worker
-            elif len(selected_gpu_indexes) > 1:
-                # Check if total VRAM across selected GPUs is sufficient
-                total_available_vram = 0
-                for idx in selected_gpu_indexes:
-                    total_available_vram += allocatable.vram.get(idx, 0)
-
-                overcommit = False
-                if (
-                    total_available_vram < self._vram_claim
-                    or allocatable.ram < self._ram_claim
-                ):
-                    overcommit = True
-
-                # Distribute VRAM evenly across selected GPUs (bounded by allocatable VRAM)
-                vram_per_gpu = max(
-                    int(self._vram_claim // len(selected_gpu_indexes)), 1
-                )
-                vram_distribution: Dict[int, int] = {}
-                for idx in selected_gpu_indexes:
-                    vram_distribution[idx] = min(
-                        vram_per_gpu, allocatable.vram.get(idx, 0)
-                    )
-
-                candidates.append(
-                    ModelInstanceScheduleCandidate(
-                        worker=target_worker,
-                        gpu_indexes=selected_gpu_indexes,
-                        computed_resource_claim=ComputedResourceClaim(
-                            vram=vram_distribution,
-                            ram=self._ram_claim,
-                        ),
-                        overcommit=overcommit,
-                    )
-                )
-
-                # Add manual selection diagnostics
-                scheduling_msg = ListMessageBuilder(
-                    [
-                        f"Selected GPUs have {byte_to_gib(total_available_vram)} GiB allocatable VRAM across {len(selected_gpu_indexes)} GPUs.",
-                        f"Required VRAM {byte_to_gib(self._vram_claim)} GiB, RAM {byte_to_gib(self._ram_claim)} GiB.",
-                    ]
-                )
-                self._event_collector.add(
-                    EventLevelEnum.INFO,
-                    EVENT_ACTION_MANUAL_MULTI,
-                    str(scheduling_msg),
-                )
+            return await self._find_manual_gpu_selection_candidates(
+                workers, 0, request, self._event_collector
+            )
 
         # Multi-worker scenarios are not supported for custom backends
         elif self._selected_gpu_worker_count > 1:
@@ -341,11 +226,9 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                     )
                 ),
             )
-            return []
+        return []
 
-        return candidates
-
-    async def _find_single_worker_single_gpu_candidates(
+    async def find_single_worker_single_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -388,7 +271,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def _find_single_worker_multi_gpu_candidates(
+    async def find_single_worker_multi_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """

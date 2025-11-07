@@ -1,5 +1,4 @@
 import asyncio
-import dataclasses
 import logging
 import os
 from typing import Dict, List, Optional
@@ -10,6 +9,7 @@ from gpustack.policies.base import (
 )
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
     ModelAttentionTypeEnum,
+    RequestEstimateUsage,
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.utils import (
@@ -34,12 +34,6 @@ from gpustack.utils.unit import byte_to_gib
 from gpustack.worker.backends.ascend_mindie import AscendMindIEParameters
 
 logger = logging.getLogger(__name__)
-
-
-@dataclasses.dataclass
-class RequestEstimateUsage:
-    ram: int
-    vram: int
 
 
 class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):

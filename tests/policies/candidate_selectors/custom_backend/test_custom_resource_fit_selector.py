@@ -38,8 +38,6 @@ from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector imp
             ),
             [
                 '- The model requires approximately 19.31 GiB of VRAM and 2.0 GiB of RAM.\n'
-                '- Selected GPUs have 47.98 GiB allocatable VRAM across 3 GPUs.\n'
-                '- Required VRAM 19.31 GiB, RAM 2.0 GiB.'
             ],
         ),
     ],

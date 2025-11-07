@@ -6,7 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from transformers import PretrainedConfig
 from typing import Dict, List, Optional, Tuple
 from gpustack.config import Config
-from gpustack.schemas.models import Model
+from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
+from gpustack.schemas.models import (
+    ComputedResourceClaim,
+    Model,
+    ModelInstanceSubordinateWorker,
+)
 from gpustack.schemas.workers import Worker
 from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
@@ -23,8 +28,12 @@ from gpustack.server.db import get_engine
 from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
 from gpustack.policies.utils import (
     ListMessageBuilder,
+    get_computed_ram_claim,
     get_model_num_attention_heads,
     get_worker_allocatable_resource,
+    get_worker_model_instances,
+    sort_gpu_indexes_by_allocatable_rate,
+    sort_selected_workers_by_resource,
 )
 from gpustack.utils.unit import byte_to_gib
 
@@ -37,6 +46,12 @@ EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
     "auto_single_worker_multi_gpu_scheduling_msg"
 )
 EVENT_ACTION_AUTO_SINGLE_GPU = "auto_single_gpu_scheduling_msg"
+
+
+@dataclass
+class RequestEstimateUsage:
+    ram: int
+    vram: int
 
 
 class ModelAttentionTypeEnum(enum.Enum):
@@ -266,9 +281,6 @@ class ScheduleCandidatesSelector(ABC):
             self._gpu_count = world_size
 
     async def _get_worker_allocatable_resource(self, worker: Worker):
-        if worker.id in self._workers_allocatable_resource:
-            return self._workers_allocatable_resource[worker.id]
-
         allocatable = await get_worker_allocatable_resource(self._engine, worker)
         self._workers_allocatable_resource[worker.id] = allocatable
         return allocatable
@@ -299,11 +311,12 @@ class ScheduleCandidatesSelector(ABC):
         self._worker_vram_totals_by_gpu_idxs[worker.name] = vram_by_idxs
         return vram_by_idxs
 
-    async def _get_worker_vram_claim(
+    async def _get_worker_resource_claim(
         self,
         worker: Worker,
         gpu_indexes: List[int],
         gpu_memory_utilization: float,
+        request: Optional[RequestEstimateUsage] = None,
     ) -> Dict[int, int]:
         """
         Given a worker and gpu indexes, get the vram claim according to gpu_memory_utilization.
@@ -314,16 +327,26 @@ class ScheduleCandidatesSelector(ABC):
             if gpu.index not in gpu_indexes:
                 continue
 
-            vram_claim[gpu.index] = int(gpu.memory.total * gpu_memory_utilization)
+            claim = 0
+            # LLMs
+            if gpu_memory_utilization > 0:
+                claim = int(gpu.memory.total * gpu_memory_utilization)
+            # non LLMs
+            else:
+                if request is not None:
+                    claim = int(request.vram / len(gpu_indexes))
+                else:
+                    claim = 0
+
+            vram_claim[gpu.index] = claim
         return vram_claim
 
     async def _generate_manual_selected_gpus_overcommit_message(  # noqa: C901
         self,
         candidate: ModelInstanceScheduleCandidate,
         workers: List[Worker],
-        vram_claim: int,
+        request: RequestEstimateUsage,
         gpu_memory_utilization: float,
-        # event_collector: EventCollector,
     ) -> Tuple[bool, str, float]:
         """Check whether the candidate is overcommit and generate overcommit message.
 
@@ -332,13 +355,12 @@ class ScheduleCandidatesSelector(ABC):
             workers (List[Worker]): The list of workers.
             vram_claim (int): The model VRAM claim in bytes.
             gpu_memory_utilization (float): The required GPU memory utilization ratio.
-            event_collector (EventCollector): The event collector to record messages.
 
         Returns:
-            _type_: _description_
+            Tuple[bool, str, float]: A tuple of (is_overcommit, message, effective_vram).
         """
         if not self._model.gpu_selector or not self._model.gpu_selector.gpu_ids:
-            return False
+            return (False, "", 0)
 
         # 1. Build worker set for easy access.
         worker_set = {w.name: w for w in workers}
@@ -388,6 +410,7 @@ class ScheduleCandidatesSelector(ABC):
         used_satisfied_count = 0
         used_gpus_total_allocatable_vram_for_non_llms = 0
         used_vram_claim_total = 0
+        used_ram_claim_total = 0
 
         pairs = [
             (
@@ -408,6 +431,8 @@ class ScheduleCandidatesSelector(ABC):
             used_vram_claim_total += (
                 sum(v for k, v in claim.vram.items() if claim.vram is not None) or 0
             )
+            used_ram_claim_total += claim.ram or 0
+
             used_gpu_count += len(indexes)
             for idx in indexes:
                 allocatable_vram = wa.vram.get(idx)
@@ -418,7 +443,9 @@ class ScheduleCandidatesSelector(ABC):
 
         # 4. Determine if overcommit occurred.
         overcommit = (
-            used_vram_claim_total < vram_claim or used_satisfied_count < used_gpu_count
+            used_vram_claim_total < request.vram
+            or (request.ram > 0 and used_ram_claim_total < request.ram)
+            or used_satisfied_count < used_gpu_count
         )
 
         if not overcommit:
@@ -487,7 +514,7 @@ class ScheduleCandidatesSelector(ABC):
         self,
         candidates: List[ModelInstanceScheduleCandidate],
         workers: List[Worker],
-        vram_claim: int,
+        request: RequestEstimateUsage,
         gpu_memory_utilization: float,
     ) -> Tuple[
         List[ModelInstanceScheduleCandidate],
@@ -502,7 +529,7 @@ class ScheduleCandidatesSelector(ABC):
         for c in candidates:
             overcommit, msg, effective_vram = (
                 await self._generate_manual_selected_gpus_overcommit_message(
-                    c, workers, vram_claim, gpu_memory_utilization
+                    c, workers, request, gpu_memory_utilization
                 )
             )
             c.overcommit = overcommit
@@ -518,3 +545,293 @@ class ScheduleCandidatesSelector(ABC):
             return non_overcommits_candidates, None, None
 
         return non_overcommits_candidates, best_overcommit_candidate, overcommit_msg
+
+    async def _find_manual_gpu_selection_candidates(
+        self,
+        workers: List[Worker],
+        gpu_memory_utilization: float,
+        request: RequestEstimateUsage,
+        event_collector: EventCollector,
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """
+        Find candidates for manual GPU selection based on user-specified GPU IDs.
+        This function handles all manual GPU selection scenarios for vLLM.
+        """
+        # Skip if no manual GPU selection is specified
+        if not self._selected_gpu_workers:
+            return []
+
+        logger.debug(
+            f"Manual GPU selection: workers={self._selected_gpu_workers}, "
+            f"worker_count={self._selected_gpu_worker_count}, "
+            f"gpu_indexes_by_worker={self._selected_gpu_indexes_by_worker}"
+        )
+
+        candidates = []
+
+        # Filter and sort selected workers by resource
+        selected_workers = await sort_selected_workers_by_resource(
+            workers,
+            self._selected_gpu_indexes_by_worker,
+            self._get_worker_allocatable_resource,
+        )
+        if len(selected_workers) != self._selected_gpu_worker_count:
+            missing_workers = set(self._selected_gpu_workers) - {
+                w.name for w in selected_workers
+            }
+
+            event_collector.add(
+                EventLevelEnum.INFO,
+                EVENT_ACTION_MANUAL_MULTI,
+                f"Selected workers not found: {list(missing_workers)}",
+            )
+            return []
+
+        # Handle single-worker single gpu scenarios
+        if self._gpu_count == 1:
+            for worker in selected_workers:
+                selected_gpu_indexes = self._selected_gpu_indexes_by_worker.get(
+                    worker.name
+                )
+                if selected_gpu_indexes is None:
+                    continue
+
+                for idx in selected_gpu_indexes:
+                    worker_candidates = (
+                        await self._manual_select_single_worker_multi_gpu_candidates(
+                            worker, [idx], gpu_memory_utilization, request
+                        )
+                    )
+                    candidates.extend(worker_candidates)
+
+        # Handle single-worker multi-GPU and multi-worker scenarios
+        elif self._gpu_count > 1:
+
+            # Single-worker multi-GPU selection
+            for worker in selected_workers:
+                selected_gpu_indexes = self._selected_gpu_indexes_by_worker.get(
+                    worker.name
+                )
+                if selected_gpu_indexes is None:
+                    continue
+
+                worker_candidates = (
+                    await self._manual_select_single_worker_multi_gpu_candidates(
+                        worker, selected_gpu_indexes, gpu_memory_utilization, request
+                    )
+                )
+                candidates.extend(worker_candidates)
+
+            # Multi-worker multi-GPU selection
+            if not candidates:
+                worker_candidates = (
+                    await self._manual_select_multi_worker_multi_gpu_candidates(
+                        selected_workers, gpu_memory_utilization, request
+                    )
+                )
+                candidates.extend(worker_candidates)
+
+        if not candidates:
+            return []
+
+        # Separate non-overcommit and overcommit candidates
+        non_overcommits_candidates, best_overcommit_candidate, overcommit_msg = (
+            await self._get_non_overcommit_and_best_overcommit_candidates(
+                candidates, workers, request, gpu_memory_utilization
+            )
+        )
+
+        # Return non-overcommit candidates if any
+        if non_overcommits_candidates:
+            return non_overcommits_candidates
+
+        # Handle overcommit candidates
+        if self._model.replicas > 1:
+            event_collector.add(
+                EventLevelEnum.INFO,
+                EVENT_ACTION_MANUAL_MULTI,
+                str(
+                    ListMessageBuilder(
+                        f"Found {len(candidates) - len(non_overcommits_candidates)} candidate, manual scheduling for multi-replica model instances does not allow overcommit or heterogeneous deployment topologies.",
+                    )
+                ),
+            )
+            return []
+
+        if best_overcommit_candidate:
+            event_collector.add(
+                EventLevelEnum.INFO, EVENT_ACTION_MANUAL_MULTI, overcommit_msg
+            )
+            return [best_overcommit_candidate]
+
+        return []
+
+    async def _manual_select_single_worker_multi_gpu_candidates(
+        self,
+        worker: Worker,
+        gpu_indexes: List[int],
+        gpu_memory_utilization: float,
+        request: RequestEstimateUsage,
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """Manually select multi GPU candidates."""
+
+        # Early exit
+        if len(gpu_indexes) < self._gpu_count:
+            return []
+
+        allocatable = await self._get_worker_allocatable_resource(worker)
+        vram_totals_by_gpu_idx = self._get_worker_vram_totals_by_gpu_idxs(worker)
+
+        # Check ram requirement
+        if request.ram is not None and allocatable.ram < request.ram:
+            return []
+
+        # Check if the GPU is satisfied the requirement
+        satisfied_gpu_indexes = []
+        unsatisfied_gpu_indexes = []
+        for gpu_index in gpu_indexes:
+            allocatable_vram = allocatable.vram.get(gpu_index, 0)
+            total_vram = vram_totals_by_gpu_idx.get(gpu_index, 0)
+
+            # LLMs
+            if gpu_memory_utilization > 0:
+                if (
+                    total_vram > 0
+                    and allocatable_vram / total_vram >= gpu_memory_utilization
+                ):
+                    satisfied_gpu_indexes.append(gpu_index)
+                else:
+                    unsatisfied_gpu_indexes.append(gpu_index)
+            # non LLMs
+            else:
+                satisfied_gpu_indexes.append(gpu_index)
+
+            if len(satisfied_gpu_indexes) >= self._gpu_count:
+                break
+
+        # Extend with unsatisfied gpu indexes if not enough satisfied gpus
+        used_gpu_indexes = satisfied_gpu_indexes.copy()
+        used_gpu_indexes.extend(
+            unsatisfied_gpu_indexes[: self._gpu_count - len(satisfied_gpu_indexes)]
+        )
+
+        # Get vram claims for used gpus
+        vram_claims = await self._get_worker_resource_claim(
+            worker, used_gpu_indexes, gpu_memory_utilization, request
+        )
+        return [
+            ModelInstanceScheduleCandidate(
+                worker=worker,
+                gpu_indexes=used_gpu_indexes,
+                computed_resource_claim=ComputedResourceClaim(
+                    vram=vram_claims,
+                    ram=get_computed_ram_claim(self._model, vram_claims, request.ram),
+                ),
+            )
+        ]
+
+    async def _manual_select_multi_worker_multi_gpu_candidates(
+        self,
+        workers: List[Worker],
+        gpu_memory_utilization: float,
+        request: RequestEstimateUsage,
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """Manual select multi worker multi GPU candidates."""
+        if len(workers) < 2:
+            return []
+
+        # Main worker is the first one (with most GPUs)
+        main_worker = workers[0]
+        main_worker_name = main_worker.name
+        main_gpu_indexes = self._selected_gpu_indexes_by_worker[main_worker_name]
+        main_vram_claim = await self._get_worker_resource_claim(
+            main_worker, main_gpu_indexes, gpu_memory_utilization, request
+        )
+
+        # Handle subordinate workers
+        subordinate_workers: List[ModelInstanceSubordinateWorker] = []
+        for worker in workers:
+
+            # Skip if the worker is not selected
+            if worker.name not in self._selected_gpu_workers:
+                continue
+            if worker.name == main_worker_name:
+                continue
+            if not await self._validate_distributed_limit_per_worker(worker):
+                continue
+
+            # Sort GPUs by allocatable rate
+            gpu_indexes = self._selected_gpu_indexes_by_worker[worker.name]
+            vram_allocatable = await self._get_worker_resource_claim(
+                worker, gpu_indexes, gpu_memory_utilization, request
+            )
+            sorted_gpu_indexes = sort_gpu_indexes_by_allocatable_rate(
+                worker, vram_allocatable
+            )
+
+            # Calculate how many GPUs can be assigned to this subordinate worker
+            current_gpu_count = len(main_gpu_indexes) + sum(
+                len(sw.gpu_indexes) for sw in subordinate_workers
+            )
+            remaining_gpu_count = max(self._gpu_count - current_gpu_count, 0)
+            assign_count = min(len(gpu_indexes), remaining_gpu_count)
+
+            # Assign GPUs to the subordinate worker
+            sw_gpu_indexes = sorted_gpu_indexes[:assign_count]
+            vram_claim = await self._get_worker_resource_claim(
+                worker, sw_gpu_indexes, gpu_memory_utilization, request
+            )
+
+            subordinate_workers.append(
+                ModelInstanceSubordinateWorker(
+                    worker_id=worker.id,
+                    worker_name=worker.name,
+                    worker_ip=worker.ip,
+                    worker_ifname=worker.ifname,
+                    total_gpus=len(worker.status.gpu_devices),
+                    gpu_indexes=sw_gpu_indexes,
+                    computed_resource_claim=ComputedResourceClaim(
+                        vram=vram_claim,
+                        ram=get_computed_ram_claim(
+                            self._model, vram_claim, request.ram
+                        ),
+                    ),
+                )
+            )
+
+            current_gpu_count = len(main_gpu_indexes) + sum(
+                len(sw.gpu_indexes) for sw in subordinate_workers
+            )
+            if self._gpu_count and current_gpu_count >= self._gpu_count:
+                break
+
+        return [
+            ModelInstanceScheduleCandidate(
+                worker=main_worker,
+                gpu_indexes=main_gpu_indexes,
+                computed_resource_claim=ComputedResourceClaim(
+                    vram=main_vram_claim,
+                    ram=get_computed_ram_claim(
+                        self._model, main_vram_claim, request.ram
+                    ),
+                ),
+                subordinate_workers=subordinate_workers,
+            )
+        ]
+
+    async def _validate_distributed_limit_per_worker(self, worker: Worker) -> bool:
+        """
+        Validate that there is no more than one distributed vLLM instance per worker.
+        """
+        instances = await get_worker_model_instances(self._engine, worker)
+        for instance in instances:
+            if (
+                instance.distributed_servers
+                and instance.distributed_servers.subordinate_workers
+            ):
+                self._messages = [
+                    f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
+                ]
+                return False
+
+        return True

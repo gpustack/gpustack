@@ -264,7 +264,13 @@ async def validate_gpu_ids(  # noqa: C901
             )
 
     audio_model = is_audio_model(model_in)
-    if audio_model and len(model_in.gpu_selector.gpu_ids) > 1:
+    if audio_model and (
+        len(model_in.gpu_selector.gpu_ids) > 1
+        or (
+            model_in.gpu_selector.gpus_per_replica is not None
+            and model_in.gpu_selector.gpus_per_replica > 1
+        )
+    ):
         raise BadRequestException(
             message="Audio models are restricted to execution on a single NVIDIA GPU."
         )
