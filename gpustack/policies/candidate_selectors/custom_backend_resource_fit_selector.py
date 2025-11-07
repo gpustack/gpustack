@@ -7,6 +7,10 @@ from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
 )
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    EVENT_ACTION_AUTO_SINGLE_GPU,
+    EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
+    EVENT_ACTION_DEFAULT,
+    EVENT_ACTION_MANUAL_MULTI,
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -28,14 +32,8 @@ from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
 
-EVENT_ACTION_DEFAULT = "default_scheduling_msg"
-EVENT_ACTION_RESOURCE_ESTIMATION = "custom_backend_resource_estimation_msg"
-EVENT_ACTION_MANUAL_MULTI = "custom_backend_manual_gpu_scheduling_msg"
-EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
-    "custom_backend_auto_single_worker_multi_gpu_scheduling_msg"
-)
-EVENT_ACTION_AUTO_SINGLE_GPU = "custom_backend_auto_single_gpu_scheduling_msg"
-EVENT_ACTION_CPU_ONLY = "custom_backend_cpu_only_scheduling_msg"
+EVENT_ACTION_RESOURCE_ESTIMATION = "backend_resource_estimation_msg"
+EVENT_ACTION_CPU_ONLY = "backend_cpu_only_scheduling_msg"
 
 
 async def estimate_custom_backend_vram(

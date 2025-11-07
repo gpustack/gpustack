@@ -8,6 +8,11 @@ from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
 )
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
+    EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+    EVENT_ACTION_AUTO_SINGLE_GPU,
+    EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
+    EVENT_ACTION_DEFAULT,
+    EVENT_ACTION_MANUAL_MULTI,
     ScheduleCandidatesSelector,
 )
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -19,6 +24,8 @@ from gpustack.policies.utils import (
     ram_not_enough,
     get_model_ram_claim,
     get_computed_ram_claim,
+    sort_gpu_indexes_by_allocatable_rate,
+    sort_workers_by_gpu_count,
 )
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -35,14 +42,6 @@ from gpustack.utils.gpu import (
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
-
-EVENT_ACTION_DEFAULT = "default_scheduling_msg"
-EVENT_ACTION_MANUAL_MULTI = "manual_multi_gpu_scheduling_msg"
-EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU = "auto_multi_worker_multi_gpu_scheduling_msg"
-EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU = (
-    "auto_single_worker_multi_gpu_scheduling_msg"
-)
-EVENT_ACTION_AUTO_SINGLE_GPU = "auto_single_gpu_scheduling_msg"
 
 
 def parse_model_size_by_name(model_name: str) -> int:
@@ -1200,36 +1199,3 @@ def _create_candidate(
         )
 
     return candidate
-
-
-def sort_workers_by_gpu_count(workers: List[Worker]):
-    """
-    Sort workers by the number of GPUs.
-    """
-    workers.sort(
-        key=lambda worker: (
-            len(worker.status.gpu_devices)
-            if worker.status and worker.status.gpu_devices
-            else 0
-        ),
-        reverse=True,
-    )
-
-
-def sort_gpu_indexes_by_allocatable_rate(
-    worker: Worker, allocatable: dict
-) -> List[int]:
-    """
-    Sort GPU indexes of a worker by allocatable VRAM rate (allocatable_vram / total_vram), ascending.
-    """
-    allocatable_rate = {
-        gpu.index: (
-            allocatable.get(gpu.index, 0) / gpu.memory.total
-            if gpu.memory and gpu.memory.total
-            else 0
-        )
-        for gpu in worker.status.gpu_devices
-    }
-
-    # return a list of gpu indexes sorted by allocatable rate in ascending order
-    return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx])
