@@ -434,7 +434,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if not gpu_list or len(gpu_list) < 2:
                 continue
 
-            if total_allocatable_vram > self._largest_multi_gpu_total:
+            if total_allocatable_vram > self._largest_multi_gpu_vram:
                 self._largest_multi_gpu_vram = total_allocatable_vram
                 self._largest_multi_gpu_utilization_satisfied_count = len(gpu_list)
                 self._largest_multi_gpu_total = len(worker.status.gpu_devices)
@@ -506,13 +506,17 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         if len(event_msg_list) == 0:
             event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
             if self._mem_fraction_static != 0:
-                effective_vram = byte_to_gib(
-                    int(
-                        self._largest_multi_gpu_vram
-                        * self._mem_fraction_static
-                        * self._largest_multi_gpu_utilization_satisfied_count
-                        / self._largest_multi_gpu_total
+                effective_vram = (
+                    byte_to_gib(
+                        int(
+                            self._largest_multi_gpu_vram
+                            * self._mem_fraction_static
+                            * self._largest_multi_gpu_utilization_satisfied_count
+                            / self._largest_multi_gpu_total
+                        )
                     )
+                    if self._largest_multi_gpu_total > 0
+                    else 0
                 )
                 event_msg = (
                     event_msg.rstrip(".")
