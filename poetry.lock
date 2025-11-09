@@ -393,13 +393,13 @@ tests = ["pytest", "pytest-cov", "torch", "torchvision"]
 
 [[package]]
 name = "argcomplete"
-version = "3.6.2"
+version = "3.6.3"
 description = "Bash tab completion for argparse"
-optional = true
+optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "argcomplete-3.6.2-py3-none-any.whl", hash = "sha256:65b3133a29ad53fb42c48cf5114752c7ab66c1c38544fdf6460f450c09b42591"},
-    {file = "argcomplete-3.6.2.tar.gz", hash = "sha256:d0519b1bc867f5f4f4713c41ad0aba73a4a5f007449716b16f385f2166dc6adf"},
+    {file = "argcomplete-3.6.3-py3-none-any.whl", hash = "sha256:f5007b3a600ccac5d25bbce33089211dfd49eab4a7718da3f10e3082525a92ce"},
+    {file = "argcomplete-3.6.3.tar.gz", hash = "sha256:62e8ed4fd6a45864acc8235409461b72c9a28ee785a2011cc5eb78318786c89c"},
 ]
 
 [package.extras]
@@ -2770,32 +2770,34 @@ six = ">=1.9.0"
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.13"
+version = "0.1.17"
 description = "GPUStack Runner is library for registering runnable accelerated backends and services in GPUStack."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runner-0.1.13-py3-none-any.whl", hash = "sha256:4fb2c42439e8a7f785f91cf1a495ba0848256e0e060e6e9a148aa5c9010f7ed4"},
-    {file = "gpustack_runner-0.1.13.tar.gz", hash = "sha256:aaf67de061bd41281128738aac3d691aea41d0b92848a6569561536719b3c34a"},
+    {file = "gpustack_runner-0.1.17-py3-none-any.whl", hash = "sha256:30358bfdda64b4d751a426f472a67ffab55805a928aa090d4b0d1cc3a15d6aa7"},
+    {file = "gpustack_runner-0.1.17.tar.gz", hash = "sha256:d3c3cce5d5c6dd7649cd1f15b0a6505c3ec5d4b5e4507a75b513822bdfdb90a5"},
 ]
 
 [package.dependencies]
+argcomplete = ">=3.6.3"
 dataclasses-json = ">=0.6.7"
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.26"
+version = "0.1.27"
 description = "GPUStack Runtime is library for detecting GPU resources and launching GPU workloads."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runtime-0.1.26-py3-none-any.whl", hash = "sha256:7a27ff1360cd769c41398a35d85ae94cef6bc95e81c97a3676ff98845f9b24da"},
-    {file = "gpustack_runtime-0.1.26.tar.gz", hash = "sha256:c9b631b4342e9c3c797d025760db92f011ca199c2db83ba2b836a04c9211e0c5"},
+    {file = "gpustack_runtime-0.1.27-py3-none-any.whl", hash = "sha256:33a027a167a34036b903077ac94c604c8ec3903bbc0830285d3731d5b29c455a"},
+    {file = "gpustack_runtime-0.1.27.tar.gz", hash = "sha256:6c9c8900f359d719aaf5fbc3248e03e10d384e7a43c77db4271c9bead3ad16fc"},
 ]
 
 [package.dependencies]
+argcomplete = ">=3.6.3"
 docker = "*"
-gpustack-runner = ">=0.1.13"
+gpustack-runner = ">=0.1.17"
 kubernetes = "*"
 nvidia-ml-py = ">=13.580.65"
 pyyaml = "*"
@@ -10692,4 +10694,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "9a1cc287b994770fe52aa28f9acd79dbd345ab4bb92ee5eb66e4e8ffb6ec6e72"
+content-hash = "2f7b2db17846454d97b4fc2dd9bde3842e3f4e10adfb27faab9bcf40dda5b357"
