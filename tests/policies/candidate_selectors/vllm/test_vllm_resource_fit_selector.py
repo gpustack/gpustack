@@ -52,12 +52,13 @@ def expected_candidate(
 
 
 @pytest.mark.parametrize(
-    "m, workers, expected_candidates, final_candidate_index",
+    "case_name, m, workers, expected_candidates, final_candidate_index",
     [
         # Manually select two GPUs from 2 worker.
         # Check point:
         # - Candidate selection correctness.
         (
+            "manual_select_1+1_gpus_2_workers",
             make_model(2, ["host4090:cuda:0", "host-2-4090:cuda:0"]),
             [
                 linux_nvidia_1_4090_24gx1(),
@@ -90,6 +91,7 @@ def expected_candidate(
         # Check point:
         # - Candidate should occupy 1 GPUs; 1 GPUs remain unused.
         (
+            "manual_select_1+1_gpus_2_workers_with_gpus_per_replica",
             make_model(1, ["host4090:cuda:0", "host-2-4090:cuda:0"]),
             [
                 linux_nvidia_1_4090_24gx1(),
@@ -107,6 +109,7 @@ def expected_candidate(
         # - Main inference worker should pick the worker with most GPUs.
         # - Subordinate worker assignment correctness.
         (
+            "manual_select_3+2_gpus_2_workers",
             make_model(
                 4,
                 [
@@ -150,6 +153,7 @@ def expected_candidate(
         # Check point:
         # - Candidate should occupy 2 GPUs; 2 GPUs remain unused.
         (
+            "manual_select_3+1_gpus_2_workers_with_gpus_per_replica_2",
             make_model(
                 2,
                 [
@@ -180,6 +184,7 @@ def expected_candidate(
         # Check point:
         # - Candidate selection correctness.
         (
+            "manual_select_2+1+1_gpus_3_workers",
             make_model(
                 4,
                 [
@@ -233,6 +238,7 @@ def expected_candidate(
         # Check point:
         # - Candidate selection correctness.
         (
+            "auto_schedule_16_gpus_2_workers_deepseek_r1",
             make_model(0, None, "deepseek-ai/DeepSeek-R1"),
             [
                 linux_nvidia_1_4090_24gx1(),
@@ -286,6 +292,7 @@ def expected_candidate(
         # - Candidate selection correctness.
         # - GPU count by PP size correctness.
         (
+            "auto_schedule_1+1+1_gpus_3_workers_pp3",
             make_model(
                 0,
                 None,
@@ -329,11 +336,67 @@ def expected_candidate(
             ],
             0,
         ),
+        # Manually select 3 GPUs distributedly from 3 worker for PP3.
+        # Check point:
+        # - Candidate selection correctness.
+        # - Manual scheduling with PP size correctness.
+        (
+            "manual_select_1+1+1_gpus_3_workers_pp3",
+            make_model(
+                0,
+                [
+                    "host4090-0:cuda:0",
+                    "host4090:cuda:0",
+                    "host-2-4090:cuda:0",
+                ],
+                "Qwen/Qwen3-0.6B",
+                backend_parameters=["--pipeline-parallel-size=3"],
+            ),
+            [
+                linux_nvidia_0_4090_24gx1(),
+                linux_nvidia_1_4090_24gx1(),
+                linux_nvidia_3_4090_24gx1(),
+            ],
+            [
+                expected_candidate(
+                    103,
+                    "host4090-0",
+                    [0],
+                    {0: 23413653504},
+                    [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=2,
+                            worker_ip="192.168.50.3",
+                            total_gpus=1,
+                            gpu_indexes=[0],
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                vram={0: 23413653504},
+                                ram=0,
+                            ),
+                        ),
+                        ModelInstanceSubordinateWorker(
+                            worker_id=12,
+                            worker_ip="192.168.50.4",
+                            total_gpus=1,
+                            gpu_indexes=[0],
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                vram={0: 23181498777},
+                                ram=0,
+                            ),
+                        ),
+                    ],
+                )
+            ],
+            0,
+        ),
         # Auto select 2 NPUs from 1 worker.
         # Check point:
         # - Candidate selection correctness.
         # - vLLM with NPUs.
         (
+            "auto_schedule_2_npus_1_worker",
             make_model(
                 0,
                 None,
@@ -354,6 +417,7 @@ def expected_candidate(
             0,
         ),
         (
+            "auto_schedule_embedding_model",
             new_model(
                 1,
                 "test_name",
@@ -367,10 +431,11 @@ def expected_candidate(
             [expected_candidate(2, "host4090", [0], {0: 1588014354})],
             0,
         ),
+        # Auto schedule model with extended kv cache.
+        # Check point:
+        # - Candidate selection correctness.
         (
-            # Auto schedule model with extended kv cache.
-            # Check point:
-            # - Candidate selection correctness.
+            "auto_schedule_model_with_extended_kv_cache",
             new_model(
                 1,
                 "test_name",
@@ -386,10 +451,11 @@ def expected_candidate(
             [expected_candidate(2, "host4090", [0], {0: 23413653504}, ram=8589934592)],
             0,
         ),
+        # Auto schedule model with extended kv cache and ram ratio.
+        # Check point:
+        # - Candidate selection correctness.
         (
-            # Auto schedule model with extended kv cache and ram ratio.
-            # Check point:
-            # - Candidate selection correctness.
+            "auto_schedule_model_with_extended_kv_cache_and_ram_ratio",
             new_model(
                 1,
                 "test_name",
@@ -409,7 +475,7 @@ def expected_candidate(
 )
 @pytest.mark.asyncio
 async def test_select_candidates(
-    config, m, workers, expected_candidates, final_candidate_index
+    config, case_name, m, workers, expected_candidates, final_candidate_index
 ):
     with (
         patch(
@@ -438,11 +504,14 @@ async def test_select_candidates(
         actual_candidates = await placement_scorer.score(actual_candidates)
         actual_candidate, _ = await scheduler.find_candidate(config, m, workers)
 
-        assert len(actual_candidates) == len(expected_candidates)
-        compare_candidates(actual_candidates, expected_candidates)
-        compare_candidates(
-            [actual_candidate], [expected_candidates[final_candidate_index]]
-        )
+        try:
+            assert len(actual_candidates) == len(expected_candidates)
+            compare_candidates(actual_candidates, expected_candidates)
+            compare_candidates(
+                [actual_candidate], [expected_candidates[final_candidate_index]]
+            )
+        except AssertionError as e:
+            raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
 
 
 @pytest.mark.asyncio

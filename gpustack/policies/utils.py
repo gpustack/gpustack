@@ -582,7 +582,7 @@ async def sort_selected_workers_by_resource(
         ]
 
         # Create a copy of the worker with sorted GPUs
-        w = worker.model_copy()
+        w = worker.model_copy(deep=True)
         w.status.gpu_devices = sorted_gpus
         selected_workers.append(w)
 
