@@ -19,6 +19,7 @@ from gpustack.utils.network import get_free_port
 from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
+    is_ascend,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,16 @@ class SGLangServer(InferenceServer):
         # Add user-defined backend parameters
         if self._model.backend_parameters:
             arguments.extend(self._model.backend_parameters)
+
+        # Add platform-specific parameters
+        if is_ascend(self._get_selected_gpu_devices()):
+            # See https://github.com/sgl-project/sglang/pull/7722.
+            arguments.extend(
+                [
+                    "--attention-backend",
+                    "ascend",
+                ]
+            )
 
         # Set host and port
         arguments.extend(
