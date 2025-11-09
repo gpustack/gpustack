@@ -525,7 +525,8 @@ ENV ASCEND_HOME_PATH="/usr/local/Ascend/ascend-toolkit/latest" \
 ##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /usr/local/neuware:/usr/local/neuware:ro -v /usr/bin/cnmon:/usr/bin/cnmon ...
 ENV CAMBRICON_VISIBLE_DEVICES="all" \
     NEUWARE_HOME="/usr/local/neuware" \
-    LD_LIBRARY_PATH="/usr/local/neuware/lib64:${LD_LIBRARY_PATH}"
+    LD_LIBRARY_PATH="/usr/local/neuware/lib64:${LD_LIBRARY_PATH}" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/usr/local/neuware;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
 ## Active all Hygon devices detection,
 ## works with (default) Hygon container runtime and privileged mode.
@@ -552,7 +553,9 @@ ENV HYGON_VISIBLE_DEVICES="all" \
 ##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /run/udev:/run/udev:ro -v /usr/local/corex:/usr/local/corex:ro -v /usr/bin/ixsmi:/usr/bin/ixsmi ...
 ##   + Disallowing privileged, try with:
 ##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /run/udev:/run/udev:ro -v /usr/local/corex:/usr/local/corex:ro -v /usr/bin/ixsmi:/usr/bin/ixsmi...
-ENV ILUVATAR_VISIBLE_DEVICES="all"
+ENV ILUVATAR_VISIBLE_DEVICES="all" \
+    LD_LIBRARY_PATH="/usr/local/corex/lib64:${LD_LIBRARY_PATH}" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/usr/local/corex;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
 ## Active all MetaX devices detection,
 ## works with (default) MetaX container runtime and privileged mode.
