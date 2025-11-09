@@ -4,6 +4,7 @@ from multiprocessing import freeze_support
 from gpustack.cmd import setup_start_cmd
 from gpustack.cmd.db_migration import setup_migrate_cmd
 from gpustack.cmd.download_tools import setup_download_tools_cmd
+from gpustack.cmd.images import setup_images_cmd
 from gpustack.cmd.reset_admin_password import setup_reset_admin_password_cmd
 from gpustack.cmd.version import setup_version_cmd
 
@@ -26,10 +27,14 @@ def main():
     setup_version_cmd(subparsers)
     setup_reset_admin_password_cmd(subparsers)
     setup_migrate_cmd(subparsers)
+    setup_images_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
-        args.func(args)
+        if isinstance(args.func, type):
+            args.func(args).run()
+        else:
+            args.func(args)
     else:
         parser.print_help()
 
