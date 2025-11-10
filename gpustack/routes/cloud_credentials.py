@@ -137,4 +137,9 @@ async def proxy_cluster_provider_api(
     header_modifier = partial(
         provider[0].process_header, credential.key, credential.secret, options
     )
-    return await proxy_to(request, url, header_modifier)
+    response = await proxy_to(request, url, header_modifier)
+    if response.status_code in [401, 403, 404]:
+        original_status = response.status_code
+        response.status_code = 400
+        response.headers.append("X-GPUStack-Original-Status", str(original_status))
+    return response
