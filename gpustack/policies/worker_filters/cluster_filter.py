@@ -18,7 +18,7 @@ class ClusterFilter(WorkerFilter):
         Filter the workers with the cluster selector.
         """
         if not hasattr(self._model, "cluster_id"):
-            return workers, ["No cluster selector specified, skipping cluster filter."]
+            return workers, []
         candidates = []
         for worker in workers:
             if worker.cluster_id != self._model.cluster_id:
