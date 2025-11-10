@@ -29,9 +29,9 @@ for ((i=0; i<$#; i++)); do
 	arg="${!i}"
 	next_idx=$((i+1))
 	next_arg="${!next_idx}"
-	if [[ "$arg" == --server-url && -n "$next_arg" && ! "$next_arg" =~ ^-- ]]; then
+    if [[ ("$arg" == "--server-url" || "$arg" == "-s") && -n "$next_arg" && ! "$next_arg" =~ ^-- ]]; then
         SERVER_URL_VALUE="$next_arg"
-		echo "[INFO] detect --server-url argument: $SERVER_URL_VALUE, setting role to worker."
+		echo "[INFO] detect --server-url/-s argument: $SERVER_URL_VALUE, setting role to worker."
         echo "worker" > "$ROLE_FILE"
         echo "0" > "$FLAG_POSTGRES_FLAG_FILE"
 	fi
