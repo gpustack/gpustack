@@ -122,7 +122,7 @@ class VoxBoxServer(InferenceServer):
         # Append immutable arguments to ensure proper operation for accessing
         immutable_arguments = [
             "--host",
-            "0.0.0.0",
+            self._worker.ip,
             "--port",
             str(port),
         ]
