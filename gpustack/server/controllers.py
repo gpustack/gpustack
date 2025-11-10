@@ -63,7 +63,6 @@ from gpustack.cloud_providers.abstract import (
     InstanceState,
 )
 from kubernetes_asyncio import client as k8s_client
-from kubernetes_asyncio.client.rest import ApiException
 from gpustack.gateway.client.networking_higress_io_v1_api import (
     NetworkingHigressIoV1Api,
     McpBridgeRegistry,
@@ -1456,15 +1455,6 @@ class ClusterController:
             return
         cluster: Cluster = event.data
         mcp_resource_name = mcp_handler.cluster_mcp_bridge_name(cluster.id)
-        if event.type == EventType.DELETED:
-            try:
-                await self._higress_network_api.delete_mcpbridge(
-                    self._namespace, mcp_resource_name
-                )
-            except ApiException as e:
-                if e.status != 404:
-                    logger.error(f"Failed to delete MCPBridge {mcp_resource_name}: {e}")
-            return
         desired_registries = []
         to_delete_prefix = mcp_handler.cluster_worker_prefix(cluster.id)
         async with AsyncSession(self._engine) as session:
