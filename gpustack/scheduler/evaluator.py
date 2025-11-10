@@ -27,7 +27,6 @@ from gpustack.schemas.models import (
     CategoryEnum,
     SourceEnum,
     get_backend,
-    is_audio_model,
     is_gguf_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
@@ -327,8 +326,8 @@ async def evaluate_model_metadata(
 
         if is_gguf_model(model):
             await scheduler.evaluate_gguf_model(config, model)
-        elif is_audio_model(model):
-            await scheduler.evaluate_audio_model(config, model)
+        elif model.backend == BackendEnum.VOX_BOX:
+            await scheduler.evaluate_vox_box_model(config, model)
         else:
             await scheduler.evaluate_pretrained_config(model)
 
