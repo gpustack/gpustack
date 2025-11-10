@@ -1,13 +1,18 @@
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Dict, Any
 from tenacity import retry, stop_after_attempt, wait_fixed
-from gpustack.gateway.labels_annotations import managed_labels
+from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway.client.networking_higress_io_v1_api import (
     NetworkingHigressIoV1Api,
     McpBridge,
     McpBridgeRegistry,
     McpBridgeSpec,
+)
+from gpustack.gateway.client.extensions_higress_io_v1_api import (
+    WasmPlugin,
+    WasmPluginSpec,
+    ExtensionsHigressIoV1Api,
 )
 from gpustack.schemas.models import (
     ModelInstance,
@@ -517,3 +522,47 @@ async def ensure_model_ingress(
                 body=existing_ingress,
             )
             logger.info(f"Updated model ingress {ingress_name} for model {model.name}")
+
+
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
+async def ensure_wasm_plugin(
+    api: ExtensionsHigressIoV1Api, name: str, namespace: str, expected: WasmPluginSpec
+):
+    current_plugin = None
+    try:
+        data: Dict[str, Any] = await api.get_wasmplugin(namespace=namespace, name=name)
+        current_plugin = WasmPlugin.model_validate(data)
+    except ApiException as e:
+        if e.status == 404:
+            current_plugin = None
+        else:
+            raise
+    if current_plugin is None:
+        wasm_plugin_body = WasmPlugin(
+            metadata={
+                "name": name,
+                "namespace": namespace,
+                "labels": managed_labels,
+            },
+            spec=expected,
+        )
+        await api.create_wasmplugin(
+            namespace=namespace,
+            body=wasm_plugin_body,
+        )
+        logger.info(f"Created WasmPlugin {name} in namespace {namespace}.")
+    elif match_labels(getattr(current_plugin.metadata, 'labels', {}), managed_labels):
+        current_spec = (
+            current_plugin.spec.model_dump(exclude_none=True)
+            if current_plugin.spec
+            else {}
+        )
+        expected_spec = expected.model_dump(exclude_none=True) if expected else {}
+        if current_spec != expected_spec:
+            current_plugin.spec = expected
+            await api.edit_wasmplugin(
+                namespace=namespace,
+                name=name,
+                body=current_plugin,
+            )
+            logger.info(f"Updated WasmPlugin {name} in namespace {namespace}.")
