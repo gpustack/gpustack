@@ -19,7 +19,6 @@ from gpustack.schemas.common import Pagination
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
-    is_audio_model,
     BackendEnum,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
@@ -263,8 +262,9 @@ async def validate_gpu_ids(  # noqa: C901
                 message="The number of selected GPUs must be greater than or equal to gpus_per_replica."
             )
 
-    audio_model = is_audio_model(model_in)
-    if audio_model and (
+    model_backend = model_in.backend
+
+    if model_backend == BackendEnum.VOX_BOX and (
         len(model_in.gpu_selector.gpu_ids) > 1
         or (
             model_in.gpu_selector.gpus_per_replica is not None
@@ -272,10 +272,8 @@ async def validate_gpu_ids(  # noqa: C901
         )
     ):
         raise BadRequestException(
-            message="Audio models are restricted to execution on a single NVIDIA GPU."
+            message="The vox-box backend is restricted to execution on a single NVIDIA GPU."
         )
-
-    model_backend = model_in.backend
 
     worker_name_set = set()
     for gpu_id in model_in.gpu_selector.gpu_ids:
@@ -300,7 +298,7 @@ async def validate_gpu_ids(  # noqa: C901
             else None
         )
         if gpu:
-            validate_gpu(gpu, is_audio_model=audio_model, model_backend=model_backend)
+            validate_gpu(gpu, model_backend=model_backend)
 
         worker_os = (
             worker.labels.get("os", "unknown")
@@ -316,12 +314,13 @@ async def validate_gpu_ids(  # noqa: C901
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
 
-def validate_gpu(
-    gpu_device: GPUDeviceInfo, is_audio_model: bool = False, model_backend: str = ""
-):
-    if is_audio_model and gpu_device.vendor != ManufacturerEnum.NVIDIA.value:
+def validate_gpu(gpu_device: GPUDeviceInfo, model_backend: str = ""):
+    if (
+        model_backend == BackendEnum.VOX_BOX
+        and gpu_device.vendor != ManufacturerEnum.NVIDIA.value
+    ):
         raise BadRequestException(
-            "Audio models are supported only on NVIDIA GPUs and CPUs."
+            "The vox-box backend is supported only on NVIDIA GPUs."
         )
 
     if (

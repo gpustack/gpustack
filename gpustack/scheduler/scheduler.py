@@ -51,7 +51,6 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_backend,
     is_gguf_model,
-    is_audio_model,
     DistributedServerCoordinateModeEnum,
 )
 from gpustack.server.bus import EventType
@@ -176,8 +175,8 @@ class Scheduler:
                             session, model, instance
                         ):
                             return
-                    elif is_audio_model(model):
-                        should_update_model = await evaluate_audio_model(
+                    elif model.backend == BackendEnum.VOX_BOX:
+                        should_update_model = await evaluate_vox_box_model(
                             self._config, model
                         )
                     else:
@@ -384,7 +383,7 @@ async def find_candidate(
     try:
         if is_gguf_model(model):
             candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
-        elif is_audio_model(model):
+        elif model.backend == BackendEnum.VOX_BOX:
             candidates_selector = VoxBoxResourceFitSelector(
                 config, model, config.cache_dir
             )
@@ -492,7 +491,7 @@ async def evaluate_gguf_model(
     return should_update
 
 
-async def evaluate_audio_model(
+async def evaluate_vox_box_model(
     config: Config,
     model: Model,
 ) -> bool:
