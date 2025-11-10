@@ -39,21 +39,13 @@ def new_model(
     placement_strategy=PlacementStrategyEnum.BINPACK,
     distributable=True,
     extended_kv_cache=None,
+    categories=[CategoryEnum.LLM],
+    cpu_offloading=True,
+    distributed_inference_across_workers=True,
     **kargs,
 ) -> Model:
-    worker_selector = kargs.get("worker_selector")
-    cpu_offloading = kargs.get("cpu_offloading", True)
-    distributed_inference_across_workers = kargs.get(
-        "distributed_inference_across_workers", True
-    )
-    gpu_selector = kargs.get("gpu_selector", None)
-    backend_parameters = kargs.get("backend_parameters")
-    categories = kargs.get("categories", [CategoryEnum.LLM])
-
-    huggingface_filename = None
     if huggingface_repo_id is not None:
         source = SourceEnum.HUGGING_FACE
-        huggingface_filename = kargs.get("huggingface_filename")
     if model_scope_model_id is not None:
         source = SourceEnum.MODEL_SCOPE
 
@@ -64,17 +56,14 @@ def new_model(
         ready_replicas=0,
         source=source,
         huggingface_repo_id=huggingface_repo_id,
-        huggingface_filename=huggingface_filename,
         model_scope_model_id=model_scope_model_id,
         distributable=distributable,
         placement_strategy=placement_strategy,
-        worker_selector=worker_selector,
         cpu_offloading=cpu_offloading,
         distributed_inference_across_workers=distributed_inference_across_workers,
-        gpu_selector=gpu_selector,
-        backend_parameters=backend_parameters,
         categories=categories,
         extended_kv_cache=extended_kv_cache,
+        **kargs,
     )
 
 

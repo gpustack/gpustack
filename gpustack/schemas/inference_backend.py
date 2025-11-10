@@ -208,7 +208,7 @@ def get_built_in_backend() -> List[InferenceBackend]:
     ]
 
 
-def is_built_in_backend(backend_name: str) -> bool:
+def is_built_in_backend(backend_name: Optional[str]) -> bool:
     """
     Check if a backend is a built-in backend.
 
@@ -218,6 +218,9 @@ def is_built_in_backend(backend_name: str) -> bool:
     Returns:
         True if the backend is built-in, False otherwise
     """
+    if not backend_name:
+        return False
+
     built_in_backends = get_built_in_backend()
     built_in_backend_names = {
         backend.backend_name.lower() for backend in built_in_backends
