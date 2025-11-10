@@ -9,6 +9,9 @@ from functools import cache
 from huggingface_hub import HfFileSystem
 from huggingface_hub.utils import validate_repo_id
 from modelscope.hub.api import HubApi
+from modelscope.hub.snapshot_download import (
+    snapshot_download as modelscope_snapshot_download,
+)
 from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
@@ -507,3 +510,131 @@ def get_model_scope_model_min_gguf_path(
                 return gguf_file
 
     return gguf_files[0]
+
+
+def has_diffusers_model_index(  # noqa: C901
+    model: Model, token: Optional[str] = None
+) -> bool:
+    """Check whether the model source contains a model_index.json with
+    the key "_diffusers_version".
+
+    Supported sources:
+    - Hugging Face: checks via HfFileSystem
+    - ModelScope: downloads only model_index.json via snapshot_download and inspects
+    - Local Path: reads model_index.json in the provided directory
+    """
+    try:
+        content_bytes: Optional[bytes] = None
+
+        if model.source == SourceEnum.HUGGING_FACE:
+            # List files in the root directory only to find model_index.json
+            repo_files = list_repo(
+                model.huggingface_repo_id,
+                SourceEnum.HUGGING_FACE,
+                token=token,
+                root_dir_only=True,
+            )
+            has_model_index = any(
+                isinstance(file, dict) and file.get("name") == "model_index.json"
+                for file in repo_files
+            )
+            if not has_model_index:
+                return False
+
+            hffs = HfFileSystem(token=token)
+            # Open and read the model_index.json
+            with hffs.open(f"{model.huggingface_repo_id}/model_index.json", "rb") as f:
+                content_bytes = f.read()
+
+        elif model.source == SourceEnum.MODEL_SCOPE:
+            # Check root for model_index.json
+            repo_files = list_repo(
+                model.model_scope_model_id,
+                SourceEnum.MODEL_SCOPE,
+                root_dir_only=True,
+            )
+            has_model_index = any(
+                isinstance(file, dict) and file.get("name") == "model_index.json"
+                for file in repo_files
+            )
+            if not has_model_index:
+                return False
+
+            # Download only model_index.json and read it
+            base_tmp = os.path.join(
+                (get_global_config().data_dir or "/tmp"),
+                "modelscope_tmp",
+                "diffusers_check",
+            )
+            os.makedirs(base_tmp, exist_ok=True)
+            safe_id = (model.model_scope_model_id or "").replace("/", "__")
+            local_dir = os.path.join(base_tmp, safe_id)
+            os.makedirs(local_dir, exist_ok=True)
+            model_dir = modelscope_snapshot_download(
+                model_id=model.model_scope_model_id,
+                local_dir=local_dir,
+                allow_patterns=["model_index.json"],
+            )
+
+            # Find the downloaded file
+            candidate = os.path.join(model_dir, "model_index.json")
+            file_path = candidate if os.path.exists(candidate) else None
+            if not file_path:
+                # Search recursively in case the snapshot places files in subfolders
+                for root, _dirs, files in os.walk(model_dir):
+                    if "model_index.json" in files:
+                        file_path = os.path.join(root, "model_index.json")
+                        break
+            if not file_path:
+                return False
+            with open(file_path, "rb") as f:
+                content_bytes = f.read()
+
+        elif model.source == SourceEnum.LOCAL_PATH:
+            # Only support directory-based local path (e.g., safetensors repo). GGUF files won't have model_index.json.
+            local_path = model.local_path or ""
+            if not local_path or not os.path.isdir(local_path):
+                return False
+            file_path = os.path.join(local_path, "model_index.json")
+            if not os.path.exists(file_path):
+                return False
+            with open(file_path, "rb") as f:
+                content_bytes = f.read()
+
+        else:
+            return False
+
+        # Decode and parse JSON
+        try:
+            content = (content_bytes or b"").decode("utf-8")
+        except Exception:
+            content = (content_bytes or b"").decode()
+
+        try:
+            data = json.loads(content)
+        except Exception:
+            return False
+
+        # The typical structure is a dict containing _diffusers_version
+        if isinstance(data, dict) and "_diffusers_version" in data:
+            return True
+        # Some repos might have a list structure; check items for the key
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and "_diffusers_version" in item:
+                    return True
+
+        return False
+    except Exception as e:
+        # Best-effort detection; do not raise on error
+        try:
+            source_key = (
+                model.huggingface_repo_id
+                or model.model_scope_model_id
+                or model.local_path
+                or "<unknown>"
+            )
+            logger.error(f"Failed to check model_index.json for {source_key}: {e}")
+        except Exception:
+            pass
+        return False
