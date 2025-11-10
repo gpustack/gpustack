@@ -398,8 +398,10 @@ def get_unified_metric_family_name(
             if (is_valid_version and version.in_range(runtime_version, ver_range)) or (
                 not is_valid_version and runtime_version == ver_range
             ):
-                name = mapping.get(source_metric_family_name, name)
-                break
+                old_version_name = mapping.get(source_metric_family_name)
+                if old_version_name is not None:
+                    return old_version_name
+
     return name
 
 
