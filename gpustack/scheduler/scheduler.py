@@ -39,6 +39,7 @@ from gpustack.scheduler.model_registry import (
 )
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
+from gpustack.schemas.inference_backend import is_built_in_backend
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.models import (
     BackendEnum,
@@ -582,7 +583,12 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
 
     model_type = detect_model_type(architectures)
 
-    if model_type == CategoryEnum.UNKNOWN and not model.backend_version:
+    # TODO : Additional checks for unsupported architectures for other backends.
+    if (
+        model.backend == BackendEnum.VLLM
+        and model_type == CategoryEnum.UNKNOWN
+        and not model.backend_version
+    ):
         raise ValueError(
             f"Unsupported architecture: {architectures}. To proceed with deployment, ensure the model is supported by backend, or deploy it using a custom backend version or custom backend."
         )
@@ -620,8 +626,12 @@ def should_skip_architecture_check(model: Model) -> bool:
         True if the model should skip architecture check, False otherwise.
     """
 
-    if model.backend_version:
-        # New model architectures may be added with custom backend version.
+    if (
+        model.backend == BackendEnum.CUSTOM
+        or not is_built_in_backend(model.backend)
+        or model.backend_version
+    ):
+        # New model architectures may be added with custom backend/version.
         return True
 
     if model.backend_parameters and find_parameter(
