@@ -251,6 +251,12 @@ class VLLMServer(InferenceServer):
         """
         Set up environment variables for distributed execution.
         """
+        # Configure Internal communication IP and port.
+        # see https://docs.vllm.ai/en/stable/configuration/env_vars.html.
+        env["VLLM_HOST_IP"] = self._worker.ip
+        if len(self._model_instance.ports) > 1:
+            env["VLLM_PORT"] = str(self._model_instance.ports[1])
+
         if is_ascend(self._get_selected_gpu_devices()):
             # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
             if "HCCL_SOCKET_IFNAME" not in env:

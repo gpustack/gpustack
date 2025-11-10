@@ -556,14 +556,13 @@ class ServeManager:
                     mi.distributed_servers
                     and mi.distributed_servers.subordinate_workers
                 ):
-                    if backend == BackendEnum.ASCEND_MINDIE:
-                        # Get port for subordinate worker watching.
-                        unavailable_ports.add(mi.port)
-                        connecting_port = network.get_free_port(
-                            port_range=self._config.service_port_range,
-                            unavailable_ports=unavailable_ports,
-                        )
-                        mi.ports.append(connecting_port)
+                    # Get port for subordinate workers' communication.
+                    unavailable_ports.add(mi.port)
+                    connecting_port = network.get_free_port(
+                        port_range=self._config.service_port_range,
+                        unavailable_ports=unavailable_ports,
+                    )
+                    mi.ports.append(connecting_port)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
