@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 0,
+  "id": 11,
   "links": [],
   "panels": [
     {
@@ -685,7 +685,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "GPU Chip Index"
+              "options": "Chip Index"
             },
             "properties": [
               {
@@ -728,7 +728,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 97
+                "value": 90
               }
             ]
           },
@@ -771,13 +771,15 @@
                 "value": "percent"
               },
               {
-                "id": "decimals"
+                "id": "decimals",
+                "value": 1
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "mode": "lcd",
-                  "type": "gauge"
+                  "mode": "gradient",
+                  "type": "gauge",
+                  "valueDisplayMode": "text"
                 }
               },
               {
@@ -788,7 +790,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 168
+                "value": 200
               }
             ]
           },
@@ -915,7 +917,7 @@
               "exported_instance 1": true,
               "exported_instance 2": true,
               "exported_instance 3": true,
-              "gpu_chip_index 1": true,
+              "gpu_chip_index 1": false,
               "gpu_chip_index 2": true,
               "gpu_chip_index 3": true,
               "gpu_index 2": true,
@@ -1028,7 +1030,7 @@
             "spanNulls": true,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -1054,7 +1056,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 6,
         "x": 0,
         "y": 15
@@ -1064,9 +1066,10 @@
         "dataLinks": [],
         "legend": {
           "calcs": [
-            "lastNotNull"
+            "last",
+            "max"
           ],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1090,7 +1093,7 @@
           "instant": false,
           "interval": "",
           "intervalFactor": 2,
-          "legendFormat": "Used",
+          "legendFormat": "{{worker_name}}",
           "refId": "A"
         }
       ],
@@ -1107,7 +1110,7 @@
         "defaults": {
           "color": {
             "fixedColor": "blue",
-            "mode": "fixed"
+            "mode": "palette-classic"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1118,8 +1121,8 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 40,
-            "gradientMode": "hue",
+            "fillOpacity": 10,
+            "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
@@ -1132,7 +1135,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "always",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1163,7 +1166,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 9,
         "x": 6,
         "y": 15
@@ -1175,7 +1178,7 @@
             "max",
             "last"
           ],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1197,7 +1200,7 @@
           "expr": "gpustack:worker_node_gpu_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "{{worker_name}}:{{gpu_chip_index}}:{{gpu_index}}",
+          "legendFormat": "{{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "A"
         }
@@ -1215,7 +1218,7 @@
         "defaults": {
           "color": {
             "fixedColor": "blue",
-            "mode": "fixed"
+            "mode": "palette-classic"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1226,8 +1229,8 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 40,
-            "gradientMode": "hue",
+            "fillOpacity": 10,
+            "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
@@ -1235,12 +1238,15 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
+            "lineStyle": {
+              "fill": "solid"
+            },
             "lineWidth": 1,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "always",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1271,7 +1277,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 9,
         "x": 15,
         "y": 15
@@ -1283,7 +1289,7 @@
             "max",
             "last"
           ],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1305,7 +1311,7 @@
           "expr": "gpustack:worker_node_gram_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "{{worker_name}}:{{gpu_chip_index}}:{{gpu_index}}",
+          "legendFormat": "{{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "A"
         }
@@ -1376,17 +1382,20 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 6,
         "x": 0,
-        "y": 26
+        "y": 28
       },
       "id": 91,
       "options": {
         "dataLinks": [],
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1407,7 +1416,7 @@
           "expr": "gpustack:worker_node_cpu_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "1min",
+          "legendFormat": "{{worker_name}}",
           "range": true,
           "refId": "A"
         }
@@ -1434,7 +1443,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -1443,7 +1452,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
@@ -1453,12 +1462,13 @@
             "spanNulls": true,
             "stacking": {
               "group": "A",
-              "mode": "normal"
+              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
             }
           },
+          "fieldMinMax": false,
           "mappings": [],
           "min": 0,
           "thresholds": {
@@ -1479,21 +1489,22 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 9,
         "x": 6,
-        "y": 26
+        "y": 28
       },
       "id": 88,
       "options": {
         "dataLinks": [],
         "legend": {
           "calcs": [
-            "lastNotNull"
+            "last",
+            "max"
           ],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         },
         "tooltip": {
           "hideZeros": false,
@@ -1513,7 +1524,7 @@
           "format": "time_series",
           "hide": false,
           "intervalFactor": 1,
-          "legendFormat": "VRAM Total: {{worker_name}}:{{gpu_chip_index}}:{{gpu_index}}",
+          "legendFormat": "Total: {{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "A"
         },
@@ -1526,9 +1537,22 @@
           "expr": "gpustack:worker_node_gram_used_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
           "hide": false,
           "instant": false,
-          "legendFormat": "VRAM Used: {{worker_name}}:{{gpu_chip_index}}:{{gpu_index}}",
+          "legendFormat": "Used: {{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "gpustack:worker_node_gram_allocated_bytes{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Allocated: {{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
+          "range": true,
+          "refId": "C"
         }
       ],
       "title": "GPU Mem Usage",
@@ -1597,21 +1621,22 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 13,
         "w": 9,
         "x": 15,
-        "y": 26
+        "y": 28
       },
       "id": 87,
       "options": {
         "dataLinks": [],
         "legend": {
           "calcs": [
-            "lastNotNull"
+            "last",
+            "max"
           ],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         },
         "tooltip": {
           "hideZeros": false,
@@ -1631,7 +1656,7 @@
           "format": "time_series",
           "hide": false,
           "intervalFactor": 1,
-          "legendFormat": "GPU {{gpu}}",
+          "legendFormat": "{{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "A"
         }
@@ -1671,19 +1696,22 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 14,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 41
       },
       "id": 78,
       "options": {
         "displayMode": "lcd",
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         },
         "maxVizHeight": 300,
         "minVizHeight": 16,
@@ -1709,9 +1737,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg by (cluster_name,worker_name, gpu_chip_index,gpu_index) (gpustack:worker_node_gpu_utilization_rate{cluster_name=~\"$cluster_name\",worker_name=~\"$worker_name\"}) ",
+          "exemplar": false,
+          "expr": "avg by (cluster_name,worker_name,gpu_chip_index,gpu_index) (gpustack:worker_node_gpu_utilization_rate{cluster_name=~\"$cluster_name\",worker_name=~\"$worker_name\"}) ",
           "instant": false,
-          "legendFormat": "{{cluster_name}}:{{worker_name}}:{{gpu_chip_index}}:{{gpu_index}}",
+          "legendFormat": "{{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "A"
         }
@@ -1759,19 +1788,22 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 14,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 41
       },
       "id": 79,
       "options": {
         "displayMode": "gradient",
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         },
         "maxVizHeight": 300,
         "minVizHeight": 16,
@@ -1799,7 +1831,7 @@
           "editorMode": "code",
           "expr": "avg by (cluster_name,worker_name, gpu_chip_index,gpu_index) (gpustack:worker_node_gram_utilization_rate{cluster_name=\"$cluster_name\",worker_name=~\"$worker_name\"}) ",
           "instant": false,
-          "legendFormat": "{{cluster_name}}:{{worker_name}}:{{gpu_chip_index}}:{{gpu_index}}",
+          "legendFormat": "{{worker_name}} GPU{{gpu_index}} (chip {{gpu_chip_index}})",
           "range": true,
           "refId": "A"
         }
@@ -1816,8 +1848,8 @@
     "list": [
       {
         "current": {
-          "text": "Default Cluster",
-          "value": "Default Cluster"
+          "text": "",
+          "value": ""
         },
         "datasource": {
           "type": "prometheus",
