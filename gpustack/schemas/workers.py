@@ -170,6 +170,24 @@ class RPCServer(BaseModel):
 
 
 class WorkerStateEnum(str, Enum):
+    r"""
+    Enum for Worker State
+
+    State Transition Diagram:
+
+    Phase 1: Provisioning Controller          |  Phase 2: Healthcheck Controller
+    ------------------------------------------|--------------------------------
+    PENDING > PROVISIONING > INITIALIZING > READY < -----|------->  UNREACHABLE
+                |             |         |      ^         |       (Worker Endpoint Unreachable)
+                |             |         |      |         |
+                |-------------|---------|------|         └------>   NOT_READY
+                \_____________________________/|                 (Worker Stop Posting Status)
+                                   ERROR       | (Provisioning failed)
+                                     |         |        |
+                                     v         |        v
+                                 DELETING  <---┘ (provisioning end)
+    """
+
     NOT_READY = "not_ready"
     READY = "ready"
     UNREACHABLE = "unreachable"
