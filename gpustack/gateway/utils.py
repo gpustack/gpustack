@@ -273,6 +273,7 @@ def generate_model_ingress(
             "higress.io/exact-match-header-x-higress-llm-model": model.name,
             "higress.io/ignore-path-case": 'true',
         },
+        labels=managed_labels,
     )
     bridge_name = model_mcp_bridge_name(model.cluster_id)
     expected_rule = ingress_rule_for_model(
@@ -566,3 +567,37 @@ async def ensure_wasm_plugin(
                 body=current_plugin,
             )
             logger.info(f"Updated WasmPlugin {name} in namespace {namespace}.")
+
+
+async def cleanup_orphaned_model_ingresses(
+    namespace: str,
+    existing_model_ids: List[int],
+    config: k8s_client.Configuration,
+):
+    networking_api = k8s_client.NetworkingV1Api(k8s_client.ApiClient(config))
+    try:
+        # Use label selector to filter only managed ingresses
+        label_selector = ','.join([f"{k}={v}" for k, v in managed_labels.items()])
+        ingresses = await networking_api.list_namespaced_ingress(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        for ingress in ingresses.items:
+            if ingress.metadata and ingress.metadata.name:
+                name = ingress.metadata.name
+                if name.startswith("ai-route-model-"):
+                    try:
+                        model_id_str = name[len("ai-route-model-") :]
+                        model_id = int(model_id_str)
+                        if model_id not in existing_model_ids:
+                            await networking_api.delete_namespaced_ingress(
+                                name=name, namespace=namespace
+                            )
+                            logger.info(
+                                f"Deleted orphaned model ingress {name} in namespace {namespace}."
+                            )
+                    except ValueError:
+                        # not a valid model id, skip
+                        continue
+    except Exception as e:
+        print(f"Error cleaning up orphaned model ingresses: {e}")

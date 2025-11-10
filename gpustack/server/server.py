@@ -13,6 +13,7 @@ from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.models import Model
 from gpustack.security import (
     JWTManager,
     generate_secure_password,
@@ -41,6 +42,7 @@ from gpustack.server.metrics_collector import GatewayMetricsCollector
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
+from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +259,7 @@ class Server:
             self._migrate_legacy_token,
             self._migrate_legacy_workers,
             self._ensure_registration_token,
+            # self._cleanup_orphaned_gateway_data,
         ]
         for init_data_func in init_data_funcs:
             await init_data_func(session)
@@ -442,4 +445,19 @@ class Server:
         write_registration_token(
             data_dir=self._config.data_dir,
             token=token,
+        )
+
+    async def _cleanup_orphaned_gateway_data(self, session: AsyncSession):
+        if self.config.gateway_mode == GatewayModeEnum.disabled:
+            return
+        # Remove the orphaned ingresses of model
+        models = await Model.all_by_field(
+            session=session, field="deleted_at", value=None
+        )
+        model_ids = [model.id for model in models]
+        k8s_config = self.config.get_async_k8s_config()
+        await cleanup_orphaned_model_ingresses(
+            namespace=self.config.get_gateway_namespace(),
+            existing_model_ids=model_ids,
+            config=k8s_config,
         )
