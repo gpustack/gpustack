@@ -63,7 +63,7 @@ from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_ids_by_worker
-from gpustack.utils.hub import get_pretrained_config
+from gpustack.utils.hub import get_pretrained_config, has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.task import run_in_thread
 from sqlalchemy.orm.attributes import flag_modified
@@ -545,6 +545,24 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     Returns:
         True if the model's categories are updated, False otherwise.
     """
+    # Special handling: SGLang now supports Diffusers (image) models.
+    # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
+    # classify as IMAGE directly.
+    try:
+        if model.backend == BackendEnum.SGLANG and not model.categories:
+            from gpustack.config.config import get_global_config as _get_global_config
+
+            hf_token = _get_global_config().huggingface_token
+            is_diffusers = await run_in_thread(
+                has_diffusers_model_index, timeout=10, model=model, token=hf_token
+            )
+            if is_diffusers:
+                model.categories = [CategoryEnum.IMAGE]
+                gpus_per_replica_modified = set_model_gpus_per_replica(model)
+                return True or gpus_per_replica_modified
+    except Exception:
+        # Best-effort detection; continue with default flow on error
+        pass
     # Check overrided architectures if specified in backend parameters.
     architectures = get_vllm_override_architectures(model)
     if not architectures:
@@ -562,7 +580,7 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
                 raise
 
             logger.debug(
-                f"Failed to get config for model {model.name or model.readable_source}: {e}"
+                f"Failed to get config for model {model.name or model.readable_source}, ValueError: {e}"
             )
             raise simplify_auto_config_value_error(e)
         except TimeoutError:
@@ -669,6 +687,9 @@ def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
         return True
     elif model_type == CategoryEnum.RERANKER:
         model.categories = [CategoryEnum.RERANKER]
+        return True
+    elif model_type == CategoryEnum.IMAGE:
+        model.categories = [CategoryEnum.IMAGE]
         return True
     elif model_type == CategoryEnum.LLM:
         model.categories = [CategoryEnum.LLM]

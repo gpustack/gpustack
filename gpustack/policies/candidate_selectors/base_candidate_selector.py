@@ -11,6 +11,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
+    CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.convert import safe_int
@@ -93,7 +94,7 @@ class ModelParameters:
         try:
             pretrained_config = get_pretrained_config(model, trust_remote_code=True)
         except ValueError as e:
-            if "architecture" in e.args[0] and model.backend_version:
+            if model.backend_version or CategoryEnum.LLM not in model.categories:
                 # In the AutoConfig.from_pretrained method, the architecture field in config undergoes validation.
                 # For custom backend versions, exceptions caused by unrecognized architectures should be allowed
                 # to prevent startup failures of valid new models with properly customized versions.

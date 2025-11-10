@@ -28,6 +28,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
+    CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
@@ -247,8 +248,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             self.find_manual_gpu_selection_candidates,
             self.find_single_worker_single_gpu_full_offloading_candidates,
             self.find_single_worker_multi_gpu_full_offloading_candidates,
-            self.find_multi_worker_multi_gpu_candidates,
         ]
+        if CategoryEnum.IMAGE not in self._model.categories:
+            # SGLang Diffusion unsupported multi-worker
+            candidate_functions.append(self.find_multi_worker_multi_gpu_candidates)
 
         sort_workers_by_gpu_count(workers)
 

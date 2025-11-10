@@ -12,7 +12,11 @@ from gpustack_runtime.deployer import (
     ContainerRestartPolicyEnum,
 )
 
-from gpustack.schemas.models import ModelInstance, SpeculativeAlgorithmEnum
+from gpustack.schemas.models import (
+    ModelInstance,
+    SpeculativeAlgorithmEnum,
+    CategoryEnum,
+)
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.network import get_free_port
@@ -37,7 +41,10 @@ class SGLangServer(InferenceServer):
 
     def start(self):  # noqa: C901
         try:
-            self._start()
+            if CategoryEnum.IMAGE in self._model.categories:
+                self._start_diffusion()
+            else:
+                self._start()
         except Exception as e:
             self._handle_error(e)
 
@@ -53,6 +60,22 @@ class SGLangServer(InferenceServer):
         arguments = self._build_command_args(
             port=self._get_serving_port(), is_distributed=is_distributed
         )
+
+        self._create_workload(
+            command_args=arguments,
+            env=envs,
+        )
+
+    def _start_diffusion(self):
+        logger.info(
+            f"Starting SGLang Diffusion model instance: {self._model_instance.name}"
+        )
+
+        # Setup environment variables
+        envs = self._get_configured_env(False)
+
+        # Build SGLang command arguments
+        arguments = self._build_diffusion_args(port=self._get_serving_port())
 
         self._create_workload(
             command_args=arguments,
@@ -141,9 +164,8 @@ class SGLangServer(InferenceServer):
         Build SGLang command arguments for container execution.
         """
         arguments = [
-            "python",
-            "-m",
-            "sglang.launch_server",
+            "sglang",
+            "serve",
             "--model-path",
             self._model_path,
         ]
@@ -193,6 +215,35 @@ class SGLangServer(InferenceServer):
                     "ascend",
                 ]
             )
+
+        # Set host and port
+        arguments.extend(
+            [
+                "--host",
+                self._worker.ip,
+                "--port",
+                str(port),
+            ]
+        )
+
+        return arguments
+
+    def _build_diffusion_args(self, port: int):
+        arguments = [
+            "sglang",
+            "serve",
+            "--model-path",
+            self._model_path,
+        ]
+
+        # Allow version-specific command override if configured (before appending extra args)
+        arguments = self.build_versioned_command_args(arguments)
+
+        # Add auto parallelism arguments if needed
+        auto_parallelism_arguments = get_auto_parallelism_arguments(
+            self._model.backend_parameters, self._model_instance, False
+        )
+        arguments.extend(auto_parallelism_arguments)
 
         # Set host and port
         arguments.extend(

@@ -41,6 +41,7 @@ from gpustack.schemas.models import (
     get_backend,
     DistributedServerCoordinateModeEnum,
     ModelInstanceSubordinateWorker,
+    CategoryEnum,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
@@ -279,7 +280,9 @@ class ServeManager:
                     # If there is no error message from subordinate workers,
                     # check whether the main worker is healthy.
                     if not sw_error_msg:
-                        if not is_ready(backend, model_instance, health_check_path):
+                        if not is_ready(
+                            backend, model_instance, health_check_path, model
+                        ):
                             continue
                         if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             continue
@@ -797,6 +800,7 @@ def is_ready(
     backend: str,
     mi: ModelInstance,
     health_check_path: Optional[str] = None,
+    model: Model = None,
 ) -> bool:
     """
     Access the health endpoint of the given model instance to check if it is servable.
@@ -810,6 +814,13 @@ def is_ready(
         # Ref: https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindieservice/servicedev/mindie_service0066.html
         # /info provides metadata information and requires more time to respond. Use it for health check.
         health_check_path = "/info"
+    elif (
+        backend == BackendEnum.SGLANG
+        and model
+        and CategoryEnum.IMAGE in model.categories
+    ):
+        # SGLang diffusion has not health check endpoint. It only serves for image/video generation.
+        return True
     elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
         # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.
         health_check_path = "/v1/models"
