@@ -201,9 +201,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             logger.warning(f"Cannot get weight size for model {self._model.name}: {e}")
 
         n_tokens = self._serving_params.max_seq_len
-        n_layers = self._model_params.num_hidden_layers
+        n_layers = self._model_params.num_hidden_layers or 0
         n_heads = 1
-        d_head = self._model_params.head_dim
+        d_head = self._model_params.head_dim or 0
         t_size = 4 if self._model_params.torch_dtype in ["float32", "float"] else 2
 
         # Get KV cache size,
