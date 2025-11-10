@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 import logging
 from fastapi import Depends, Request
-from gpustack.config.config import Config
+from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.server.db import get_session
 from typing import Annotated, Optional, Tuple
 from fastapi.security import (
@@ -68,8 +68,15 @@ async def get_current_user(
     elif bearer_token:
         user, api_key = await get_user_from_bearer_token(session, bearer_token)
 
-    if user is None and request.client.host == "127.0.0.1":
-        server_config: Config = request.app.state.server_config
+    server_config: Config = request.app.state.server_config
+    client_ip_from_header = (
+        request.headers.get("X-GPUStack-Real-IP", "")
+        if server_config.gateway_mode == GatewayModeEnum.embedded
+        else ""
+    )
+    if user is None and (
+        request.client.host == "127.0.0.1" or client_ip_from_header == "127.0.0.1"
+    ):
         if not server_config.force_auth_localhost:
             try:
                 user = await User.first_by_field(session, "is_admin", True)
