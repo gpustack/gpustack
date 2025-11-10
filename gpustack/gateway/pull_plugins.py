@@ -102,22 +102,23 @@ def main():
 
     failed_plugins = []
 
-    for plugin_name, versions in supported_plugins.items():
-        for version, digest in versions:
-            plugin_url = get_plugin_url_with_name_and_version(
-                plugin_name, version
-            ).removeprefix("oci://")
-            plugin_url = plugin_url.removesuffix(f":{version}") + f"@{digest}"
+    for plugin in supported_plugins:
+        if plugin.digest is None:
+            continue
+        plugin_url = get_plugin_url_with_name_and_version(
+            plugin.name, plugin.version
+        ).removeprefix("oci://")
 
-            print(f"\nProcessing plugin: {plugin_name} {version}({digest})")
-            success = process_plugin(base_path, plugin_name, plugin_url, version)
-            if not success:
-                failed_plugins.append(f"{plugin_name}:{version}")
+        print(f"\nProcessing plugin: {plugin.name} {plugin.version}({plugin.digest})")
+        success = process_plugin(base_path, plugin.name, plugin_url, plugin.version)
+        if not success:
+            failed_plugins.append(f"{plugin.name}:{plugin.version}")
 
     if failed_plugins:
         print("\nThe following plugins were not processed successfully:")
         for plugin in failed_plugins:
             print(f"- {plugin}")
+        exit(1)
 
 
 def process_plugin(plugins_base_path, plugin_name, plugin_url, version):

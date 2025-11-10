@@ -1,39 +1,65 @@
 import os
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, List
 from fastapi import FastAPI
 from gpustack.config.config import Config, GatewayModeEnum
 from fastapi.staticfiles import StaticFiles
 
-# the digest value is hardcoded in 2025-10-29
-supported_plugins = {
-    "ai-statistics": [
-        (
-            "2.0.0",
-            "sha256:394b188ebc23935047752cbbfab0418a9085377fab680430738bd7ab324d2c3e",
-        )
-    ],
-    "ext-auth": [
-        (
-            "2.0.0",
-            "sha256:b02da08e0dd519ee0180696f062bb15a04b37de0a88a2c1b46836c07d1e9adab",
-        )
-    ],
-    "model-router": [
-        (
-            "2.0.0",
-            "sha256:4367cff0ce1349ea9885b7e80e495bcd443931d302b6dc804946ecda78545632",
-        )
-    ],
-    "transformer": [
-        (
-            "2.0.0",
-            "sha256:40ff2e000dcfd94da76c36593bdfd50f4d0f094309c013732da8e1c35171f321",
-        )
-    ],
-}
-
-oci_plugin_hostname_path = "higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins"
+oci_plugin_prefix = "oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/"
 http_path_prefix = "wasm-plugins"
+
+
+@dataclass
+class HigressPlugin:
+    name: str
+    version: str
+    digest: Optional[str] = None
+    registry_prefix: str = oci_plugin_prefix
+
+    def get_oci_url(self) -> Optional[str]:
+        if self.digest is not None:
+            return f"{self.registry_prefix}{self.name}:{self.version}@{self.digest}"
+        return None
+
+    def get_local_path(self) -> str:
+        return os.path.join(self.name, self.version, "plugin.wasm")
+
+    def get_path(self, cfg: Optional[Config] = None) -> str:
+        prefix = get_plugin_url_prefix(cfg)
+        if prefix.startswith("oci://"):
+            return self.get_oci_url()
+        return f"{prefix}/{self.get_local_path()}"
+
+
+# the digest value is hardcoded in 2025-10-29
+supported_plugins: List[HigressPlugin] = [
+    HigressPlugin(
+        name="ai-statistics",
+        version="2.0.0",
+        digest="sha256:394b188ebc23935047752cbbfab0418a9085377fab680430738bd7ab324d2c3e",
+    ),
+    HigressPlugin(
+        name="ext-auth",
+        version="2.0.0",
+        digest="sha256:b02da08e0dd519ee0180696f062bb15a04b37de0a88a2c1b46836c07d1e9adab",
+    ),
+    HigressPlugin(
+        name="model-router",
+        version="2.0.0",
+        digest="sha256:4367cff0ce1349ea9885b7e80e495bcd443931d302b6dc804946ecda78545632",
+    ),
+    HigressPlugin(
+        name="transformer",
+        version="2.0.0",
+        digest="sha256:40ff2e000dcfd94da76c36593bdfd50f4d0f094309c013732da8e1c35171f321",
+    ),
+    HigressPlugin(
+        name="gpustack-token-usage",
+        version="1.0.0",
+        digest="sha256:61e6ba79741d5a9799535ec8fffc16087ea9089944be489c2586a28b639abdca",
+        registry_prefix="oci://docker.io/gpustack/higress-plugin-",
+    ),
+]
 
 
 def get_wasm_plugin_dir(mkdirs: bool = False) -> Optional[str]:
@@ -50,33 +76,30 @@ def get_wasm_plugin_dir(mkdirs: bool = False) -> Optional[str]:
 
 
 def get_plugin_url_with_name_and_version(
-    name: str, version: str, prefix: Optional[str] = None
+    name: str, version: str, cfg: Optional[Config] = None
 ) -> str:
-    if prefix is None:
-        prefix = get_plugin_url_prefix()
-    supported_versions = [v[0] for v in supported_plugins[name]]
-    if name not in supported_plugins or version not in supported_versions:
+    target = next(
+        (p for p in supported_plugins if p.name == name and p.version == version), None
+    )
+    if target is None:
         raise ValueError(f"Plugin {name} with version {version} is not supported.")
-    if prefix.startswith("oci://"):
-        return f"{prefix}/{name}:{version}"
-    return f"{prefix}/{name}/{version}/plugin.wasm"
+    return target.get_path(cfg)
 
 
-def get_plugin_url_prefix(cfg: Optional[Config] = None) -> str:
+def get_plugin_url_prefix(cfg: Optional[Config] = None):
     plugin_dir = get_wasm_plugin_dir()
     address = "localhost"
     if cfg is not None and cfg.gateway_mode != GatewayModeEnum.embedded:
         address = cfg.get_advertise_address()
     if cfg is not None and plugin_dir is not None and os.path.isdir(plugin_dir):
         return f"http://{address}:{cfg.get_api_port()}/{http_path_prefix}"
-    return f"oci://{oci_plugin_hostname_path}"
+    return oci_plugin_prefix
 
 
 def register(cfg: Config, app: FastAPI):
     plugin_dir = os.getenv("GPUSTACK_HIGRESS_PLUGIN_DIR", None)
-    prefix = get_plugin_url_prefix(cfg)
-
-    if plugin_dir is not None and prefix.startswith("http://"):
+    plugin_prefix = get_plugin_url_prefix(cfg)
+    if plugin_dir is not None and plugin_prefix.startswith("http://"):
         app.mount(
             f"/{http_path_prefix}",
             app=StaticFiles(directory=os.path.join(plugin_dir, http_path_prefix)),

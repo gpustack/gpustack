@@ -2,7 +2,7 @@ import time
 import asyncio
 import base64
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Tuple, List
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -18,7 +18,6 @@ from gpustack.gateway.client import (
     McpBridge,
     McpBridgeSpec,
     McpBridgeRegistry,
-    WasmPlugin,
     WasmPluginSpec,
 )
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
@@ -27,15 +26,13 @@ from gpustack.gateway.utils import (
     openai_model_prefixes,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
+    ensure_wasm_plugin,
 )
 from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
-    get_plugin_url_prefix,
 )
 from gpustack.utils.network import get_first_non_loopback_ip
 
-# plugin_prefix is updated by get_plugin_url_prefix in initialize_gateway
-plugin_prefix = ""
 mcp_registry_port = 80
 
 supported_openai_routes = [
@@ -220,20 +217,8 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             )
 
 
-async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
+def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-llm-ext-auth"
-    api = gw_client.ExtensionsHigressIoV1Api(api_client=api_client)
-    gateway_namespace = cfg.get_gateway_namespace()
-    try:
-        data: Dict[str, Any] = await api.get_wasmplugin(
-            namespace=gateway_namespace, name=resource_name
-        )
-        ext_auth = WasmPlugin.model_validate(data)
-    except ApiException as e:
-        if e.status == 404:
-            ext_auth = None
-        else:
-            raise
     registry = get_gpustack_higress_registry(cfg=cfg)
     match_list = [
         {"match_rule_path": route, "match_rule_type": "exact"}
@@ -272,77 +257,14 @@ async def ensure_ext_auth(cfg: Config, api_client: k8s_client.ApiClient):
         phase="AUTHN",
         priority=360,
         url=get_plugin_url_with_name_and_version(
-            name="ext-auth", version="2.0.0", prefix=plugin_prefix
+            name="ext-auth", version="2.0.0", cfg=cfg
         ),
     )
-    if ext_auth is None:
-        ext_auth = WasmPlugin(
-            metadata={
-                "name": resource_name,
-                "namespace": gateway_namespace,
-                "labels": managed_labels,
-            },
-            spec=expected_spec,
-        )
-        await api.create_wasmplugin(namespace=gateway_namespace, body=ext_auth)
-    elif match_labels(getattr(ext_auth.metadata, 'labels', {}), managed_labels):
-        should_update = False
-        spec = ext_auth.spec
-        if not spec:
-            ext_auth.spec = expected_spec
-            should_update = True
-        elif spec.defaultConfig is None:
-            ext_auth.spec.defaultConfig = expected_spec.defaultConfig
-            should_update = True
-        else:
-            # only compare the endpoint related fields for update
-            http_service: Dict[str, Any] = ext_auth.spec.defaultConfig.get(
-                "http_service", {}
-            )
-            endpoint: Dict[str, Any] = http_service.get("endpoint", {})
-            if (
-                endpoint.get("path")
-                != expected_spec.defaultConfig["http_service"]["endpoint"]["path"]
-                or endpoint.get("request_method")
-                != expected_spec.defaultConfig["http_service"]["endpoint"][
-                    "request_method"
-                ]
-                or endpoint.get("service_name")
-                != expected_spec.defaultConfig["http_service"]["endpoint"][
-                    "service_name"
-                ]
-                or endpoint.get("service_port")
-                != expected_spec.defaultConfig["http_service"]["endpoint"][
-                    "service_port"
-                ]
-            ):
-                http_service["endpoint"] = expected_spec.defaultConfig["http_service"][
-                    "endpoint"
-                ]
-                ext_auth.spec.defaultConfig["http_service"] = http_service
-                should_update = True
-        if should_update:
-            ext_auth.spec = spec
-            await api.edit_wasmplugin(
-                namespace=gateway_namespace, name=resource_name, body=ext_auth
-            )
+    return resource_name, expected_spec
 
 
-async def ensure_ai_statistics(cfg: Config, api_client: k8s_client.ApiClient):
+def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-ai-statistics"
-    api = gw_client.ExtensionsHigressIoV1Api(api_client=api_client)
-    gateway_namespace = cfg.get_gateway_namespace()
-    try:
-        data: Dict[str, Any] = await api.get_wasmplugin(
-            namespace=gateway_namespace,
-            name=resource_name,
-        )
-        ai_stats = WasmPlugin.model_validate(data)
-    except ApiException as e:
-        if e.status == 404:
-            ai_stats = None
-        else:
-            raise
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "attributes": [
@@ -362,36 +284,14 @@ async def ensure_ai_statistics(cfg: Config, api_client: k8s_client.ApiClient):
         phase="UNSPECIFIED_PHASE",
         priority=900,
         url=get_plugin_url_with_name_and_version(
-            name="ai-statistics", version="2.0.0", prefix=plugin_prefix
+            name="ai-statistics", version="2.0.0", cfg=cfg
         ),
     )
-    if ai_stats is None:
-        ai_stats = WasmPlugin(
-            metadata={
-                "name": resource_name,
-                "namespace": gateway_namespace,
-                "labels": managed_labels,
-            },
-            spec=expected_spec,
-        )
-        await api.create_wasmplugin(namespace=gateway_namespace, body=ai_stats)
-    # no dynamic data, skip updating for now
+    return resource_name, expected_spec
 
 
-async def ensure_model_router(cfg: Config, api_client: k8s_client.ApiClient):
+def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-model-router"
-    gateway_namespace = cfg.get_gateway_namespace()
-    api = gw_client.ExtensionsHigressIoV1Api(api_client=api_client)
-    try:
-        data: Dict[str, Any] = await api.get_wasmplugin(
-            namespace=gateway_namespace, name=resource_name
-        )
-        model_router = WasmPlugin.model_validate(data)
-    except ApiException as e:
-        if e.status == 404:
-            model_router = None
-        else:
-            raise
     enabled_paths = supported_openai_routes.copy()
     enabled_paths.append("/model/proxy")
     expected_spec = WasmPluginSpec(
@@ -406,36 +306,14 @@ async def ensure_model_router(cfg: Config, api_client: k8s_client.ApiClient):
         phase="AUTHN",
         priority=900,
         url=get_plugin_url_with_name_and_version(
-            name="model-router", version="2.0.0", prefix=plugin_prefix
+            name="model-router", version="2.0.0", cfg=cfg
         ),
     )
-    if model_router is None:
-        model_router = WasmPlugin(
-            metadata={
-                "name": resource_name,
-                "namespace": gateway_namespace,
-                "labels": managed_labels,
-            },
-            spec=expected_spec,
-        )
-        await api.create_wasmplugin(namespace=gateway_namespace, body=model_router)
-    # no dynamic data, skip updating for now
+    return resource_name, expected_spec
 
 
-async def ensure_transformer(cfg: Config, api_client: k8s_client.ApiClient):
+def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-header-transformer"
-    gateway_namespace = cfg.get_gateway_namespace()
-    api = gw_client.ExtensionsHigressIoV1Api(api_client=api_client)
-    try:
-        data: Dict[str, Any] = await api.get_wasmplugin(
-            namespace=gateway_namespace, name=resource_name
-        )
-        transformer = WasmPlugin.model_validate(data)
-    except ApiException as e:
-        if e.status == 404:
-            transformer = None
-        else:
-            raise
     expected_spec = WasmPluginSpec(
         defaultConfig={
             "reqRules": [
@@ -457,20 +335,29 @@ async def ensure_transformer(cfg: Config, api_client: k8s_client.ApiClient):
         phase="AUTHN",
         priority=410,
         url=get_plugin_url_with_name_and_version(
-            name="transformer", version="2.0.0", prefix=plugin_prefix
+            name="transformer", version="2.0.0", cfg=cfg
         ),
     )
-    if transformer is None:
-        transformer = WasmPlugin(
-            metadata={
-                "name": resource_name,
-                "namespace": gateway_namespace,
-                "labels": managed_labels,
-            },
-            spec=expected_spec,
-        )
-        await api.create_wasmplugin(namespace=gateway_namespace, body=transformer)
-    # no dynamic data, skip updating for now
+    return resource_name, expected_spec
+
+
+def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    resource_name = "gpustack-token-usage"
+    expected_spec = WasmPluginSpec(
+        defaultConfig={
+            'realIPToHeader': "X-GPUStack-Real-IP",
+        },
+        defaultConfigDisable=False,
+        failStrategy="FAIL_OPEN",
+        imagePullPolicy="UNSPECIFIED_POLICY",
+        matchRules=[],
+        phase="UNSPECIFIED_PHASE",
+        priority=920,
+        url=get_plugin_url_with_name_and_version(
+            name="gpustack-token-usage", version="1.0.0", cfg=cfg
+        ),
+    )
+    return resource_name, expected_spec
 
 
 async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
@@ -553,25 +440,33 @@ def set_async_k8s_config(cfg: Config):
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
-    global plugin_prefix
-    plugin_prefix = get_plugin_url_prefix(cfg=cfg)
     set_async_k8s_config(cfg=cfg)
     wait_for_apiserver_ready(cfg=cfg, timeout=timeout, interval=interval)
     if cfg.gateway_mode in [
         GatewayModeEnum.embedded,
         GatewayModeEnum.external,
     ]:
+        plugin_list: List[Tuple[str, WasmPluginSpec]] = [
+            ext_auth_plugin(cfg=cfg),
+            ai_statistics_plugin(cfg=cfg),
+            model_router_plugin(cfg=cfg),
+        ]
+        if cfg.server_role() != Config.ServerRole.WORKER:
+            plugin_list.append(transformer_plugin(cfg=cfg))
+            plugin_list.append(token_usage_plugin(cfg=cfg))
 
         async def prepare():
             api_client = k8s_client.ApiClient(configuration=cfg.get_async_k8s_config())
             await ensure_tls_secret(cfg=cfg, api_client=api_client)
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)
-            await ensure_ext_auth(cfg=cfg, api_client=api_client)
-            await ensure_ai_statistics(cfg=cfg, api_client=api_client)
-            await ensure_model_router(cfg=cfg, api_client=api_client)
-            if cfg.server_role() != Config.ServerRole.WORKER:
-                await ensure_transformer(cfg=cfg, api_client=api_client)
+            for plugin_name, plugin_spec in plugin_list:
+                await ensure_wasm_plugin(
+                    api=gw_client.ExtensionsHigressIoV1Api(api_client),
+                    name=plugin_name,
+                    namespace=cfg.get_gateway_namespace(),
+                    expected=plugin_spec,
+                )
 
         try:
             asyncio.run(prepare())
