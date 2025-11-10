@@ -192,7 +192,7 @@ class SGLangServer(InferenceServer):
         arguments.extend(
             [
                 "--host",
-                "0.0.0.0",
+                self._worker.ip,
                 "--port",
                 str(port),
             ]
