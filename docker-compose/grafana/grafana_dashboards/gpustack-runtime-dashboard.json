@@ -107,7 +107,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_desired_instances{model_name=\"$model_name\"})",
+          "expr": "sum(gpustack:model_desired_instances{cluster_name=\"$cluster_name\", model_name=\"$model_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -183,7 +183,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_running_instances{model_name=\"$model_name\"})",
+          "expr": "sum(gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -274,7 +274,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:model_desired_instances{model_name=\"$model_name\"}) - sum(gpustack:model_running_instances{model_name=\"$model_name\"})",
+          "expr": "sum(gpustack:model_desired_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}) - sum(gpustack:model_running_instances{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -350,7 +350,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:num_requests_running{model_name=\"$model_name\"})",
+          "expr": "sum(gpustack:num_requests_running{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -441,7 +441,7 @@
             "uid": "P1809F7CD0C75ACF3"
           },
           "editorMode": "code",
-          "expr": "sum(gpustack:num_requests_waiting{model_name=\"$model_name\"})",
+          "expr": "sum(gpustack:num_requests_waiting{cluster_name=\"$cluster_name\",model_name=\"$model_name\"})",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
@@ -508,7 +508,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{model_name=\"$model_name\"}",
+          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -577,7 +577,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{model_name=\"$model_name\"}",
+          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -661,7 +661,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{model_name=\"$model_name\"}",
+          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -745,7 +745,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "gpustack:model_info{model_name=\"$model_name\"}",
+          "expr": "gpustack:model_info{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}",
           "format": "table",
           "legendFormat": "__auto",
           "range": true,
@@ -802,7 +802,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -840,8 +840,11 @@
       "id": 22,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -855,7 +858,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "increase(gpustack:e2e_request_latency_seconds_count{model_name=~\"$model_name\", model_instance_name=~\"$model_instance_name\"}[1m])",
+          "expr": "increase(gpustack:e2e_request_latency_seconds_count{cluster_name=\"$cluster_name\",model_name=~\"$model_name\", model_instance_name=~\"$model_instance_name\"}[1m])",
           "legendFormat": "Requests/min({{model_instance_name}})",
           "range": true,
           "refId": "A"
@@ -898,7 +901,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -935,8 +938,11 @@
       "id": 41,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -955,7 +961,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum(rate(gpustack:generation_tokens_total{model_name=\"$model_name\"}[$__rate_interval]))",
+          "expr": "sum(rate(gpustack:generation_tokens_total{cluster_name=\"$cluster_name\",model_name=\"$model_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1003,7 +1009,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1041,8 +1047,11 @@
       "id": 9,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1061,7 +1070,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -1077,7 +1086,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1094,7 +1103,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1111,7 +1120,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:e2e_request_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1127,7 +1136,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(gpustack:e2e_request_latency_seconds_sum{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:e2e_request_latency_seconds_count{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
+          "expr": "rate(gpustack:e2e_request_latency_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:e2e_request_latency_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Average({{model_instance_name}})",
@@ -1218,7 +1227,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(gpustack:e2e_request_latency_seconds_bucket{model_name=~\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(gpustack:e2e_request_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=~\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -1279,7 +1288,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1317,8 +1326,11 @@
       "id": 3,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1337,7 +1349,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "gpustack:num_requests_running{model_instance_name=~\"$model_instance_name\", model_name=\"$model_name\"}",
+          "expr": "gpustack:num_requests_running{cluster_name=\"$cluster_name\",model_instance_name=~\"$model_instance_name\", model_name=\"$model_name\"}",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1353,7 +1365,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "gpustack:num_requests_swapped{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}",
+          "expr": "gpustack:num_requests_swapped{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -1370,7 +1382,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "gpustack:num_requests_waiting{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}",
+          "expr": "gpustack:num_requests_waiting{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -1418,7 +1430,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1455,8 +1467,11 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1475,7 +1490,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(gpustack:prompt_tokens_total{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(gpustack:prompt_tokens_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -1491,7 +1506,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(gpustack:generation_tokens_total{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(gpustack:generation_tokens_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1508,7 +1523,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum(rate(gpustack:prompt_tokens_total{model_name=\"$model_name\"}[$__rate_interval]))",
+          "expr": "sum(rate(gpustack:prompt_tokens_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1525,7 +1540,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum(rate(gpustack:generation_tokens_total{model_name=\"$model_name\"}[$__rate_interval]))",
+          "expr": "sum(rate(gpustack:generation_tokens_total{cluster_name=\"$cluster_name\", model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1573,7 +1588,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1611,8 +1626,11 @@
       "id": 5,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1631,7 +1649,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1648,7 +1666,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -1664,7 +1682,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1681,7 +1699,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:time_to_first_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1697,7 +1715,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(gpustack:time_to_first_token_seconds_sum{model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_to_first_token_seconds_count{model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
+          "expr": "rate(gpustack:time_to_first_token_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_to_first_token_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Average({{model_instance_name}})",
@@ -1742,7 +1760,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1780,8 +1798,11 @@
       "id": 39,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1800,7 +1821,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:inter_token_latency_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:inter_token_latency_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -1816,7 +1837,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1833,7 +1854,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1850,7 +1871,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -1866,7 +1887,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(gpustack:time_per_output_token_seconds_sum{model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_per_output_token_seconds_count{model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
+          "expr": "rate(gpustack:time_per_output_token_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_per_output_token_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Mean({{model_instance_name}})",
@@ -1911,7 +1932,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -1949,8 +1970,11 @@
       "id": 4,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1968,7 +1992,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "gpustack:kv_cache_usage_ratio{model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}",
+          "expr": "gpustack:kv_cache_usage_ratio{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}",
           "instant": false,
           "legendFormat": "{{model_instance_name}}",
           "range": true,
@@ -2011,7 +2035,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -2049,8 +2073,11 @@
       "id": 38,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2084,7 +2111,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(gpustack:prefix_cache_hits_total{model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m]) / rate(gpustack:prefix_cache_queries_total{model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m])",
+          "expr": "rate(gpustack:prefix_cache_hits_total{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m]) / rate(gpustack:prefix_cache_queries_total{cluster_name=\"$cluster_name\",model_name=~\"$model_name\",model_instance_name=~\"$model_instance_name\"}[1m])",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model_instance_name}}",
@@ -2173,7 +2200,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(gpustack:request_prompt_tokens_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(gpustack:request_prompt_tokens_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\", cluster_name=\"$cluster_name\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -2265,7 +2292,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(gpustack:request_generation_tokens_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(gpustack:request_generation_tokens_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\", cluster_name=\"$cluster_name\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -2313,7 +2340,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -2351,8 +2378,11 @@
       "id": 10,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2371,7 +2401,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\", cluster_name=\"$cluster_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -2387,7 +2417,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -2404,7 +2434,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -2421,7 +2451,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le, model_instance_name) (rate(gpustack:time_per_output_token_seconds_bucket{cluster_name=\"$cluster_name\",model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -2437,7 +2467,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(gpustack:time_per_output_token_seconds_sum{model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_per_output_token_seconds_count{model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
+          "expr": "rate(gpustack:time_per_output_token_seconds_sum{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])\n/\nrate(gpustack:time_per_output_token_seconds_count{cluster_name=\"$cluster_name\",model_name=\"$model_name\",model_instance_name=~\"$model_instance_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Mean({{model_instance_name}})",
@@ -2482,7 +2512,7 @@
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -2519,8 +2549,11 @@
       "id": 11,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2539,7 +2572,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(finished_reason, model_instance_name) (increase(gpustack:request_success_total{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\"}[$__rate_interval]))",
+          "expr": "sum by(finished_reason, model_instance_name) (increase(gpustack:request_success_total{model_name=\"$model_name\", model_instance_name=~\"$model_instance_name\", cluster_name=\"$cluster_name\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -2565,21 +2598,34 @@
           "text": "",
           "value": ""
         },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
+        "definition": "label_values(gpustack:cluster_info,cluster_name)",
+        "label": "Cluster Name",
+        "name": "cluster_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(gpustack:cluster_info,cluster_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "definition": "label_values(gpustack:num_requests_running,model_name)",
-        "includeAll": false,
+        "refresh": 2,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "definition": "label_values(gpustack:model_info{cluster_name=\"$cluster_name\"},model_name)",
         "label": "Model",
         "name": "model_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(gpustack:num_requests_running,model_name)",
+          "query": "label_values(gpustack:model_info{cluster_name=\"$cluster_name\"},model_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 2,
+        "refresh": 1,
         "regex": "",
         "type": "query"
       },
@@ -2589,14 +2635,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values(gpustack:generation_tokens_total{model_name=\"$model_name\"},model_instance_name)",
+        "definition": "label_values(gpustack:generation_tokens_total{model_name=\"$model_name\", cluster_name=\"$cluster_name\"},model_instance_name)",
         "includeAll": true,
         "label": "Model Instance",
         "name": "model_instance_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(gpustack:generation_tokens_total{model_name=\"$model_name\"},model_instance_name)",
+          "query": "label_values(gpustack:generation_tokens_total{model_name=\"$model_name\", cluster_name=\"$cluster_name\"},model_instance_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
