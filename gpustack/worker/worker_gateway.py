@@ -39,7 +39,12 @@ class WorkerGatewayController:
         self._async_k8s_config = cfg.get_async_k8s_config()
         self._lock = asyncio.Lock()
         self._model_cache = Cache(Cache.MEMORY)
+        self._cache_synced = False
         self._disabled_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+
+    async def wait_for_cache_sync(self):
+        while not self._cache_synced:
+            await asyncio.sleep(1)
 
     async def sync_model_cache(self):
         if self._disabled_gateway:
@@ -52,6 +57,12 @@ class WorkerGatewayController:
             else:
                 await self._model_cache.set(model.id, model)
 
+        current_models = self._clientset.models.list(
+            params={"cluster_id": self._cluster_id}
+        )
+        for model in current_models.items:
+            await self._model_cache.set(model.id, model)
+        self._cache_synced = True
         while True:
             try:
                 logger.debug("Started watching model instances.")
@@ -87,6 +98,14 @@ class WorkerGatewayController:
                 api_client=api_client
             )
             self._networking_api = k8s_client.NetworkingV1Api(api_client=api_client)
+        await self.wait_for_cache_sync()
+        if self._config.server_role() == Config.ServerRole.WORKER:
+            model_ids = list(self._model_cache._cache.keys())
+            await mcp_handler.cleanup_orphaned_model_ingresses(
+                self._namespace,
+                model_ids,
+                self._async_k8s_config,
+            )
 
     async def _handle_model_instance_event(self, event: Event):
         model_instance = ModelInstancePublic.model_validate(event.data)
