@@ -147,7 +147,7 @@ class ModelInstanceController:
 
         model_instance: ModelInstance = event.data
         try:
-            async with AsyncSession(self._engine) as session:
+            async with AsyncSession(self._engine, expire_on_commit=False) as session:
                 model = await Model.one_by_id(session, model_instance.model_id)
                 if not model:
                     return
