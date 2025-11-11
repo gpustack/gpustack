@@ -54,6 +54,7 @@ class CustomServer(InferenceServer):
             version=self._model.backend_version,
             model_path=self._model_path,
             port=self._get_serving_port(),
+            worker_ip=self._worker.ip,
             model_name=self._model.name,
             command=self._model.run_command,
         )
