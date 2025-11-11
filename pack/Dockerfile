@@ -393,32 +393,37 @@ ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/opt/data/plugins
 
 ## Install Skopeo
 
+ARG GOLANG_INSTALL_MIRROR="https://go.dev/dl"
+ARG GOPROXY="https://proxy.golang.org"
 RUN <<EOF
     # Skopeo
 
+    REQUIRED_SKOPEO_VERSION=1.13.3
     # Install Skopeo for images mirroring
     apt-get update -y && apt-get install -y --no-install-recommends \
         skopeo
 
     IFS="." read -r MAJOR MINOR PATCH <<< "$(skopeo --version | awk '{print $3}' | cut -d'-' -f1)"
     if (( MAJOR < 1 || ( MAJOR == 1 && MINOR < 14 ) )); then
-        echo "Skopeo version ${MAJOR}.${MINOR} is lower than required 1.13.3, upgrading from source..."
+        GOLANG_VERSION=1.18.10
+        echo "Skopeo version ${MAJOR}.${MINOR} is lower than required ${REQUIRED_SKOPEO_VERSION}, upgrading from source..."
 
         apt-get install -y --no-install-recommends \
             libgpgme-dev \
             libdevmapper-dev
 
         # Install Go
-        curl --retry 3 --retry-connrefused -fL "https://go.dev/dl/go1.18.10.${TARGETOS}-${TARGETARCH}.tar.gz" | tar -zx -C /usr/local
+        curl --retry 3 --retry-connrefused -fL "${GOLANG_INSTALL_MIRROR}/go${GOLANG_VERSION}.${TARGETOS}-${TARGETARCH}.tar.gz" | tar -zx -C /usr/local
         export PATH="/usr/local/go/bin:${PATH}"
 
         # Install Skopeo from source
         git -C /tmp clone --recursive --shallow-submodules \
-            --depth 1 --branch v1.13.3 --single-branch \
+            --depth 1 --branch v${REQUIRED_SKOPEO_VERSION} --single-branch \
             https://github.com/containers/skopeo.git skopeo
 
         # Build and install
         pushd /tmp/skopeo \
+            && sed -i "s#export GOPROXY=https://proxy.golang.org#export GOPROXY=${GOPROXY}#g" Makefile\
             && make vendor \
             && DISABLE_DOCS=1 PREFIX=/usr make install-binary
 
@@ -481,6 +486,7 @@ RUN --mount=type=cache,target=/root/.cache \
     gpustack version
 
     # Download wasm-plugins
+    export ORAS_CACHE=/root/cache/oras
     python gpustack/gateway/pull_plugins.py
 
     # Try to update PCI IDs
