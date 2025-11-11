@@ -975,11 +975,7 @@ class AscendMindIEServer(InferenceServer):
             backend_config["multiNodesInferPort"] = connecting_port
         if is_distributed_follower:
             subworker = next(
-                (
-                    sw
-                    for sw in subworkers
-                    if sw.worker_id == self._model_instance.worker_id
-                ),
+                (sw for sw in subworkers if sw.worker_id == self._worker.id),
                 None,
             )
             # Override device config if is a subordinate worker.
