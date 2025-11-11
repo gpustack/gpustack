@@ -122,11 +122,15 @@ def clean_env(args):
 
 def _copy_sqlite_file(data_dir: str):
     sqlite_path = ""
-    files = ["database.db", "database.db-wal"]
-    for f in files:
+    required_files = ["database.db"]
+    optional_files = ["database.db-wal"]
+    for f in required_files + optional_files:
         file_path = os.path.join(data_dir, f)
         if os.path.exists(file_path) is False:
-            raise FileNotFoundError(f"SQLite database file not found at {file_path}")
+            if f in required_files:
+                raise FileNotFoundError(f"Required sqlite file {file_path} not found.")
+            else:
+                continue
 
         copied_file_path = os.path.join(data_dir, f"{migration_temp_file_prefix}{f}")
         try:
