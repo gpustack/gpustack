@@ -142,6 +142,7 @@ class Config(BaseSettings):
     host: Optional[str] = None
     # The api_port is used in gpustack server serving API requests.
     api_port: Optional[int] = 8080
+    database_port: Optional[int] = 5432
     database_url: Optional[str] = None
     disable_worker: bool = False
     bootstrap_password: Optional[str] = None
@@ -533,9 +534,7 @@ class Config(BaseSettings):
 
     def init_database_url(self):
         if self.database_url is None:
-            self.database_url = (
-                "postgresql://root@127.0.0.1:5432/gpustack?sslmode=disable"
-            )
+            self.database_url = f"postgresql://root@127.0.0.1:{self.database_port}/gpustack?sslmode=disable"
             return
 
         if not self.database_url.startswith(
