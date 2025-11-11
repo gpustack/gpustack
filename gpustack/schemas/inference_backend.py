@@ -68,7 +68,41 @@ class InferenceBackendBase(SQLModel):
     )
     health_check_path: Optional[str] = SQLField(default=None)
 
-    def get_version_config(self, version: Optional[str] = None) -> VersionConfig:
+    def resolve_target_version(self, version: Optional[str] = None) -> Optional[str]:
+        """
+        Resolve the target version to use based on the requested version, default version,
+        and available version configs.
+
+        Logic:
+        - If requested/default version exists in version_configs, return it.
+        - If using a non-built-in backend and version_configs exist, return the latest version
+          (by compare_versions, falling back to lexicographical sort).
+        - Otherwise, return None.
+        """
+        version_configs_dict = self.version_configs.root
+        target_version = version or self.default_version
+
+        # 1) Requested/default version exists
+        if target_version in version_configs_dict:
+            return target_version
+
+        # 2) For non-built-in backends, auto-select the latest available version
+        if version_configs_dict and not self.is_built_in:
+            try:
+                version_list = list(version_configs_dict.keys())
+                latest_version = version_list[0]
+                for ver in version_list[1:]:
+                    if compare_versions(ver, latest_version) > 0:
+                        latest_version = ver
+                return latest_version
+            except Exception:
+                sorted_versions = sorted(version_configs_dict.keys())
+                return sorted_versions[-1] if sorted_versions else None
+
+        # 3) No suitable version found
+        return None
+
+    def get_version_config(self, version: Optional[str] = None) -> (VersionConfig, str):
         """
         Get configuration for a specific version.
 
@@ -76,47 +110,22 @@ class InferenceBackendBase(SQLModel):
             version: Version string, uses default_version if None
 
         Returns:
-            VersionConfig for the specified version
+            VersionConfig for the resolved version, and the resolved version string
 
         Raises:
-            KeyError: If the version is not found in version_configs
+            KeyError: If the version cannot be resolved from version_configs
         """
-        target_version = version or self.default_version
-
-        version_configs_dict = self.version_configs.root
-
-        if target_version not in version_configs_dict:
-            # if no version or default_version is specified,
-            # automatically select the latest version from the available versions
-            if version_configs_dict and not self.is_built_in:
-                # Get the latest version from the available versions
-                # Sort using the same logic as compare_versions function from gpustack_runtime
-                try:
-                    # Find the highest version by comparing all versions
-                    version_list = list(version_configs_dict.keys())
-                    latest_version = version_list[0]
-                    for ver in version_list[1:]:
-                        if (
-                            compare_versions(ver, latest_version) > 0
-                        ):  # ver > latest_version
-                            latest_version = ver
-                    target_version = latest_version
-                except Exception:
-                    # Fallback to simple string sorting if compare_versions is not available
-                    sorted_versions = sorted(version_configs_dict.keys())
-                    target_version = sorted_versions[-1]
-
-                return version_configs_dict[target_version]
-
+        target_version = self.resolve_target_version(version)
+        if target_version is None:
             raise KeyError(
-                f"Version '{target_version}' not found in backend '{self.backend_name}'"
+                f"Version '{version or self.default_version}' not found in backend '{self.backend_name}'"
             )
-        return version_configs_dict[target_version]
+        return self.version_configs.root[target_version], target_version
 
     def get_run_command(self, version: Optional[str] = None) -> str:
         if not version:
             version = self.default_version
-        version_config = self.get_version_config(version)
+        version_config, _ = self.get_version_config(version)
         return version_config.run_command or self.default_run_command
 
     def replace_command_param(
@@ -139,14 +148,14 @@ class InferenceBackendBase(SQLModel):
         command = command.replace("{{model_name}}", model_name)
         return command
 
-    def get_image_name(self, version: Optional[str] = None) -> str:
+    def get_image_name(self, version: Optional[str] = None) -> (str, str):
         if self.backend_name == BackendEnum.CUSTOM.value:
             return ""
         try:
-            version_config = self.get_version_config(version)
+            version_config, version = self.get_version_config(version)
         except KeyError:
-            return ""
-        return version_config.image_name
+            return "", ""
+        return version_config.image_name, version
 
 
 class InferenceBackend(InferenceBackendBase, BaseModelMixin, table=True):
