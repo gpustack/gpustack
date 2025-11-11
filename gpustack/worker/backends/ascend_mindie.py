@@ -911,7 +911,7 @@ class AscendMindIEServer(InferenceServer):
         )
         env["INF_NAN_MODE_ENABLE"] = env.pop("INF_NAN_MODE_ENABLE", "0")
         env["ATB_LLM_ENABLE_AUTO_TRANSPOSE"] = env.pop(
-            "ATB_LLM_ENABLE_AUTO_TRANSPOSE", "0"
+            "ATB_LLM_ENABLE_AUTO_TRANSPOSE", "1"
         )
         env["ATB_CONVERT_NCHW_TO_ND"] = env.pop("ATB_CONVERT_NCHW_TO_ND", "1")
         env["ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE"] = env.pop(
