@@ -43,6 +43,11 @@ function waitForConfig() {
     done
 }
 
+function isPortInUse() {
+    local port="$1"
+    ss -tuln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" 
+}
+
 GPUSTACK_GATEWAY_DIR="${GPUSTACK_GATEWAY_DIR:-/var/lib/gpustack/higress}"
 createDir "$GPUSTACK_GATEWAY_DIR"
 # shellcheck disable=SC2034

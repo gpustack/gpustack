@@ -196,6 +196,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("API_PORT"),
     )
     group.add_argument(
+        "--database-port",
+        type=int,
+        help="Port of the database. Example: 5432 for PostgreSQL.",
+        default=get_gpustack_env("DATABASE_PORT"),
+    )
+    group.add_argument(
         "--metrics-port",
         type=int,
         help="Port to expose server metrics.",
@@ -642,6 +648,7 @@ def set_server_options(args, config_data: dict):
     options = [
         "api_port",
         "metrics_port",
+        "database_port",
         "disable_metrics",
         "database_url",
         "disable_worker",

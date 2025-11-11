@@ -2,25 +2,33 @@
 # shellcheck shell=bash
 
 ROLE_FILE="/var/lib/gpustack/run/role"
-FLAG_POSTGRES_FLAG_FILE="/var/lib/gpustack/run/flag_should_start_postgres"
+FLAG_START_EMBEDDED_DATABASE_FILE="/var/lib/gpustack/run/flag_start_embedded_database"
+FLAG_EMBEDDED_DATABASE_PORT_FILE="/var/lib/gpustack/run/flag_embedded_database_port"
 
 
 ROLE=""
-POSTGRES_FLAG=""
+EMBEDDED_DATABASE_FLAG=""
+EMBEDDED_DATABASE_PORT="5432"
+
 if [ -f "$ROLE_FILE" ]; then
 	ROLE=$(cat "$ROLE_FILE")
 fi
-if [ -f "$FLAG_POSTGRES_FLAG_FILE" ]; then
-	POSTGRES_FLAG=$(cat "$FLAG_POSTGRES_FLAG_FILE")
+
+if [ -f "$FLAG_START_EMBEDDED_DATABASE_FILE" ]; then
+	EMBEDDED_DATABASE_FLAG=$(cat "$FLAG_START_EMBEDDED_DATABASE_FILE")
 fi
 
-if [ "$ROLE" != "server" ] || [ "$POSTGRES_FLAG" != "1" ]; then
+if [ "$ROLE" != "server" ] || [ "$EMBEDDED_DATABASE_FLAG" != "1" ]; then
 	echo "[INFO] Not server or not need to start postgres, skip checking."
 	exit 0
 fi
 
+if [ -f "$FLAG_EMBEDDED_DATABASE_PORT_FILE" ]; then
+    EMBEDDED_DATABASE_PORT=$(cat "$FLAG_EMBEDDED_DATABASE_PORT_FILE")
+fi
+
 echo "[INFO] Checking Postgres readiness."
-if gosu postgres pg_isready -q; then
+if gosu postgres pg_isready -p "$EMBEDDED_DATABASE_PORT" -q; then
     echo "[INFO] Postgres is ready."
     exit 0
 else
