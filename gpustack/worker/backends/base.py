@@ -477,7 +477,7 @@ class InferenceServer(ABC):
         # Load version configuration
         version_config = None
         try:
-            version_config = self.inference_backend.get_version_config(version)
+            version_config, version = self.inference_backend.get_version_config(version)
         except Exception:
             version_config = self.inference_backend.version_configs.root.get(version)
 
@@ -516,15 +516,18 @@ class InferenceServer(ABC):
 
         See _resolve_image for resolution details.
         """
-        image = self._resolve_image(backend)
-        if image is None:
+        image_name, target_version = self._resolve_image(backend)
+        if image_name is None:
             return None
-        return self._apply_registry_override(image)
+        # Update model backend service version at upper layer if we detected it
+        if target_version and not self._model.backend_version:
+            self._update_model_backend_service_version(target_version)
+        return self._apply_registry_override(image_name)
 
     def _resolve_image(  # noqa: C901
         self,
         backend: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> (Optional[str], Optional[str]):
         """
         Resolve the container image to use for the current backend.
 
@@ -536,17 +539,21 @@ class InferenceServer(ABC):
         2) Prefer image name from the user's config when using custom backend or built-in backend with a custom version
         3) Auto-detected image from gpustack-runner based on device vendor/arch and backend
 
+        Return:
+            image_name, backend_version
+
         """
         # 1) Return directly if explicitly provided.
         if self._model.image_name:
-            return self._model.image_name
+            return self._model.image_name, None
 
         # 2) Configuration takes priority when backend_version is set
         if self._model and self.inference_backend:
-            if image_name := self.inference_backend.get_image_name(
+            image_name, target_version = self.inference_backend.get_image_name(
                 self._model.backend_version
-            ):
-                return image_name
+            )
+            if image_name and target_version:
+                return image_name, target_version
 
         """
         Prepare queries for retrieving runners.
@@ -625,7 +632,7 @@ class InferenceServer(ABC):
         )
         if not runners:
             # Return directly if there is not a valid runner.
-            return None
+            return None, None
 
         """
         Pick the appropriate backend version from among the multiple versions.
@@ -660,11 +667,6 @@ class InferenceServer(ABC):
             service_version = (
                 backend_versioned_runners[0].variants[0].services[0].versions[0].version
             )
-            if service_version and not self._model.backend_version:
-                self._model.backend_version = service_version
-                self._clientset.models.update(
-                    self._model.id, ModelUpdate(**self._model.model_dump())
-                )
         except Exception as e:
             logger.error(
                 f"Failed to update model service version {service_version}: {e}"
@@ -672,7 +674,7 @@ class InferenceServer(ABC):
 
         # Return directly if there is only one versioned backend.
         if len(backend_versioned_runners) == 1:
-            return get_docker_image(backend_versioned_runners[0])
+            return get_docker_image(backend_versioned_runners[0]), service_version
 
         backend_version = runtime_version
 
@@ -684,14 +686,35 @@ class InferenceServer(ABC):
                     compare_versions(backend_versioned_runner.version, backend_version)
                     <= 0
                 ):
-                    return get_docker_image(backend_versioned_runner)
+                    return get_docker_image(backend_versioned_runner), service_version
 
         # Return the last(oldest) backend version of selected runner
         # if failed to detect host backend version or no backend version matched.
         #
         # NB(thxCode): Not using the latest backend version is to keep backend version idempotence
         #              when the gpustack-runner adds new backend version.
-        return get_docker_image(backend_versioned_runners[-1])
+        return get_docker_image(backend_versioned_runners[-1]), service_version
+
+    def _update_model_backend_service_version(
+        self, service_version: Optional[str]
+    ) -> None:
+        """
+        Update model backend (service) version back to server if not already set.
+
+        This method is extracted from image resolution flow to be called from the upper
+        layer after the version is detected.
+        """
+        if not service_version:
+            return
+        try:
+            self._model.backend_version = service_version
+            self._clientset.models.update(
+                self._model.id, ModelUpdate(**self._model.model_dump())
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to update model service version {service_version}: {e}"
+            )
 
     def _apply_registry_override(self, image: str) -> str:
         """
