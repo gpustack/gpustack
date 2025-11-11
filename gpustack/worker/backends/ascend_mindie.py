@@ -887,23 +887,29 @@ class AscendMindIEServer(InferenceServer):
         # -- Pin installation path, which helps to locate other resources.
         env["MIES_INSTALL_PATH"] = str(install_path)
         # -- Enable exposing metircs.
-        env["MIES_SERVICE_MONITOR_MODE"] = "1"
+        env["MIES_SERVICE_MONITOR_MODE"] = env.pop("MIES_SERVICE_MONITOR_MODE", "1")
         # -- Enable high performance swapper.
-        env["MIES_RECOMPUTE_THRESHOLD"] = "0.5"
+        env["MIES_RECOMPUTE_THRESHOLD"] = env.pop("MIES_RECOMPUTE_THRESHOLD", "0.5")
         # env["MINDIE_LLM_USE_MB_SWAPPER"] = "1"  # Atlas 300I Duo needs to unset this.
-        env["MINDIE_LLM_RECOMPUTE_THRESHOLD"] = "0.5"
+        env["MINDIE_LLM_RECOMPUTE_THRESHOLD"] = env.pop(
+            "MINDIE_LLM_RECOMPUTE_THRESHOLD", "0.5"
+        )
         # -- Enforce continues batching.
-        env["MINDIE_LLM_CONTINUOUS_BATCHING"] = "1"
+        env["MINDIE_LLM_CONTINUOUS_BATCHING"] = env.pop(
+            "MINDIE_LLM_CONTINUOUS_BATCHING", "1"
+        )
         # -- Disable checking files permission.
         env["MINDIE_CHECK_INPUTFILES_PERMISSION"] = "0"
         # -- Enforce using ATB as backend
         env["MINDIE_LLM_FRAMEWORK_BACKEND"] = "ATB"
-        # -- Enforce using 80% of GPU memory
+        # -- Enforce using 80% of GPU memory.
         env["NPU_MEMORY_FRACTION"] = "0.8"
         # -- Disable OpenMP parallelism, speed up model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
         # -- Improve performance.
-        env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = "1"
+        env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = env.pop(
+            "MINDIE_ASYNC_SCHEDULING_ENABLE", "1"
+        )
         env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "2")
         env["ATB_OPERATION_EXECUTE_ASYNC"] = "1"
         env["ATB_LAYER_INTERNAL_TENSOR_REUSE"] = env.pop(
