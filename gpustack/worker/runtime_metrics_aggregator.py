@@ -318,7 +318,7 @@ class RuntimeMetricsAggregator:
             if enable_metrics is None:
                 return True
 
-        if model.env and model.env.get("GPUSTACK_SKIP_SCRAPE_METRICS"):
+        if model.env and model.env.get("GPUSTACK_DISABLE_METRICS"):
             return True
 
         return False

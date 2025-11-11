@@ -161,6 +161,12 @@ class SGLangServer(InferenceServer):
         )
         arguments.extend(auto_parallelism_arguments)
 
+        # Add metrics arguments if needed
+        metrics_arguments = get_metrics_arguments(
+            self._model.backend_parameters, self._model.env
+        )
+        arguments.extend(metrics_arguments)
+
         # Add speculative config arguments if needed
         speculative_config_arguments = self._get_speculative_arguments()
         arguments.extend(speculative_config_arguments)
@@ -379,3 +385,24 @@ def get_auto_parallelism_arguments(
             arguments.extend(["--tp-size", str(gpu_count)])
 
     return arguments
+
+
+def get_metrics_arguments(
+    backend_parameters: List[str], env: Optional[Dict[str, str]] = None
+) -> List[str]:
+    """
+    Get metrics flag for SGLang.
+    """
+
+    metrics_flag = find_parameter(
+        backend_parameters,
+        ["enable-metrics"],
+    )
+
+    if metrics_flag is not None:
+        return []
+
+    if env and env.get("GPUSTACK_DISABLE_METRICS"):
+        return []
+
+    return ["--enable-metrics"]
