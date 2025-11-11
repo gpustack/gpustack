@@ -76,6 +76,8 @@ class InferenceServer(ABC):
             self._model_instance = mi
             self._config = cfg
             self._worker = self._clientset.workers.get(worker_id)
+            if not self._worker:
+                raise KeyError(f"Worker {worker_id} not found")
 
             self.get_model()
             self.inference_backend = inference_backend
@@ -494,11 +496,12 @@ class InferenceServer(ABC):
             resolved_model_name = self._model_instance.model_name
 
             command = self.inference_backend.replace_command_param(
-                version,
-                resolved_model_path,
-                resolved_port,
-                resolved_model_name,
-                version_config.run_command,
+                version=version,
+                model_path=resolved_model_path,
+                port=resolved_port,
+                worker_ip=self._worker.ip,
+                model_name=resolved_model_name,
+                command=version_config.run_command,
             )
             if command:
                 return command.split()

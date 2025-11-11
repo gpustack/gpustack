@@ -124,6 +124,7 @@ class InferenceBackendBase(SQLModel):
         version: Optional[str],
         model_path: Optional[str],
         port: Optional[int],
+        worker_ip: Optional[str] = None,
         model_name: Optional[str] = None,
         command: Optional[str] = None,
     ) -> str:
@@ -134,6 +135,7 @@ class InferenceBackendBase(SQLModel):
 
         command = command.replace("{{model_path}}", model_path)
         command = command.replace("{{port}}", str(port))
+        command = command.replace("{{worker_ip}}", str(worker_ip))
         command = command.replace("{{model_name}}", model_name)
         return command
 
