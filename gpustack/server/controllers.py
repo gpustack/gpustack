@@ -1085,6 +1085,7 @@ async def new_workers_from_pool(
             labels={
                 "provider": pool.cluster.provider.value,
                 "instance_type": pool.instance_type or "unknown",
+                **pool.labels,
             },
             state=WorkerStateEnum.PENDING,
             status=WorkerStatus.get_default_status(),

@@ -42,6 +42,7 @@ class WorkerPoolUpdate(SQLModel):
     name: str
     batch_size: Optional[int] = Field(default=None, ge=1)
     replicas: int = Field(default=1, ge=0)
+    labels: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
 
 
 class Volume(BaseModel):
@@ -74,7 +75,6 @@ class WorkerPoolCreate(WorkerPoolUpdate):
     instance_type: str
     os_image: str
     image_name: str
-    labels: Optional[Dict[str, str]] = Field(sa_column=Column(JSON), default={})
     cloud_options: Optional[CloudOptions] = Field(
         default={}, sa_column=Column(pydantic_column_type(CloudOptions))
     )
