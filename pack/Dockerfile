@@ -595,16 +595,22 @@ ENV HYGON_VISIBLE_DEVICES="all" \
 
 ## Active all Iluvatar devices detection,
 ## works with (default) Iluvatar container runtime and privileged mode.
-## See https://gitee.com/deep-spark/ix-device-plugin/blob/master/vendor/gitee.com/deep-spark/go-ixml/pkg/ixml/api.h.
+## See https://github.com/Deep-Spark/ix-container-toolkit.
 ## Runs:
 ## - With container runtime installed:
-##   [TODO, TBD]
+##   + If installed Iluvatar container runtime as default runtime, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged ...
+##   + If there are mulitple container runtimes installed, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged --runtime iluvatar ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock ...
 ## - Without container runtime installed:
 ##   + Allowing privileged, try with:
-##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /run/udev:/run/udev:ro -v /usr/local/corex:/usr/local/corex:ro -v /usr/bin/ixsmi:/usr/bin/ixsmi ...
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --privileged -v /usr/local/corex:/usr/local/corex:ro ...
 ##   + Disallowing privileged, try with:
-##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /run/udev:/run/udev:ro -v /usr/local/corex:/usr/local/corex:ro -v /usr/bin/ixsmi:/usr/bin/ixsmi...
-ENV ILUVATAR_VISIBLE_DEVICES="all" \
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock --security-opt seccomp=unconfined -v /dev:/dev:ro -v /usr/local/corex:/usr/local/corex:ro ...
+ENV IX_VISIBLE_DEVICES="all" \
+    COREX_HOME="/usr/local/corex" \
     LD_LIBRARY_PATH="/usr/local/corex/lib64:${LD_LIBRARY_PATH}" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/usr/local/corex;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
 
