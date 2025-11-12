@@ -12,6 +12,7 @@ from gpustack.schemas.workers import (
     WorkerCreate,
     WorkerUpdate,
 )
+from gpustack.security import API_KEY_PREFIX
 from gpustack.utils import platform
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.config.registration import (
@@ -111,7 +112,7 @@ class WorkerManager:
         workerStatus = timed_collect()
         workerUpdate = WorkerUpdate(
             name=self._worker_name,
-            labels=ensure_builtin_labels(self._worker_name),
+            labels=self._ensure_builtin_labels(),
         )
         to_register = WorkerCreate.model_validate(
             {
@@ -129,10 +130,15 @@ class WorkerManager:
     def _register_shutdown_hooks(self):
         pass
 
+    def _ensure_builtin_labels(self) -> dict:
+        labels = {
+            "os": platform.system(),
+            "arch": platform.arch(),
+            "worker-name": self._worker_name,
+        }
 
-def ensure_builtin_labels(worker_name: str) -> dict:
-    return {
-        "os": platform.system(),
-        "arch": platform.arch(),
-        "worker-name": worker_name,
-    }
+        # Legacy workers with version 0.7.x send worker_uuid as part of registration.
+        # Legacy workers with version <0.7.x don't have worker_uuid, so we use this label as part of the registration allowance.
+        if self._cfg.token and not self._cfg.token.startswith(API_KEY_PREFIX):
+            labels["gpustack.existence-check"] = "true"
+        return labels

@@ -151,6 +151,14 @@ async def get_existing_worker(
         existing_worker = await Worker.one_by_fields(session, fields)
         if existing_worker is not None:
             return existing_worker
+
+    # find existing worker by name
+    if worker_in.labels and worker_in.labels.get("gpustack.existence-check"):
+        fields = {"name": worker_in.name}
+        existing_worker = await Worker.one_by_fields(session, fields)
+        if existing_worker is not None:
+            return existing_worker
+
     # no existing worker found, find duplicated name worker
     name_conflict_fields = {**static_fields, "name": worker_in.name}
     name_conflict_worker = await Worker.one_by_fields(session, name_conflict_fields)
