@@ -552,7 +552,7 @@ async def ensure_wasm_plugin(
             body=wasm_plugin_body,
         )
         logger.info(f"Created WasmPlugin {name} in namespace {namespace}.")
-    elif match_labels(getattr(current_plugin.metadata, 'labels', {}), managed_labels):
+    elif match_labels(current_plugin.metadata.get("labels", {}), managed_labels):
         current_spec = (
             current_plugin.spec.model_dump(exclude_none=True)
             if current_plugin.spec
