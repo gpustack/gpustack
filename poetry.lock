@@ -2770,13 +2770,13 @@ six = ">=1.9.0"
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.17"
+version = "0.1.19"
 description = "GPUStack Runner is library for registering runnable accelerated backends and services in GPUStack."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runner-0.1.17-py3-none-any.whl", hash = "sha256:30358bfdda64b4d751a426f472a67ffab55805a928aa090d4b0d1cc3a15d6aa7"},
-    {file = "gpustack_runner-0.1.17.tar.gz", hash = "sha256:d3c3cce5d5c6dd7649cd1f15b0a6505c3ec5d4b5e4507a75b513822bdfdb90a5"},
+    {file = "gpustack_runner-0.1.19-py3-none-any.whl", hash = "sha256:4300ba51bb3b7fd1111921710bf857541fdc5c638fec25843c8a554ecd88562d"},
+    {file = "gpustack_runner-0.1.19.tar.gz", hash = "sha256:342179c910acd53d0b71030594d593143885525a2f0687155396945eed6cb941"},
 ]
 
 [package.dependencies]
@@ -2785,19 +2785,19 @@ dataclasses-json = ">=0.6.7"
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.27"
+version = "0.1.28"
 description = "GPUStack Runtime is library for detecting GPU resources and launching GPU workloads."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runtime-0.1.27-py3-none-any.whl", hash = "sha256:33a027a167a34036b903077ac94c604c8ec3903bbc0830285d3731d5b29c455a"},
-    {file = "gpustack_runtime-0.1.27.tar.gz", hash = "sha256:6c9c8900f359d719aaf5fbc3248e03e10d384e7a43c77db4271c9bead3ad16fc"},
+    {file = "gpustack_runtime-0.1.28-py3-none-any.whl", hash = "sha256:393362110210aceab443175547091bcea0d3b290b788e7a59dad2059f8c4e090"},
+    {file = "gpustack_runtime-0.1.28.tar.gz", hash = "sha256:0c076a7369dab7c26ae48ac3fe8b3f208d2f85e177d15a4dce6f3fd5e7322cac"},
 ]
 
 [package.dependencies]
 argcomplete = ">=3.6.3"
 docker = "*"
-gpustack-runner = ">=0.1.17"
+gpustack-runner = ">=0.1.19"
 kubernetes = "*"
 nvidia-ml-py = ">=13.580.65"
 pyyaml = "*"
@@ -10694,4 +10694,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "2f7b2db17846454d97b4fc2dd9bde3842e3f4e10adfb27faab9bcf40dda5b357"
+content-hash = "4db4b27fe5923cf4b4ab03a3244462a5ab0bb00b81fe4e425c8d5e95ed37ef36"
