@@ -167,7 +167,7 @@ class Server:
         await init_db(self._config.database_url)
 
         engine = get_engine()
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
             await self._init_data(session)
 
         logger.debug("Data initialization completed.")
