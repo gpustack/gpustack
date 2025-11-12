@@ -41,6 +41,9 @@ def construct_cloud_instance(
     """
     cluster = worker.cluster
     pool = worker.worker_pool
+    labels = worker.labels or {}
+    labels.pop("provider", None)
+    labels.pop("instance_type", None)
     return CloudInstanceCreate(
         name=worker.name,
         image=pool.os_image,
@@ -51,6 +54,7 @@ def construct_cloud_instance(
         labels={
             "cluster_id": cluster.id,
             "worker_id": worker.id,
+            **labels,
         },
     )
 
