@@ -75,7 +75,7 @@ kubernetes-asyncio = "^33.1.0"
 msgpack = "^1.1.2"
 
 gpustack-runner = ">=0.1.19"
-gpustack-runtime = "0.1.28"
+gpustack-runtime = "0.1.29"
 
 [tool.poetry.group.dev.dependencies]
 installer = "0.7.0"
