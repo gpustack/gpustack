@@ -21,6 +21,7 @@ if [ -n "${GPUSTACK_MIGRATION_DATA_DIR}" ]; then
     if gpustack migrate --migration-data-dir "${GPUSTACK_MIGRATION_DATA_DIR}" \
         --database-url "postgresql://root@localhost:${EMBEDDED_DATABASE_PORT}/gpustack"; then
         touch "$STATE_MIGRATION_DONE_FILE"
+        echo "[INFO] Migration completed successfully."
     else
         echo "[ERROR] Migration failed."
         exit 1
