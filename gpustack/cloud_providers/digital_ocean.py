@@ -2,7 +2,6 @@ import logging
 import random
 import string
 import asyncio
-from functools import partial
 from typing import List, Optional, Dict, Any, Tuple
 from .abstract import (
     ProviderClientBase,
@@ -10,7 +9,7 @@ from .abstract import (
     CloudInstanceCreate,
     InstanceState,
 )
-from pydo import Client
+from pydo.aio import Client
 from gpustack.schemas.clusters import Volume
 
 logger = logging.getLogger(__name__)
@@ -27,15 +26,6 @@ class DigitalOceanClient(ProviderClientBase):
     def __init__(self, token: str):
         self.client = Client(token=token, timeout=30)
 
-    async def _run_in_executor(self, sync_func, *args, **kwargs):
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-
-        func = partial(sync_func, *args, **kwargs)
-        return await loop.run_in_executor(None, func)
-
     async def create_instance(self, instance: CloudInstanceCreate) -> str:
         tags: List[str] = [f"{k}:{v}" for k, v in instance.labels.items()]
         req = {
@@ -50,9 +40,7 @@ class DigitalOceanClient(ProviderClientBase):
         try:
             logger.info(f"Creating digital ocean droplet with name {instance.name}")
             logger.debug(f"Request body: {req}")
-            droplet_resp = await self._run_in_executor(
-                self.client.droplets.create, body=req
-            )
+            droplet_resp = await self.client.droplets.create(body=req)
             id = droplet_resp['droplet']['id']
             return str(id)
         except Exception as e:
@@ -61,10 +49,11 @@ class DigitalOceanClient(ProviderClientBase):
 
     async def delete_instance(self, external_id: str):
         logger.info(f"Deleting digital ocean instance with id {external_id}")
-        delete_response = await self._run_in_executor(
-            self.client.droplets.destroy_with_associated_resources_dangerous,
-            external_id,
-            x_dangerous=True,
+        delete_response = (
+            await self.client.droplets.destroy_with_associated_resources_dangerous(
+                external_id,
+                x_dangerous=True,
+            )
         )
         if delete_response is None:
             return
@@ -76,7 +65,7 @@ class DigitalOceanClient(ProviderClientBase):
         )
 
     async def get_instance(self, external_id: str) -> Optional[CloudInstance]:
-        response = await self._run_in_executor(self.client.droplets.get, external_id)
+        response = await self.client.droplets.get(external_id)
         instance: Dict[str, Any] = response.get('droplet', None)
         if instance is None:
             return None
@@ -131,15 +120,14 @@ class DigitalOceanClient(ProviderClientBase):
         )
 
     async def create_ssh_key(self, worker_name: str, public_key: str) -> str:
-        ssh_key_resp = await self._run_in_executor(
-            self.client.ssh_keys.create,
+        ssh_key_resp = await self.client.ssh_keys.create(
             body={"name": f"sshkey-{worker_name}", "public_key": public_key},
         )
         id = ssh_key_resp['ssh_key']['id']
         return str(id)
 
     async def delete_ssh_key(self, id: str):
-        await self._run_in_executor(self.client.ssh_keys.delete, id)
+        await self.client.ssh_keys.delete(id)
 
     async def create_volumes_and_attach(
         self, worker_id: int, external_id: str, region: str, *volumes: Volume
@@ -172,8 +160,7 @@ class DigitalOceanClient(ProviderClientBase):
             logger.info(
                 f"Creating volume {name} of size {volume.size_gb}GB in region {region}"
             )
-            vol_resp = await self._run_in_executor(
-                self.client.volumes.create,
+            vol_resp = await self.client.volumes.create(
                 body={
                     "size_gigabytes": volume.size_gb,
                     "name": name,
@@ -185,8 +172,7 @@ class DigitalOceanClient(ProviderClientBase):
             vol_id = vol_resp['volume']['id']
             volume_ids.append(str(vol_id))
             logger.info(f"Attaching volume {vol_id} to droplet {external_id}")
-            resp = await self._run_in_executor(
-                self.client.volume_actions.post_by_id,
+            resp = await self.client.volume_actions.post_by_id(
                 volume_id=vol_id,
                 body={"type": "attach", "droplet_id": external_id, "region": region},
             )
@@ -204,9 +190,7 @@ class DigitalOceanClient(ProviderClientBase):
     async def determine_linux_distribution(
         self, image_id: str
     ) -> Tuple[Optional[str], bool]:
-        image: Dict[str, Any] = await self._run_in_executor(
-            self.client.images.get, image_id
-        )
+        image: Dict[str, Any] = await self.client.images.get(image_id)
         if image is None or 'image' not in image:
             return None, True
         # if image is not public, we cannot determine the distribution
