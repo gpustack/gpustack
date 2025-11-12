@@ -755,31 +755,32 @@ class WorkerController:
             return
         worker: Worker = event.data
         changed_fields = event.changed_fields
-        if not worker or not changed_fields:
+        if not worker or (not changed_fields and event.type != EventType.DELETED):
             return
-        state_changed: Optional[Tuple[Any, Any]] = changed_fields.get("state", None)
-        if state_changed is None:
+        state_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
+            "state", None
+        )
+        should_notify = state_changed is not None or event.type == EventType.DELETED
+        if not should_notify:
             return
         async with AsyncSession(self._engine) as session:
-            worker = await Worker.one_by_id(session, worker.id)
-            if not worker:
-                return
-            if worker.worker_pool is not None:
+            if worker.worker_pool_id is not None:
                 result = await session.exec(
                     select(WorkerPool)
                     .options(selectinload(WorkerPool.pool_workers))
                     .where(WorkerPool.id == worker.worker_pool_id)
                 )
-                worker_pool = result.one()
-                copied_pool = WorkerPool(**worker_pool.model_dump())
-                await event_bus.publish(
-                    copied_pool.__class__.__name__.lower(),
-                    Event(
-                        type=EventType.UPDATED,
-                        data=copied_pool,
-                    ),
-                )
-            if worker.cluster is not None:
+                worker_pool = result.one_or_none()
+                if worker_pool is not None:
+                    copied_pool = WorkerPool(**worker_pool.model_dump())
+                    await event_bus.publish(
+                        copied_pool.__class__.__name__.lower(),
+                        Event(
+                            type=EventType.UPDATED,
+                            data=copied_pool,
+                        ),
+                    )
+            if worker.cluster_id is not None:
                 result = await session.exec(
                     select(Cluster)
                     .options(
@@ -788,15 +789,16 @@ class WorkerController:
                     )
                     .where(Cluster.id == worker.cluster_id)
                 )
-                cluster = result.one()
-                copied_cluster = Cluster(**cluster.model_dump())
-                await event_bus.publish(
-                    copied_cluster.__class__.__name__.lower(),
-                    Event(
-                        type=EventType.UPDATED,
-                        data=copied_cluster,
-                    ),
-                )
+                cluster = result.one_or_none()
+                if cluster is not None:
+                    copied_cluster = Cluster(**cluster.model_dump())
+                    await event_bus.publish(
+                        copied_cluster.__class__.__name__.lower(),
+                        Event(
+                            type=EventType.UPDATED,
+                            data=copied_cluster,
+                        ),
+                    )
 
 
 class InferenceBackendController:
