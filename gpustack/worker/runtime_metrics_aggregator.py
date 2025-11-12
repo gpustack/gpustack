@@ -247,8 +247,8 @@ class RuntimeMetricsAggregator:
                     )
                     for k in label_keys
                 ]
-                labels = base_labels.copy()
-                labels.update(sample.labels)
+                labels = sample.labels.copy()
+                labels.update(base_labels)
 
                 if family.type in ("histogram", "summary"):
                     raw_family.add_sample(
@@ -309,13 +309,6 @@ class RuntimeMetricsAggregator:
                 model.backend_parameters, ["disable-log-stats"]
             )
             if disable_metrics:
-                return True
-
-        if runtime == BackendEnum.SGLANG:
-            enable_metrics = find_parameter(
-                model.backend_parameters, ["enable-metrics"]
-            )
-            if enable_metrics is None:
                 return True
 
         if model.env and model.env.get("GPUSTACK_DISABLE_METRICS"):
