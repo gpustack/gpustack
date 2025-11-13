@@ -7,6 +7,7 @@ from typing import Optional, Tuple, List
 import aiohttp
 import psutil
 from datetime import datetime, timezone
+import ipaddress
 
 
 def normalize_route_path(path: str) -> str:
@@ -19,83 +20,90 @@ def normalize_route_path(path: str) -> str:
     return path
 
 
-def get_first_non_loopback_ip() -> Tuple[str, str]:
+def get_first_non_loopback_ip() -> str:
     """
-    Get the first non-loopback IPv4 address and the interface name of the machine.
+    Get the first non-loopback IPv4 address of the machine.
 
     Returns:
-        A tuple containing the IPv4 address and the interface name.
+        The IPv4 address as a string.
     """
 
-    target_af = socket.AF_INET
-
-    # First try to get the preferred outbound IP
-    outbound_ip, _ = _get_preferred_outbound_ip(target_af)
-    if outbound_ip:
-        ifname = get_ifname_by_ip(outbound_ip, target_af)
-        return outbound_ip, ifname
-
     # Fallback to scanning all interfaces
-    for ifname, addrs in psutil.net_if_addrs().items():
+    for _, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
-            if addr.family == target_af and not addr.address.startswith(
+            if addr.family == socket.AF_INET and not addr.address.startswith(
                 ("127.", "169.254.")
             ):
-                return addr.address, ifname
+                return addr.address
 
     raise Exception("No non-loopback IPv4 address found.")
 
 
-def _get_preferred_outbound_ip(
-    address_family: Optional[socket.AddressFamily] = None,
-) -> Tuple[Optional[str], Optional[socket.AddressFamily]]:
-    """
-    Get the preferred outbound IP address of the machine.
-
-    Args:
-        address_family:
-            The address family to use (socket.AF_INET or socket.AF_INET6).
-            If None, try both.
-    """
-
-    cases: List[Tuple[socket.AddressFamily, str]] = []
-    if address_family is None or address_family == socket.AF_INET:
-        cases.append((socket.AF_INET, "8.8.8.8"))
-    if address_family is None or address_family == socket.AF_INET6:
-        cases.append((socket.AF_INET6, "2001:4860:4860::8888"))
-
-    for af, test_ip in cases:
-        with contextlib.suppress(Exception):
-            with socket.socket(af, socket.SOCK_DGRAM) as s:
-                s.connect((test_ip, 80))
-                return s.getsockname()[0], af
-
-    return None, None
-
-
-def get_ifname_by_ip(
+def _get_ifname_by_local_ip(
     ip_address: str,
     address_family: socket.AddressFamily = socket.AF_INET,
-) -> str:
+) -> Optional[str]:
     """
-    Get the interface name by IP address using psutil.
-
-    Args:
-        ip_address:
-            The IP address to look for.
-        address_family:
-            The address family (default is socket.AF_INET).
+    Given an IP address, return the interface name if it exists and is not loopback/link-local.
 
     Returns:
-        The interface name associated with the given IP address.
+        The interface name as a string, or None if not found.
     """
+
+    try:
+        ip = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return None
+    if ip.is_loopback or ip.is_link_local:
+        return None
 
     for ifname, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
             if addr.family == address_family and addr.address == ip_address:
                 return ifname
 
-    raise Exception(f"No interface found for IP address {ip_address}.")
+    return None
+
+
+def get_ifname_by_ip_hostname(
+    ip_address_hostname: str,
+    address_family: socket.AddressFamily = socket.AF_INET,
+) -> Optional[str]:
+    """
+    Get the interface name by IP address using psutil.
+
+    Args:
+        ip_address_hostname:
+            The IP address or hostname to look for. If a hostname is provided, it will be resolved to an IP address.
+        address_family:
+            The address family (default is socket.AF_INET).
+
+    Returns:
+        The interface name associated with the given IP address or hostname.
+    """
+
+    local_ifname = _get_ifname_by_local_ip(
+        ip_address_hostname, address_family=address_family
+    )
+    if local_ifname is not None:
+        return local_ifname
+
+    cases: List[Tuple[socket.AddressFamily, str]] = [
+        (address_family, ip_address_hostname),
+    ]
+    if address_family == socket.AF_INET:
+        cases.append((socket.AF_INET, "8.8.8.8"))
+    if address_family == socket.AF_INET6:
+        cases.append((socket.AF_INET6, "2001:4860:4860::8888"))
+
+    for af, test_ip in cases:
+        with contextlib.suppress(Exception):
+            with socket.socket(af, socket.SOCK_DGRAM) as s:
+                # the port is arbitrary since we won't actually send any data
+                s.connect((test_ip, 1))
+                return _get_ifname_by_local_ip(s.getsockname()[0], af)
+
+    return None
 
 
 def parse_port_range(port_range: str) -> Tuple[int, int]:

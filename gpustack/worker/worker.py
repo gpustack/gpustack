@@ -11,6 +11,7 @@ from fastapi import FastAPI
 import setproctitle
 import tenacity
 import uvicorn
+from urllib.parse import urlparse
 
 from gpustack.api import exceptions
 from gpustack.config.config import Config, GatewayModeEnum
@@ -19,7 +20,10 @@ from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.routes.token import worker_auth
 from gpustack.server import catalog
-from gpustack.utils.network import get_first_non_loopback_ip, get_ifname_by_ip
+from gpustack.utils.network import (
+    get_first_non_loopback_ip,
+    get_ifname_by_ip_hostname,
+)
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
@@ -46,16 +50,13 @@ class Worker:
     _status_collector: WorkerStatusCollector
     _worker_manager: WorkerManager
     _config: Config
-    _worker_ip: Optional[str] = None
+    _worker_ip: str = None
     _worker_ifname: Optional[str] = None
     _worker_id: Optional[int] = None
     _cluster_id: Optional[int] = None
 
     def worker_ip(self) -> str:
-        static_worker_ip = (
-            self._config.worker_ip or self._config.advertise_address or None
-        )
-        return static_worker_ip if static_worker_ip else self._worker_ip
+        return self._config.static_worker_ip() or self._worker_ip
 
     def worker_ifname(self) -> str:
         return self._config.worker_ifname or self._worker_ifname
@@ -69,6 +70,14 @@ class Worker:
     def cluster_id(self) -> Optional[int]:
         return self._cluster_id
 
+    def _worker_ifname_lookup_hostname(self) -> Optional[str]:
+        if self._is_embedded:
+            return get_first_non_loopback_ip()
+        static_worker_ip = self._config.static_worker_ip()
+        if static_worker_ip is not None:
+            return static_worker_ip
+        return urlparse(self._config.get_server_url()).hostname
+
     def __init__(self, cfg: Config):
         self._config = cfg
         self._is_embedded = cfg.server_role() == Config.ServerRole.BOTH
@@ -76,7 +85,15 @@ class Worker:
         self._address = "0.0.0.0"
         self._exporter_enabled = not cfg.disable_worker_metrics
         self._async_tasks = []
-        self._worker_ip, self._worker_ifname = get_first_non_loopback_ip()
+        # worker ip should be determined by out going interface to server
+        self._worker_ip = get_first_non_loopback_ip()
+        # if embedded, use the worker ip as the hostname to lookup ifname
+        # otherwise, use the static ip or server url hostname to lookup ifname
+        self._worker_ifname = cfg.worker_ifname
+        if self._worker_ifname is None:
+            self._worker_ifname = get_ifname_by_ip_hostname(
+                self._worker_ifname_lookup_hostname()
+            )
 
         self._worker_name = cfg.worker_name
         if self._worker_name is None:
@@ -193,12 +210,9 @@ class Worker:
             run_periodically_in_thread(self._exporter.start, 15)
 
         # Monitor the ip change, if not fixed.
-        if not self._config.worker_ip and not self._config.advertise_address:
+        if self._config.static_worker_ip() is None:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
-        # Fill the worker ifname if not set.
-        elif not self._config.worker_ifname:
-            self._worker_ifname = get_ifname_by_ip(self.worker_ip())
 
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
@@ -304,8 +318,13 @@ class Worker:
         instances so they can be recreated with the new worker IP.
         """
 
-        new_ip, new_ifname = get_first_non_loopback_ip()
-        old_ip, old_ifname = self.worker_ip(), self.worker_ifname()
+        new_ip = get_first_non_loopback_ip()
+        new_ifname = (
+            get_ifname_by_ip_hostname(self._worker_ifname_lookup_hostname())
+            if self._config.worker_ifname is None or self._config.worker_ifname == ""
+            else self.worker_ifname()
+        )
+        old_ip, old_ifname = self._worker_ip, self.worker_ifname()
         if new_ip == old_ip and new_ifname == old_ifname:
             return
 
