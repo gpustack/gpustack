@@ -177,7 +177,7 @@ class VLLMServer(InferenceServer):
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """
-        Setup environment variables for the vLLM container server.
+        Get environment variables for vLLM service
         """
 
         # Apply GPUStack's inference environment setup

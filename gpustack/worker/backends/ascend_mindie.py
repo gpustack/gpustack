@@ -1344,7 +1344,7 @@ class AscendMindIEServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
-                command=command_args,
+                args=command_args,
                 working_dir=working_dir,
             ),
             envs=[
