@@ -358,15 +358,26 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             # which is used to determine if enough devices are selected.
             world_size_remain = self._serving_params.world_size
 
-            for worker in workers:
+            # Index workers by their names for quick lookup.
+            worker_names_idx: Dict[str, Worker] = {
+                worker.name: worker for worker in workers
+            }
+
+            for (
+                worker_name,
+                selected_device_indexes,
+            ) in self._selected_worker_name_devices_idx.items():
                 # Break if selected devices are enough,
                 # if the value is negative, it means not selected.
                 if world_size_remain == 0:
                     break
 
-                # Skip if the worker is not in the selected worker names.
-                if worker.name not in self._selected_worker_name_devices_idx:
-                    continue
+                worker = worker_names_idx.get(worker_name)
+                if not worker:
+                    self._diagnostic_messages.append(
+                        f"Selected worker {worker_name} is not found among available workers."
+                    )
+                    return {}
 
                 _ = await self.__get_worker_alloc(worker)
 
