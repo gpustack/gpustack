@@ -54,16 +54,16 @@ class SGLangServer(InferenceServer):
         is_distributed, _, _ = self._get_distributed_metadata()
 
         # Setup environment variables
-        envs = self._get_configured_env(is_distributed)
+        env = self._get_configured_env(is_distributed)
 
         # Build SGLang command arguments
-        arguments = self._build_command_args(
+        command_args = self._build_command_args(
             port=self._get_serving_port(), is_distributed=is_distributed
         )
 
         self._create_workload(
-            command_args=arguments,
-            env=envs,
+            command_args=command_args,
+            env=env,
         )
 
     def _start_diffusion(self):
@@ -72,14 +72,14 @@ class SGLangServer(InferenceServer):
         )
 
         # Setup environment variables
-        envs = self._get_configured_env(False)
+        env = self._get_configured_env(False)
 
         # Build SGLang command arguments
-        arguments = self._build_diffusion_args(port=self._get_serving_port())
+        command_args = self._build_diffusion_args(port=self._get_serving_port())
 
         self._create_workload(
-            command_args=arguments,
-            env=envs,
+            command_args=command_args,
+            env=env,
         )
 
     def _create_workload(
@@ -97,19 +97,20 @@ class SGLangServer(InferenceServer):
         mounts = self._get_configured_mounts()
 
         # Get SGLang image name
-        image_name = self._get_configured_image()
-        if not image_name:
+        image = self._get_configured_image()
+        if not image:
             raise ValueError("Can't find compatible SGLang image")
 
         ports = self._get_configured_ports()
 
         # Create container configuration
         run_container = Container(
-            image=image_name,
+            image=image,
             name="default",
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
+                privileged=True,
                 args=command_args,
             ),
             envs=[
@@ -133,7 +134,7 @@ class SGLangServer(InferenceServer):
 
         logger.info(f"Creating SGLang container workload: {self._workload_name}")
         logger.info(
-            f"With image: {image_name}, "
+            f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"

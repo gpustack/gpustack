@@ -64,8 +64,8 @@ class CustomServer(InferenceServer):
             command_args.extend(self._model.backend_parameters)
 
         self._create_workload(
-            command_args,
-            env,
+            command_args=command_args,
+            env=env,
         )
 
     def _create_workload(
@@ -76,9 +76,9 @@ class CustomServer(InferenceServer):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
 
-        image_name = self._get_configured_image()
-        if not image_name:
-            raise ValueError("Failed to get Custom backend image name")
+        image = self._get_configured_image()
+        if not image:
+            raise ValueError("Failed to get Custom backend image")
 
         resources = self._get_configured_resources()
 
@@ -87,7 +87,7 @@ class CustomServer(InferenceServer):
         ports = self._get_configured_ports()
 
         run_container = Container(
-            image=image_name,
+            image=image,
             name="default",
             profile=ContainerProfileEnum.RUN,
             restart_policy=ContainerRestartPolicyEnum.NEVER,
@@ -109,7 +109,7 @@ class CustomServer(InferenceServer):
 
         logger.info(f"Creating container workload: {self._workload_name}")
         logger.info(
-            f"With image: {image_name}, "
+            f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
