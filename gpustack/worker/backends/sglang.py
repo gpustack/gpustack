@@ -56,12 +56,15 @@ class SGLangServer(InferenceServer):
         # Setup environment variables
         env = self._get_configured_env(is_distributed)
 
+        command_script = self._get_serving_command_script(env)
+
         # Build SGLang command arguments
         command_args = self._build_command_args(
             port=self._get_serving_port(), is_distributed=is_distributed
         )
 
         self._create_workload(
+            command_script=command_script,
             command_args=command_args,
             env=env,
         )
@@ -74,16 +77,20 @@ class SGLangServer(InferenceServer):
         # Setup environment variables
         env = self._get_configured_env(False)
 
+        command_script = self._get_serving_command_script(env)
+
         # Build SGLang command arguments
         command_args = self._build_diffusion_args(port=self._get_serving_port())
 
         self._create_workload(
+            command_script=command_script,
             command_args=command_args,
             env=env,
         )
 
     def _create_workload(
         self,
+        command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
     ):
@@ -111,6 +118,7 @@ class SGLangServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command_script=command_script,
                 args=command_args,
             ),
             envs=[

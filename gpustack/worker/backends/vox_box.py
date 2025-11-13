@@ -32,17 +32,21 @@ class VoxBoxServer(InferenceServer):
 
         env = self._get_configured_env()
 
+        command_script = self._get_serving_command_script(env)
+
         command_args = self._build_command_args(
             port=self._get_serving_port(),
         )
 
         self._create_workload(
+            command_script=command_script,
             command_args=command_args,
             env=env,
         )
 
     def _create_workload(
         self,
+        command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
     ):
@@ -69,6 +73,7 @@ class VoxBoxServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command_script=command_script,
                 args=command_args,
             ),
             envs=[
