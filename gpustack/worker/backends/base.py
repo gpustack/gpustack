@@ -18,6 +18,7 @@ from gpustack_runtime.detector import (
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
+from gpustack_runtime.envs import to_bool
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 
 from gpustack.client.generated_clientset import ClientSet
@@ -454,6 +455,78 @@ class InferenceServer(ABC):
             if self._model_instance.ports
             else self._model_instance.port
         )
+
+    @staticmethod
+    def _get_serving_command_script(env: dict[str, str]) -> Optional[str]:
+        """
+        Get the serving command script for the model instance.
+
+        Return None if `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED` is disabled,
+        or no specific envs are set.
+
+        Args:
+            env:
+                The environment variables for the model instance.
+
+        Returns:
+            The serving command script for the model instance, or None if not needed.
+
+        """
+
+        # Skip if explicitly disabled.
+        if env and to_bool(
+            env.get("GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED", "0")
+        ):
+            return None
+
+        # Skip if no specific envs are set.
+        if not env or "PYPI_PACKAGES_INSTALL" not in env:
+            return None
+
+        return """
+#!/bin/sh
+
+set -eu
+
+#
+# Prepare
+#
+
+if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
+    if command -v uv >/dev/null 2>&1; then
+        echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
+        export UV_PRERELEASE=allow
+        export UV_HTTP_TIMEOUT=500
+        export UV_NO_CACHE=1
+        if [ -n "${PIP_INDEX_URL:-}" ]; then
+            export UV_DEFAULT_INDEX="${PIP_INDEX_URL}"
+            export UV_INDEX_URL="${PIP_INDEX_URL}"
+        fi
+        if [ -n "${PIP_EXTRA_INDEX_URL:-}" ]; then
+            export UV_INDEX="${PIP_EXTRA_INDEX_URL}"
+            export UV_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}"
+        fi
+        uv pip install --system ${PYPI_PACKAGES_INSTALL}
+        uv pip tree --system
+    elif command -v pip >/dev/null 2>&1; then
+        echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
+        export PIP_DISABLE_PIP_VERSION_CHECK=1
+        export PIP_ROOT_USER_ACTION=ignore
+        export PIP_PRE=1
+        export PIP_TIMEOUT=500
+        export PIP_NO_CACHE_DIR=1
+        pip install ${PYPI_PACKAGES_INSTALL}
+        pip freeze
+    fi
+    unset PYPI_PACKAGES_INSTALL
+fi
+
+#
+# Execute
+#
+
+exec "$@"
+        """
 
     def build_versioned_command_args(
         self,

@@ -61,12 +61,15 @@ class VLLMServer(InferenceServer):
             is_distributed=is_distributed,
         )
 
+        command_script = self._get_serving_command_script(env)
+
         command_args = self._build_command_args(
             port=self._get_serving_port(),
             is_distributed=is_distributed,
         )
 
         self._create_workload(
+            command_script=command_script,
             command_args=command_args,
             env=env,
             is_distributed_leader=is_distributed_leader,
@@ -75,6 +78,7 @@ class VLLMServer(InferenceServer):
 
     def _create_workload(
         self,
+        command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
         is_distributed_leader: bool,
@@ -100,6 +104,7 @@ class VLLMServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command_script=command_script,
                 args=command_args,
             ),
             envs=[

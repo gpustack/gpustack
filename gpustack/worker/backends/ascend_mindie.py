@@ -1305,16 +1305,17 @@ class AscendMindIEServer(InferenceServer):
         # Indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
 
-        arguments = [
-            str(install_path.joinpath("bin", "mindieservice_daemon")),
-        ]
-        command_args = self.build_versioned_command_args(arguments)
+        command_args = self.build_versioned_command_args(
+            [
+                str(install_path.joinpath("bin", "mindieservice_daemon")),
+            ]
+        )
 
         self._create_workload(
-            command_args,
-            env,
-            config_files,
-            str(install_path.joinpath("bin")),
+            command_args=command_args,
+            env=env,
+            config_files=config_files,
+            working_dir=str(install_path.joinpath("bin")),
         )
 
     def _create_workload(
