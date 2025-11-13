@@ -146,6 +146,20 @@ jobs:
           echo "DEBUG: GITHUB_REF=${GITHUB_REF}"
           echo "DEBUG: CACHE_FROM_REF=${CACHE_FROM_REF}"
           echo "DEBUG: CACHE_TO_REF=${CACHE_TO_REF}"
+      - name: Get Image Labels
+        run: |
+          #!/usr/bin/env bash
+
+          set -eo pipefail
+
+          LABELS=(
+            "org.opencontainers.image.source=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.source'] }}"
+            "org.opencontainers.image.version=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.version'] }}"
+            "org.opencontainers.image.revision=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.revision'] }}"
+            "org.opencontainers.image.created=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.created'] }}"
+          )
+          INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS=$(printf "%s;" "${LABELS[@]}")
+          echo "INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS=${INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS}" >> $GITHUB_ENV
       - name: Package
         uses: docker/build-push-action@v6
         with:
@@ -163,6 +177,7 @@ jobs:
           platforms: "linux/amd64,linux/arm64"
           build-args: |
             PYTHON_VERSION=${{ env.INPUT_PYTHON_VERSION }}
+            GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=${{ env.INPUT_DOCKER_MIRRORED_NAME_FILTER_LABELS }}
           tags: |
             ${{ steps.metadata.outputs.tags }}
           labels: |

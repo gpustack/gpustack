@@ -264,6 +264,7 @@ class InferenceServer(ABC):
                             "_DISABLE_REQUIRE",
                             "_DRIVER_CAPABILITIES",
                             "_PATH",
+                            "_HOME",
                         )
                     )
                     or (

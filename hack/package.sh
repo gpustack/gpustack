@@ -32,6 +32,7 @@ function pack() {
             --bootstrap
     fi
 
+    LABELS=("org.opencontainers.image.source=https://github.com/gpustack/gpustack" "org.opencontainers.image.version=main" "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo "unknown")" "org.opencontainers.image.created=$(date +"%Y-%m-%dT%H:%M:%S.%s")");
     TAG="${PACKAGE_NAMESPACE}/${PACKAGE_REPOSITORY}:${PACKAGE_TAG}"
     EXTRA_ARGS=()
 	if [[ "${PACKAGE_WITH_CACHE}" == "true" ]]; then
@@ -53,6 +54,7 @@ function pack() {
         --ulimit nofile=65536:65536 \
         --shm-size 16G \
         --progress plain \
+        --build-arg "GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS=$(printf "%s;" "${LABELS[@]}")" \
         "${EXTRA_ARGS[@]}" \
         "${ROOT_DIR}"
     set +x
