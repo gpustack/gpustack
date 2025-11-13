@@ -209,6 +209,7 @@ class Worker:
         inference_backend_manager = InferenceBackendManager(self._clientset)
         # Start InferenceBackend listener to cache backend data
         self._create_async_task(inference_backend_manager.start_listener())
+        self._create_async_task(inference_backend_manager.check_docker_hub_reachable())
 
         serve_manager = ServeManager(
             worker_id=self._worker_id,

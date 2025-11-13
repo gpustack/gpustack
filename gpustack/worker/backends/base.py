@@ -1,9 +1,7 @@
 import logging
 import os
 import sys
-import requests
 import threading
-import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List
@@ -47,9 +45,7 @@ from gpustack.utils import platform
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
 
-_docker_hub_connectivity_ok = None
-_docker_hub_connectivity_ts = 0.0
-_DOCKER_HUB_CONNECTIVITY_TTL = 300
+_is_docker_hub_reachable: Optional[bool] = None
 
 
 class ModelInstanceStateError(Exception):
@@ -766,7 +762,7 @@ class InferenceServer(ABC):
         # 4) Otherwise, check if Docker Hub is reachable.
         #    If it is, prefix the image with "docker.io".
         #    Otherwise, prefix it with "quay.io".
-        if self.is_docker_hub_reachable():
+        if get_dockerhub_reachable():
             logger.info(
                 f"Docker Hub reachable; using Docker Hub for gpustack image: {image}"
             )
@@ -777,41 +773,6 @@ class InferenceServer(ABC):
                 f"Docker Hub not reachable; fallback to Quay.io for gpustack image: {final}"
             )
             return final
-
-    def is_docker_hub_reachable(self) -> bool:
-        """
-        Check if Docker Hub is reachable.
-        To avoid frequent checks, cache the result for a short period via global lock.
-
-        Returns:
-            bool: True if Docker Hub is reachable, False otherwise.
-        """
-        global _docker_hub_connectivity_ok, _docker_hub_connectivity_ts
-        now = time.time()
-        use_cache = False
-        hub_ok = False
-        with lock:
-            if (
-                _docker_hub_connectivity_ok is not None
-                and now - _docker_hub_connectivity_ts < _DOCKER_HUB_CONNECTIVITY_TTL
-            ):
-                use_cache = True
-                hub_ok = _docker_hub_connectivity_ok
-        if use_cache:
-            logger.info(f"Using cached Docker Hub connectivity: {hub_ok}")
-        else:
-            logger.info("Checking Docker Hub connectivity")
-            try:
-                resp = requests.get("https://registry-1.docker.io/v2/", timeout=5)
-                hub_ok = resp.status_code < 500
-            except Exception as e:
-                hub_ok = False
-                logger.warning(f"Docker Hub connectivity check failed: {e}")
-            with lock:
-                _docker_hub_connectivity_ok = hub_ok
-                _docker_hub_connectivity_ts = now
-
-        return hub_ok
 
 
 def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
@@ -854,3 +815,12 @@ def cal_distributed_parallelism_arguments(
             f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
         )
     return tp, pp
+
+
+def set_dockerhub_reachable(reachable: bool):
+    global _is_docker_hub_reachable
+    _is_docker_hub_reachable = reachable
+
+
+def get_dockerhub_reachable() -> Optional[bool]:
+    return _is_docker_hub_reachable
