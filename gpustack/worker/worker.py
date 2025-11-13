@@ -270,7 +270,7 @@ class Worker:
         app.add_api_route(
             path="/token-auth",
             endpoint=worker_auth,
-            methods=["POST"],
+            methods=["GET"],
         )
         register_gateway_plugins(self._config, app)
         exceptions.register_handlers(app)
