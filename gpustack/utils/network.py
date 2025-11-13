@@ -6,6 +6,7 @@ import time
 from typing import Optional, Tuple, List
 import aiohttp
 import psutil
+from datetime import datetime, timezone
 
 
 def normalize_route_path(path: str) -> str:
@@ -151,3 +152,35 @@ async def is_url_reachable(
         except Exception:
             await asyncio.sleep(retry_interval_in_second)
     return False
+
+
+def is_offline(
+    last_update: Optional[datetime],
+    timeout_seconds: int,
+    now: Optional[datetime] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Check if the last_update time is offline based on the timeout_seconds.
+
+    Args:
+        last_update: The last update time (UTC datetime). If None, it means no record.
+        timeout_seconds: The threshold in seconds to consider offline.
+        now: The current time (UTC datetime), defaults to datetime.now(timezone.utc)
+
+    Returns:
+        Tuple[bool, Optional[str]]: (Whether offline, last_update readable string)
+            - If last_update is None, returns "unknown"
+            - Otherwise returns formatted time "%Y-%m-%d %H:%M:%S UTC"
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if last_update is None:
+        return True, "unknown"
+
+    last_update_ts = int(last_update.timestamp())
+    now_ts = int(now.timestamp())
+
+    is_offline_flag = (now_ts - last_update_ts) > timeout_seconds
+    last_update_str = last_update.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return is_offline_flag, last_update_str

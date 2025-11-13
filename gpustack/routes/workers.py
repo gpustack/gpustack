@@ -281,8 +281,13 @@ async def update_worker(session: SessionDep, id: int, worker_in: WorkerUpdate):
     if not worker:
         raise NotFoundException(message="worker not found")
 
+    patch = worker_in.model_dump()
+    if worker_in.maintenance is not None:
+        worker.maintenance = worker_in.maintenance
+        worker.compute_state()
+        patch["state"] = worker.state
     try:
-        await WorkerService(session).update(worker, worker_in)
+        await WorkerService(session).update(worker, patch)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update worker: {e}")
 

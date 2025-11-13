@@ -687,7 +687,10 @@ class WorkerController:
                 return
 
             instance_names = []
-            if worker.state == WorkerStateEnum.UNREACHABLE:
+            if (
+                worker.state == WorkerStateEnum.UNREACHABLE
+                or worker.state == WorkerStateEnum.NOT_READY
+            ):
                 await self.update_instance_states(
                     session,
                     instances,
