@@ -10,21 +10,21 @@ class DummyClient:
 
     class droplets:
         @staticmethod
-        def create(body):
+        async def create(body):
             return {'droplet': {'id': '12345'}}
 
         @staticmethod
-        def destroy(external_id):
+        async def destroy(external_id):
             return None
 
         @staticmethod
-        def destroy_with_associated_resources_dangerous(
+        async def destroy_with_associated_resources_dangerous(
             external_id: str, x_dangerous: bool
         ):
             return None
 
         @staticmethod
-        def get(external_id):
+        async def get(external_id):
             return {
                 'droplet': {
                     'id': external_id,
@@ -40,21 +40,21 @@ class DummyClient:
 
     class ssh_keys:
         @staticmethod
-        def create(body):
+        async def create(body):
             return {'ssh_key': {'id': 'ssh-1'}}
 
         @staticmethod
-        def delete(id):
+        async def delete(id):
             return None
 
     class volumes:
         @staticmethod
-        def create(body):
+        async def create(body):
             return {'volume': {'id': 'vol-1'}}
 
     class volume_actions:
         @staticmethod
-        def post_by_id(volume_id, body):
+        async def post_by_id(volume_id, body):
             return {"action": {"status": "completed"}}
 
 
