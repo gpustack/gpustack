@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, List
 from fastapi import FastAPI
 from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.utils.network import get_first_non_loopback_ip
 from fastapi.staticfiles import StaticFiles
 
 oci_plugin_prefix = "oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/"
@@ -88,10 +89,14 @@ def get_plugin_url_with_name_and_version(
 
 def get_plugin_url_prefix(cfg: Optional[Config] = None):
     plugin_dir = get_wasm_plugin_dir()
-    address = "localhost"
-    if cfg is not None and cfg.gateway_mode != GatewayModeEnum.embedded:
-        address = cfg.get_advertise_address()
+    address: Optional[str] = None
     if cfg is not None and plugin_dir is not None and os.path.isdir(plugin_dir):
+        if cfg.gateway_mode == GatewayModeEnum.embedded:
+            address = "localhost"
+        elif cfg.gateway_mode == GatewayModeEnum.incluster:
+            address = get_first_non_loopback_ip()
+        elif cfg.gateway_mode == GatewayModeEnum.external:
+            address = cfg.get_advertise_address()
         return f"http://{address}:{cfg.get_api_port()}/{http_path_prefix}"
     return oci_plugin_prefix
 

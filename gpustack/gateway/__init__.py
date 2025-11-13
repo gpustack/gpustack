@@ -62,21 +62,18 @@ def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
 
 
 def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
-    registry_type = "static"
-    if cfg.gateway_mode == GatewayModeEnum.incluster and cfg.gateway_kubeconfig is None:
-        registry_type = "dns"
-    non_loopback_ip, _ = get_first_non_loopback_ip()
-    address = (
-        cfg.get_advertise_address()
-        if cfg.gateway_mode != GatewayModeEnum.embedded
-        else non_loopback_ip
-    )
-    port = cfg.get_api_port()
-    domain = (
-        f"{address}:{port}"
-        if registry_type == "static"
-        else f"{cfg.service_discovery_name}.{cfg.get_gateway_namespace()}.svc"
-    )
+    # default to incluster mode
+    registry_type = "dns"
+    domain = f"{cfg.service_discovery_name}.{cfg.get_gateway_namespace()}.svc"
+    if cfg.gateway_mode != GatewayModeEnum.incluster:
+        registry_type = "static"
+        port = cfg.get_api_port()
+        if cfg.gateway_mode == GatewayModeEnum.external:
+            address = cfg.get_advertise_address()
+        elif cfg.gateway_mode == GatewayModeEnum.embedded:
+            address = get_first_non_loopback_ip()
+        domain = f"{address}:{port}"
+
     mcp_registry_name = (
         "gpustack"
         if cfg.server_role() != Config.ServerRole.WORKER

@@ -697,11 +697,7 @@ current-context: higress
         return rtn
 
     def get_advertise_address(self) -> str:
-        if self.advertise_address is None:
-            address, _ = get_first_non_loopback_ip()
-            return address
-        else:
-            return self.advertise_address
+        return self.advertise_address or get_first_non_loopback_ip()
 
     def get_gateway_namespace(self) -> str:
         default_gateway_namespace = "higress-system"
@@ -756,6 +752,9 @@ current-context: higress
             if self.server_role() != self.ServerRole.WORKER
             else self.worker_port
         )
+
+    def static_worker_ip(self) -> Optional[str]:
+        return self.worker_ip or self.advertise_address or None
 
 
 def get_openid_configuration(issuer: str) -> dict:
