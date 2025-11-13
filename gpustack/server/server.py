@@ -37,6 +37,7 @@ from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
 from gpustack.server.usage_buffer import flush_usage_to_db
+from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.metrics_collector import GatewayMetricsCollector
 from gpustack.utils.process import add_signal_handlers_in_loop
@@ -83,6 +84,7 @@ class Server:
         self._start_worker_syncer()
         self._start_update_checker()
         self._start_model_usage_flusher()
+        self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
         self._start_gateway_metrics_collector()
 
@@ -218,6 +220,12 @@ class Server:
         self._create_async_task(flush_usage_to_db())
 
         logger.debug("Model usage flusher started.")
+
+    def _start_worker_instance_cleaner(self):
+        worker_instance_cleaner = WorkerInstanceCleaner()
+        self._create_async_task(worker_instance_cleaner.start())
+
+        logger.debug("Worker instance cleaner started.")
 
     def _start_gateway_metrics_collector(self):
         if self._config.gateway_mode != GatewayModeEnum.embedded:

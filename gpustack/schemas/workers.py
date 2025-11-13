@@ -13,10 +13,13 @@ from sqlmodel import (
     ForeignKey,
 )
 from sqlalchemy import String
+from gpustack import envs
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
 from typing import List
 from sqlalchemy.orm import declarative_base
+
+from gpustack.utils.network import is_offline
 from .clusters import ClusterProvider, Cluster, WorkerPool
 
 Base = declarative_base()
@@ -176,16 +179,23 @@ class WorkerStateEnum(str, Enum):
     State Transition Diagram:
 
     Phase 1: Provisioning Controller          |  Phase 2: Healthcheck Controller
-    ------------------------------------------|--------------------------------
-    PENDING > PROVISIONING > INITIALIZING > READY < -----|------->  UNREACHABLE
+    ------------------------------------------|------------------------------------
+    PENDING > PROVISIONING > INITIALIZING > READY < -----|----------->  UNREACHABLE
                 |             |         |      ^         |       (Worker Endpoint Unreachable)
                 |             |         |      |         |
-                |-------------|---------|------|         └------>   NOT_READY
+                |-------------|---------|------|         └----------->   NOT_READY
                 \_____________________________/|                 (Worker Stop Posting Status)
-                                   ERROR       | (Provisioning failed)
-                                     |         |        |
-                                     v         |        v
-                                 DELETING  <---┘ (provisioning end)
+                                   ERROR       | (Provisioning failed)       ^
+                                     |         |        |                    |
+                                     v         |        v                    |
+                                 DELETING  <---┘ (provisioning end)          |
+                                               |                             |
+                                               |                             |
+    Phase 3: Upgrade and Maintain              |                             |
+    -------------------------------------------|-----------------------------|-----
+                                               v                             |
+                                           MAINTENANCE <---------------------┘
+                                           (Back to Ready/Not Ready after maintenance completed)
     """
 
     NOT_READY = "not_ready"
@@ -196,6 +206,7 @@ class WorkerStateEnum(str, Enum):
     INITIALIZING = "initializing"
     DELETING = "deleting"
     ERROR = "error"
+    MAINTENANCE = "maintenance"
 
     @property
     def is_provisioning(self) -> bool:
@@ -216,6 +227,11 @@ class SystemInfo(BaseModel):
     os: Optional[OperatingSystemInfo] = Field(sa_column=Column(JSON), default=None)
     kernel: Optional[KernelInfo] = Field(sa_column=Column(JSON), default=None)
     uptime: Optional[UptimeInfo] = Field(sa_column=Column(JSON), default=None)
+
+
+class Maintenance(BaseModel):
+    enabled: bool = False
+    message: Optional[str] = None
 
 
 class WorkerStatus(SystemInfo):
@@ -278,6 +294,9 @@ class WorkerUpdate(SQLModel):
 
     name: str = Field(index=True, unique=True)
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
+    maintenance: Optional[Maintenance] = Field(
+        sa_column=Column(pydantic_column_type(Maintenance), default=None)
+    )
 
 
 class WorkerCreate(WorkerStatusStored, WorkerUpdate):
@@ -297,22 +316,33 @@ class WorkerBase(WorkerCreate):
     )
     unreachable: bool = False
 
-    def compute_state(self, worker_offline_timeout=60):
+    def compute_state(self):
+        if self.maintenance and self.maintenance.enabled:
+            self.state = WorkerStateEnum.MAINTENANCE
+            self.state_message = self.maintenance.message
+            return
+
         if self.state.is_provisioning:
             return
         if self.state == WorkerStateEnum.NOT_READY and self.state_message is not None:
             return
-        now = int(datetime.now(timezone.utc).timestamp())
-        heartbeat_timestamp = (
-            self.heartbeat_time.timestamp() if self.heartbeat_time else None
+
+        is_not_ready_flag, last_heartbeat_str = is_offline(
+            self.heartbeat_time,
+            envs.WORKER_HEARTBEAT_GRACE_PERIOD,
+            datetime.now(timezone.utc),
         )
 
-        if (
-            heartbeat_timestamp is None
-            or now - heartbeat_timestamp > worker_offline_timeout
-        ):
+        if is_not_ready_flag:
+            reschedule_minutes = envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD / 60
             self.state = WorkerStateEnum.NOT_READY
-            self.state_message = "Heartbeat lost, please <a href='https://docs.gpustack.ai/latest/troubleshooting/#view-gpustack-logs'>check the worker logs</a>. If everything proceeds smoothly, please verify that the clocks on both the worker and the server are properly synchronized."
+            self.state_message = (
+                f"Heartbeat lost (last heartbeat: {last_heartbeat_str}). "
+                f"If the worker remains unresponsive for more than {reschedule_minutes:.1f} minutes, "
+                "the instances on this worker will be rescheduled automatically. "
+                "If this downtime is planned maintenance, please enable maintenance mode. "
+                "Otherwise, please <a href='https://docs.gpustack.ai/latest/troubleshooting/#view-gpustack-logs'>check the worker logs</a>."
+            )
             return
 
         if self.unreachable:

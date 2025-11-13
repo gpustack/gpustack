@@ -14,12 +14,9 @@ class WorkerSyncer:
     WorkerSyncer syncs worker status periodically.
     """
 
-    def __init__(
-        self, interval=15, worker_offline_timeout=100, worker_unreachable_timeout=10
-    ):
+    def __init__(self, interval=15, worker_unreachable_timeout=20):
         self._engine = get_engine()
         self._interval = interval
-        self._worker_offline_timeout = worker_offline_timeout
         self._worker_unreachable_timeout = worker_unreachable_timeout
 
     async def start(self):
@@ -53,7 +50,7 @@ class WorkerSyncer:
                 WorkerStateEnum.READY: [],
             }
             for worker in results:
-                if worker:
+                if worker and worker.state in state_to_worker_name:
                     should_update_workers.append(worker)
                     state_to_worker_name[worker.state].append(worker.name)
 
@@ -72,7 +69,7 @@ class WorkerSyncer:
         unreachable = not await self.is_worker_reachable(worker)
         worker = await Worker.one_by_id(session, worker.id)
         worker.unreachable = unreachable
-        worker.compute_state(self._worker_offline_timeout)
+        worker.compute_state()
 
         if (
             original_worker_unreachable != worker.unreachable
