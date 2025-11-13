@@ -3,7 +3,7 @@ import aiohttp
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from gpustack.api.responses import StreamingResponseWithStatusCode
-from gpustack.config.envs import PROXY_TIMEOUT
+from gpustack import envs
 
 from gpustack.server.services import ModelInstanceService
 from gpustack.worker.logs import LogOptionsDep
@@ -110,7 +110,7 @@ async def get_serving_logs(  # noqa: C901
         # Get model file ID for injected download logs if instance is downloading
         model_instance_log_url += f"&model_file_id={model_instance.model_files[0].id}"
 
-    timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT, sock_connect=5)
+    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
     client: aiohttp.ClientSession = request.app.state.http_client
 

@@ -6,7 +6,7 @@ from functools import lru_cache
 import jwt
 from argon2 import PasswordHasher
 
-from gpustack.config.envs import JWT_TOKEN_EXPIRE_MINUTES
+from gpustack import envs
 
 ph = PasswordHasher()
 
@@ -50,7 +50,7 @@ class JWTManager:
         expires_delta: Optional[timedelta] = None,
     ):
         if expires_delta is None:
-            expires_delta = timedelta(minutes=JWT_TOKEN_EXPIRE_MINUTES)
+            expires_delta = timedelta(minutes=envs.JWT_TOKEN_EXPIRE_MINUTES)
         self.secret_key = secret_key
         self.algorithm = algorithm
         self.expires_delta = expires_delta

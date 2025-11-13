@@ -7,7 +7,7 @@ from starlette.background import BackgroundTask
 
 from gpustack.api.auth import worker_auth
 from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableException
-from gpustack.config.envs import PROXY_TIMEOUT
+from gpustack import envs
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -34,7 +34,7 @@ async def proxy(path: str, request: Request):
                 yield chunk
 
         http_client: aiohttp.ClientSession = request.app.state.http_client
-        timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+        timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
         resp = await http_client.request(
             method=request.method,
             url=url,

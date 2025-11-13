@@ -21,7 +21,7 @@ from gpustack.api.exceptions import (
     ForbiddenException,
 )
 from gpustack.api.responses import StreamingResponseWithStatusCode
-from gpustack.config.envs import PROXY_TIMEOUT
+from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.models import build_category_conditions
 from gpustack.schemas.models import (
@@ -290,7 +290,7 @@ async def handle_streaming_request(
     form_data: Optional[aiohttp.FormData],
     extra_headers: Optional[dict] = None,
 ):
-    timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
     headers = filter_headers(request.headers)
     if extra_headers:
         headers.update(extra_headers)
@@ -353,7 +353,7 @@ async def handle_standard_request(
         headers.update(extra_headers)
 
     http_client: aiohttp.ClientSession = request.app.state.http_client
-    timeout = aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
     async with http_client.request(
         method=request.method,
         url=url,

@@ -14,7 +14,7 @@ import uvicorn
 
 from gpustack.api import exceptions
 from gpustack.config.config import Config, GatewayModeEnum
-from gpustack.config.envs import TCP_CONNECTOR_LIMIT
+from gpustack import envs
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.routes.token import worker_auth
@@ -246,7 +246,7 @@ class Worker:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             connector = aiohttp.TCPConnector(
-                limit=TCP_CONNECTOR_LIMIT,
+                limit=envs.TCP_CONNECTOR_LIMIT,
                 force_close=True,
             )
             app.state.http_client = aiohttp.ClientSession(

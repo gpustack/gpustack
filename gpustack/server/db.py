@@ -11,7 +11,7 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy import DDL, event
 
-from gpustack.config.envs import DB_ECHO, DB_MAX_OVERFLOW, DB_POOL_SIZE, DB_POOL_TIMEOUT
+from gpustack import envs
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.schemas.model_usage import ModelUsage
@@ -85,10 +85,10 @@ async def init_db_engine(db_url: str):
 
     engine = create_async_engine(
         db_url,
-        echo=DB_ECHO,
-        pool_size=DB_POOL_SIZE,
-        max_overflow=DB_MAX_OVERFLOW,
-        pool_timeout=DB_POOL_TIMEOUT,
+        echo=envs.DB_ECHO,
+        pool_size=envs.DB_POOL_SIZE,
+        max_overflow=envs.DB_MAX_OVERFLOW,
+        pool_timeout=envs.DB_POOL_TIMEOUT,
         connect_args=connect_args,
     )
     return engine

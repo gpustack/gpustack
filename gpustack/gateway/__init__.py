@@ -13,7 +13,7 @@ from kubernetes_asyncio.config.incluster_config import (
 )
 from kubernetes_asyncio.client.rest import ApiException
 from gpustack.config.config import Config, GatewayModeEnum
-from gpustack.config.envs import HIGRESS_EXT_AUTH_TIMEOUT_MS
+from gpustack import envs
 from gpustack.gateway import client as gw_client
 from gpustack.gateway.client import (
     McpBridge,
@@ -248,7 +248,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "service_port": registry.port,
                 },
                 "endpoint_mode": "forward_auth",
-                "timeout": HIGRESS_EXT_AUTH_TIMEOUT_MS,
+                "timeout": envs.HIGRESS_EXT_AUTH_TIMEOUT_MS,
             },
             "match_list": match_list,
             "match_type": "blacklist",
