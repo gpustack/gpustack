@@ -1,7 +1,9 @@
 import logging
 import os
 import sys
+import requests
 import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List
@@ -44,6 +46,10 @@ from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
+
+_docker_hub_connectivity_ok = None
+_docker_hub_connectivity_ts = 0.0
+_DOCKER_HUB_CONNECTIVITY_TTL = 300
 
 
 class ModelInstanceStateError(Exception):
@@ -722,36 +728,90 @@ class InferenceServer(ABC):
 
     def _apply_registry_override(self, image: str) -> str:
         """
-        Apply registry override rules to a resolved image name.
-
-        - If system_default_container_registry is set and the image does not
-          contain an explicit registry host, prefix it with the configured registry.
-
-        This helps enterprise/offline environments redirect image pulls to a mirror
-        or local registry.
+        1) If the image has an explicit registry, return it as is.
+        2) If the image does not have an explicit registry and a system default registry is configured,
+           prefix the image with the system default registry in config.
+        3) If the image does not have an explicit registry and no system default registry is configured,
+           using docker.io as default if image without "gpustack" prefix.
+        4) If the image does not have an explicit registry and no system default registry is configured,
+           and with "gpustack" prefix, using docker.io as default if docker.io is reachable.
+           Otherwise, using quay.io.
         """
+        registry_cfg = (self._config.system_default_container_registry or "").strip()
 
-        registry = (self._config.system_default_container_registry or "").strip()
-        if not registry:
+        parts = image.split("/", 1)
+        # 1) If the image has an explicit registry, return it as is.
+        has_explicit = len(parts) >= 2 and (
+            "." in parts[0] or ":" in parts[0] or parts[0] == "localhost"
+        )
+        if has_explicit:
+            return image
+        # 2) If the image does not have an explicit registry and a system default registry is configured,
+        #    prefix the image with the system default registry in config.
+        if registry_cfg:
+            registry = registry_cfg.rstrip("/")
+            final = f"{registry}/{image}"
+            logger.info(
+                f"Using system default registry '{registry}'; image resolved to: {final}"
+            )
+            return final
+
+        # 3) no explicit or configured, and not start with "gpustack" using "docker.io" as default.
+        if not image.startswith("gpustack"):
+            logger.info(
+                f"Using Docker Hub for non-gpustack image; image resolved to: {image}"
+            )
             return image
 
-        # Normalize registry value (remove trailing slash if present)
-        registry = registry.rstrip("/")
-
-        def has_explicit_registry(img: str) -> bool:
-            # Detect if the image has an explicit registry host in its first segment.
-            image_split = img.split("/", 1)
-            if len(image_split) < 2:
-                return False
-            first = image_split[0]
-            return "." in first or ":" in first or first == "localhost"
-
-        if has_explicit_registry(image):
-            logger.debug(f"Docker pull command: docker pull {image}")
+        # 4) Otherwise, check if Docker Hub is reachable.
+        #    If it is, prefix the image with "docker.io".
+        #    Otherwise, prefix it with "quay.io".
+        if self.is_docker_hub_reachable():
+            logger.info(
+                f"Docker Hub reachable; using Docker Hub for gpustack image: {image}"
+            )
             return image
-        final = f"{registry}/{image}"
-        logger.debug(f"Docker pull command: docker pull {final}")
-        return final
+        else:
+            final = f"quay.io/{image}"
+            logger.info(
+                f"Docker Hub not reachable; fallback to Quay.io for gpustack image: {final}"
+            )
+            return final
+
+    def is_docker_hub_reachable(self) -> bool:
+        """
+        Check if Docker Hub is reachable.
+        To avoid frequent checks, cache the result for a short period via global lock.
+
+        Returns:
+            bool: True if Docker Hub is reachable, False otherwise.
+        """
+        global _docker_hub_connectivity_ok, _docker_hub_connectivity_ts
+        now = time.time()
+        use_cache = False
+        hub_ok = False
+        with lock:
+            if (
+                _docker_hub_connectivity_ok is not None
+                and now - _docker_hub_connectivity_ts < _DOCKER_HUB_CONNECTIVITY_TTL
+            ):
+                use_cache = True
+                hub_ok = _docker_hub_connectivity_ok
+        if use_cache:
+            logger.info(f"Using cached Docker Hub connectivity: {hub_ok}")
+        else:
+            logger.info("Checking Docker Hub connectivity")
+            try:
+                resp = requests.get("https://registry-1.docker.io/v2/", timeout=5)
+                hub_ok = resp.status_code < 500
+            except Exception as e:
+                hub_ok = False
+                logger.warning(f"Docker Hub connectivity check failed: {e}")
+            with lock:
+                _docker_hub_connectivity_ok = hub_ok
+                _docker_hub_connectivity_ts = now
+
+        return hub_ok
 
 
 def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
