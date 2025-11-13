@@ -45,6 +45,10 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
+from gpustack.worker.backends.base import (
+    get_dockerhub_reachable,
+    set_dockerhub_reachable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +349,7 @@ class ServeManager:
         cfg: Config,
         worker_id: int,
         inference_backend: InferenceBackend,
+        dockerhub_reachable: Optional[bool],
     ):
         """
         Serve model instance in a subprocess.
@@ -361,6 +366,8 @@ class ServeManager:
         """
 
         setproctitle.setproctitle(f"gpustack_model_instance_{mi.id}")
+        if dockerhub_reachable is not None:
+            set_dockerhub_reachable(dockerhub_reachable)
         add_signal_handlers()
 
         clientset = ClientSet(
@@ -582,6 +589,7 @@ class ServeManager:
                     self._config,
                     self._worker_id,
                     self._inference_backend_manager.get_backend_by_name(backend),
+                    get_dockerhub_reachable(),
                 ),
             )
             process.daemon = False
