@@ -295,7 +295,8 @@ class WorkerUpdate(SQLModel):
     name: str = Field(index=True, unique=True)
     labels: Dict[str, str] = Field(sa_column=Column(JSON), default={})
     maintenance: Optional[Maintenance] = Field(
-        sa_column=Column(pydantic_column_type(Maintenance), default=None)
+        default=None,
+        sa_column=Column(pydantic_column_type(Maintenance), default=None),
     )
 
 
