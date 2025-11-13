@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from transformers.utils import strtobool
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
@@ -63,22 +63,47 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._largest_multi_gpu_utilization_satisfied_count = 0
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
 
-        tp_size = find_int_parameter(
+        world_size, strategies = (
+            SGLangResourceFitSelector.get_world_size_from_backend_parameters(model)
+        )
+        self._set_gpu_count(world_size, strategies)
+        self._validate_arguments()
+
+    @staticmethod
+    def get_world_size_from_backend_parameters(
+        model: Model,
+    ) -> Tuple[Optional[int], Optional[List[str]]]:
+        tp = find_int_parameter(
             model.backend_parameters, ["tp-size", "tensor-parallel-size"]
         )
-        pp_size = find_int_parameter(
+        pp = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
         )
-        dp_size = find_int_parameter(
+        dp = find_int_parameter(
             model.backend_parameters, ["dp-size", "data-parallel-size"]
         )
         dp_attention = find_parameter(model.backend_parameters, ["enable-dp-attention"])
         if dp_attention:
             # For DP attention, it's using the TP group GPUs for data parallelism.
             # So we don't need to consider DP size for GPU count calculation.
-            dp_size = None
-        self._set_gpu_count(tp_size, pp_size, dp_size)
-        self._validate_arguments()
+            dp = None
+
+        if tp or pp or dp:
+            world_size = 1
+            strategies = []
+            if tp:
+                strategies.append("tp")
+                world_size *= tp
+            if pp:
+                strategies.append("pp")
+                world_size *= pp
+            if dp:
+                strategies.append("dp")
+                world_size *= dp
+
+            return world_size, strategies
+
+        return None, None
 
     def _set_mem_fraction_static(self):
         """Set memory fraction static parameter for SGLang."""

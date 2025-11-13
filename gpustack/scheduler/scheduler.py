@@ -61,7 +61,6 @@ from gpustack.scheduler.calculator import (
 )
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
-from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_ids_by_worker
 from gpustack.utils.hub import get_pretrained_config, has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
@@ -718,11 +717,20 @@ def set_model_gpus_per_replica(model: Model) -> bool:
         if model.backend == BackendEnum.VOX_BOX.value:
             return 1
 
-        tp_param = safe_int(
-            find_parameter(model.backend_parameters, ["tensor-parallel-size", "tp"])
-        )
-        if tp_param > 0:
-            return tp_param
+        # User-specified world size from backend parameters takes precedence.
+        if model.backend_parameters is not None:
+            selector_map = {
+                BackendEnum.VLLM.value: VLLMResourceFitSelector,
+                BackendEnum.ASCEND_MINDIE.value: AscendMindIEResourceFitSelector,
+                BackendEnum.SGLANG.value: SGLangResourceFitSelector,
+            }
+            selector = selector_map.get(model.backend)
+            world_size = None
+            if selector:
+                result = selector.get_world_size_from_backend_parameters(model)
+                world_size, _ = result if result is not None else (None, None)
+            if world_size and world_size > 0:
+                return world_size
 
         # The largest power of 2 less than or equal to (total GPUs / replicas), used as the initial per-replica GPU count.
         gpus_per_replica = largest_power_of_2_leq(

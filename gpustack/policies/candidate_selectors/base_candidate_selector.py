@@ -236,9 +236,8 @@ class ScheduleCandidatesSelector(ABC):
 
     def _set_gpu_count(
         self,
-        tp: Optional[int] = None,
-        pp: Optional[int] = None,
-        dp: Optional[int] = None,
+        world_size: Optional[int] = None,
+        strategies: Optional[List[str]] = None,
     ):
         model = self._model
         if model.gpu_selector and model.gpu_selector.gpu_ids:
@@ -258,23 +257,11 @@ class ScheduleCandidatesSelector(ABC):
                 model.gpu_selector.gpu_ids
             )
 
-        # When tp/pp/dp is set, the gpu count is calculated by tp * pp * dp.
-        if tp or pp or dp:
-            world_size = 1
-            strategies = []
-            if tp:
-                strategies.append("tp")
-                world_size *= tp
-            if pp:
-                strategies.append("pp")
-                world_size *= pp
-            if dp:
-                strategies.append("dp")
-                world_size *= dp
-
+        # When world_size is set.
+        if world_size:
             if self._gpu_count and self._gpu_count != world_size:
                 # Both gpu selector and parallelism are set, validate they match.
-                strategies_str = "/".join(strategies)
+                strategies_str = "/".join(strategies) if strategies else "parallelism"
                 raise ValueError(
                     f"Model {model.name} has {strategies_str} set, but the selected gpu count ({self._gpu_count}) does not match the world size ({world_size})."
                 )
@@ -522,7 +509,6 @@ class ScheduleCandidatesSelector(ABC):
         Optional[ModelInstanceScheduleCandidate],
         Optional[str],
     ]:
-
         non_overcommits_candidates = []
         max_effective_vram = 0
         best_overcommit_candidate = None

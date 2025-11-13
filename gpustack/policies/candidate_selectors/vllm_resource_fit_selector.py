@@ -2,7 +2,7 @@ import json
 from collections import defaultdict
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -75,19 +75,16 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         self._unsatisfied_gpu_messages: Dict[str, List[int]] = {}
 
-        tp_size = find_int_parameter(
-            model.backend_parameters, ["tensor-parallel-size", "tp"]
+        world_size, strategies = (
+            VLLMResourceFitSelector.get_world_size_from_backend_parameters(model)
         )
-        pp_size = find_int_parameter(
-            model.backend_parameters, ["pipeline-parallel-size", "pp"]
-        )
-        dp_size = find_int_parameter(
-            model.backend_parameters, ["data-parallel-size", "dp"]
-        )
-        self._set_gpu_count(tp_size, pp_size, dp_size)
+        self._set_gpu_count(world_size, strategies)
         self._set_gpu_memory_utilization()
 
         # Validate attention heads divisibility
+        tp_size = find_int_parameter(
+            model.backend_parameters, ["tensor-parallel-size", "tp"]
+        )
         if (
             tp_size
             and self._num_attention_heads
@@ -98,6 +95,35 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 " must be divisible by tensor parallel size "
                 f"({tp_size})."
             )
+
+    @staticmethod
+    def get_world_size_from_backend_parameters(
+        model: Model,
+    ) -> Tuple[Optional[int], Optional[List[str]]]:
+        tp = find_int_parameter(
+            model.backend_parameters, ["tensor-parallel-size", "tp"]
+        )
+        pp = find_int_parameter(
+            model.backend_parameters, ["pipeline-parallel-size", "pp"]
+        )
+        dp = find_int_parameter(model.backend_parameters, ["data-parallel-size", "dp"])
+
+        if tp or pp or dp:
+            world_size = 1
+            strategies = []
+            if tp:
+                strategies.append("tp")
+                world_size *= tp
+            if pp:
+                strategies.append("pp")
+                world_size *= pp
+            if dp:
+                strategies.append("dp")
+                world_size *= dp
+
+            return world_size, strategies
+
+        return None, None
 
     def _set_gpu_memory_utilization(self):
         self._gpu_memory_utilization = 0.9
