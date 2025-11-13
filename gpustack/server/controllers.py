@@ -54,7 +54,6 @@ from gpustack.server.services import (
 from gpustack.cloud_providers.common import (
     get_client_from_provider,
     construct_cloud_instance,
-    construct_user_data,
     generate_ssh_key_pair,
 )
 from gpustack.cloud_providers.abstract import (
@@ -1178,19 +1177,16 @@ class WorkerProvisioningController:
         worker: Worker,
         cfg: Config,
     ) -> str:
-        distrubution, public = await client.determine_linux_distribution(
-            worker.worker_pool.os_image
-        )
-        user_data = construct_user_data(
-            config=cfg,
-            worker=worker,
-            distribution=distrubution,
-            public=public,
+        user_data = await client.construct_user_data(
+            server_url=cfg.server_external_url,
+            token=worker.cluster.registration_token,
+            image_name=cfg.get_image_name(),
+            os_image=worker.worker_pool.os_image,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
             raise ValueError(f"SSH key {worker.ssh_key_id} not found")
-        to_create = construct_cloud_instance(worker, ssh_key, user_data)
+        to_create = construct_cloud_instance(worker, ssh_key, user_data.format())
         logger.info(f"Creating cloud instance for worker {worker.name}")
         logger.debug(f"Cloud instance configuration: {to_create}")
         return await client.create_instance(to_create)

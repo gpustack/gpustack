@@ -2,7 +2,7 @@ import logging
 import random
 import string
 import asyncio
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 from .abstract import (
     ProviderClientBase,
     CloudInstance,
@@ -11,6 +11,8 @@ from .abstract import (
 )
 from pydo.aio import Client
 from gpustack.schemas.clusters import Volume
+from gpustack.cloud_providers.user_data import UserDataTemplate
+from gpustack_runtime.detector import ManufacturerEnum
 
 logger = logging.getLogger(__name__)
 
@@ -187,29 +189,33 @@ class DigitalOceanClient(ProviderClientBase):
                 )
         return volume_ids
 
-    async def determine_linux_distribution(
-        self, image_id: str
-    ) -> Tuple[Optional[str], bool]:
-        image: Dict[str, Any] = await self.client.images.get(image_id)
-        if image is None or 'image' not in image:
-            return None, True
-        # if image is not public, we cannot determine the distribution
-        if image['image'].get('public', False) is False:
-            return None, True
-        distribution: Optional[str] = image['image'].get('distribution', None)
-        is_public: bool = image['image'].get('public', True)
-        if distribution is not None:
-            return distribution.lower(), is_public
-        return None, is_public
-
-    @classmethod
-    def modify_cloud_init(cls, user_data: Dict[str, Any]):
-        command_list: List[str] = user_data.get('runcmd', [])
-        command_list.insert(
-            0,
-            "mkdir -p /var/lib/gpustack && curl -s http://169.254.169.254/metadata/v1/id > /var/lib/gpustack/external_id",
+    async def construct_user_data(
+        self, server_url, token, image_name, os_image
+    ) -> UserDataTemplate:
+        image_info = await self.client.images.get(os_image)
+        distribution = image_info.get('image', {}).get('distribution', '').lower()
+        image_slug = image_info.get('image', {}).get('slug', '').lower()
+        setup_driver = None
+        install_driver = None
+        # This is a trick to find out AI/ML ready images of DigitalOcean
+        if image_slug.startswith("gpu"):
+            # AMD will not take affect for now
+            if os_image.lower().find("amd") != -1:
+                setup_driver = ManufacturerEnum.AMD
+            else:
+                setup_driver = ManufacturerEnum.NVIDIA
+        elif distribution in ['ubuntu', 'debian']:
+            install_driver = ManufacturerEnum.NVIDIA
+            setup_driver = ManufacturerEnum.NVIDIA
+        user_data = await super().construct_user_data(
+            server_url, token, image_name, os_image
         )
-        user_data['runcmd'] = command_list
+        user_data.distribution = distribution
+        user_data.setup_driver = setup_driver
+        user_data.install_driver = install_driver
+        user_data.insert_runcmd(
+            "mkdir -p /var/lib/gpustack && curl -s http://169.254.169.254/metadata/v1/id > /var/lib/gpustack/external_id"
+        )
 
     @classmethod
     def get_api_endpoint(cls) -> str:

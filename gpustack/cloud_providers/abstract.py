@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict
 from abc import ABC, abstractmethod
 from enum import Enum
 from gpustack.schemas.clusters import Volume
+from gpustack.cloud_providers.user_data import UserDataTemplate
 
 
 class InstanceState(str, Enum):
@@ -88,19 +89,19 @@ class ProviderClientBase(ABC):
         """
         pass
 
-    @abstractmethod
-    async def determine_linux_distribution(
-        self, image_id: str
-    ) -> Tuple[Optional[str], bool]:
-        """
-        Determine the linux distribution of the instance.
-        Return values can be: "ubuntu", "debian", "centos", "rocky", "almalinux", "unknown"
-        """
-        pass
-
-    @classmethod
-    def modify_cloud_init(cls, user_data: Dict[str, Any]):
-        pass
+    async def construct_user_data(
+        self,
+        server_url: str,
+        token: str,
+        image_name: str,
+        os_image: str,
+    ) -> UserDataTemplate:
+        user_data = UserDataTemplate(
+            server_url=server_url,
+            token=token,
+            image_name=image_name,
+        )
+        return user_data
 
     @classmethod
     def get_api_endpoint(cls) -> str:
