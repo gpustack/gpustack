@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import tempfile
 from typing import Dict, List, Optional
 from pathlib import Path
 import fnmatch
@@ -258,6 +259,82 @@ def match_model_scope_file_paths(
         matching_paths.append(extra_matching_paths[0])
 
     return matching_paths
+
+
+def read_repo_file_content(
+    model: Model,
+    file_path: str,
+    token: Optional[str] = None,
+) -> Optional[bytes]:
+    """
+    Read a file's raw bytes from the model's source.
+
+    - Hugging Face: uses HfFileSystem to open `{repo_id}/{file_path}`.
+    - ModelScope: downloads a snapshot matching `file_path` and cleaned automatically after reading locally.
+    - Local Path: reads from the local directory.
+
+    Returns None if the file cannot be found or read.
+    """
+    try:
+        if model.source == SourceEnum.HUGGING_FACE:
+            hffs = HfFileSystem(token=token)
+            repo_path = f"{model.huggingface_repo_id}/{file_path}"
+            with hffs.open(repo_path, "rb") as f:
+                return f.read()
+
+        elif model.source == SourceEnum.MODEL_SCOPE:
+            _cfg = get_global_config()
+            base_tmp = os.path.join(
+                (_cfg.cache_dir if _cfg and _cfg.cache_dir else "/tmp"),
+                "modelscope",
+                "tempfile",
+            )
+            os.makedirs(base_tmp, exist_ok=True)
+            safe_id = (model.model_scope_model_id or "").replace("/", "__")
+            with tempfile.TemporaryDirectory(
+                dir=base_tmp, prefix=f"{safe_id}__"
+            ) as tmp_dir:
+                model_dir = modelscope_snapshot_download(
+                    model_id=model.model_scope_model_id,
+                    local_dir=tmp_dir,
+                    allow_patterns=[file_path],
+                )
+
+                candidate = os.path.join(model_dir, file_path)
+                fp = candidate if os.path.exists(candidate) else None
+                if not fp:
+                    # Search recursively by base filename for robustness
+                    base_name = os.path.basename(file_path)
+                    for root, _dirs, files in os.walk(model_dir):
+                        if base_name in files:
+                            fp = os.path.join(root, base_name)
+                            break
+                if not fp:
+                    return None
+                with open(fp, "rb") as f:
+                    return f.read()
+
+        elif model.source == SourceEnum.LOCAL_PATH:
+            local_path = model.local_path or ""
+            if not local_path or not os.path.isdir(local_path):
+                return None
+            fp = os.path.join(local_path, file_path)
+            if not os.path.exists(fp):
+                return None
+            with open(fp, "rb") as f:
+                return f.read()
+
+        else:
+            return None
+    except Exception as e:
+        source_key = (
+            model.huggingface_repo_id
+            or model.model_scope_model_id
+            or model.local_path
+            or "<unknown>"
+        )
+        logger.error(f"Failed to read '{file_path}' for source '{source_key}': {e}")
+        return None
 
 
 def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
@@ -526,82 +603,9 @@ def has_diffusers_model_index(  # noqa: C901
     try:
         content_bytes: Optional[bytes] = None
 
-        if model.source == SourceEnum.HUGGING_FACE:
-            # List files in the root directory only to find model_index.json
-            repo_files = list_repo(
-                model.huggingface_repo_id,
-                SourceEnum.HUGGING_FACE,
-                token=token,
-                root_dir_only=True,
-            )
-            has_model_index = any(
-                isinstance(file, dict) and file.get("name") == "model_index.json"
-                for file in repo_files
-            )
-            if not has_model_index:
-                return False
-
-            hffs = HfFileSystem(token=token)
-            # Open and read the model_index.json
-            with hffs.open(f"{model.huggingface_repo_id}/model_index.json", "rb") as f:
-                content_bytes = f.read()
-
-        elif model.source == SourceEnum.MODEL_SCOPE:
-            # Check root for model_index.json
-            repo_files = list_repo(
-                model.model_scope_model_id,
-                SourceEnum.MODEL_SCOPE,
-                root_dir_only=True,
-            )
-            has_model_index = any(
-                isinstance(file, dict) and file.get("name") == "model_index.json"
-                for file in repo_files
-            )
-            if not has_model_index:
-                return False
-
-            # Download only model_index.json and read it
-            base_tmp = os.path.join(
-                (get_global_config().data_dir or "/tmp"),
-                "modelscope_tmp",
-                "diffusers_check",
-            )
-            os.makedirs(base_tmp, exist_ok=True)
-            safe_id = (model.model_scope_model_id or "").replace("/", "__")
-            local_dir = os.path.join(base_tmp, safe_id)
-            os.makedirs(local_dir, exist_ok=True)
-            model_dir = modelscope_snapshot_download(
-                model_id=model.model_scope_model_id,
-                local_dir=local_dir,
-                allow_patterns=["model_index.json"],
-            )
-
-            # Find the downloaded file
-            candidate = os.path.join(model_dir, "model_index.json")
-            file_path = candidate if os.path.exists(candidate) else None
-            if not file_path:
-                # Search recursively in case the snapshot places files in subfolders
-                for root, _dirs, files in os.walk(model_dir):
-                    if "model_index.json" in files:
-                        file_path = os.path.join(root, "model_index.json")
-                        break
-            if not file_path:
-                return False
-            with open(file_path, "rb") as f:
-                content_bytes = f.read()
-
-        elif model.source == SourceEnum.LOCAL_PATH:
-            # Only support directory-based local path (e.g., safetensors repo). GGUF files won't have model_index.json.
-            local_path = model.local_path or ""
-            if not local_path or not os.path.isdir(local_path):
-                return False
-            file_path = os.path.join(local_path, "model_index.json")
-            if not os.path.exists(file_path):
-                return False
-            with open(file_path, "rb") as f:
-                content_bytes = f.read()
-
-        else:
+        # Read model_index.json content based on model source
+        content_bytes = read_repo_file_content(model, "model_index.json", token=token)
+        if content_bytes is None:
             return False
 
         # Decode and parse JSON

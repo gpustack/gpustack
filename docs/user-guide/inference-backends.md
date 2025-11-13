@@ -95,7 +95,11 @@ The SGLang backend currently supports Linux.
 
 ### Supported Models
 
-Please refer to the SGLang [documentation](https://docs.sglang.ai/supported_models/generative_models.html) for supported models. We also support SGLang Diffusion, please refer to the [roadmap](https://lmsys.org/blog/2025-11-07-sglang-diffusion/#roadmap-and-diffusion-ecosystem) for supported diffusion models.
+Please refer to the SGLang [documentation](https://docs.sglang.ai/supported_models/generative_models.html) for supported models.
+
+SGLang Diffusion also support open-source image and video generation models, including:
+- Video models: Wan-series, FastWan, Hunyuan
+- Image models: Qwen-Image, Qwen-Image-Edit, Flux
 
 ### Supported Features
 
@@ -121,10 +125,6 @@ If the above conditions are not met, you can still manually schedule the model i
 
 SGLang Diffusion is a high-performance inference engine designed specifically for diffusion models, aiming to accelerate the generation process of images and videos.
 Through SGLang's parallel processing techniques and optimized kernels, it achieves up to 1.2x higher generation speed compared to mainstream baselines (e.g., Hugging Face Diffusers).
-
-Supports a variety of popular open-source image and video generation models, including:
-- Video models: Wan-series, FastWan, Hunyuan
-- Image models: Qwen-Image, Qwen-Image-Edit, Flux
 
 For more details, please refer to [SGLang Diffusion](https://lmsys.org/blog/2025-11-07-sglang-diffusion/)
 

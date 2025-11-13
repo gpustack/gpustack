@@ -248,10 +248,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             self.find_manual_gpu_selection_candidates,
             self.find_single_worker_single_gpu_full_offloading_candidates,
             self.find_single_worker_multi_gpu_full_offloading_candidates,
+            self.find_multi_worker_multi_gpu_candidates,
         ]
-        if CategoryEnum.IMAGE not in self._model.categories:
-            # SGLang Diffusion unsupported multi-worker
-            candidate_functions.append(self.find_multi_worker_multi_gpu_candidates)
 
         sort_workers_by_gpu_count(workers)
 
@@ -286,6 +284,13 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         # Skip conditions for distributed inference.
         if (
             not self._model.distributed_inference_across_workers
+            and candidate_func == self.find_multi_worker_multi_gpu_candidates
+        ):
+            return True
+
+        # SGLang Diffusion unsupported multi-worker
+        if (
+            CategoryEnum.IMAGE in self._model.categories
             and candidate_func == self.find_multi_worker_multi_gpu_candidates
         ):
             return True

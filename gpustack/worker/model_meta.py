@@ -4,6 +4,8 @@ from typing import Any, Dict
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
+    Model,
+    CategoryEnum,
 )
 
 
@@ -11,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_meta_from_running_instance(
-    mi: ModelInstance, backend: str, worker_ip: str
+    mi: ModelInstance, backend: str, worker_ip: str, model: Model
 ) -> Dict[str, Any]:
     """
     Get the meta information from the running instance (synchronous version).
@@ -20,6 +22,8 @@ def get_meta_from_running_instance(
     if backend == BackendEnum.ASCEND_MINDIE:
         # Ref: https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindieservice/servicedev/mindie_service0066.html
         meta_path = "/info"
+    if backend == BackendEnum.SGLANG and CategoryEnum.IMAGE in model.categories:
+        return {}
 
     try:
         url = f"http://{worker_ip}:{mi.port}{meta_path}"
