@@ -295,7 +295,7 @@ class ServeManager:
 
                         # Fetch model meta once running.
                         meta = get_meta_from_running_instance(
-                            model_instance, backend, self._worker_ip
+                            model_instance, backend, self._worker_ip, model
                         )
                         if meta and meta != model.meta:
                             model_patch_dict = {"meta": meta}

@@ -10,7 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
-from gpustack.config.config import Config
+from gpustack.config.config import Config, get_global_config
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
     WorkerFilterChain,
@@ -536,6 +536,23 @@ async def evaluate_vox_box_model(
     return should_update
 
 
+async def evaluate_diffusion_model(model: Model):
+    # SGLang now supports Diffusers (image) models.
+    # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
+    # classify as IMAGE directly.
+    if model.backend != BackendEnum.SGLANG or model.categories:
+        return False
+
+    hf_token = get_global_config().huggingface_token
+    is_diffusers = await run_in_thread(
+        has_diffusers_model_index, timeout=10, model=model, token=hf_token
+    )
+    if is_diffusers:
+        model.categories = [CategoryEnum.IMAGE]
+        return True
+    return False
+
+
 async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> bool:
     """
     evaluate the model's pretrained config to determine its type.
@@ -545,25 +562,14 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     Returns:
         True if the model's categories are updated, False otherwise.
     """
-    # Special handling: SGLang now supports Diffusers (image) models.
-    # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
-    # classify as IMAGE directly.
+    # 1) try to evaluate as diffusion model
     try:
-        if model.backend == BackendEnum.SGLANG and not model.categories:
-            from gpustack.config.config import get_global_config as _get_global_config
-
-            hf_token = _get_global_config().huggingface_token
-            is_diffusers = await run_in_thread(
-                has_diffusers_model_index, timeout=10, model=model, token=hf_token
-            )
-            if is_diffusers:
-                model.categories = [CategoryEnum.IMAGE]
-                gpus_per_replica_modified = set_model_gpus_per_replica(model)
-                return True or gpus_per_replica_modified
+        is_image_category = await evaluate_diffusion_model(model)
+        if is_image_category:
+            return True
     except Exception:
-        # Best-effort detection; continue with default flow on error
         pass
-    # Check overrided architectures if specified in backend parameters.
+    # 2) Check overrided architectures if specified in backend parameters.
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
@@ -687,9 +693,6 @@ def set_model_categories(model: Model, model_type: CategoryEnum) -> bool:
         return True
     elif model_type == CategoryEnum.RERANKER:
         model.categories = [CategoryEnum.RERANKER]
-        return True
-    elif model_type == CategoryEnum.IMAGE:
-        model.categories = [CategoryEnum.IMAGE]
         return True
     elif model_type == CategoryEnum.LLM:
         model.categories = [CategoryEnum.LLM]
