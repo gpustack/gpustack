@@ -7,6 +7,7 @@ from gpustack.cmd.download_tools import setup_download_tools_cmd
 from gpustack.cmd.images import setup_images_cmd
 from gpustack.cmd.reset_admin_password import setup_reset_admin_password_cmd
 from gpustack.cmd.version import setup_version_cmd
+from gpustack.cmd.reload_config import setup_reload_config_cmd
 
 
 def main():
@@ -19,10 +20,12 @@ def main():
         ),
     )
     subparsers = parser.add_subparsers(
-        help="sub-command help", metavar='{start,chat,download-tools,version}'
+        help="sub-command help",
+        metavar='{start,chat,download-tools,version,reload-config}',
     )
 
     setup_start_cmd(subparsers)
+    setup_reload_config_cmd(subparsers)
     setup_download_tools_cmd(subparsers)
     setup_version_cmd(subparsers)
     setup_reset_admin_password_cmd(subparsers)
