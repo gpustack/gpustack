@@ -14,7 +14,7 @@ from gpustack.api.exceptions import NotFoundException
 from gpustack.worker.logs import LogOptions, LogOptionsDep, log_generator
 from gpustack.utils import file
 from gpustack.server.deps import SessionDep
-from gpustack.config.envs import PROXY_TIMEOUT
+from gpustack import envs
 
 
 router = APIRouter()
@@ -41,7 +41,7 @@ async def wait_for_container_generator(
     model_instance_name: str,
     options: LogOptionsDep,
     poll_interval: float = 5,
-    timeout: float = PROXY_TIMEOUT,
+    timeout: float = envs.PROXY_TIMEOUT,
 ):
     """Wait until container logs are ready, then return the async generator.
 
@@ -230,7 +230,10 @@ async def _stream_file_logs_preempt_to_container(
         first_item_emitted = False
         try:
             gen = await wait_for_container_generator(
-                model_instance_name, options, poll_interval=5, timeout=PROXY_TIMEOUT
+                model_instance_name,
+                options,
+                poll_interval=5,
+                timeout=envs.PROXY_TIMEOUT,
             )
             async for cline in gen:
                 if not first_item_emitted:
@@ -240,7 +243,7 @@ async def _stream_file_logs_preempt_to_container(
                 await container_queue.put(cline)
         except asyncio.TimeoutError:
             logger.warning(
-                f"Pump container logs timed out for {model_instance_name} after {PROXY_TIMEOUT}s"
+                f"Pump container logs timed out for {model_instance_name} after {envs.PROXY_TIMEOUT}s"
             )
         except Exception as e:
             logger.error(f"Error streaming container logs: {e}")
@@ -283,7 +286,7 @@ async def _emit_file_then_container_logs(
     try:
         if options.follow:
             gen = await wait_for_container_generator(
-                model_instance_name, options, timeout=PROXY_TIMEOUT
+                model_instance_name, options, timeout=envs.PROXY_TIMEOUT
             )
             async for line in gen:
                 yield line

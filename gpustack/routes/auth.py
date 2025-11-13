@@ -10,11 +10,11 @@ from gpustack.api.exceptions import InvalidException, UnauthorizedException
 from gpustack.schemas.users import UpdatePassword
 from gpustack.schemas.users import User, AuthProviderEnum
 from gpustack.security import (
-    JWT_TOKEN_EXPIRE_MINUTES,
     JWTManager,
     get_secret_hash,
     verify_hashed_secret,
 )
+from gpustack import envs
 from gpustack.api.auth import SESSION_COOKIE_NAME, authenticate_user
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -239,8 +239,8 @@ async def saml_callback(request: Request, session: SessionDep):
             key=SESSION_COOKIE_NAME,
             value=access_token,
             httponly=True,
-            max_age=JWT_TOKEN_EXPIRE_MINUTES * 60,
-            expires=JWT_TOKEN_EXPIRE_MINUTES * 60,
+            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
         )
     except Exception as e:
         logger.error(f"SAML callback error: {str(e)}")
@@ -373,8 +373,8 @@ async def oidc_callback(request: Request, session: SessionDep):
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
     )
     return response
 
@@ -400,8 +400,8 @@ async def login(
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 

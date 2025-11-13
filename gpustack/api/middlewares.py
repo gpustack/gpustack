@@ -21,7 +21,8 @@ from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
 from gpustack.schemas.model_usage import ModelUsage, OperationEnum
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
-from gpustack.security import JWT_TOKEN_EXPIRE_MINUTES, JWTManager
+from gpustack.security import JWTManager
+from gpustack import envs
 from gpustack.api.auth import SESSION_COOKIE_NAME
 from gpustack.server.db import get_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -313,8 +314,8 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
                             key=SESSION_COOKIE_NAME,
                             value=new_token,
                             httponly=True,
-                            max_age=JWT_TOKEN_EXPIRE_MINUTES * 60,
-                            expires=JWT_TOKEN_EXPIRE_MINUTES * 60,
+                            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
                         )
             except (ExpiredSignatureError, DecodeError):
                 pass

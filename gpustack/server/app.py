@@ -7,9 +7,7 @@ from fastapi_cdn_host import patch_docs
 from gpustack import __version__
 from gpustack.api import exceptions, middlewares
 from gpustack.config.config import Config
-from gpustack.config.envs import (
-    TCP_CONNECTOR_LIMIT,
-)
+from gpustack import envs
 from gpustack.routes import ui
 from gpustack.routes.routes import api_router
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
@@ -20,7 +18,7 @@ def create_app(cfg: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         connector = aiohttp.TCPConnector(
-            limit=TCP_CONNECTOR_LIMIT,
+            limit=envs.TCP_CONNECTOR_LIMIT,
             force_close=True,
         )
         app.state.http_client = aiohttp.ClientSession(
