@@ -682,10 +682,6 @@ class ScheduleCandidatesSelector(ABC):
         allocatable = await self._get_worker_allocatable_resource(worker)
         vram_totals_by_gpu_idx = self._get_worker_vram_totals_by_gpu_idxs(worker)
 
-        # Check ram requirement
-        if request.ram is not None and allocatable.ram < request.ram:
-            return []
-
         # Check if the GPU is satisfied the requirement
         satisfied_gpu_indexes = []
         unsatisfied_gpu_indexes = []
