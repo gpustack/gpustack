@@ -17,11 +17,13 @@
 # - PYTHON_VERSION: Version of Python to use.
 # - GPUSTACK_BASE_IMAGE: Base image for the gpustack stage.
 # - GPUSTACK_RUNTIME_ROCM_VERSION: Version of ROCm detection library for gpustack-runtime, update this if project dependencies has changed.
+# - GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS: Semicolon-separated list of labels to filter mirrored images when deploying mirrored deployment.
 # - HIGRESS_VERSION: Version of Higress to use.
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
 ARG GPUSTACK_RUNTIME_ROCM_VERSION=6.2.4
+ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.8
 ARG HIGRESS_APISERVER_VERSION=0.0.25
 
@@ -660,6 +662,15 @@ ENV MTHREADS_VISIBLE_DEVICES="all" \
 ENV NVIDIA_DISABLE_REQUIRE="true" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility"
+
+## Active GPUStack runtime mirrored deployment mode,
+## if getting an error like, "Found multiple Containers with the same hostname ...",
+## please use `--env GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME=...` to specify the exact container name.
+##
+ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
+
+ENV GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
+    GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS="${GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS}"
 
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
 
