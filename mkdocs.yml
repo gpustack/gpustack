@@ -176,6 +176,12 @@ nav:
           - H200: performance-lab/deepseek-r1/h200.md
       - Qwen3-8B:
           - 910B: performance-lab/qwen3-8b/910b.md
+      - Qwen3-14B:
+          - A100: performance-lab/qwen3-14b/a100.md
+          - H100: performance-lab/qwen3-14b/h100.md
+      - Qwen3-32B:
+          - A100: performance-lab/qwen3-32b/a100.md
+          - H100: performance-lab/qwen3-32b/h100.md
       - Qwen3-30B-A3B:
           - 910B: performance-lab/qwen3-30b-a3b/910b.md
       - Qwen3-235B-A22B:
