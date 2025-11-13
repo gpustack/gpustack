@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gpustack.policies.base import (
     Allocatable,
@@ -105,6 +105,43 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 raise ValueError(
                     f"Failed to parse model {model.name} serve parameters: {e}"
                 )
+
+    @staticmethod
+    def get_world_size_from_backend_parameters(
+        model: Model,
+    ) -> Tuple[Optional[int], Optional[List[str]]]:
+        if model.backend_parameters is None:
+            return None, None
+
+        serving_params = AscendMindIEParameters()
+        serving_params.from_args(model.backend_parameters)
+
+        tp, pp, dp, moe_tp, moe_ep, ws = (
+            serving_params.tensor_parallel_size,
+            serving_params.pipeline_parallel_size,
+            serving_params.data_parallel_size,
+            serving_params.moe_tensor_parallel_size,
+            serving_params.moe_expert_parallel_size,
+            serving_params.world_size,
+        )
+
+        if tp or pp or dp or moe_tp or moe_ep:
+            world_size = ws
+            strategies = []
+            if tp > 0:
+                strategies.append("tp")
+            if pp > 0:
+                strategies.append("pp")
+            if dp > 0:
+                strategies.append("dp")
+            if moe_ep > 0:
+                strategies.append("moe_ep")
+            if moe_tp > 0:
+                strategies.append("moe_tp")
+
+            return world_size, strategies
+
+        return None, None
 
     def get_messages(self) -> List[str]:
         return self._diagnostic_messages
