@@ -214,8 +214,11 @@ class DigitalOceanClient(ProviderClientBase):
         user_data.setup_driver = setup_driver
         user_data.install_driver = install_driver
         user_data.insert_runcmd(
-            "mkdir -p /var/lib/gpustack && curl -s http://169.254.169.254/metadata/v1/id > /var/lib/gpustack/external_id"
+            "mkdir -p /var/lib/gpustack",
+            "curl -s http://169.254.169.254/metadata/v1/id > /var/lib/gpustack/external_id",
+            'ip=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address); ip_lc=$(echo "$ip" | tr "A-Z" "a-z"); if [ "$ip_lc" != "not found" ]; then echo "$ip" > /var/lib/gpustack/advertise_address; fi',
         )
+        return user_data
 
     @classmethod
     def get_api_endpoint(cls) -> str:
