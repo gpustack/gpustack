@@ -6,8 +6,6 @@ from gpustack_runtime.detector import ManufacturerEnum
 # default_user_data_template is assuming the NVIDIA drivers and container toolkit
 # are pre-installed on the base image
 default_user_data_template = """#cloud-config
-package_update: true
-package_upgrade: true
 write_files:
   - path: /var/lib/gpustack/config.yaml
     permissions: '0644'
@@ -106,6 +104,8 @@ class UserDataTemplate:
         process_install_driver handles the installation of the GPU drivers.
         Returns True if a reboot is required after installation.
         """
+        self._data['package_update'] = True
+        self._data['package_upgrade'] = True
         packages: List[str] = self._data.get('packages')
         write_files: List[Dict[str, Any]] = self._data.get('write_files')
         # only supports nvidia and debian/ubuntu for now

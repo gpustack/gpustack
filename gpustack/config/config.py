@@ -222,6 +222,17 @@ class Config(BaseSettings):
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
 
+        if self.advertise_address is None and os.path.exists(
+            os.path.join(self.data_dir, "advertise_address")
+        ):
+            with open(os.path.join(self.data_dir, "advertise_address"), "r") as f:
+                addr = f.read().strip()
+                try:
+                    if len(addr) > 0 and ipaddress.ip_address(addr):
+                        self.advertise_address = addr
+                except Exception:
+                    pass
+
         if (
             not self._is_server()
             and self.token is None
