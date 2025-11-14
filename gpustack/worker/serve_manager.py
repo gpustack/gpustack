@@ -281,11 +281,11 @@ class ServeManager:
                     # If there is no error message from subordinate workers,
                     # check whether the main worker is healthy.
                     if not sw_error_msg:
+                        if model_instance.state == ModelInstanceStateEnum.RUNNING:
+                            continue
                         if not is_ready(
                             backend, model_instance, health_check_path, model
                         ):
-                            continue
-                        if model_instance.state == ModelInstanceStateEnum.RUNNING:
                             continue
 
                         patch_dict = {
@@ -868,6 +868,6 @@ def is_ready(
         if response.status_code == 200:
             return True
     except Exception as e:
-        logger.error(f"Error checking model instance {mi.name} health: {e}")
+        logger.debug(f"Error checking model instance {mi.name} health: {e}")
         pass
     return False
