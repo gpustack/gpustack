@@ -292,3 +292,55 @@ model_sets:
       backend_parameters:
         - '--hf_overrides={"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}'
         - --task=score
+# Image models
+- name: FLUX.1 Dev
+  description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
+  home: https://blackforestlabs.ai
+  icon: /static/catalog_icons/blackforestlabs.png
+  size: 12
+  categories:
+    - image
+  licenses:
+    - flux-1-dev-non-commercial-license
+  release_date: "2024-08-02"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: black-forest-labs/FLUX.1-dev
+      backend: SGLang
+      backend_version: 0.5.5
+- name: Qwen-Image
+  description: Qwen-Image is an image generation foundation model in the Qwen series that achieves significant advances in complex text rendering and precise image editing.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 20
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-08-04"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen-Image
+      backend: SGLang
+      backend_version: 0.5.5
+- name: Qwen-Image-Edit
+  description: Qwen-Image-Edit is an image editing version of Qwen-Image. Built upon our 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image’s unique text rendering capabilities to image editing tasks, enabling precise text editing.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 20
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-08-19"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen-Image-Edit
+      backend: SGLang
+      backend_version: 0.5.5
