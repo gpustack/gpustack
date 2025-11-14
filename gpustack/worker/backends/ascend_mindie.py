@@ -1393,10 +1393,7 @@ class AscendMindIEServer(InferenceServer):
         ):
             return None
 
-        return """
-#!/bin/sh
-
-set -eu
+        return """#!/usr/bin/bash
 
 #
 # Prepare
@@ -1504,11 +1501,11 @@ export TORCH_AIE_PRINT_TO_FILE=0
 ## otherwise, execute the original binary.
 
 if [ -x ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_ ]; then
-    exec ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_
+    ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_
 else
-    exec "$@"
+    $@
 fi
-            """
+"""
 
     @staticmethod
     @lru_cache
