@@ -117,9 +117,9 @@ Below are additional environment variables that can be set:
 
 Below are prefixed with `GPUSTACK_` special environment variables that can be set:
 
-| <div style="width:360px">Flag</div>       | Description                                                                        |
-| ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `GPUSTACK_DISABLE_DYNAMIC_LINK_LLAMA_BOX` | Dynamic linking is used by default. Setting this to `true` enables static linking. |
+| <div style="width:360px">Flag</div>                     | Description                                                                        |
+| -----------------------------------------               | ---------------------------------------------------------------------------------- |
+| `GPUSTACK_DISABLE_DYNAMIC_LINK_LLAMA_BOX`               | Dynamic linking is used by default. Setting this to `true` enables static linking. |
 
 ## Config File
 

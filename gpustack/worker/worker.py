@@ -231,8 +231,10 @@ class Worker:
             cfg=self._config,
             inference_backend_manager=inference_backend_manager,
         )
-        # Check serving model instances' health every 3 seconds.
-        run_periodically_in_thread(serve_manager.sync_model_instances_state, 3)
+        run_periodically_in_thread(
+            serve_manager.sync_model_instances_state,
+            envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
+        )
         run_periodically_in_thread(serve_manager.cleanup_orphan_workloads, 120, 15)
 
         self._create_async_task(serve_manager.watch_model_instances_event())
