@@ -157,6 +157,7 @@ nav:
     - CLI Reference:
         - Start: cli-reference/start.md
         - Download Tools: cli-reference/download-tools.md
+        - Reload Config: cli-reference/reload-config.md
   - Inference Performance Lab:
     - Optimizing Throughput:
       - GLM-4.6/4.5-Air:
