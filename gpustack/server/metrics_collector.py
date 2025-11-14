@@ -102,9 +102,6 @@ def parse_sample_label_to_usage(sample: Sample) -> Optional[ModelUsageMetrics]:
             access_key = consumer_parts[0]
 
     value = int(sample.value)
-    logger.debug(
-        f"Parsed metric sample: name={sample.name}, model={model}, user_id={user_id}, access_key={access_key}, value={value}"
-    )
     rtn = ModelUsageMetrics(
         model=model,
         user_id=user_id,
@@ -113,6 +110,27 @@ def parse_sample_label_to_usage(sample: Sample) -> Optional[ModelUsageMetrics]:
     setattr(rtn, attr, value)
 
     return rtn
+
+
+async def create_or_update_model_usage(
+    session: AsyncSession, metric: ModelUsage, auto_commit: bool = True
+):
+    current_usage = await ModelUsage.one_by_fields(
+        session=session,
+        fields={
+            "model_id": metric.model_id,
+            "user_id": metric.user_id,
+            "access_key": metric.access_key,
+            "date": metric.date,
+        },
+    )
+    if current_usage is None:
+        await metric.save(session=session, auto_commit=auto_commit)
+    else:
+        current_usage.prompt_token_count += metric.prompt_token_count
+        current_usage.completion_token_count += metric.completion_token_count
+        current_usage.request_count += metric.request_count
+        await current_usage.save(session=session, auto_commit=auto_commit)
 
 
 class GatewayMetricsCollector:
@@ -183,7 +201,7 @@ class GatewayMetricsCollector:
                 continue
             # Valid delta, append to result and update cache
             rtn.append(copied_metric)
-            self.cached_dict[key] = copied_metric
+            self.cached_dict[key] = metric
         return rtn
 
     async def _store_metrics(self, metrics: List[ModelUsageMetrics]):
@@ -204,6 +222,7 @@ class GatewayMetricsCollector:
                 validated_model_names = {m.name for m in models}
                 validated_user_ids = {u.id for u in users}
                 for metric in metrics:
+                    logger.debug(f"Storing metric: {metric}")
                     if metric.model not in validated_model_names:
                         continue
                     if (
@@ -220,7 +239,9 @@ class GatewayMetricsCollector:
                         completion_token_count=metric.output_token,
                         request_count=metric.request_count,
                     )
-                    await model_usage.save(session=session, auto_commit=False)
+                    await create_or_update_model_usage(
+                        session, model_usage, auto_commit=False
+                    )
                 await session.commit()
             except Exception as e:
                 logger.exception(f"Error storing gateway metrics: {e}")
@@ -241,11 +262,19 @@ class GatewayMetricsCollector:
 
         while True:
             try:
+                logger.debug(
+                    "Collecting gateway metrics from %s",
+                    self._embedded_gateway_metrics_url,
+                )
                 text = await retry_connect()
                 metrics = parse_token_metrics(text)
                 delta_metrics = self._metrics_delta(metrics)
+                for m in delta_metrics:
+                    logger.debug("Delta metric: %s", m)
                 if len(delta_metrics) != 0:
+                    logger.debug("Storing delta metrics to database...")
                     await self._store_metrics(delta_metrics)
+                    logger.debug("Delta metrics stored successfully.")
             except Exception as e:
                 logger.exception(f"Error collecting gateway metrics: {e}")
             await asyncio.sleep(self._interval)
