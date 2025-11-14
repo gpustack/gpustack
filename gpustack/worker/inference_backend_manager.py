@@ -134,8 +134,6 @@ class InferenceBackendManager:
         try:
             resp = requests.get("https://registry-1.docker.io/v2/", timeout=3)
             _is_docker_hub_reachable = resp.status_code < 500
-            logger.debug(f"Docker Hub reachable: {_is_docker_hub_reachable}")
-        except Exception as e:
+        except Exception:
             _is_docker_hub_reachable = False
-            logger.debug(f"Docker Hub connectivity check failed: {e}")
         set_dockerhub_reachable(_is_docker_hub_reachable)
