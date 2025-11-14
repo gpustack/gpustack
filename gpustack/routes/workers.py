@@ -195,6 +195,7 @@ async def create_worker(
     hashed_suffix = secrets.token_hex(6)
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
+    new_token = f"{API_KEY_PREFIX}_{access_key}_{secret_key}"
 
     new_worker = update_worker_data(
         worker_in,
@@ -202,7 +203,7 @@ async def create_worker(
         # following args are only used when creating a new worker
         provider=cluster.provider,
         cluster=cluster,
-        token=f"{API_KEY_PREFIX}_{access_key}_{secret_key}",
+        token=new_token,
     )
 
     # determine if existing worker already has an user and api key
@@ -245,6 +246,8 @@ async def create_worker(
     try:
         worker = None
         if existing_worker is not None:
+            if to_create_apikey is not None:
+                new_worker.token = new_token
             await WorkerService(session).update(existing_worker, new_worker)
             worker = existing_worker
         else:
