@@ -484,10 +484,7 @@ class InferenceServer(ABC):
         if not env or "PYPI_PACKAGES_INSTALL" not in env:
             return None
 
-        return """
-#!/bin/sh
-
-set -eu
+        return """#!/bin/sh
 
 #
 # Prepare
@@ -526,8 +523,8 @@ fi
 # Execute
 #
 
-exec "$@"
-        """
+$@
+"""
 
     def build_versioned_command_args(
         self,
