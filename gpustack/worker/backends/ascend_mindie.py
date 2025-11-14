@@ -17,6 +17,7 @@ from gpustack_runtime.deployer import (
     ContainerFile,
     ContainerRestartPolicyEnum,
 )
+from gpustack_runtime.envs import to_bool
 
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
@@ -1305,6 +1306,8 @@ class AscendMindIEServer(InferenceServer):
         # Indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
 
+        command_script = self._get_serving_command_script(env)
+
         command_args = self.build_versioned_command_args(
             [
                 str(install_path.joinpath("bin", "mindieservice_daemon")),
@@ -1312,6 +1315,7 @@ class AscendMindIEServer(InferenceServer):
         )
 
         self._create_workload(
+            command_script=command_script,
             command_args=command_args,
             env=env,
             config_files=config_files,
@@ -1320,6 +1324,7 @@ class AscendMindIEServer(InferenceServer):
 
     def _create_workload(
         self,
+        command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
         config_files: List[ContainerFile],
@@ -1345,6 +1350,7 @@ class AscendMindIEServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command_script=command_script,
                 args=command_args,
                 working_dir=working_dir,
             ),
@@ -1379,6 +1385,135 @@ class AscendMindIEServer(InferenceServer):
         create_workload(workload_plan)
 
         logger.info(f"Created Ascend MindIE container workload {self._workload_name}")
+
+    @staticmethod
+    def _get_serving_command_script(env: dict[str, str]) -> Optional[str]:
+        """
+        Get serving command script for the MindIE service.
+        """
+
+        # Skip if explicitly disabled.
+        if env and to_bool(
+            env.get("GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED", "0")
+        ):
+            return None
+
+        return """
+#!/bin/sh
+
+set -eu
+
+#
+# Prepare
+#
+
+if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
+    if command -v uv >/dev/null 2>&1; then
+        echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
+        export UV_PRERELEASE=allow
+        export UV_HTTP_TIMEOUT=500
+        export UV_NO_CACHE=1
+        if [ -n "${PIP_INDEX_URL:-}" ]; then
+            export UV_DEFAULT_INDEX="${PIP_INDEX_URL}"
+            export UV_INDEX_URL="${PIP_INDEX_URL}"
+        fi
+        if [ -n "${PIP_EXTRA_INDEX_URL:-}" ]; then
+            export UV_INDEX="${PIP_EXTRA_INDEX_URL}"
+            export UV_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}"
+        fi
+        uv pip install --system ${PYPI_PACKAGES_INSTALL}
+        uv pip tree --system
+    elif command -v pip >/dev/null 2>&1; then
+        echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
+        export PIP_DISABLE_PIP_VERSION_CHECK=1
+        export PIP_ROOT_USER_ACTION=ignore
+        export PIP_PRE=1
+        export PIP_TIMEOUT=500
+        export PIP_NO_CACHE_DIR=1
+        pip install ${PYPI_PACKAGES_INSTALL}
+        pip freeze
+    fi
+    unset PYPI_PACKAGES_INSTALL
+fi
+
+#
+# Execute
+#
+
+## Cache Envs Configured by GPUStack
+
+MINDIE_LOG_LEVEL=${MINDIE_LOG_LEVEL:-INFO}
+MIES_CERTS_LOG_LEVEL=${MIES_CERTS_LOG_LEVEL:-INFO}
+MINDIE_LLM_LOG_LEVEL=${MINDIE_LLM_LOG_LEVEL:-WARN}
+MINDIE_LLM_PYTHON_LOG_LEVEL=${MINDIE_LLM_PYTHON_LOG_LEVEL:-WARN}
+ASCEND_GLOBAL_LOG_LEVEL=${ASCEND_GLOBAL_LOG_LEVEL:-3}
+ASCEND_SLOG_LEVEL=${ASCEND_SLOG_LEVEL:-WARN}
+MINDIE_RT_LOG_LEVEL=${MINDIE_RT_LOG_LEVEL:-3}
+ATB_LOG_LEVEL=${ATB_LOG_LEVEL:-ERROR}
+ASDOPS_LOG_LEVEL=${ASDOPS_LOG_LEVEL:-ERROR}
+OCK_LOG_LEVEL=${OCK_LOG_LEVEL:-ERROR}
+LOG_LEVEL=${LOG_LEVEL:-ERROR}
+TORCH_AIE_LOG_LEVEL=${TORCH_AIE_LOG_LEVEL:-3}
+CANN_HOME=${CANN_HOME:-/usr/local/Ascend}
+
+## Activate Ascend Envs
+
+PYTHON_LIB_PREFIX=$(python3 -c "import sys; print(sys.base_prefix);")
+export LD_LIBRARY_PATH=${PYTHON_LIB_PREFIX}/lib:${PYTHON_LIB_PREFIX}/lib64:${LD_LIBRARY_PATH}
+source ${CANN_HOME}/ascend-toolkit/set_env.sh
+source ${CANN_HOME}/nnal/atb/set_env.sh
+source ${CANN_HOME}/atb-models/set_env.sh
+source ${CANN_HOME}/mindie/set_env.sh
+
+## Override Envs Configured by GPUStack
+
+export MINDIE_LOG_LEVEL=${MINDIE_LOG_LEVEL}
+export MINDIE_LOG_TO_STDOUT=1
+export MINDIE_LOG_TO_FILE=0
+export MIES_CERTS_LOG_LEVEL=${MIES_CERTS_LOG_LEVEL}
+export MIES_CERTS_LOG_TO_STDOUT=1
+export MIES_CERTS_LOG_TO_FILE=0
+export MINDIE_LLM_LOG_LEVEL=${MINDIE_LLM_LOG_LEVEL}
+export MINDIE_LLM_LOG_TO_STDOUT=1
+export MINDIE_LLM_LOG_TO_FILE=0
+export MINDIE_LLM_PYTHON_LOG_LEVEL=${MINDIE_LLM_PYTHON_LOG_LEVEL}
+export MINDIE_LLM_PYTHON_LOG_TO_STDOUT=1
+export MINDIE_LLM_PYTHON_LOG_TO_FILE=0
+export ASCEND_GLOBAL_LOG_LEVEL=${ASCEND_GLOBAL_LOG_LEVEL}
+export ASCEND_GLOBAL_EVENT_ENABLE=0
+export ASCEND_SLOG_LEVEL=${ASCEND_SLOG_LEVEL}
+export ASCEND_SLOG_PRINT_TO_STDOUT=1
+export ASCEND_SLOG_PRINT_TO_FILE=0
+export MINDIE_RT_LOG_LEVEL=${MINDIE_RT_LOG_LEVEL}
+export MINDIE_RT_LOG_PRINT_TO_STDOUT=1
+export MINDIE_RT_LOG_PRINT_TO_FILE=0
+export ATB_LOG_LEVEL=${ATB_LOG_LEVEL}
+export ATB_LOG_TO_STDOUT=1
+export ATB_LOG_TO_FILE=0
+export ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE=0
+export ATB_LOG_TO_FILE_FLUSH=0
+export ASDOPS_LOG_LEVEL=${ASDOPS_LOG_LEVEL}
+export ASDOPS_LOG_TO_STDOUT=1
+export ASDOPS_LOG_TO_FILE=0
+export OCK_LOG_LEVEL=${OCK_LOG_LEVEL}
+export OCK_LOG_TO_STDOUT=1
+export OCK_LOG_TO_FILE=0
+export LOG_LEVEL=${LOG_LEVEL}
+export LOG_TO_STDOUT=1
+export LOG_TO_FILE=0
+export TORCH_AIE_LOG_LEVEL=${TORCH_AIE_LOG_LEVEL}
+export TORCH_AIE_PRINT_TO_STDOUT=1
+export TORCH_AIE_PRINT_TO_FILE=0
+
+## Execute the binary preprocessed by GPUStack Runner if exists,
+## otherwise, execute the original binary.
+
+if [ -x ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_ ]; then
+    exec ${CANN_HOME}/mindie/latest/mindie-service/bin/mindieservice_daemon_
+else
+    exec "$@"
+fi
+            """
 
     def _get_model_max_seq_len(self) -> Optional[int]:
         """
