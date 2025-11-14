@@ -145,12 +145,6 @@ class InferenceServer(ABC):
 
         self._model = model
 
-    def exit_with_code(self, exit_code: int):
-        if exit_code < 0:
-            signal_number = -exit_code
-            exit_code = 128 + signal_number
-        sys.exit(exit_code)
-
     def _until_model_instance_starting(self):
         self._clientset.model_instances.watch(
             callback=None,
@@ -212,10 +206,17 @@ class InferenceServer(ABC):
         is_distributed_follower = is_distributed and not is_distributed_leader
         return is_distributed, is_distributed_leader, is_distributed_follower
 
-    def _derive_max_model_len(self) -> Optional[int]:
+    def _derive_max_model_len(self, default: Optional[int] = None) -> Optional[int]:
         """
         Derive max model length from model config.
-        Returns None if unavailable.
+        Returns default value if unavailable.
+
+        Args:
+            default:
+                The default max model length to return if unable to derive from config.
+
+        Returns:
+            The derived max model length, or the default value if derivation fails.
         """
         try:
             pretrained_config = get_pretrained_config(self._model)
@@ -224,7 +225,7 @@ class InferenceServer(ABC):
         except Exception as e:
             logger.error(f"Failed to derive max model length: {e}")
 
-        return None
+        return default
 
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """

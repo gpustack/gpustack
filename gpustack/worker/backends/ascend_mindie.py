@@ -21,11 +21,6 @@ from gpustack_runtime.envs import to_bool
 
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
-from gpustack.utils.hub import (
-    get_hf_text_config,
-    get_max_model_len,
-    get_pretrained_config,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -980,7 +975,7 @@ class AscendMindIEServer(InferenceServer):
             model_config["worldSize"] = len(subworker.gpu_indexes)
 
         # - Model config
-        derived_max_seq_len = self._get_model_max_seq_len()
+        derived_max_seq_len = self._derive_max_model_len(default=8192)
         max_seq_len = derived_max_seq_len
         # -- Mutate default max sequence length (aka. context length),
         #    but allow to change it with below advanced parameters.
@@ -1514,19 +1509,6 @@ else
     exec "$@"
 fi
             """
-
-    def _get_model_max_seq_len(self) -> Optional[int]:
-        """
-        Get the maximum sequence length of the model.
-        """
-        try:
-            pretrained_config = get_pretrained_config(self._model)
-            pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
-        except Exception as e:
-            logger.error(f"Failed to get model max seq length: {e}")
-
-        return 8192
 
     @staticmethod
     @lru_cache
