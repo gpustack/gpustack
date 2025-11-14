@@ -23,6 +23,7 @@ from gpustack.utils.network import get_first_non_loopback_ip, get_ifname_by_ip
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
+from gpustack.utils.envs import get_gpustack_env
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
@@ -218,8 +219,15 @@ class Worker:
             cfg=self._config,
             inference_backend_manager=inference_backend_manager,
         )
-        # Check serving model instances' health every 3 seconds.
-        run_periodically_in_thread(serve_manager.sync_model_instances_state, 3)
+        interval_str = get_gpustack_env("INSTANCE_HEALTH_CHECK_INTERVAL")
+        try:
+            interval = int(interval_str) if interval_str is not None else 3
+        except Exception:
+            interval = 3
+        run_periodically_in_thread(
+            serve_manager.sync_model_instances_state,
+            interval,
+        )
         run_periodically_in_thread(serve_manager.cleanup_orphan_workloads, 120, 15)
 
         self._create_async_task(serve_manager.watch_model_instances_event())
