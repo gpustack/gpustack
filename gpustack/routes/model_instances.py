@@ -126,9 +126,10 @@ async def get_serving_logs(  # noqa: C901
 
                     async for chunk in resp.content.iter_any():
                         yield chunk, resp.headers, resp.status
+            except TimeoutError:
+                yield "\x1b[999;1H" + f"Log stream timed out ({timeout.total} seconds). Please reopen the log page.\n", {}, status.HTTP_500_INTERNAL_SERVER_ERROR
             except Exception as e:
-                error_response = f"Error fetching serving logs: {str(e)}\n"
-                yield error_response, {}, status.HTTP_500_INTERNAL_SERVER_ERROR
+                yield "\x1b[999;1H" + f"Error fetching serving logs: {str(e)}\n", {}, status.HTTP_500_INTERNAL_SERVER_ERROR
 
         return StreamingResponseWithStatusCode(
             proxy_stream(),
