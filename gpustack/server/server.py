@@ -267,7 +267,7 @@ class Server:
             self._migrate_legacy_token,
             self._migrate_legacy_workers,
             self._ensure_registration_token,
-            # self._cleanup_orphaned_gateway_data,
+            self._cleanup_orphaned_gateway_data,
         ]
         for init_data_func in init_data_funcs:
             await init_data_func(session)
