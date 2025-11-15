@@ -16,6 +16,7 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.inference_backend import is_built_in_backend
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
@@ -377,8 +378,16 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
     await validate_model_in(session, model_in)
 
+    if is_built_in_backend(model_in.backend) and (
+        model.run_command or model.image_name
+    ):
+        patch = model_in.model_dump(exclude_unset=True)
+        patch["run_command"] = None
+        patch["image_name"] = None
+        model_in = patch
+
     try:
-        await ModelService(session).update(model, model_in, exclude_unset=False)
+        await ModelService(session).update(model, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update model: {e}")
 
