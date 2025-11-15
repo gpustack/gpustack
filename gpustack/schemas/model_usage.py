@@ -15,6 +15,7 @@ class OperationEnum(str, Enum):
     IMAGE_GENERATION = "image_generation"
     AUDIO_SPEECH = "audio_speech"
     AUDIO_TRANSCRIPTION = "audit_transcription"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
 
 
 class ModelUsage(SQLModel, ActiveRecordMixin, table=True):

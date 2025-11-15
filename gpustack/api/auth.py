@@ -7,6 +7,7 @@ from gpustack.server.db import get_session
 from typing import Annotated, Optional, Tuple
 from fastapi.security import (
     APIKeyCookie,
+    APIKeyHeader,
     HTTPAuthorizationCredentials,
     HTTPBasic,
     HTTPBasicCredentials,
@@ -35,6 +36,7 @@ SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 basic_auth = HTTPBasic(auto_error=False)
 bearer_auth = HTTPBearer(auto_error=False)
 cookie_auth = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
+anthropic_api_key = APIKeyHeader(name="x-api-key", auto_error=False)
 
 credentials_exception = UnauthorizedException(
     message="Invalid authentication credentials"
@@ -51,6 +53,7 @@ async def get_current_user(
         Optional[HTTPAuthorizationCredentials], Depends(bearer_auth)
     ] = None,
     cookie_token: Annotated[Optional[str], Depends(cookie_auth)] = None,
+    x_api_key: Annotated[Optional[str], Depends(anthropic_api_key)] = None,
 ) -> User:
     if hasattr(request.state, "user"):
         user: User = getattr(request.state, "user")
@@ -67,6 +70,8 @@ async def get_current_user(
         user = await get_user_from_jwt_token(session, jwt_manager, cookie_token)
     elif bearer_token:
         user, api_key = await get_user_from_bearer_token(session, bearer_token)
+    elif x_api_key:
+        user, api_key = await get_user_from_api_key_string(session, x_api_key)
 
     server_config: Config = request.app.state.server_config
     client_ip_from_header = (
@@ -203,8 +208,27 @@ def parse_uuid(value: str) -> Optional[str]:
 async def get_user_from_bearer_token(
     session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
 ) -> Tuple[Optional[User], Optional[ApiKey]]:
+    return await get_user_from_api_key_string(
+        session, bearer_token.credentials
+    )
+
+
+async def get_user_from_api_key_string(
+        session: AsyncSession, api_key_string: str
+) -> Tuple[Optional[User], Optional[ApiKey]]:
+    """
+    Authenticate user from API key string.
+    Supports both Bearer token and x-api-key header formats.
+
+    Args:
+        session: Database session
+        api_key_string: API key in format "gpustack_<access>_<secret>"
+
+    Returns:
+        Tuple of (User, ApiKey) or (None, None) if authentication fails
+    """
     try:
-        parts = bearer_token.credentials.split("_")
+        parts = api_key_string.split("_")
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
