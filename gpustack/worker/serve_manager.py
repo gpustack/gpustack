@@ -68,10 +68,6 @@ class ServeManager:
     """
     The ID of current worker.
     """
-    _worker_ip: str
-    """
-    The IP address of current worker.
-    """
     _config: Config
     """
     Global configuration.
@@ -113,13 +109,11 @@ class ServeManager:
     def __init__(
         self,
         worker_id: int,
-        worker_ip: str,
         clientset: ClientSet,
         cfg: Config,
         inference_backend_manager: InferenceBackendManager,
     ):
         self._worker_id = worker_id
-        self._worker_ip = worker_ip
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
         self._clientset = clientset
@@ -302,7 +296,7 @@ class ServeManager:
 
                         # Fetch model meta once running.
                         meta = get_meta_from_running_instance(
-                            model_instance, backend, self._worker_ip, model
+                            model_instance, backend, model
                         )
                         if meta and meta != model.meta:
                             model_patch_dict = {"meta": meta}

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_meta_from_running_instance(
-    mi: ModelInstance, backend: str, worker_ip: str, model: Model
+    mi: ModelInstance, backend: str, model: Model
 ) -> Dict[str, Any]:
     """
     Get the meta information from the running instance (synchronous version).
@@ -26,7 +26,7 @@ def get_meta_from_running_instance(
         return {}
 
     try:
-        url = f"http://{worker_ip}:{mi.port}{meta_path}"
+        url = f"http://{mi.worker_ip}:{mi.port}{meta_path}"
         response = requests.get(url, timeout=1)
         response.raise_for_status()
 
