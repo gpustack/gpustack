@@ -1,6 +1,5 @@
 import logging
 import os
-from filelock import SoftFileLock
 from typing import List, Optional, Union
 from pathlib import Path
 from tqdm.contrib.concurrent import thread_map
@@ -19,6 +18,7 @@ from gpustack.utils.hub import (
     match_model_scope_file_paths,
     FileEntry,
 )
+from gpustack.utils.locks import HeartbeatSoftFileLock
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class HfDownloader:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
         logger.info(f"Retrieving file lock: {lock_filename}")
-        with SoftFileLock(lock_filename):
+        with HeartbeatSoftFileLock(lock_filename):
             if filename:
                 return cls.download_file(
                     repo_id=repo_id,
@@ -243,7 +243,7 @@ class ModelScopeDownloader:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
         logger.info(f"Retrieving file lock: {lock_filename}")
-        with SoftFileLock(lock_filename):
+        with HeartbeatSoftFileLock(lock_filename):
             if file_path:
                 matching_files = match_model_scope_file_paths(
                     model_id, file_path, extra_file_path
