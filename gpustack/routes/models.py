@@ -16,7 +16,6 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
-from gpustack.schemas.inference_backend import is_built_in_backend
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
@@ -378,7 +377,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
     await validate_model_in(session, model_in)
 
-    if is_built_in_backend(model_in.backend) and (
+    if model_in.backend != BackendEnum.CUSTOM.value and (
         model.run_command or model.image_name
     ):
         patch = model_in.model_dump(exclude_unset=True)
