@@ -50,6 +50,7 @@ def setup_logging(debug: bool = False):
         "huggingface_hub.file_download",
         "docker.auth",
         "kubernetes_asyncio.client.rest",
+        "gpustack_runtime",
     ]
 
     for logger_name in disable_logger_names:
