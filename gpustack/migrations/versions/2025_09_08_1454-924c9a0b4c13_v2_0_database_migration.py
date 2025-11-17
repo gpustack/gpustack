@@ -5,6 +5,7 @@ Revises: d19176de3b74
 Create Date: 2025-09-08 14:54:02.843848
 
 """
+from datetime import datetime, timezone
 from typing import Sequence, Union
 
 from alembic import op
@@ -31,8 +32,14 @@ sqlite_now = "datetime('now')"
 
 def now_func():
     return sa.func.now() if op.get_bind().dialect.name != 'sqlite' else sa.text(sqlite_now)
-def now_sql_func():
-    return "NOW()" if op.get_bind().dialect.name != 'sqlite' else sqlite_now
+
+def utc_now_sql_literal():
+    """
+    Return the current UTC time as a naive datetime SQL literal string,
+    e.g. '2025-11-17 12:33:15.123456'
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return f"'{now.isoformat(sep=' ')}'"
 
 WORKER_STATE_ADDITIONAL_VALUES = ['PENDING', 'PROVISIONING', 'INITIALIZING', 'DELETING', "ERROR"]
 
@@ -85,7 +92,7 @@ def upgrade() -> None:
     # stat == 3 means PROVISIONED and READY
     op.execute(f"""
         INSERT INTO clusters (name, description, provider, state, hashed_suffix, registration_token, created_at, updated_at)
-        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', '', {now_sql_func()}, {now_sql_func()})
+        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', '', {utc_now_sql_literal()}, {utc_now_sql_literal()})
     """)
 
     op.create_table(
@@ -178,7 +185,7 @@ def upgrade() -> None:
     op.execute(f"""
         INSERT INTO users (username, is_admin, require_password_change, hashed_password, is_system, role, cluster_id, created_at, updated_at)
         VALUES
-            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()})
+            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {utc_now_sql_literal()}, {utc_now_sql_literal()})
     """)
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.drop_constraint('uix_name_user_id', type_='unique')
