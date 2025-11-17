@@ -10,9 +10,9 @@ function Build {
     $distDir = Join-Path -Path $ROOT_DIR -ChildPath "dist"
     Remove-Item -Path $distDir -Recurse -Force -ErrorAction SilentlyContinue
 
-    poetry build
+    uv build
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed to run poetry build."
+        GPUStack.Log.Fatal "failed to run uv build."
     }
 
     $whlFiles = Get-ChildItem -Path $distDir -Filter "*.whl" -File
@@ -37,6 +37,7 @@ function Install-Dependency {
 
 function Set-Version {
     $versionFile = Join-Path -Path $ROOT_DIR -ChildPath "gpustack\__init__.py"
+    $pyprojectFile = Join-Path -Path $ROOT_DIR -ChildPath "pyproject.toml"
     $version = if ($null -ne $global:GIT_VERSION) { $global:GIT_VERSION } else { "v0.0.0" }
     $gitCommit = if ($null -ne $global:GIT_COMMIT) { $global:GIT_COMMIT } else { "HEAD" }
     $gitCommitShort = $gitCommit.Substring(0, [Math]::Min(7, $gitCommit.Length))
@@ -50,16 +51,19 @@ function Set-Version {
     $fileContent = $fileContent -replace "__git_commit__ = .*", "__git_commit__ = '$gitCommitShort'"
     Set-Content -Path $versionFile -Value $fileContent
 
-    # Update the poetry version
-    poetry version "$version"
+    # Update the version in pyproject.toml
+    $pyprojectContent = Get-Content -Path $pyprojectFile
+    $pyprojectContent = $pyprojectContent -replace "^version = .*", "version = `"$version`""
+    Set-Content -Path $pyprojectFile -Value $pyprojectContent
 }
 
 function Restore-Version-File {
     $versionFile = Join-Path -Path $ROOT_DIR -ChildPath "gpustack\__init__.py"
+    $pyprojectFile = Join-Path -Path $ROOT_DIR -ChildPath "pyproject.toml"
 
-    git checkout -- $versionFile
+    git checkout -- $versionFile $pyprojectFile
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed restore version file."
+        GPUStack.Log.Fatal "failed restore version files."
     }
 }
 

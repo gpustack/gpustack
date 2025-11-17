@@ -8,17 +8,17 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
 function Install-Dependency {
-    pip install poetry==1.8.3
+    pip install uv
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed to install poetry."
+        GPUStack.Log.Fatal "failed to install uv."
     }
 
-    poetry install
+    uv sync
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed run poetry install."
+        GPUStack.Log.Fatal "failed run uv sync."
     }
 
-    poetry run pre-commit install
+    uv run pre-commit install
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed run pre-commint install."
     }

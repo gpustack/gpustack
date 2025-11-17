@@ -13,7 +13,7 @@ make install
 ## Run
 
 ```bash
-poetry run gpustack
+uv run gpustack
 ```
 
 ## Build
@@ -33,13 +33,13 @@ make test
 ## Update Dependencies
 
 ```bash
-poetry add <something>
+uv add <something>
 ```
 
 Or
 
 ```bash
-poetry add --group dev <something>
+uv add --dev <something>
 ```
 
 For dev/testing dependencies.
