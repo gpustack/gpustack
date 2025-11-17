@@ -215,6 +215,16 @@ model_sets:
     - apache-2.0
   release_date: "2025-08-05"
   specs:
+    - mode: throughput
+      quantization: "MXFP4"
+      source: model_scope
+      model_scope_model_id: openai-mirror/gpt-oss-120b
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=32768
+        - --tool-call-parser=openai
+        - --enable-auto-tool-choice
+        - --async-scheduling
     - mode: standard
       quantization: "MXFP4"
       source: model_scope
@@ -237,6 +247,16 @@ model_sets:
     - apache-2.0
   release_date: "2025-08-05"
   specs:
+    - mode: throughput
+      quantization: "MXFP4"
+      source: model_scope
+      model_scope_model_id: openai-mirror/gpt-oss-20b
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=32768
+        - --tool-call-parser=openai
+        - --enable-auto-tool-choice
+        - --async-scheduling
     - mode: standard
       quantization: "MXFP4"
       source: model_scope
@@ -259,6 +279,17 @@ model_sets:
     - mit
   release_date: "2025-05-28"
   specs:
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-R1-0528
+      backend: SGLang
+      backend_parameters:
+        - --enable-dp-attention
+        - --context-length=32768
     - mode: standard
       quantization: FP8
       source: model_scope
