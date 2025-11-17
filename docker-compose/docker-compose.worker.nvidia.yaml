@@ -1,0 +1,22 @@
+version: "3.8"
+name: gpustack-worker
+
+services:
+  gpustack-worker:
+    image: gpustack/gpustack
+    container_name: gpustack-worker
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      - gpustack-data:/var/lib/gpustack
+      - /var/run/docker.sock:/var/run/docker.sock
+    runtime: nvidia
+    command: 
+      - --server-url 
+      - http://myserver # replace with actual server URL and
+      - --token 
+      - mytoken         # replace with token
+
+volumes:
+  gpustack-data: {}

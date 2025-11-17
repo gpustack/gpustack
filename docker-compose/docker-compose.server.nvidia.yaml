@@ -2,35 +2,34 @@ version: "3.8"
 name: gpustack-observability-stack
 
 services:
-  gpustack:
+  gpustack-server:
     image: gpustack/gpustack
-    restart: always
-    ipc: host
+    container_name: gpustack-server
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
     volumes:
       - gpustack-data:/var/lib/gpustack
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-    network_mode: host
+      - /var/run/docker.sock:/var/run/docker.sock
+    runtime: nvidia
+
   prometheus:
     image: prom/prometheus
     container_name: gpustack-prometheus
+    restart: unless-stopped
+    network_mode: host
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--web.enable-remote-write-receiver'
-    restart: unless-stopped
     volumes:
       - ./prometheus:/etc/prometheus
       - prom_data:/prometheus
-    network_mode: host
 
   grafana:
     image: grafana/grafana
     container_name: gpustack-grafana
     restart: unless-stopped
+    network_mode: host
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=grafana
@@ -38,7 +37,6 @@ services:
     volumes:
       - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
       - ./grafana/grafana_dashboards:/etc/dashboards:ro
-    network_mode: host
 
 
 
