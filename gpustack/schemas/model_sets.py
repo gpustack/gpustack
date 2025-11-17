@@ -1,6 +1,6 @@
 from datetime import date
-from typing import List, Optional
-from pydantic import BaseModel, ConfigDict
+from typing import List, Optional, Union
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from gpustack.schemas.models import (
     ModelSource,
@@ -8,10 +8,26 @@ from gpustack.schemas.models import (
 )
 
 
+class GPUFilters(BaseModel):
+    vendor: Optional[Union[str, List[str]]] = None
+    """List of GPU vendors, e.g., ['nvidia', 'amd'] or 'nvidia'."""
+    compute_capability: Optional[str] = None
+    """Compute capability filter expressed using pip-style version specifiers. E.g., '>=7.0,<8.0'."""
+
+    @field_validator("vendor", mode="before")
+    def normalize_vendor(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        return v
+
+
 class ModelSpec(ModelSpecBase):
     name: Optional[str] = None
     quantization: Optional[str] = None
     mode: Optional[str] = "standard"
+    gpu_filters: Optional[GPUFilters] = None
 
 
 class ModelSetBase(BaseModel):
