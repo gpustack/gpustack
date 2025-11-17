@@ -173,11 +173,29 @@ class SGLangServer(InferenceServer):
         # Apply GPUStack's inference environment setup
         env = super()._get_configured_env()
 
-        # Apply SGLang distributed environment setup
-        if is_distributed and "NCCL_SOCKET_IFNAME" not in env:
-            env["NCCL_SOCKET_IFNAME"] = self._worker.ifname
+        # Apply distributed environment variables
+        if is_distributed:
+            self._set_distributed_env(env)
 
         return env
+
+    def _set_distributed_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for distributed execution.
+        """
+
+        if is_ascend(self._get_selected_gpu_devices()):
+            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
+            if "HCCL_SOCKET_IFNAME" not in env:
+                env["HCCL_IF_IP"] = self._worker.ip
+                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+                env["TP_SOCKET_IFNAME"] = self._worker.ifname
+            return
+
+        if "NCCL_SOCKET_IFNAME" not in env:
+            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
 
     def _build_command_args(self, port: int, is_distributed: bool) -> List[str]:
         """
