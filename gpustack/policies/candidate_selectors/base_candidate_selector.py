@@ -788,6 +788,9 @@ class ScheduleCandidatesSelector(ABC):
             if self._gpu_count and current_gpu_count >= self._gpu_count:
                 break
 
+        if not subordinate_workers:
+            return []
+
         return [
             ModelInstanceScheduleCandidate(
                 worker=main_worker,
@@ -813,8 +816,13 @@ class ScheduleCandidatesSelector(ABC):
                 and instance.distributed_servers.subordinate_workers
             ):
                 self._messages = [
-                    f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
+                    str(
+                        ListMessageBuilder(
+                            f"Each worker can run only one distributed vLLM instance. Worker '{worker.name}' already has '{instance.name}'."
+                        )
+                    ),
                 ]
+
                 return False
 
         return True
