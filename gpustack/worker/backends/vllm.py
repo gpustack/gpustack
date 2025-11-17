@@ -266,13 +266,13 @@ class VLLMServer(InferenceServer):
             # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
             if "HCCL_SOCKET_IFNAME" not in env:
                 env["HCCL_IF_IP"] = self._worker.ip
-                env["HCCL_SOCKET_IFNAME"] = self._worker.ifname
+                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
                 env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
                 env["TP_SOCKET_IFNAME"] = self._worker.ifname
             return
 
         if "NCCL_SOCKET_IFNAME" not in env:
-            env["NCCL_SOCKET_IFNAME"] = self._worker.ifname
+            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
             env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
 
     def _get_total_vram_claim(self) -> int:
