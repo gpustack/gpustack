@@ -7,9 +7,9 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
 function Test {
-    poetry run pytest
+    uv run pytest
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed to run poetry run pytest."
+        GPUStack.Log.Fatal "failed to run uv run pytest."
     }
 }
 

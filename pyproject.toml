@@ -1,104 +1,122 @@
-[tool.poetry]
+[project]
 name = "gpustack"
 version = "v0.0.0"
 description = "GPUStack"
-authors = ["GPUStack Authors <contact@gpustack.ai>"]
+authors = [{name = "GPUStack Authors", email = "contact@gpustack.ai"}]
 readme = "README.md"
-include = ["*/third_party/config/**/*","*/ui/**/*"]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "sqlmodel>=0.0.18",
+    "pydantic>=2.11.5",
+    "pydantic-settings>=2.2.1",
+    "setproctitle>=1.3.3",
+    "inflection>=0.5.1",
+    "openai>=1.31.1",
+    "prometheus-client>=0.20.0",
+    "colorama>=0.4.6",
+    "psutil>=7.0.0",
+    "requests>=2.32.3",
+    "huggingface-hub>=0.32.0",
+    "attrs>=24.2.0",
+    "aiosqlite>=0.20.0",
+    "sqlalchemy[asyncio]>=2.0.38",
+    "pyjwt>=2.8.0",
+    "argon2-cffi>=23.1.0",
+    "python-multipart>=0.0.17",
+    "dataclasses-json>=0.6.7",
+    "apscheduler>=3.10.4,<4.0.0",
+    "asyncpg>=0.29.0",
+    "httpx[socks]>=0.27.0",
+    "alembic>=1.13.2",
+    "importlib-resources>=6.4.0",
+    "pytest-asyncio>=0.23.7",
+    "truststore>=0.9.1",
+    "cryptography>=43.0.0",
+    "tzdata>=2024.1",
+    "modelscope>=1.28",
+    "uvicorn>=0.32.0",
+    "transformers>=4.51.3,!=4.57.0",
+    "fastapi-cdn-host>=0.8.0",
+    "wmi>=1.5.1; platform_system == 'Windows'",
+    "pywin32>=308; platform_system == 'Windows'",
+    "packaging>=24.1",
+    "psycopg2-binary>=2.9.10",
+    "tenacity>=9.0.0",
+    "aiocache>=0.12.3",
+    "aiofiles>=23.2.1",
+    "aiohttp>=3.11.2",
+    "python-json-logger>=3.3.0",
+    "hf-transfer>=0.1.9",
+    "asyncmy>=0.2.10",
+    "pymysql>=1.1.1",
+    "pyarrow>=18.0.0,<19.0.0",
+    "pandas>=2.3.0",
+    "blobfile>=3.0.0",
+    "aiolimiter>=1.2.1",
+    "python3-saml==1.16.0",
+    "lxml==5.2.1",
+    "xmlsec==1.3.14",
+    "pydo>=0.15.0",
+    "jinja2>=3.1.6",
+    "kubernetes>=33.1.0",
+    "kubernetes-asyncio>=33.1.0",
+    "msgpack>=1.1.2",
+    "gpustack-runner>=0.1.20.post1",
+    "gpustack-runtime==0.1.33.post1",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.13"
-fastapi = "^0.115.0"
-sqlmodel = "^0.0.18"
-pydantic = "^2.11.5"
-pydantic-settings = "^2.2.1"
-setproctitle = "^1.3.3"
-inflection = "^0.5.1"
-openai = "^1.31.1"
+[dependency-groups]
+dev = [
+    "installer==0.7.0",
+    "coverage[toml]>=7.5.1",
+    "flake8>=7.0.0",
+    "flake8-bugbear>=24.4.26",
+    "black>=24.4.2",
+    "pytest>=8.2.0",
+    "openapi-python-client>=0.20.0",
+    "httpx-aiohttp>=0.1.4",
+    "deptry>=0.16.1",
+    "pre-commit>=3.7.1",
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.27",
+    "shellcheck-py>=0.10.0.1",
+    "twine>=5.1.1",
+    "mike>=2.1.3",
+    "mkdocs-glightbox>=0.4.0",
+]
 
-prometheus-client = "^0.20.0"
-colorama = "^0.4.6"
-psutil = "^7.0.0"
-requests = "^2.32.3"
-huggingface-hub = ">=0.32.0"
-attrs = "^24.2.0"
-aiosqlite = "^0.20.0"
-sqlalchemy = {extras = ["asyncio"], version = "^2.0.38"}
-pyjwt = "^2.8.0"
-argon2-cffi = "^23.1.0"
-python-multipart = "^0.0.17"
-dataclasses-json = "^0.6.7"
-apscheduler = "^3.10.4"
-asyncpg = "^0.29.0"
-httpx = {extras = ["socks"], version = ">=0.27.0"}
-alembic = "^1.13.2"
-importlib-resources = "^6.4.0"
-pytest-asyncio = "^0.23.7"
-truststore = "^0.9.1"
-cryptography = "^43.0.0"
-tzdata = "^2024.1"
-modelscope = "^1.28"
-vllm = {version = "0.10.1.1", optional = true}
-mistral_common = {version = "^1.4.3", optional = true, extras = ["opencv"]}
-uvicorn = "^0.32.0"
-# Transformers version 4.57.0 contains incorrect dependency declaration syntax, causing Poetry to malfunction.
-transformers = "^4.51.3,!=4.57.0"
-fastapi-cdn-host = "^0.8.0"
-wmi = { version="^1.5.1", markers = "platform_system == 'Windows'" }
-pywin32 = { version="^308", markers = "platform_system == 'Windows'" }
-packaging = "^24.1"
-psycopg2-binary = "^2.9.10"
-vox-box = {version = "0.0.19", optional = true}
+[project.optional-dependencies]
+vllm = [
+    "vllm==0.10.1.1",
+    "mistral_common[opencv]>=1.4.3",
+    "bitsandbytes>=0.45.2",
+    "timm>=1.0.15",
+]
+audio = [
+    "vox-box==0.0.19",
+]
+all = [
+    "vllm==0.10.1.1",
+    "mistral_common[opencv]>=1.4.3",
+    "bitsandbytes>=0.45.2",
+    "timm>=1.0.15",
+    "vox-box==0.0.19",
+]
 
-tenacity = "^9.0.0"
-aiocache = "^0.12.3"
-aiofiles = "^23.2.1"
-aiohttp = "^3.11.2"
-bitsandbytes = {version = "^0.45.2", optional = true}
-python-json-logger = "^3.3.0"
-hf-transfer = "^0.1.9"
-asyncmy = "^0.2.10"
-pymysql = "^1.1.1"
-
-pyarrow = ">=18.0.0,<19.0.0"
-pandas = "^2.3.0"
-blobfile = "^3.0.0"
-timm = {version = "^1.0.15", optional = true}
-aiolimiter = "^1.2.1"
-python3-saml="1.16.0"
-lxml="5.2.1"
-xmlsec="1.3.14"
-pydo = "^0.15.0"
-jinja2 = "^3.1.6"
-kubernetes = "^33.1.0"
-kubernetes-asyncio = "^33.1.0"
-msgpack = "^1.1.2"
-
-gpustack-runner = ">=0.1.21"
-gpustack-runtime = "0.1.33.post1"
-
-[tool.poetry.group.dev.dependencies]
-installer = "0.7.0"
-coverage = {extras = ["toml"], version = "^7.5.1"}
-flake8 = "^7.0.0"
-flake8-bugbear = "^24.4.26"
-black = "^24.4.2"
-pytest = "^8.2.0"
-openapi-python-client = ">=0.20.0"
-httpx-aiohttp = "^0.1.4"
-
-deptry = "^0.16.1"
-pre-commit = "^3.7.1"
-mkdocs = "^1.6.0"
-mkdocs-material = "^9.5.27"
-shellcheck-py = "^0.10.0.1"
-twine = "^5.1.1"
-mike = "^2.1.3"
-mkdocs-glightbox = "^0.4.0"
+[project.scripts]
+gpustack = "gpustack.main:main"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+only-include = ["gpustack"]
+artifacts = [
+    "gpustack/ui",
+    "gpustack/third_party"
+]
 
 [tool.black]
 line-length = 88
@@ -109,11 +127,3 @@ force-exclude = '''
     .*/migrations/.*
 )/
 '''
-
-[tool.poetry.extras]
-vllm = ["vllm", "mistral_common", "bitsandbytes", "timm"]
-audio = ["vox-box"]
-all = ["vllm", "mistral_common", "bitsandbytes", "timm", "vox-box"]
-
-[tool.poetry.scripts]
-gpustack = "gpustack.main:main"

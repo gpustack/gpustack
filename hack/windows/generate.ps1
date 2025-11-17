@@ -7,9 +7,9 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
 function Generate {
-    poetry run gen
+    uv run gen
     if ($LASTEXITCODE -ne 0) {
-        GPUStack.Log.Fatal "failed to run poetry run gen."
+        GPUStack.Log.Fatal "failed to run uv run gen."
     }
 }
 

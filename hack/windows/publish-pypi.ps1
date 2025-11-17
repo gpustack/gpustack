@@ -8,8 +8,8 @@ $ROOT_DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-
 . "$ROOT_DIR/hack/lib/windows/init.ps1"
 
 function Publish-Pypi {
-    poetry run twine check dist/*.whl
-    poetry run twine upload dist/*.whl
+    uv run twine check dist/*.whl
+    uv run twine upload dist/*.whl
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "twine upload failed."
     }

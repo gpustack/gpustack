@@ -4,4 +4,4 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-poetry run mkdocs build
+uv run mkdocs build
