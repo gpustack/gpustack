@@ -23,6 +23,8 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceStateEnum,
     get_backend,
+    is_audio_model,
+    is_image_model,
 )
 import logging
 import uuid
@@ -283,6 +285,10 @@ class RuntimeMetricsAggregator:
     def _should_skip_endpoint(
         self, model: Model, model_instance: ModelInstance, metrics_config: dict
     ) -> bool:
+        # skip image and audio models
+        if is_image_model(model) or is_audio_model(model):
+            return True
+
         # model and model instance must be valid
         if (
             model_instance.state != ModelInstanceStateEnum.RUNNING
