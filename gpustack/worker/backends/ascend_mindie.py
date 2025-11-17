@@ -953,7 +953,11 @@ class AscendMindIEServer(InferenceServer):
 
         # - Device config
         backend_config["interNodeTLSEnabled"] = False
-        backend_config["npuDeviceIds"] = [self._model_instance.gpu_indexes]
+        backend_config["npuDeviceIds"] = [
+            # Use logic(count) device indexes as NPU device IDs,
+            # which is friendly to virtualized environments.
+            list(range(len(self._model_instance.gpu_indexes)))
+        ]
         model_config["worldSize"] = len(self._model_instance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
         if is_distributed:
@@ -971,7 +975,11 @@ class AscendMindIEServer(InferenceServer):
                 None,
             )
             # Override device config if is a subordinate worker.
-            backend_config["npuDeviceIds"] = [subworker.gpu_indexes]
+            backend_config["npuDeviceIds"] = [
+                # Use logic(count) device indexes as NPU device IDs,
+                # which is friendly to virtualized environments.
+                list(range(len(subworker.gpu_indexes)))
+            ]
             model_config["worldSize"] = len(subworker.gpu_indexes)
 
         # - Model config
@@ -1217,6 +1225,14 @@ class AscendMindIEServer(InferenceServer):
                     "container_ip": self._model_instance.worker_ip,
                     "device": [
                         {
+                            # Unlike above npuDeviceIds,
+                            # here we must use real device indexes as device IDs.
+                            # I guess Ascend needs to construct the communication topology based on real device IDs,
+                            # see https://www.hiascend.com/document/detail/zh/canncommercial/83RC1/hccl/hcclug/hcclug_000014.html#ZH-CN_TOPIC_0000002479883061__zh-cn_topic_0000001463640385_section10882094214.
+                            #
+                            # Since rank table will in charge of device mapping in distributed mode,
+                            # the above logic(count) device indexes will not affect distributed deployment,
+                            # see https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindiellm/llmdev/mindie_llm0004.html#ZH-CN_TOPIC_0000002366997374__section7821428101811.
                             "device_id": str(self._model_instance.gpu_indexes[i]),
                             "device_ip": self._model_instance.gpu_addresses[i],
                             "rank_id": str(i),
@@ -1232,6 +1248,14 @@ class AscendMindIEServer(InferenceServer):
                         "container_ip": sw.worker_ip,
                         "device": [
                             {
+                                # Unlike above npuDeviceIds,
+                                # here we must use real device indexes as device IDs.
+                                # I guess Ascend needs to construct the communication topology based on real device IDs,
+                                # see https://www.hiascend.com/document/detail/zh/canncommercial/83RC1/hccl/hcclug/hcclug_000014.html#ZH-CN_TOPIC_0000002479883061__zh-cn_topic_0000001463640385_section10882094214.
+                                #
+                                # Since rank table will in charge of device mapping in distributed mode,
+                                # the above logic(count) device indexes will not affect distributed deployment,
+                                # see https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindiellm/llmdev/mindie_llm0004.html#ZH-CN_TOPIC_0000002366997374__section7821428101811.
                                 "device_id": str(sw.gpu_indexes[j]),
                                 "device_ip": sw.gpu_addresses[j],
                                 "rank_id": str(j + len(sw.gpu_indexes) * (i + 1)),
@@ -1310,6 +1334,7 @@ class AscendMindIEServer(InferenceServer):
         )
 
         self._create_workload(
+            is_distributed=is_distributed,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -1319,6 +1344,7 @@ class AscendMindIEServer(InferenceServer):
 
     def _create_workload(
         self,
+        is_distributed: bool,
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
@@ -1332,7 +1358,7 @@ class AscendMindIEServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
-        resources = self._get_configured_resources(mount_all_devices=True)
+        resources = self._get_configured_resources(mount_all_devices=is_distributed)
 
         mounts = self._get_configured_mounts()
 
