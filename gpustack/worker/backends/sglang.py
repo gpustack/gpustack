@@ -11,6 +11,7 @@ from gpustack_runtime.deployer import (
     create_workload,
     ContainerRestartPolicyEnum,
 )
+from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.schemas.models import (
     ModelInstance,
@@ -38,10 +39,12 @@ class SGLangServer(InferenceServer):
     """
 
     _workload_name: Optional[str] = None
+    is_diffusion = False
 
     def start(self):  # noqa: C901
         try:
             if CategoryEnum.IMAGE in self._model.categories:
+                self.is_diffusion = True
                 self._start_diffusion()
             else:
                 self._start()
@@ -107,6 +110,14 @@ class SGLangServer(InferenceServer):
         image = self._get_configured_image()
         if not image:
             raise ValueError("Can't find compatible SGLang image")
+
+        if (
+            self.is_diffusion
+            and compare_versions(self._model.backend_version, "0.5.5") < 0
+        ):
+            raise ValueError(
+                "SGLang versions <= 0.5.5 do not support Diffusion models."
+            )
 
         ports = self._get_configured_ports()
 
