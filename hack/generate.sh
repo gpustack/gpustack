@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function generate() {
-  poetry run python -m gpustack.codegen.generate
+  uv run python -m gpustack.codegen.generate
 }
 
 #

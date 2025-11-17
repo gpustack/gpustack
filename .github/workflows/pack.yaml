@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cache
-          key: cache-mount-${{ hashFiles('poetry.lock') }}
+          key: cache-mount-${{ hashFiles('uv.lock') }}
       - name: Restore BuildX Cache
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:

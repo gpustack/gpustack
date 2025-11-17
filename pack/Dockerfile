@@ -232,10 +232,10 @@ wheel
 pybind11<3
 Cython
 psutil
-poetry
 pipx
 uv
 yq
+hatchling
 EOT
     pip install -r /tmp/requirements.txt
 

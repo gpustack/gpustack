@@ -10,6 +10,6 @@ if [[ ${PUBLISH_SOURCE:-} == "1" ]]; then
 fi
 
 # shellcheck disable=SC2086
-poetry run twine check $DIST
+uv run twine check $DIST
 # shellcheck disable=SC2086
-poetry run twine upload $DIST
+uv run twine upload $DIST
