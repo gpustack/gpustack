@@ -327,7 +327,9 @@ class Server:
                 hashed_password="",
                 cluster=default_cluster,
             )
-            await User.create(session, default_cluster_user, auto_commit=False)
+            created_user = await User.create(
+                session, default_cluster_user, auto_commit=False
+            )
 
             if default_cluster.id != 1:
                 # _migrate_legacy_token handles legacy token for cluster with ID 1.
@@ -338,7 +340,8 @@ class Server:
                     name=f'{system_name_prefix}-{hashed_suffix}',
                     access_key=access_key,
                     hashed_secret_key=get_secret_hash(secret_key),
-                    user=default_cluster_user,
+                    user=created_user,
+                    user_id=created_user.id,
                 )
                 await ApiKey.create(session, to_create_apikey, auto_commit=False)
 

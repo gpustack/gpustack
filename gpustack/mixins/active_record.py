@@ -13,6 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import FlushError
+from sqlalchemy.orm.state import InstanceState
 from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
@@ -59,22 +60,6 @@ def find_history(session: AsyncSession, flush_context, instances):
                     event.event.changed_fields[attr.key] = (deleted_dump, added_dump)
                 else:
                     event.event.changed_fields[attr.key] = (hist.deleted, hist.added)
-
-
-@sa_event.listens_for(Session, "before_commit")
-def refresh_objects_before_commit(session: AsyncSession):
-    events: List[CommitEvent] = session.info.get("pending_events", [])
-    for event in events:
-        bus_event = event.event
-        # refresh the object before commit to ensure the data is up-to-date
-        if (
-            isinstance(bus_event.data, SQLModel)
-            and bus_event.data not in session.deleted
-        ):
-            try:
-                session.refresh(bus_event.data)
-            except Exception as e:
-                logger.error(f"Failed to refresh object {bus_event.data}: {e}")
 
 
 # commit hook to send events after a database commit
@@ -289,6 +274,19 @@ class ActiveRecordMixin:
             obj = cls.parse_obj(source, update=update)
         return obj
 
+    async def _refresh_related_objects(self, session: AsyncSession):
+        """Refresh all related objects of the given object."""
+
+        for rel in self.__mapper__.relationships:
+            rel_obj = getattr(self, rel.key, None)
+            if rel_obj is None:
+                continue
+            elif isinstance(rel_obj, list) and len(rel_obj) == 0:
+                continue
+            elif isinstance(rel_obj, InstanceState):
+                continue
+            await session.refresh(rel_obj)
+
     @classmethod
     async def create(
         cls,
@@ -305,6 +303,7 @@ class ActiveRecordMixin:
 
         cls._publish_event_after_commit(session, EventType.CREATED, obj)
         await obj.save(session, auto_commit=auto_commit)
+        await obj._refresh_related_objects(session)
         return obj
 
     @classmethod
@@ -373,7 +372,7 @@ class ActiveRecordMixin:
         """Save the object to the database. Raise exception if failed."""
 
         session.add(self)
-        await session.flush()
+        await session.flush([self])
 
         if not auto_commit:
             return
