@@ -81,6 +81,12 @@ def upgrade() -> None:
         sa.Column('deleted_at', sa.DateTime(), nullable=True),
     )
     op.create_index('idx_clusters_deleted_at_created_at', 'clusters', ['deleted_at', 'created_at'])
+    # create default cluster
+    # stat == 3 means PROVISIONED and READY
+    op.execute(f"""
+        INSERT INTO clusters (name, description, provider, state, hashed_suffix, registration_token, created_at, updated_at)
+        VALUES ('Default Cluster', 'The default cluster for GPUStack', 'Docker', 'READY', '{secrets.token_hex(6)}', '', {now_sql_func()}, {now_sql_func()})
+    """)
 
     op.create_table(
         'worker_pools',
@@ -167,6 +173,13 @@ def upgrade() -> None:
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.alter_column('cluster_id', existing_type=sa.Integer(), nullable=False)
 
+
+    # create default cluster system user legacy worker user
+    op.execute(f"""
+        INSERT INTO users (username, is_admin, require_password_change, hashed_password, is_system, role, cluster_id, created_at, updated_at)
+        VALUES
+            ('system/cluster-1', false, false, '', true, 'Cluster', (SELECT max(id) FROM clusters), {now_sql_func()}, {now_sql_func()})
+    """)
     with op.batch_alter_table('api_keys', schema=None) as batch_op:
         batch_op.drop_constraint('uix_name_user_id', type_='unique')
         batch_op.create_unique_constraint('uix_user_id_name', ['user_id', 'name'])

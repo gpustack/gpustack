@@ -9,10 +9,10 @@ import secrets
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
-from gpustack.schemas.users import User, UserRole, system_name_prefix
+from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
-from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import Model
 from gpustack.security import (
     JWTManager,
@@ -264,7 +264,6 @@ class Server:
     async def _init_data(self, session: AsyncSession):
         init_data_funcs = [
             self._init_user,
-            self._init_default_cluster,
             self._migrate_legacy_token,
             self._migrate_legacy_workers,
             self._ensure_registration_token,
@@ -301,52 +300,6 @@ class Server:
                 require_password_change=require_password_change,
             )
             await User.create(session, user)
-
-    async def _init_default_cluster(self, session: AsyncSession):
-        cluster_count = await Cluster.count(session)
-        if cluster_count == 0:
-            hashed_suffix = secrets.token_hex(6)
-            default_cluster = Cluster(
-                name="Default Cluster",
-                description="The default cluster for GPUStack",
-                provider=ClusterProvider.Docker,
-                state=ClusterStateEnum.READY,
-                hashed_suffix=hashed_suffix,
-                registration_token="",
-            )
-            default_cluster = await Cluster.create(
-                session, default_cluster, auto_commit=False
-            )
-
-            default_cluster_user = User(
-                username=f"system/cluster-{default_cluster.id}",
-                is_system=True,
-                is_admin=False,
-                require_password_change=False,
-                role=UserRole.Cluster,
-                hashed_password="",
-                cluster=default_cluster,
-            )
-            created_user = await User.create(
-                session, default_cluster_user, auto_commit=False
-            )
-
-            if default_cluster.id != 1:
-                # _migrate_legacy_token handles legacy token for cluster with ID 1.
-                # For other cluster IDs, we create an API key like normal.
-                access_key = secrets.token_hex(8)
-                secret_key = secrets.token_hex(16)
-                to_create_apikey = ApiKey(
-                    name=f'{system_name_prefix}-{hashed_suffix}',
-                    access_key=access_key,
-                    hashed_secret_key=get_secret_hash(secret_key),
-                    user=created_user,
-                    user_id=created_user.id,
-                )
-                await ApiKey.create(session, to_create_apikey, auto_commit=False)
-
-            await session.commit()
-            logger.debug("Default cluster created.")
 
     async def _migrate_legacy_token(self, session: AsyncSession):
         """
