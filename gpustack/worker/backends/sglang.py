@@ -173,8 +173,9 @@ class SGLangServer(InferenceServer):
         Build SGLang command arguments for container execution.
         """
         arguments = [
-            "sglang",
-            "serve",
+            "python",
+            "-m",
+            "sglang.launch_server",
             "--model-path",
             self._model_path,
         ]
