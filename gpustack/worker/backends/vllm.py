@@ -14,6 +14,7 @@ from gpustack_runtime.deployer import (
     ContainerPort,
     ContainerRestartPolicyEnum,
 )
+from gpustack_runtime.detector import ManufacturerEnum
 
 from gpustack.schemas.models import (
     ModelInstance,
@@ -337,12 +338,18 @@ class VLLMServer(InferenceServer):
             arguments.extend(["--distributed-executor-backend", "ray"])
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
-            arguments.extend(
-                [
-                    "--kv-transfer-config",
-                    '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
-                ]
-            )
+            vendor, _, _ = self._get_device_info()
+            if vendor in [ManufacturerEnum.NVIDIA, ManufacturerEnum.AMD]:
+                arguments.extend(
+                    [
+                        "--kv-transfer-config",
+                        '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+                    ]
+                )
+            else:
+                logger.warning(
+                    "Extended KV cache for vLLM is only supported on NVIDIA and AMD GPUs. Skipping LMCache configuration."
+                )
 
         # For Ascend 310P, we need to enforce eager execution and default dtype to float16
         if is_ascend_310p(self._get_selected_gpu_devices()):

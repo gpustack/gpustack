@@ -4,7 +4,7 @@ import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_backend_runners
@@ -372,6 +372,30 @@ class InferenceServer(ABC):
                         gpu_devices.append(gpu_device)
         return gpu_devices
 
+    def _get_device_info(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Get the device information for the serving. Get vendor from selected devices at first,
+        if not specified, retrieve from the first device of the worker.
+
+        Returns:
+            A tuple of (vendor, runtime_version, arch_family).
+        """
+        gpu_devices = self._get_selected_gpu_devices()
+        if gpu_devices:
+            gpu_device = gpu_devices[0]
+            return (
+                gpu_device.vendor,
+                gpu_device.runtime_version,
+                gpu_device.arch_family,
+            )
+        elif self._worker.status.gpu_devices:
+            gpu_device = self._worker.status.gpu_devices[0]
+            return (
+                gpu_device.vendor,
+                gpu_device.runtime_version,
+                gpu_device.arch_family,
+            )
+        return None, None, None
+
     def _get_configured_resources(
         self, mount_all_devices: bool = False
     ) -> ContainerResources:
@@ -639,24 +663,7 @@ $@
         def get_docker_image(bvr: BackendVersionedRunner) -> str:
             return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
 
-        # Get vendor from selected devices at first,
-        # if no specified, retrieve from the first device of the worker.
-        vendor, runtime_version, arch_family = None, None, None
-        gpu_devices = self._get_selected_gpu_devices()
-        if gpu_devices:
-            gpu_device = gpu_devices[0]
-            vendor, runtime_version, arch_family = (
-                gpu_device.vendor,
-                gpu_device.runtime_version,
-                gpu_device.arch_family,
-            )
-        elif self._worker.status.gpu_devices:
-            gpu_device = self._worker.status.gpu_devices[0]
-            vendor, runtime_version, arch_family = (
-                gpu_device.vendor,
-                gpu_device.runtime_version,
-                gpu_device.arch_family,
-            )
+        vendor, runtime_version, arch_family = self._get_device_info()
         if not vendor:
             # Return directly if there is not a valid device.
             # GPUStack-Runner does not provide CPU-only platform images.
