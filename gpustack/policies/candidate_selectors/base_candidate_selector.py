@@ -814,6 +814,11 @@ class ScheduleCandidatesSelector(ABC):
             if (
                 instance.distributed_servers
                 and instance.distributed_servers.subordinate_workers
+                and (
+                    instance.model
+                    and instance.model.backend
+                    and instance.model.backend == self._model.backend
+                )
             ):
                 self._messages = [
                     str(
