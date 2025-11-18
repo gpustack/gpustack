@@ -40,7 +40,7 @@ docker run -d --name gpustack \
 
 Replace `<Hugging Face API Key>` with your [Hugging Face API key](https://huggingface.co/settings/tokens). GPUStack will use this key to download the model files.
 
-For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](../installation/installation-requirements.md).
+For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](../installation/requirements).
 
 ## Step 2: Log in to GPUStack UI
 
