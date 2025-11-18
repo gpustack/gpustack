@@ -1,17 +1,24 @@
 import os
 import time
 import threading
+import json
+import socket
 from typing import Optional
 from filelock import SoftFileLock, Timeout
+from modelscope.hub.utils.utils import model_id_to_group_owner_name
+
+from gpustack.schemas import ModelFile
+from gpustack.schemas.models import SourceEnum
 
 
 class HeartbeatSoftFileLock:
     def __init__(
         self,
         lock_path: str,
-        ttl_seconds: int = 600,
+        ttl_seconds: int = 60,
         timeout_seconds: int = 120,
         heartbeat_seconds: int = 5,
+        owner_worker_id: Optional[int] = None,
     ):
         """
         Initialize a heartbeat-backed, lease-based soft file lock.
@@ -36,6 +43,7 @@ class HeartbeatSoftFileLock:
         self._lock = SoftFileLock(lock_path)
         self._hb_stop = threading.Event()
         self._hb_thread: Optional[threading.Thread] = None
+        self._owner_worker_id = owner_worker_id
 
     def _cleanup_stale_lock(self):
         try:
@@ -54,11 +62,24 @@ class HeartbeatSoftFileLock:
                 # Attempt fast acquisition, fall through on contention
                 self._lock.acquire(timeout=1)
                 break
-            except Timeout:
+            except Timeout as te:
                 self._cleanup_stale_lock()
                 if time.time() - start > self._timeout_seconds:
-                    raise TimeoutError(f"Failed to acquire lock {self._lock_path}")
+                    # Ensure has other processes in the same worker holding the lock
+                    raise te
                 time.sleep(1)
+
+        try:
+            info = {
+                "worker_id": self._owner_worker_id,
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+                "created_at": time.time(),
+            }
+            with open(self._lock_path, "w") as f:
+                json.dump(info, f)
+        except Exception:
+            pass
 
         # Start heartbeat to keep lock mtime fresh
         self._hb_thread = threading.Thread(target=self._heartbeat, daemon=True)
@@ -106,3 +127,27 @@ def cleanup_stale_lock_files(base_dir: str, ttl_seconds: int):
             except Exception:
                 # Ignore failures, best-effort cleanup
                 pass
+
+
+def get_lock_path(cache_dir: str, model_file: ModelFile):
+    model_id = None
+    if model_file.source == SourceEnum.HUGGING_FACE:
+        model_id = model_file.huggingface_repo_id
+    elif model_file.source == SourceEnum.MODEL_SCOPE:
+        model_id = model_file.model_scope_model_id
+    group_or_owner, name = model_id_to_group_owner_name(model_id)
+    return os.path.join(
+        os.path.join(cache_dir, model_file.source),
+        group_or_owner,
+        f"{name}.lock",
+    )
+
+
+def read_lock_info(lock_path: str) -> Optional[dict]:
+    try:
+        if not os.path.exists(lock_path):
+            return None
+        with open(lock_path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
