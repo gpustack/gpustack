@@ -13,9 +13,11 @@ class GPUFilters(BaseModel):
     """List of GPU vendors, e.g., ['nvidia', 'amd'] or 'nvidia'."""
     compute_capability: Optional[str] = None
     """Compute capability filter expressed using pip-style version specifiers. E.g., '>=7.0,<8.0'."""
+    vendor_variant: Optional[Union[str, List[str]]] = None
+    """List of GPU vendor variants. For example, ['910b', '310p'] or '910b' for Ascend NPUs."""
 
-    @field_validator("vendor", mode="before")
-    def normalize_vendor(cls, v):
+    @field_validator("vendor", "vendor_variant", mode="before")
+    def normalize_str_or_list_fields(cls, v):
         if v is None:
             return []
         if isinstance(v, str):
