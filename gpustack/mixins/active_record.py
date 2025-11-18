@@ -13,6 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import FlushError
+from sqlalchemy.orm.state import InstanceState
 from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
@@ -61,22 +62,6 @@ def find_history(session: AsyncSession, flush_context, instances):
                     event.event.changed_fields[attr.key] = (hist.deleted, hist.added)
 
 
-@sa_event.listens_for(Session, "before_commit")
-def refresh_objects_before_commit(session: AsyncSession):
-    events: List[CommitEvent] = session.info.get("pending_events", [])
-    for event in events:
-        bus_event = event.event
-        # refresh the object before commit to ensure the data is up-to-date
-        if (
-            isinstance(bus_event.data, SQLModel)
-            and bus_event.data not in session.deleted
-        ):
-            try:
-                session.refresh(bus_event.data)
-            except Exception as e:
-                logger.error(f"Failed to refresh object {bus_event.data}: {e}")
-
-
 # commit hook to send events after a database commit
 @sa_event.listens_for(Session, "after_commit")
 def send_post_commit_events(session: AsyncSession):
@@ -86,7 +71,7 @@ def send_post_commit_events(session: AsyncSession):
         id = getattr(event.event.data, "id", None)
         logger.trace(f"Sending event {event.name} of type {event.event.type}, id {id}")
         bus_event = event.event
-        copied_dict = bus_event.data.model_dump()
+        copied_dict = bus_event.data.model_dump(warnings=False)
         bus_event.data = type(bus_event.data).model_validate(copied_dict)
         try:
             asyncio.create_task(event_bus.publish(event.name, bus_event))
@@ -289,6 +274,37 @@ class ActiveRecordMixin:
             obj = cls.parse_obj(source, update=update)
         return obj
 
+    async def _refresh_related_objects(self, session: AsyncSession):
+        """Refresh all related objects of the given object."""
+
+        for rel in self.__mapper__.relationships:
+            if not hasattr(self, rel.key):
+                continue
+            rel_obj = getattr(self, rel.key, None)
+            if rel_obj is None:
+                continue
+            elif isinstance(rel_obj, list) and len(rel_obj) == 0:
+                continue
+            elif isinstance(rel_obj, InstanceState):
+                continue
+            await session.refresh(rel_obj)
+
+    def _get_flush_targets(self, session: AsyncSession) -> List[SQLModel]:
+        # always needs to flush self
+        rtn = [self]
+        state: InstanceState = inspect(self)
+        dirty_objs = [obj for obj in session.dirty]
+        for rel in self.__mapper__.relationships:
+            if rel.direction.name != "MANYTOMANY":
+                continue
+            attr = state.attrs[rel.key]
+            if not attr.history.has_changes():
+                continue
+            for obj in attr.value:
+                if obj in dirty_objs:
+                    rtn.append(obj)
+        return rtn
+
     @classmethod
     async def create(
         cls,
@@ -305,6 +321,7 @@ class ActiveRecordMixin:
 
         cls._publish_event_after_commit(session, EventType.CREATED, obj)
         await obj.save(session, auto_commit=auto_commit)
+        await obj._refresh_related_objects(session)
         return obj
 
     @classmethod
@@ -373,12 +390,12 @@ class ActiveRecordMixin:
         """Save the object to the database. Raise exception if failed."""
 
         session.add(self)
-        await session.flush()
-
-        if not auto_commit:
-            return
-
         try:
+            targets = self._get_flush_targets(session)
+            await session.flush(targets)
+
+            if not auto_commit:
+                return
             await session.commit()
             await session.refresh(self)
         except (IntegrityError, OperationalError, FlushError) as e:
