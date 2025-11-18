@@ -41,6 +41,9 @@ function pack() {
 	if [[ "${PACKAGE_PUSH}" == "true" ]]; then
 		EXTRA_ARGS+=("--push")
 	fi
+	for label in "${LABELS[@]}"; do
+		EXTRA_ARGS+=("--label" "${label}")
+	done
     gpustack::log::info "Building '${TAG}' platform 'linux/${PACKAGE_ARCH}'"
     set -x
     docker buildx build \
