@@ -1,6 +1,3 @@
-version: "3.8"
-name: gpustack-worker
-
 services:
   gpustack-worker:
     image: gpustack/gpustack

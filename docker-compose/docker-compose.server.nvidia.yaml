@@ -1,6 +1,3 @@
-version: "3.8"
-name: gpustack-observability-stack
-
 services:
   gpustack-server:
     image: gpustack/gpustack
