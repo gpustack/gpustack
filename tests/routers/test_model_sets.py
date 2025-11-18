@@ -51,10 +51,10 @@ def make_model_spec(**kwargs):
             ],
             [
                 make_model_spec(
-                    mode="standard", gpu_filters=GPUFilters(vendor=["ascend"])
+                    mode="throughput", gpu_filters=GPUFilters(vendor=["ascend"])
                 ),
                 make_model_spec(
-                    mode="throughput", gpu_filters=GPUFilters(vendor=["ascend"])
+                    mode="standard", gpu_filters=GPUFilters(vendor=["ascend"])
                 ),
             ],
         ),
@@ -89,16 +89,62 @@ def make_model_spec(**kwargs):
             ],
             [
                 make_model_spec(
+                    mode="latency",
+                    gpu_filters=GPUFilters(
+                        vendor=["nvidia"], compute_capability=">=7.0,<=9.0"
+                    ),
+                ),
+                make_model_spec(
                     mode="standard",
                     gpu_filters=GPUFilters(
                         vendor=["nvidia"], compute_capability=">=7.0"
                     ),
                 ),
+            ],
+        ),
+        (
+            "filter by gpu vendor and CANN variant",
+            [
+                GPUDevice(vendor="ascend", arch_family="Ascend910B2"),
+            ],
+            [
+                make_model_spec(
+                    mode="standard",
+                    gpu_filters=GPUFilters(vendor=["nvidia"]),
+                ),
+                make_model_spec(
+                    mode="standard",
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="310p"),
+                ),
+                make_model_spec(
+                    mode="standard",
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="910b"),
+                ),
+                make_model_spec(
+                    mode="throughput",
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="310p"),
+                ),
                 make_model_spec(
                     mode="latency",
-                    gpu_filters=GPUFilters(
-                        vendor=["nvidia"], compute_capability=">=7.0,<=9.0"
-                    ),
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="910b"),
+                ),
+                make_model_spec(
+                    mode="any-ascend",
+                    gpu_filters=GPUFilters(vendor=["ascend"]),
+                ),
+            ],
+            [
+                make_model_spec(
+                    mode="latency",
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="910b"),
+                ),
+                make_model_spec(
+                    mode="standard",
+                    gpu_filters=GPUFilters(vendor=["ascend"], vendor_variant="910b"),
+                ),
+                make_model_spec(
+                    mode="any-ascend",
+                    gpu_filters=GPUFilters(vendor=["ascend"]),
                 ),
             ],
         ),
@@ -123,7 +169,8 @@ def test_filter_specs_by_gpu(
     config, case_name, gpus, model_specs, filtered_specs_expected
 ):
     try:
-        assert filter_specs_by_gpu(gpus, model_specs) == filtered_specs_expected
+        actual_specs = filter_specs_by_gpu(gpus, model_specs)
+        assert actual_specs == filtered_specs_expected
     except AssertionError as e:
         print(f"Test case '{case_name}' failed.")
         raise e

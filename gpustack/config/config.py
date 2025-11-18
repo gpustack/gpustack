@@ -438,6 +438,7 @@ class Config(BaseSettings):
             gpu_devices:
             - name: Ascend CANN 910b
               vendor: ascend
+              arch_family: Ascend910B2
               index: 0
               device_index: 0              # optional
               device_chip_index: 0         # optional
@@ -465,6 +466,7 @@ class Config(BaseSettings):
 
         for gd in gpu_device_dict:
             name = gd.get("name")
+            arch_family = gd.get("arch_family", None)
             index = gd.get("index")
             compute_capability = gd.get("compute_capability", None)
             device_index = gd.get("device_index", index)
@@ -518,6 +520,7 @@ class Config(BaseSettings):
             gpu_devices.append(
                 GPUDeviceInfo(
                     index=index,
+                    arch_family=arch_family,
                     compute_capability=compute_capability,
                     device_index=device_index,
                     device_chip_index=device_chip_index,

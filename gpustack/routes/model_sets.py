@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, Query
 from packaging.version import Version
 from packaging.specifiers import SpecifierSet
-
+from gpustack_runtime.detector import ManufacturerEnum
 from gpustack.routes.models import NotFoundException
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.gpu_devices import GPUDevice
@@ -15,6 +15,7 @@ from gpustack.server.catalog import (
     get_model_set_specs,
 )
 from gpustack.server.deps import ListParamsDep, SessionDep
+from gpustack.worker.backends.base import get_ascend_cann_variant
 
 router = APIRouter()
 
@@ -108,11 +109,19 @@ def filter_specs_by_gpu(
     """Filter model specs based on the GPUs available."""
 
     # Matched specs mapping by mode (standard, throughput, latency, etc.).
-    filtered = {}
+    filtered: Dict[str, ModelSpec] = {}
 
     gpu_vendors = {gpu.vendor.lower() for gpu in gpus}
 
+    # Vendor variants. Now only Ascend CANN variants are supported.
+    vendor_variants = {
+        get_ascend_cann_variant(gpu.arch_family).lower()
+        for gpu in gpus
+        if gpu.arch_family is not None and gpu.vendor == ManufacturerEnum.ASCEND
+    }
+
     for spec in specs:
+        # If already selected for this mode, skip
         if spec.mode in filtered:
             continue
 
@@ -121,24 +130,35 @@ def filter_specs_by_gpu(
             filtered[spec.mode] = spec
             continue
 
-        # GPU Vendor match
-        vendor_ok = True
+        # --- GPU Vendor check ---
         if gf.vendor:
             wanted = {v.lower() for v in gf.vendor}
-            vendor_ok = not wanted.isdisjoint(gpu_vendors)
+            if wanted.isdisjoint(gpu_vendors):
+                continue
 
-        # Compute capability (pip-style version matching)
-        cc_ok = True
+        # --- Compute Capability check ---
         if gf.compute_capability:
-            cc_ok = any(
+            if not any(
                 match_compute_capability(gf.compute_capability, gpu.compute_capability)
                 for gpu in gpus
-            )
+            ):
+                continue
 
-        if vendor_ok and cc_ok:
-            filtered[spec.mode] = spec
+        # --- Vendor Variant check ---
+        if gf.vendor_variant:
+            wanted = {v.lower() for v in gf.vendor_variant}
+            if wanted.isdisjoint(vendor_variants):
+                continue
 
-    return list(filtered.values())
+        filtered[spec.mode] = spec
+
+    result = list(filtered.values())
+
+    # Sort by mode priority in case catalog items are messy. These are our conventional priorities.
+    ORDER = {"throughput": 0, "latency": 1, "standard": 2}
+    result.sort(key=lambda spec: (ORDER.get(spec.mode, 999), spec.mode))
+
+    return result
 
 
 def match_compute_capability(filter_str: Optional[str], gpu_cc: Optional[str]) -> bool:
