@@ -37,6 +37,7 @@ def download_model(
             token=huggingface_token,
             local_dir=local_dir,
             cache_dir=os.path.join(cache_dir, "huggingface"),
+            owner_worker_id=getattr(model, "worker_id", None),
         )
     elif model.source == SourceEnum.MODEL_SCOPE:
         return ModelScopeDownloader.download(
@@ -45,6 +46,7 @@ def download_model(
             extra_file_path=get_mmproj_filename(model),
             local_dir=local_dir,
             cache_dir=os.path.join(cache_dir, "model_scope"),
+            owner_worker_id=getattr(model, "worker_id", None),
         )
     elif model.source == SourceEnum.LOCAL_PATH:
         return file.get_sharded_file_paths(model.local_path)
@@ -95,6 +97,7 @@ class HfDownloader:
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
         max_workers: int = 8,
+        owner_worker_id: Optional[int] = None,
     ) -> List[str]:
         """Download a model from the Hugging Face Hub.
 
@@ -124,7 +127,7 @@ class HfDownloader:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
         logger.info(f"Retrieving file lock: {lock_filename}")
-        with HeartbeatSoftFileLock(lock_filename):
+        with HeartbeatSoftFileLock(lock_filename, owner_worker_id=owner_worker_id):
             if filename:
                 return cls.download_file(
                     repo_id=repo_id,
@@ -221,6 +224,7 @@ class ModelScopeDownloader:
         extra_file_path: Optional[str],
         local_dir: Optional[Union[str, os.PathLike[str]]] = None,
         cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        owner_worker_id: Optional[int] = None,
     ) -> List[str]:
         """Download a model from Model Scope.
 
@@ -243,7 +247,7 @@ class ModelScopeDownloader:
             local_dir = os.path.join(cache_dir, group_or_owner, name)
 
         logger.info(f"Retrieving file lock: {lock_filename}")
-        with HeartbeatSoftFileLock(lock_filename):
+        with HeartbeatSoftFileLock(lock_filename, owner_worker_id=owner_worker_id):
             if file_path:
                 matching_files = match_model_scope_file_paths(
                     model_id, file_path, extra_file_path

@@ -9,6 +9,8 @@ import platform
 import time
 import threading
 from typing import Dict, Tuple
+
+from filelock import Timeout
 from modelscope.hub.constants import TEMPORARY_FOLDER_NAME
 from multiprocessing import Manager, cpu_count
 from huggingface_hub._local_folder import get_local_download_paths
@@ -27,7 +29,7 @@ from gpustack.utils import hub
 from gpustack.utils.file import delete_path, get_local_file_size_in_byte
 from gpustack.worker import downloaders
 from gpustack.config.registration import read_worker_token
-
+from gpustack.utils.locks import read_lock_info, get_lock_path
 
 logger = logging.getLogger(__name__)
 
@@ -481,6 +483,30 @@ class ModelFileDownloadTask:
         except asyncio.CancelledError:
             self._write_to_instance_download_logs(
                 f"Download task cancelled: {self._model_file.readable_source}"
+            )
+        except Timeout:
+            lock_path = get_lock_path(self._config.cache_dir, self._model_file)
+
+            info = read_lock_info(lock_path) if lock_path else None
+            owner_id = info.get("worker_id") if info else None
+            current_worker_id = self._model_file.worker_id
+
+            if owner_id is None or owner_id != current_worker_id:
+                msg = (
+                    f"Download model {self._model_file.readable_source} timed out: "
+                    f"lock held by other worker, please try again later."
+                )
+                self._write_to_instance_download_logs(f"{msg}", is_error=True)
+                self._update_model_file(
+                    self._model_file.id,
+                    state=ModelFileStateEnum.ERROR,
+                    state_message=msg,
+                )
+                return
+
+            logger.warning(
+                f"Download model {self._model_file.readable_source} timed out waiting to acquire the lock. "
+                f"There might be another download task currently downloading the same model to the same disk directory."
             )
         except Exception as e:
             self._write_to_instance_download_logs(
