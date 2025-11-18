@@ -2,6 +2,10 @@ import logging
 import os
 from typing import Dict, List, Optional
 
+from gpustack_runtime.detector import ManufacturerEnum
+from packaging.version import Version
+from packaging.specifiers import SpecifierSet
+
 from gpustack_runtime.deployer import (
     Container,
     ContainerEnv,
@@ -284,6 +288,13 @@ class SGLangServer(InferenceServer):
         )
         arguments.extend(auto_parallelism_arguments)
 
+        attention_arguments = self._get_attention_backend_for_diffusion()
+        arguments.extend(attention_arguments)
+
+        # Add user-defined backend parameters
+        if self._model.backend_parameters:
+            arguments.extend(self._model.backend_parameters)
+
         # Set host and port
         arguments.extend(
             [
@@ -295,6 +306,33 @@ class SGLangServer(InferenceServer):
         )
 
         return arguments
+
+    def _get_attention_backend_for_diffusion(self) -> List[str]:
+        if (
+            find_parameter(self._model.backend_parameters, ["attention-backend"])
+            is not None
+        ):
+            return []
+
+        devices = self._get_selected_gpu_devices()
+        if devices and all(
+            (d.vendor or "").lower() == ManufacturerEnum.NVIDIA for d in devices
+        ):
+            spec = SpecifierSet(">=8.0,<9.0")
+            in_range = True
+            for d in devices:
+                cap = d.compute_capability
+                try:
+                    v = Version(cap) if cap is not None else None
+                except Exception:
+                    v = None
+                if v is None or v not in spec:
+                    in_range = False
+                    break
+            if not in_range:
+                return ["--attention-backend", "torch_sdpa"]
+
+        return []
 
     def _get_hicache_arguments(self) -> List[str]:
         """
