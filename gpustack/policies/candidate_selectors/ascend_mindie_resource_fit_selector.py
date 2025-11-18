@@ -12,6 +12,7 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
     RequestEstimateUsage,
     ScheduleCandidatesSelector,
 )
+from gpustack.policies.event_recorder.recorder import EventCollector
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     ListMessageBuilder,
@@ -26,7 +27,6 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
 from gpustack.config import Config
 from gpustack.utils.convert import safe_int
-from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
 from gpustack.utils.hub import (
     get_model_weight_size,
 )
@@ -53,8 +53,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         self._diagnostic_messages: List[str] = []
         # Serving parameters.
         self._serving_params = AscendMindIEParameters()
-        # Indexer of selected worker name and its device indexes: {Worker Name: [Device Index 0, Device Index 1, ...]}.
-        self._selected_worker_name_devices_idx: Dict[str, List[int]] = {}
         # Temporary indexer for caching worker's allocatable, avoiding redundant database queries: {Worker ID: Allocatable}.
         self.__worker_alloc_idx: Dict[int, Allocatable] = {}
         # Temporary indexer for caching worker's devices that sort by VRAM size: {Worker ID: sorted([Device 0, Device 1, ...])}.
@@ -62,37 +60,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Store and format the abnormal message during scheduling, finally it will be extended to self._diagnostic_messages.
         self._scheduling_messages: ListMessageBuilder = ListMessageBuilder([])
-
-        # Expand selected devices.
-        if model.gpu_selector and model.gpu_selector.gpu_ids:
-            worker_device_ids_map = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
-            selected_worker_devices_cnt = 0
-            selected_devices_cnt = 0
-            for worker_name, device_ids in worker_device_ids_map.items():
-                device_indexes = []
-                for device_id in device_ids:
-                    valid, matched = parse_gpu_id(device_id)
-                    if valid:
-                        device_index = safe_int(matched.get("gpu_index"))
-                        device_indexes.append(device_index)
-                if selected_worker_devices_cnt == 0:
-                    selected_worker_devices_cnt = len(device_indexes)
-                elif selected_worker_devices_cnt != len(device_indexes):
-                    raise ValueError(
-                        f"Selected devices count for worker {worker_name} is not matched with the previous worker."
-                    )
-                if selected_worker_devices_cnt & (selected_worker_devices_cnt - 1) != 0:
-                    raise ValueError(
-                        f"Selected devices count for worker {worker_name} is not power of 2."
-                    )
-                self._selected_worker_name_devices_idx[worker_name] = device_indexes
-                selected_devices_cnt += len(device_indexes)
-            # Configure serving parameters to help following process.
-            # If the given serving parameters are not matched,
-            # the parsing logic will raise an error.
-            self._serving_params.local_world_size = selected_worker_devices_cnt
-            self._serving_params.world_size = selected_devices_cnt
-
         # Parse model params.
         if model.backend_parameters:
             max_seq_len = self._model_params.derived_max_seq_len
@@ -105,6 +72,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 raise ValueError(
                     f"Failed to parse model {model.name} serve parameters: {e}"
                 )
+
+        world_size, strategies = (
+            AscendMindIEResourceFitSelector.get_world_size_from_backend_parameters(
+                model
+            )
+        )
+        self._set_gpu_count(world_size, strategies)
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -319,198 +293,101 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
     async def _validate_parallelized(self) -> bool:  # noqa: C901
         # Validate whether model can be parallelized.
         if num_attention_heads := self._model_params.num_attention_heads:
-            if self._selected_worker_name_devices_idx:
-                if num_attention_heads % self._serving_params.local_world_size != 0:
+            if self._serving_params.pipeline_parallel_size > 1:
+                if num_attention_heads % self._serving_params.tensor_parallel_size != 0:
                     self._diagnostic_messages.append(
                         f"Model's attention heads ({num_attention_heads}) must be divisible by "
-                        f"the selected devices count ({self._serving_params.local_world_size}) per worker."
+                        f"the --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
                     )
                     return False
             else:
-                if self._serving_params.pipeline_parallel_size > 1:
-                    if (
-                        num_attention_heads % self._serving_params.tensor_parallel_size
-                        != 0
-                    ):
+                if num_attention_heads % self._serving_params.world_size != 0:
+                    if self._serving_params.data_parallel_size > 1:
+                        self._diagnostic_messages.append(
+                            f"Model's attention heads ({num_attention_heads}) must be divisible by "
+                            f"the world size ({self._serving_params.world_size}), "
+                            f"multiplied by --data-parallel-size ({self._serving_params.data_parallel_size}) "
+                            f"and --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
+                        )
+                    elif self._serving_params.moe_expert_parallel_size > 1:
+                        self._diagnostic_messages.append(
+                            f"Model's attention heads ({num_attention_heads}) must be divisible by "
+                            f"the world size ({self._serving_params.world_size}), "
+                            f"multiplied by --moe-expert-parallel-size ({self._serving_params.moe_expert_parallel_size}) "
+                            f"and --moe-tensor-parallel-size ({self._serving_params.moe_tensor_parallel_size})."
+                        )
+                    else:
                         self._diagnostic_messages.append(
                             f"Model's attention heads ({num_attention_heads}) must be divisible by "
                             f"the --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
                         )
-                        return False
-                else:
-                    if num_attention_heads % self._serving_params.world_size != 0:
-                        if self._serving_params.data_parallel_size > 1:
+                    return False
+                if self._serving_params.moe_expert_parallel_size > 1:
+                    if moe_num_experts := self._model_params.moe_num_experts:
+                        if (
+                            moe_num_experts
+                            % self._serving_params.moe_expert_parallel_size
+                            != 0
+                        ):
                             self._diagnostic_messages.append(
-                                f"Model's attention heads ({num_attention_heads}) must be divisible by "
-                                f"the world size ({self._serving_params.world_size}), "
-                                f"multiplied by --data-parallel-size ({self._serving_params.data_parallel_size}) "
-                                f"and --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
+                                f"Model's MoE experts ({moe_num_experts}) must be divisible by "
+                                f"the --moe-expert-parallel-size ({self._serving_params.moe_expert_parallel_size})."
                             )
-                        elif self._serving_params.moe_expert_parallel_size > 1:
+                            return False
+                if self._serving_params.moe_tensor_parallel_size > 1:
+                    if moe_inter_size := self._model_params.moe_intermediate_size:
+                        if (
+                            moe_inter_size
+                            % self._serving_params.moe_tensor_parallel_size
+                            != 0
+                        ):
                             self._diagnostic_messages.append(
-                                f"Model's attention heads ({num_attention_heads}) must be divisible by "
-                                f"the world size ({self._serving_params.world_size}), "
-                                f"multiplied by --moe-expert-parallel-size ({self._serving_params.moe_expert_parallel_size}) "
-                                f"and --moe-tensor-parallel-size ({self._serving_params.moe_tensor_parallel_size})."
+                                f"Model's MoE intermediate size ({moe_inter_size}) must be divisible by "
+                                f"the --moe-tensor-parallel-size ({self._serving_params.moe_tensor_parallel_size})."
                             )
-                        else:
-                            self._diagnostic_messages.append(
-                                f"Model's attention heads ({num_attention_heads}) must be divisible by "
-                                f"the --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
-                            )
-                        return False
-                    if self._serving_params.moe_expert_parallel_size > 1:
-                        if moe_num_experts := self._model_params.moe_num_experts:
-                            if (
-                                moe_num_experts
-                                % self._serving_params.moe_expert_parallel_size
-                                != 0
-                            ):
-                                self._diagnostic_messages.append(
-                                    f"Model's MoE experts ({moe_num_experts}) must be divisible by "
-                                    f"the --moe-expert-parallel-size ({self._serving_params.moe_expert_parallel_size})."
-                                )
-                                return False
-                    if self._serving_params.moe_tensor_parallel_size > 1:
-                        if moe_inter_size := self._model_params.moe_intermediate_size:
-                            if (
-                                moe_inter_size
-                                % self._serving_params.moe_tensor_parallel_size
-                                != 0
-                            ):
-                                self._diagnostic_messages.append(
-                                    f"Model's MoE intermediate size ({moe_inter_size}) must be divisible by "
-                                    f"the --moe-tensor-parallel-size ({self._serving_params.moe_tensor_parallel_size})."
-                                )
-                                return False
+                            return False
         return True
 
     async def _get_available_worker_devices_idx(  # noqa: C901
         self, workers, ram_request
     ) -> Dict[Worker, Dict[int, GPUDeviceInfo]]:
         available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceInfo]] = {}
-        # Get available worker devices for manual mode.
-        if self._selected_worker_name_devices_idx:
-            # Record the remaining count needed to be selected,
-            # which is used to determine if enough devices are selected.
-            world_size_remain = self._serving_params.world_size
+        for worker in workers:
+            # Skip if the worker does not have devices.
+            if not worker.status.gpu_devices:
+                continue
 
-            # Index workers by their names for quick lookup.
-            worker_names_idx: Dict[str, Worker] = {
-                worker.name: worker for worker in workers
+            worker_alloc = await self.__get_worker_alloc(worker)
+
+            # Skip if the worker does not have enough RAM.
+            ram_allocate = worker_alloc.ram
+            if ram_request > ram_allocate:
+                continue
+
+            # Skip if VRAM request exceeds the main device allocatable.
+            device = self.__worker_sorted_devices_idx[worker.id][0]
+            device_vram_request = int(
+                device.memory.total * self._serving_params.npu_memory_fraction
+            )
+            device_vram_allocate = worker_alloc.vram.get(device.index, 0)
+            if device_vram_request > device_vram_allocate:
+                continue
+
+            # Get selected devices of the worker: {Device Index: Device}.
+            selected_devices_idx: Dict[int, GPUDeviceInfo] = {
+                device.index: device
+                for device in self.__worker_sorted_devices_idx[worker.id]
+                if device.type == "cann"
             }
 
-            for (
-                worker_name,
-                selected_device_indexes,
-            ) in self._selected_worker_name_devices_idx.items():
-                # Break if selected devices are enough,
-                # if the value is negative, it means not selected.
-                if world_size_remain == 0:
-                    break
+            # Index the worker and its devices.
+            available_worker_devices_idx[worker] = selected_devices_idx
 
-                worker = worker_names_idx.get(worker_name)
-                if not worker:
-                    self._diagnostic_messages.append(
-                        f"Selected worker {worker_name} is not found among available workers."
-                    )
-                    return {}
-
-                _ = await self.__get_worker_alloc(worker)
-
-                # Get selected devices of the worker: {Device Index: Device}.
-                selected_devices_idx: Dict[int, GPUDeviceInfo] = {
-                    device.index: device
-                    for device in self.__worker_sorted_devices_idx[worker.id]
-                    if device.index
-                    in self._selected_worker_name_devices_idx[worker.name]
-                }
-
-                for device in self.__worker_sorted_devices_idx[worker.id]:
-                    if (
-                        device.index
-                        in self._selected_worker_name_devices_idx[worker.name]
-                    ):
-                        if device.type != "cann":
-                            self._diagnostic_messages.append(
-                                f"The selected worker {worker.name} contain non-NPU devices."
-                            )
-                            return {}
-
-                        selected_devices_idx[device.index] = device
-
-                # Return if the selected devices aren't matched with the worker's available devices.
-                if len(selected_devices_idx) < len(
-                    self._selected_worker_name_devices_idx[worker.name]
-                ):
-                    self._diagnostic_messages.append(
-                        f"Worker {worker.name} does not satisfy the selected devices: "
-                        f"{self._selected_worker_name_devices_idx[worker.name]}."
-                    )
-                    return {}
-
-                # Stats
-                world_size_remain -= len(selected_devices_idx)
-
-                # Index the worker and its devices.
-                available_worker_devices_idx[worker] = selected_devices_idx
-
-            # Validate if the selected workers are matched with the available workers,
-            # if not, return.
-            if len(self._selected_worker_name_devices_idx) > len(
-                available_worker_devices_idx
-            ):
-                unavailable_workers = set(
-                    self._selected_worker_name_devices_idx.keys()
-                ) - set(worker.name for worker in available_worker_devices_idx.keys())
-                if len(unavailable_workers) > 1:
-                    self._diagnostic_messages.append(
-                        f"Unavailable selected workers [{', '.join(unavailable_workers)}]."
-                    )
-                else:
-                    self._diagnostic_messages.append(
-                        f"Unavailable selected worker {unavailable_workers.pop()}."
-                    )
-                return {}
-
-        # Otherwise, get available worker devices for semi-automatic or automatic mode.
-        else:
-            for worker in workers:
-                # Skip if the worker does not have devices.
-                if not worker.status.gpu_devices:
-                    continue
-
-                worker_alloc = await self.__get_worker_alloc(worker)
-
-                # Skip if the worker does not have enough RAM.
-                ram_allocate = worker_alloc.ram
-                if ram_request > ram_allocate:
-                    continue
-
-                # Skip if VRAM request exceeds the main device allocatable.
-                device = self.__worker_sorted_devices_idx[worker.id][0]
-                device_vram_request = int(
-                    device.memory.total * self._serving_params.npu_memory_fraction
-                )
-                device_vram_allocate = worker_alloc.vram.get(device.index, 0)
-                if device_vram_request > device_vram_allocate:
-                    continue
-
-                # Get selected devices of the worker: {Device Index: Device}.
-                selected_devices_idx: Dict[int, GPUDeviceInfo] = {
-                    device.index: device
-                    for device in self.__worker_sorted_devices_idx[worker.id]
-                    if device.type == "cann"
-                }
-
-                # Index the worker and its devices.
-                available_worker_devices_idx[worker] = selected_devices_idx
-
-            # Validate if there are available workers,
-            # if not, return.
-            if not available_worker_devices_idx:
-                self._diagnostic_messages.append("No available workers found.")
-                return available_worker_devices_idx
+        # Validate if there are available workers,
+        # if not, return.
+        if not available_worker_devices_idx:
+            self._diagnostic_messages.append("No available workers found.")
+            return available_worker_devices_idx
 
         # Sort available worker devices by allocatable resources,
         # make sure the worker with the largest VRAM is in first position.
@@ -526,195 +403,19 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         return available_worker_devices_idx
 
-    async def _manual_select_candidates(  # noqa: C901
-        self,
-        available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceInfo]],
-        request_usage: RequestEstimateUsage,
-    ):
-        candidates: List[ModelInstanceScheduleCandidate] = []
-        if not self._selected_worker_name_devices_idx:
-            return candidates
+    async def _manual_select_candidates(
+        self, workers: List[Worker], request_usage: RequestEstimateUsage
+    ) -> List[ModelInstanceScheduleCandidate]:
+        event_collector = EventCollector(self._model, logger)
+        candidates = await self._find_manual_gpu_selection_candidates(
+            workers,
+            self._serving_params.npu_memory_fraction,
+            request_usage,
+            event_collector,
+        )
 
-        candidate: Optional[ModelInstanceScheduleCandidate] = None
-        subworker: Optional[ModelInstanceSubordinateWorker] = None
-        subworker_index = -1
-
-        # Record the remaining VRAM request in the worker group level,
-        # which is used to determine if enough devices are selected.
-        workers_vram_request_remain = request_usage.vram
-
-        # Store the overcommit worker for later scheduling message construction
-        unsatisfied_devices_idx: Dict[str, List[int]] = {}
-        unsatisfied_workers = []
-        replica_gpu_count = 0
-
-        for worker, devices in available_worker_devices_idx.items():
-            # Construct candidate by the main worker.
-            if subworker_index < 0:
-                candidate = ModelInstanceScheduleCandidate(
-                    worker=worker,
-                    gpu_indexes=[],
-                    gpu_addresses=[],
-                    computed_resource_claim=ComputedResourceClaim(
-                        ram=request_usage.ram,
-                        vram={},
-                    ),
-                    subordinate_workers=[],
-                )
-            # Increase subordinate workers.
-            else:
-                subworker = ModelInstanceSubordinateWorker(
-                    worker_id=worker.id,
-                    worker_name=worker.name,
-                    worker_ip=worker.ip,
-                    worker_ifname=worker.ifname,
-                    total_gpus=len(worker.status.gpu_devices),
-                    gpu_indexes=[],
-                    gpu_addresses=[],
-                    computed_resource_claim=ComputedResourceClaim(
-                        ram=request_usage.ram,
-                        vram={},
-                    ),
-                )
-
-            # Worker allocation.
-            worker_alloc = await self.__get_worker_alloc(worker)
-            # Record the remaining VRAM request in the worker level,
-            # which is used to determine if enough devices are selected.
-            worker_vram_request_remain = workers_vram_request_remain
-
-            # Iterate over the worker's devices from the largest VRAM.
-            for device in self.__worker_sorted_devices_idx[worker.id]:
-                # Skip if the device is not in the selected worker's devices.
-                if device.index not in devices:
-                    continue
-
-                # Calculate device VRAM request/allocate.
-                device_vram_request = int(
-                    devices[device.index].memory.total
-                    * self._serving_params.npu_memory_fraction
-                )
-                device_vram_allocate = worker_alloc.vram.get(device.index, 0)
-
-                # Increase main worker's devices.
-                if subworker_index < 0:
-                    candidate.gpu_indexes.append(device.index)
-                    candidate.gpu_addresses.append(
-                        device.network.inet
-                        if device.network
-                        and device.network.status == 'up'
-                        and device.network.inet
-                        else "-.-.-.-"
-                    )
-                    candidate.computed_resource_claim.vram[device.index] = (
-                        device_vram_request
-                    )
-                    replica_gpu_count += 1
-
-                # Increase subordinate worker's devices.
-                else:
-                    subworker.gpu_indexes.append(device.index)
-                    subworker.gpu_addresses.append(
-                        device.network.inet
-                        if device.network
-                        and device.network.status == 'up'
-                        and device.network.inet
-                        else "-.-.-.-"
-                    )
-                    subworker.computed_resource_claim.vram[device.index] = (
-                        device_vram_request
-                    )
-                    replica_gpu_count += 1
-
-                # Validate
-                if device_vram_request > device_vram_allocate:
-                    candidate.overcommit = True
-                    if worker.name not in unsatisfied_devices_idx:
-                        unsatisfied_devices_idx[worker.name] = []
-                    unsatisfied_devices_idx[worker.name].append(device.index)
-
-                # Stats
-                worker_vram_request_remain -= device_vram_request
-
-                # GPUs per replica check
-                if (
-                    self._model.gpu_selector
-                    and self._model.gpu_selector.gpus_per_replica
-                    and replica_gpu_count >= self._model.gpu_selector.gpus_per_replica
-                ):
-                    break
-
-            # Validate
-            ram_allocate = worker_alloc.ram
-            if request_usage.ram > ram_allocate:
-                candidate.overcommit = True
-                unsatisfied_workers.append(worker.name)
-
-            # Append the subordinate worker to the candidate.
-            if subworker_index >= 0:
-                candidate.subordinate_workers.append(subworker)
-
-            # Stats
-            subworker_index += 1
-            workers_vram_request_remain = worker_vram_request_remain
-
-            if (
-                self._model.gpu_selector
-                and self._model.gpu_selector.gpus_per_replica
-                and replica_gpu_count >= self._model.gpu_selector.gpus_per_replica
-            ):
-                break
-
-        # Validate and construct scheduling messages.
-        if unsatisfied_workers:
-            msg = (
-                f"{str(unsatisfied_workers[:2]).rstrip(']')}...(more {len(unsatisfied_workers) - 2})]"
-                if len(unsatisfied_workers) > 2
-                else str(unsatisfied_workers)
-            )
-            self._scheduling_messages.append(
-                f"Worker {msg} fail to meet the required RAM."
-            )
-
-        for worker_name, devices in unsatisfied_devices_idx.items():
-            unsatisfied_devices = (
-                f"{str(devices[:3]).rstrip(']')}...(more {len(devices) - 3})]"
-                if len(devices) > 3
-                else str(devices)
-            )
-            msg = f"Worker {worker_name} GPU indexes {unsatisfied_devices}"
-            if len(unsatisfied_devices_idx) > 1:
-                msg += f" and other {len(unsatisfied_devices_idx) - 1} {'workers' if len(unsatisfied_devices_idx) > 2 else 'worker'}"
-            msg += f" {'fail' if len(unsatisfied_devices_idx) > 2 else 'fails'} to meet the {self._serving_params.npu_memory_fraction * 100}% allocatable VRAM ratio."
-            self._scheduling_messages.append(msg)
-            break
-
-        if workers_vram_request_remain > 0:
-            candidate.overcommit = True
-            devices_count = sum(
-                len(gpus) for gpus in available_worker_devices_idx.values()
-            )
-            satisfied_devices_count = devices_count - sum(
-                len(gpus) for gpus in unsatisfied_devices_idx.values()
-            )
-            effective_vram = (
-                (
-                    byte_to_gib(request_usage.vram - workers_vram_request_remain)
-                    * self._serving_params.npu_memory_fraction
-                    * satisfied_devices_count
-                    / devices_count
-                )
-                if devices_count
-                else 0.0
-            )
-            self._scheduling_messages.append(
-                f"Selected GPUs have {byte_to_gib(request_usage.vram - workers_vram_request_remain)} GiB allocatable VRAM, "
-                f"{satisfied_devices_count}/{devices_count} of GPUs meet the VRAM utilization ratio, providing {effective_vram:.2f} GiB of allocatable VRAM."
-            )
-
-        # Return one candidate for selected workers.
-        candidates.append(candidate)
-        logger.debug(f"Found intermediate candidate: {candidate.to_log_string()}")
+        for event in event_collector.events:
+            self._scheduling_messages.append(event.message.removeprefix("- "))
         return candidates
 
     async def _select_single_worker(  # noqa: C901
@@ -1153,6 +854,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 f"and each GPU needs {int(self._serving_params.npu_memory_fraction * 100)}% of allocatable VRAM."
             )
 
+        # Statisfy the selected devices count, if specified.
+        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
+            return await self._manual_select_candidates(
+                workers,
+                request_usage,
+            )
+
         # Available worker devices: {Worker: {Device Index: Device}},
         # all devices are in sorted.
         available_worker_devices_idx = await self._get_available_worker_devices_idx(
@@ -1160,12 +868,6 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         )
         if not available_worker_devices_idx:
             return candidates
-
-        # Statisfy the selected devices count, if specified.
-        if self._selected_worker_name_devices_idx:
-            return await self._manual_select_candidates(
-                available_worker_devices_idx, request_usage
-            )
 
         # Try to find a single worker that can satisfy the requested resources.
         single_worker_candidates = await self._select_single_worker(

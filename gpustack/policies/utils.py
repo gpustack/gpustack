@@ -541,7 +541,7 @@ def sort_gpu_indexes_by_allocatable_rate(
     }
 
     # return a list of gpu indexes sorted by allocatable rate in ascending order
-    return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx])
+    return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx], reverse=True)
 
 
 async def sort_selected_workers_by_resource(
