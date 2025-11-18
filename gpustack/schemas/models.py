@@ -272,7 +272,10 @@ class Model(ModelBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "selectin"},
     )
 
-    cluster: "Cluster" = Relationship(back_populates="cluster_models")
+    cluster: "Cluster" = Relationship(
+        back_populates="cluster_models",
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
 
 
 class ModelCreate(ModelBase):
@@ -451,7 +454,10 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "selectin"},
     )
 
-    cluster: "Cluster" = Relationship(back_populates="cluster_model_instances")
+    cluster: "Cluster" = Relationship(
+        back_populates="cluster_model_instances",
+        sa_relationship_kwargs={"lazy": "noload"},
+    )
 
     # overwrite the hash to use in uniquequeue
     def __hash__(self):
