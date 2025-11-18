@@ -228,6 +228,7 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
             "http_service": {
                 "authorization_request": {
                     "allowed_headers": [
+                        {"exact": "X-GPUStack-Real-IP"},
                         {"exact": "x-higress-llm-model"},
                         {"exact": "cookie"},
                     ]
@@ -349,8 +350,8 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",
         matchRules=[],
-        phase="UNSPECIFIED_PHASE",
-        priority=920,
+        phase="AUTHN",
+        priority=900,
         url=get_plugin_url_with_name_and_version(
             name="gpustack-token-usage", version="1.0.0", cfg=cfg
         ),
