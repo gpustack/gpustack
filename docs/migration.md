@@ -34,7 +34,7 @@ docker run -d --name gpustack \
 
 This will launch GPUStack using Docker, preserving your existing data.
 
-For workers and other GPU hardware platforms, please refer to the commands in the [Installation Documentation](installation/installation-requirements.md).
+For workers and other GPU hardware platforms, please refer to the commands in the [Installation Documentation](installation/requirements).
 
 ## macOS / Windows Migration
 

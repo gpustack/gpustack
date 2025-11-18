@@ -9,7 +9,7 @@ GPUStack supports running on ARM64 Windows, enabling use on Snapdragon X-based C
 ## Prerequisites
 
 - A Copilot+ PC with Snapdragon X. In this tutorial, we use the Dell XPS 13 9345.
-- Install **AMD64** Python (version 3.10 to 3.12). [See details](../installation/installation-requirements.md#supported-architectures)
+- Install **AMD64** Python (version 3.10 to 3.12). [See details](../installation/requirements#supported-architectures)
 
 ## Installing GPUStack
 

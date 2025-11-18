@@ -75,33 +75,15 @@ nav:
     - Overview: overview.md
     - Quickstart: quickstart.md
     - Installation:
-        - Installation Requirements: installation/installation-requirements.md
-        - NVIDIA CUDA:
-            - Online Installation: installation/nvidia-cuda/online-installation.md
-            - Air-Gapped Installation: installation/nvidia-cuda/air-gapped-installation.md
-        - AMD ROCm:
-            - Online Installation: installation/amd-rocm/online-installation.md
-            - Air-Gapped Installation: installation/amd-rocm/air-gapped-installation.md
-        - Apple Metal: installation/apple-metal-installation.md
-        - Ascend CANN:
-            - Online Installation: installation/ascend-cann/online-installation.md
-            - Air-Gapped Installation: installation/ascend-cann/air-gapped-installation.md
-        - Hygon DTK:
-            - Online Installation: installation/hygon-dtk/online-installation.md
-            - Air-Gapped Installation: installation/hygon-dtk/air-gapped-installation.md
-        - Moore Threads MUSA:
-            - Online Installation: installation/moorethreads-musa/online-installation.md
-            - Air-Gapped Installation: installation/moorethreads-musa/air-gapped-installation.md
-        - Iluvatar Corex:
-            - Online Installation: installation/iluvatar-corex/online-installation.md
-            - Air-Gapped Installation: installation/iluvatar-corex/air-gapped-installation.md
-        - Cambricon MLU:
-            - Online Installation: installation/cambricon-mlu/online-installation.md
-        - CPU:
-            - Online Installation: installation/cpu/online-installation.md
-            - Air-Gapped Installation: installation/cpu/air-gapped-installation.md
-        - Desktop Installer: installation/desktop-installer.md
-        - Installation Script: installation/installation-script.md
+        - Requirements: installation/requirements.md
+        - NVIDIA: installation/nvidia/installation.md
+        - AMD: installation/amd/installation.md
+        - Ascend:  installation/ascend/installation.md
+        - Hygon: installation/hygon/installation.md
+        - MThreads: installation/mthreads/installation.md
+        - Iluvatar: installation/iluvatar/installation.md
+        - Cambricon:  installation/cambricon/installation.md
+        - Air-Gapped Installation: installation/air-gapped.md
         - Uninstallation: installation/uninstallation.md
     - Upgrade: upgrade.md
     - Migration: migration.md
@@ -158,6 +140,9 @@ nav:
         - Start: cli-reference/start.md
         - Download Tools: cli-reference/download-tools.md
         - Reload Config: cli-reference/reload-config.md
+        - List Images: cli-reference/list-images.md
+        - Save Images: cli-reference/save-images.md
+        - Copy Images: cli-reference/copy-images.md
   - Inference Performance Lab:
     - Optimizing Throughput:
       - GLM-4.6/4.5-Air:
