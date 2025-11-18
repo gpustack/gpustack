@@ -357,9 +357,10 @@ class ServeManager:
         workloads = list_workloads()
         for w in workloads:
             create_at = parse_iso8601_to_utc(w.created_at)
-            if w.name not in current_instance_names and network.is_offline(
+            should_clean_orphan, _ = network.is_offline(
                 create_at, envs.WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD
-            ):
+            )
+            if w.name not in current_instance_names and should_clean_orphan:
                 delete_workload(w.name)
                 logger.info(
                     f"Deleted orphan workload {w.name}, created at {w.created_at}."
