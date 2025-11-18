@@ -30,6 +30,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-04-19"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-0.6B
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=8192
+    # Other GPUs
     - mode: standard
       quantization: BF16
       source: huggingface
@@ -52,6 +63,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-04-19"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-8B
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       source: huggingface
@@ -82,6 +104,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-04-19"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-14B
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       gpu_filters:
@@ -126,6 +159,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-04-19"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-32B
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       source: huggingface
@@ -157,6 +201,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-07-21"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-30B-A3B-Instruct-2507
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       gpu_filters:
@@ -204,6 +259,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-07-21"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-30B-A3B-Thinking-2507
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=32768
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       gpu_filters:
@@ -254,6 +320,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-07-21"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-235B-A22B-Instruct-2507
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=65536
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       source: huggingface
@@ -287,6 +364,17 @@ model_sets:
     - apache-2.0
   release_date: "2025-07-21"
   specs:
+    # Ascend NPUs
+    - mode: throughput
+      quantization: BF16
+      gpu_filters:
+        vendor: ascend
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-235B-A22B-Thinking-2507
+      backend: MindIE
+      backend_parameters:
+        - --max-seq-len=65536
+    # Other GPUs
     - mode: throughput
       quantization: FP8
       source: huggingface
