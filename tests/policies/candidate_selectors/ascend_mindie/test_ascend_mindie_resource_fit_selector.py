@@ -4,6 +4,7 @@ from unittest.mock import patch, AsyncMock
 from tests.utils.model import new_model
 from gpustack.policies.candidate_selectors import AscendMindIEResourceFitSelector
 from gpustack.schemas.models import (
+    BackendEnum,
     ModelInstance,
     ComputedResourceClaim,
     ModelInstanceSubordinateWorker,
@@ -526,6 +527,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 backend_parameters=[
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -560,6 +562,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "--npu-memory-fraction=0.8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -590,6 +593,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 backend_parameters=[
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -622,6 +626,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "--tensor-parallel-size=2",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -654,6 +659,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "--data-parallel-size=2",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -688,6 +694,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 backend_parameters=[
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -701,7 +708,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
                             worker_ip="192.168.50.4",
-                            total_gpus=8,
+                            total_gpus=2,
                             gpu_indexes=[3, 4],
                             gpu_addresses=["29.17.49.41", "29.17.45.216"],
                             computed_resource_claim=ComputedResourceClaim(
@@ -735,6 +742,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "--npu-memory-fraction=0.8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -748,7 +756,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                         ModelInstanceSubordinateWorker(
                             worker_id=3,
                             worker_ip="192.168.50.4",
-                            total_gpus=8,
+                            total_gpus=1,
                             gpu_indexes=[0],
                             gpu_addresses=["29.17.48.41"],
                             computed_resource_claim=ComputedResourceClaim(
@@ -782,6 +790,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 backend_parameters=[
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -791,7 +800,15 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
                     "vram": {1: 54975581388, 2: 54975581388},
-                }
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [3, 4],
+                    "gpu_addresses": ["29.17.49.41", "29.17.45.216"],
+                    "ram": 536870912,
+                    "vram": {3: 54975581388, 4: 54975581388},
+                },
             ],
         ),
         # Automatic multi-workers selection.
@@ -811,6 +828,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "--npu-memory-fraction=0.8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -910,6 +928,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "--npu-memory-fraction=0.8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -1017,6 +1036,10 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
             return_value=model_instances,
         ),
         patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=model_instances,
+        ),
+        patch(
             "gpustack.schemas.workers.Worker.all",
             return_value=workers,
         ),
@@ -1079,6 +1102,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                     "--tensor-parallel-size=8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -1241,7 +1265,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                         "ascend_3:npu:6",
                         "ascend_3:npu:7",
                     ],
-                    gpus_per_replica=16,
+                    gpus_per_replica=32,
                 ),
                 backend_parameters=[
                     "--npu-memory-fraction=0.95",
@@ -1249,6 +1273,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                     "--tensor-parallel-size=8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -1324,6 +1349,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                     "--tensor-parallel-size=8",
                     "--trust-remote-code",
                 ],
+                backend=BackendEnum.ASCEND_MINDIE.value,
             ),
             [
                 {
@@ -1473,6 +1499,10 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
         patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
             return_value=model_instances,
         ),
         patch(
@@ -1649,7 +1679,8 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
             [
                 """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.9, all GPUs combined need to provide at least 173.60 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
-- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fail to meet the 90.0% allocatable VRAM ratio."""
+- Manual GPU selection resulted in resource overcommit.
+- Selected GPUs have 307.20 GiB allocatable VRAM, 0/8 of GPUs meet the VRAM utilization ratio, providing 276.48 GiB of allocatable VRAM."""
             ],
         ),
         (
@@ -1682,7 +1713,8 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
             [
                 """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.1, all GPUs combined need to provide at least 1562.40 GiB of total VRAM and each GPU needs 10% of allocatable VRAM.
-- Selected GPUs have 51.2 GiB allocatable VRAM, 8/8 of GPUs meet the VRAM utilization ratio, providing 5.12 GiB of allocatable VRAM."""
+- Manual GPU selection resulted in resource overcommit.
+- Selected GPUs have 307.20 GiB allocatable VRAM, 8/8 of GPUs meet the VRAM utilization ratio, providing 30.72 GiB of allocatable VRAM."""
             ],
         ),
         (
@@ -1715,8 +1747,8 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
             [
                 """- The model requires approximately 156.24 GiB VRAM and 0.5 GiB RAM.
 - With --npu-memory-fraction=0.9, all GPUs combined need to provide at least 173.60 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
-- Worker ['ascend_0', 'ascend_1'...(more 2)] fail to meet the required RAM.
-- Worker ascend_0 GPU indexes [0, 2] and other 3 workers fail to meet the 90.0% allocatable VRAM ratio."""
+- Manual GPU selection resulted in resource overcommit.
+- Selected GPUs have 307.20 GiB allocatable VRAM, 0/8 of GPUs meet the VRAM utilization ratio, providing 276.48 GiB of allocatable VRAM."""
             ],
         ),
     ],
@@ -1790,6 +1822,10 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
             return_value=model_instances,
         ),
         patch(

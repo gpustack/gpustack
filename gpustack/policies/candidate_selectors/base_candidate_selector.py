@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
+    BackendEnum,
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
@@ -258,7 +259,7 @@ class ScheduleCandidatesSelector(ABC):
             )
 
         # When world_size is set.
-        if world_size:
+        if world_size and world_size > 0:
             if self._gpu_count and self._gpu_count != world_size:
                 # Both gpu selector and parallelism are set, validate they match.
                 strategies_str = "/".join(strategies) if strategies else "parallelism"
@@ -328,6 +329,32 @@ class ScheduleCandidatesSelector(ABC):
 
             vram_claim[gpu.index] = claim
         return vram_claim
+
+    def _get_worker_gpu_addresses(
+        self,
+        worker: Worker,
+        gpu_indexes: List[int],
+    ) -> List[str]:
+        """
+        Given a worker and gpu indexes, get the gpu addresses according to gpu_indexes.
+        Returns a list of GPU addresses.
+        """
+        gpu_addresses = []
+
+        if self._model.backend != BackendEnum.ASCEND_MINDIE.value:
+            return gpu_addresses
+
+        for gpu in worker.status.gpu_devices:
+            if gpu.index not in gpu_indexes:
+                continue
+
+            addr = (
+                gpu.network.inet
+                if gpu.network and gpu.network.status == 'up' and gpu.network.inet
+                else "-.-.-.-"
+            )
+            gpu_addresses.append(addr)
+        return gpu_addresses
 
     async def _generate_manual_selected_gpus_overcommit_message(  # noqa: C901
         self,
@@ -596,9 +623,7 @@ class ScheduleCandidatesSelector(ABC):
 
             # Single-worker multi-GPU selection
             for worker in selected_workers:
-                selected_gpu_indexes = self._selected_gpu_indexes_by_worker.get(
-                    worker.name
-                )
+                selected_gpu_indexes = [gpu.index for gpu in worker.status.gpu_devices]
                 if selected_gpu_indexes is None:
                     continue
 
@@ -706,6 +731,7 @@ class ScheduleCandidatesSelector(ABC):
             ModelInstanceScheduleCandidate(
                 worker=worker,
                 gpu_indexes=used_gpu_indexes,
+                gpu_addresses=self._get_worker_gpu_addresses(worker, used_gpu_indexes),
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claims,
                     ram=get_computed_ram_claim(self._model, vram_claims, request.ram),
@@ -773,6 +799,9 @@ class ScheduleCandidatesSelector(ABC):
                     worker_ifname=worker.ifname,
                     total_gpus=len(worker.status.gpu_devices),
                     gpu_indexes=sw_gpu_indexes,
+                    gpu_addresses=self._get_worker_gpu_addresses(
+                        worker, sw_gpu_indexes
+                    ),
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
                         ram=get_computed_ram_claim(
@@ -795,6 +824,9 @@ class ScheduleCandidatesSelector(ABC):
             ModelInstanceScheduleCandidate(
                 worker=main_worker,
                 gpu_indexes=main_gpu_indexes,
+                gpu_addresses=self._get_worker_gpu_addresses(
+                    main_worker, main_gpu_indexes
+                ),
                 computed_resource_claim=ComputedResourceClaim(
                     vram=main_vram_claim,
                     ram=get_computed_ram_claim(
