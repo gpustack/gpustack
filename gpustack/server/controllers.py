@@ -675,7 +675,10 @@ class WorkerController:
         worker: Worker = event.data
         # Skip reconciliation for provisioning and deleting workers.
         # There is a dedicated controller to handle provisioning.
-        if not worker or worker.state.is_provisioning:
+        if not worker or (
+            worker.state.is_provisioning
+            and not worker.state == WorkerStateEnum.DELETING
+        ):
             return
 
         async with AsyncSession(self._engine) as session:
