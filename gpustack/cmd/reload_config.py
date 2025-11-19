@@ -7,6 +7,7 @@ from typing import Dict, Any
 from gpustack import __version__, __git_commit__
 from gpustack.cmd.start import load_config_from_yaml
 from gpustack.config.config import Config
+from gpustack.utils.envs import get_gpustack_env
 from gpustack.utils.config import (
     WHITELIST_CONFIG_FIELDS,
     coerce_value_by_field,
@@ -65,6 +66,12 @@ def setup_reload_config_cmd(subparsers: argparse._SubParsersAction):
         ),
         default=False,
     )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        help="API Key to authenticate as admin.",
+        default=get_gpustack_env("API_KEY"),
+    )
 
     parser.set_defaults(func=run)
 
@@ -73,21 +80,7 @@ def run(args):
     try:
         logger.info("Starting configuration reload...")
         logger.info(f"GPUStack version: {__version__} ({__git_commit__})")
-
-        if getattr(args, "list", False):
-            print("Whitelisted fields:")
-            for field in sorted(WHITELIST_CONFIG_FIELDS):
-                print(f"- {field.replace('_', '-')}")
-
-            runtime_values = list_runtime_values()
-            if runtime_values:
-                print("Current config values:")
-                for scope, conf in runtime_values.items():
-                    for field in sorted(WHITELIST_CONFIG_FIELDS):
-                        if field in conf and conf[field] is not None:
-                            print(
-                                f"- {scope}: {field.replace('_', '-')} = {conf[field]}"
-                            )
+        if handle_list_mode(args):
             return
 
         cfg = parse_args_with_filter(args, {})
@@ -99,7 +92,7 @@ def run(args):
                     payload[field] = value
 
         setup_logging(cfg.debug)
-        apply_runtime_updates(payload, cfg)
+        apply_runtime_updates(payload, cfg, api_key=getattr(args, "api_key", None))
         display_config_summary(cfg)
 
     except Exception as e:
@@ -155,7 +148,9 @@ def parse_args_with_filter(args: argparse.Namespace, filtered_changes: Dict[str,
     return Config(**config_data)
 
 
-def apply_runtime_updates(payload: Dict[str, Any], cfg: Config):
+def apply_runtime_updates(
+    payload: Dict[str, Any], cfg: Config, api_key: str | None = None
+):
     urls = []
     try:
         urls.append(f"http://127.0.0.1:{cfg.get_api_port()}/debug/config")
@@ -167,7 +162,8 @@ def apply_runtime_updates(payload: Dict[str, Any], cfg: Config):
         pass
     for url in urls:
         try:
-            resp = requests.put(url, json=payload)
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+            resp = requests.put(url, json=payload, headers=headers)
             if resp.status_code == 200:
                 logger.info(f"Applied runtime config via {url}")
             else:
@@ -176,7 +172,7 @@ def apply_runtime_updates(payload: Dict[str, Any], cfg: Config):
             logger.warning(f"Failed to apply config via {url}: {e}")
 
 
-def list_runtime_values() -> Dict[str, Dict[str, Any]]:
+def list_runtime_values(api_key: str | None = None) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
     endpoints = {
         "server": "http://127.0.0.1:8080/debug/config",
@@ -184,9 +180,26 @@ def list_runtime_values() -> Dict[str, Dict[str, Any]]:
     }
     for scope, url in endpoints.items():
         try:
-            resp = requests.get(url, timeout=2)
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+            resp = requests.get(url, timeout=2, headers=headers)
             if resp.status_code == 200:
                 results[scope] = resp.json()
         except Exception:
             continue
     return results
+
+
+def handle_list_mode(args) -> bool:
+    if not getattr(args, "list", False):
+        return False
+    print("Whitelisted fields:")
+    for field in sorted(WHITELIST_CONFIG_FIELDS):
+        print(f"- {field.replace('_', '-')}")
+    runtime_values = list_runtime_values(api_key=getattr(args, "api_key", None))
+    if runtime_values:
+        print("Current config values:")
+        for scope, conf in runtime_values.items():
+            for field in sorted(WHITELIST_CONFIG_FIELDS):
+                if field in conf and conf[field] is not None:
+                    print(f"- {scope}: {field.replace('_', '-')} = {conf[field]}")
+    return True
