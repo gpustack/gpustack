@@ -73,6 +73,19 @@ def setup_reload_config_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("API_KEY"),
     )
 
+    parser.add_argument(
+        "--server-port",
+        type=int,
+        help="Port of the GPUStack API server to target.",
+        default=get_gpustack_env("API_PORT"),
+    )
+    parser.add_argument(
+        "--worker-port",
+        type=int,
+        help="Port of the GPUStack worker to target.",
+        default=get_gpustack_env("WORKER_PORT"),
+    )
+
     parser.set_defaults(func=run)
 
 
@@ -92,7 +105,7 @@ def run(args):
                     payload[field] = value
 
         setup_logging(cfg.debug)
-        apply_runtime_updates(payload, cfg, api_key=getattr(args, "api_key", None))
+        apply_runtime_updates(payload, args)
         display_config_summary(cfg)
 
     except Exception as e:
@@ -149,17 +162,16 @@ def parse_args_with_filter(args: argparse.Namespace, filtered_changes: Dict[str,
 
 
 def apply_runtime_updates(
-    payload: Dict[str, Any], cfg: Config, api_key: str | None = None
+    payload: Dict[str, Any],
+    args: argparse.Namespace,
 ):
-    urls = []
-    try:
-        urls.append(f"http://127.0.0.1:{cfg.get_api_port()}/debug/config")
-    except Exception:
-        pass
-    try:
-        urls.append(f"http://127.0.0.1:{cfg.worker_port}/debug/config")
-    except Exception:
-        pass
+    api_key = getattr(args, "api_key", None)
+    server_port = getattr(args, "server_port") or 8080
+    worker_port = getattr(args, "worker_port") or 10150
+    urls = [
+        f"http://127.0.0.1:{server_port}/debug/config",
+        f"http://127.0.0.1:{worker_port}/debug/config",
+    ]
     for url in urls:
         try:
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
@@ -172,11 +184,17 @@ def apply_runtime_updates(
             logger.warning(f"Failed to apply config via {url}: {e}")
 
 
-def list_runtime_values(api_key: str | None = None) -> Dict[str, Dict[str, Any]]:
+def list_runtime_values(
+    api_key: str | None = None,
+    server_port: int | None = None,
+    worker_port: int | None = None,
+) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
+    s_port = server_port or 8080
+    w_port = worker_port or 10150
     endpoints = {
-        "server": "http://127.0.0.1:8080/debug/config",
-        "worker": "http://127.0.0.1:10150/debug/config",
+        "server": f"http://127.0.0.1:{s_port}/debug/config",
+        "worker": f"http://127.0.0.1:{w_port}/debug/config",
     }
     for scope, url in endpoints.items():
         try:
@@ -195,7 +213,11 @@ def handle_list_mode(args) -> bool:
     print("Whitelisted fields:")
     for field in sorted(WHITELIST_CONFIG_FIELDS):
         print(f"- {field.replace('_', '-')}")
-    runtime_values = list_runtime_values(api_key=getattr(args, "api_key", None))
+    runtime_values = list_runtime_values(
+        api_key=getattr(args, "api_key", None),
+        server_port=getattr(args, "server_port", None),
+        worker_port=getattr(args, "worker_port", None),
+    )
     if runtime_values:
         print("Current config values:")
         for scope, conf in runtime_values.items():
