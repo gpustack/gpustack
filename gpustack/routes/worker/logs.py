@@ -25,14 +25,12 @@ logger = logging.getLogger(__name__)
 def is_container_logs_ready(model_instance_name: str) -> bool:
     """Probe whether container logs have any content available to output."""
     try:
-        probe_stream = logs_workload(
+        logs_workload(
             name=model_instance_name,
             tail=1,
             follow=False,
         )
-        if isinstance(probe_stream, bytes):
-            return bool(probe_stream.strip())
-        return bool(str(probe_stream).strip())
+        return True
     except Exception:
         return False
 
