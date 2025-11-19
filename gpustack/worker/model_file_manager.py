@@ -24,7 +24,7 @@ from gpustack.client import ClientSet
 from gpustack.schemas.models import SourceEnum
 from gpustack.server.bus import Event, EventType
 from gpustack.utils import hub
-from gpustack.utils.file import delete_path
+from gpustack.utils.file import delete_path, get_local_file_size_in_byte
 from gpustack.worker import downloaders
 from gpustack.config.registration import read_worker_token
 
@@ -306,6 +306,7 @@ class ModelFileDownloadTask:
         self._file_line_mapping = {}
         # Dict[tqdm_id, {'last_update_time': float, 'last_progress': float}]
         self._file_progress_tracking = {}
+        self._tqdm_file_basename = {}
         # Number of header lines in the log file
         self._log_header_lines = 1
 
@@ -564,37 +565,36 @@ class ModelFileDownloadTask:
 
         # Write initial progress line for this file using ANSI cursor positioning
         file_desc = getattr(tqdm_instance, 'desc', None) or f"File {tqdm_id}"
+        self._assign_file_basename(tqdm_id, file_desc)
         self._write_progress_with_cursor_positioning(
             line_number, f"{file_desc}: Initializing...", tqdm_id
         )
 
     def _handle_tqdm_update(self, tqdm_instance, original_update, n=1):
+        # Get the tqdm ID and line number for this instance
+        tqdm_id = getattr(tqdm_instance, '_gpustack_id', None)
+        if not tqdm_id or tqdm_id not in self._file_line_mapping:
+            return
+        if n == tqdm_instance.n:
+            # https://github.com/modelscope/modelscope/blob/609442d271bd7ed106a0933b1937289be7c1ad01/modelscope/hub/file_download.py#L417-L422
+            # During download reconnection events, the progress bar may recalculate based on the current downloaded size.
+            # We need to intercept this behavior and read the actual cached file size to correct the progress display.
+            n = self._adjust_downloaded_by_cache_size(tqdm_instance, n)
         original_update(tqdm_instance, n)
 
         if self._cancel_flag.is_set():
             raise asyncio.CancelledError("Download cancelled")
 
-        # Get the tqdm ID and line number for this instance
-        tqdm_id = getattr(tqdm_instance, '_gpustack_id', None)
-        if not tqdm_id or tqdm_id not in self._file_line_mapping:
-            return
-
         line_number = self._file_line_mapping[tqdm_id]
 
-        # Calculate download sizes
-        total_size = tqdm_instance.total
-        downloaded_size = tqdm_instance.n
-
-        if hasattr(self, '_model_file_size'):
-            # This is summary for group downloading
-            total_size = self._model_file_size
-            with self._speed_lock:
-                self._model_downloaded_size += n
-                downloaded_size = self._model_downloaded_size
+        with self._speed_lock:
+            self._model_downloaded_size += n
 
         try:
             # Update overall progress
-            progress = round((downloaded_size / total_size) * 100, 2)
+            progress = round(
+                (self._model_downloaded_size / self._model_file_size) * 100, 2
+            )
 
             # Update individual file progress using ANSI cursor positioning
             current_time = time.time()
@@ -649,6 +649,58 @@ class ModelFileDownloadTask:
                 f"Download error: {error_msg}", is_error=True
             )
             raise Exception(error_msg)
+
+    def _adjust_downloaded_by_cache_size(self, tqdm_instance, n: int) -> int:
+        try:
+            actual_size = self._get_cache_file_actual_size(tqdm_instance)
+            if actual_size is None:
+                return n
+            base = tqdm_instance.n or 0
+            delta = actual_size - base
+            return delta if delta > 0 else 0
+        except Exception:
+            return n
+
+    def _get_cache_file_actual_size(self, tqdm_instance) -> int | None:
+        try:
+            source = self._model_file.source
+            paths = self._model_file.resolved_paths or []
+            if not paths:
+                return None
+            target_basename = None
+            tid = getattr(tqdm_instance, '_gpustack_id', None)
+            if tid is not None:
+                target_basename = self._tqdm_file_basename.get(tid)
+
+            if source == SourceEnum.MODEL_SCOPE:
+                for path in paths:
+                    p = Path(str(path))
+                    filename_pattern = p.name
+                    local_dir = p.parent
+                    if target_basename and target_basename != filename_pattern:
+                        continue
+                    incomplete_path = (
+                        local_dir / TEMPORARY_FOLDER_NAME / filename_pattern
+                    )
+                    if incomplete_path.exists():
+                        return get_local_file_size_in_byte(str(incomplete_path))
+
+            return None
+        except Exception:
+            return None
+
+    def _assign_file_basename(self, tqdm_id: int, desc: str | None):
+        try:
+            if not desc:
+                return
+            paths = self._model_file.resolved_paths or []
+            for path in paths:
+                b = Path(str(path)).name
+                if b and b in desc:
+                    self._tqdm_file_basename[tqdm_id] = b
+                    return
+        except Exception:
+            return
 
     def _write_progress_with_cursor_positioning(
         self, line_number: int, message: str, tqdm_id: int
@@ -710,10 +762,11 @@ class ModelFileDownloadTask:
             cache_dir=self._config.cache_dir,
         )
 
-        self._model_file.size = size
         self._update_model_file(
             self._model_file.id, size=size, resolved_paths=file_paths
         )
+        self._model_file.size = size
+        self._model_file.resolved_paths = file_paths
 
     def _update_model_file_progress(self, model_file_id: int, progress: float):
         self._update_model_file(model_file_id, download_progress=progress)
