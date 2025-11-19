@@ -912,11 +912,15 @@ async def sync_main_worker_model_file_state(
             if (
                 is_draft_model
                 and file.download_progress != instance.draft_model_download_progress
+                and instance.draft_model_download_progress != 100
             ):
                 # For the draft model file
                 instance.draft_model_download_progress = file.download_progress
                 need_update = True
-            elif file.download_progress != instance.download_progress:
+            elif (
+                file.download_progress != instance.download_progress
+                and instance.download_progress != 100
+            ):
                 # For the main model file
                 instance.download_progress = file.download_progress
                 need_update = True
@@ -945,6 +949,11 @@ async def sync_main_worker_model_file_state(
         if model_instance_download_completed(instance):
             # All files are downloaded
             instance.state = ModelInstanceStateEnum.STARTING
+            instance.state_message = ""
+            need_update = True
+        elif instance.state == ModelInstanceStateEnum.INITIALIZING:
+            # one but not all files downloaded, turn to DOWNLOADING state
+            instance.state = ModelInstanceStateEnum.DOWNLOADING
             instance.state_message = ""
             need_update = True
 
