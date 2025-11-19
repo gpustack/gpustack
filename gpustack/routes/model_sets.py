@@ -40,6 +40,18 @@ async def get_model_sets(
         ]
 
     count = len(model_sets)
+
+    if params.page < 1 or params.perPage < 1:
+        # Return all items.
+        pagination = Pagination(
+            page=1,
+            perPage=count,
+            total=count,
+            totalPage=1,
+        )
+        return PaginatedList[ModelSetPublic](items=model_sets, pagination=pagination)
+
+    # Paginate results.
     total_page = math.ceil(count / params.perPage)
 
     start_index = (params.page - 1) * params.perPage
