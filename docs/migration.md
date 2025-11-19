@@ -1,61 +1,77 @@
-# Migration from Legacy Script Installation
 
-If you previously installed GPUStack using the legacy installation script, follow the instructions below to migrate to a supported method.
+# Migration from v0.7 and Earlier
+
+In v0.7 and earlier, GPUStack used an embedded SQLite database by default to store management data. Starting from v2.0.0, GPUStack dropped SQLite support and now uses an embedded PostgreSQL database by default for improved performance and scalability.
+
+If you previously deployed GPUStack with the embedded SQLite database, follow the steps below to migrate your data to the new PostgreSQL-based format.
+
+!!! warning
+      **Backup First:** Before starting the migration, it is strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of `/var/lib/gpustack/database.db`.
+
+## Migration Guide
 
 !!! note
+    Since v2.0.0, GPUStack supports Linux only, and this migration must be run on Linux.
 
-    Before proceeding with a migration, it’s strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of the file located at `/var/lib/gpustack/database.db`.
+### Step 1: Identify Your Legacy Data Directory
 
-## Linux Migration
-
-### Step 1: Locate Your Existing Data Directory
-
-Find the path to your existing data directory used by the legacy installation. The default path is:
+Locate the data directory used by your previous GPUStack installation. The default path is:
 
 ```bash
 /var/lib/gpustack
 ```
 
-We'll refer to this as `${your-data-dir}` in the next step.
+In the following steps, this path is referenced as `${your-data-dir}`.
 
-### Step 2: Reinstall GPUStack via Docker
+### Step 2: Migrate Using Docker
 
-If you are using Nvidia GPUs, run the following Docker command to migrate your GPUStack server, replacing the volume mount path with your data directory location.
+#### Server Migration (NVIDIA GPUs)
 
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v ${your-data-dir}:/var/lib/gpustack \
-    gpustack/gpustack
+If you are using NVIDIA GPUs, run the following Docker command to start the migration. Replace ${your-data-dir} with your legacy data directory containing the original SQLite database and related files.
+
+By mounting `${your-data-dir}` to `/var/lib/gpustack` and setting the environment variable `GPUSTACK_MIGRATION_DATA_DIR`, GPUStack to automatically migrate the SQLite data to the new embedded PostgreSQL database during startup.
+
+```diff
+sudo docker run -d --name gpustack-server \
+      --restart=unless-stopped \
+      --privileged \
+      --network=host \
+      --volume /var/run/docker.sock:/var/run/docker.sock \
++     --env GPUSTACK_MIGRATION_DATA_DIR=/var/lib/gpustack \
++     --volume ${your-data-dir}:/var/lib/gpustack \
+      --runtime nvidia \
+      gpustack/gpustack
 ```
 
-This will launch GPUStack using Docker, preserving your existing data.
+This command will launch the GPUStack server in Docker, preserving and migrating your existing data.
 
-For workers and other GPU hardware platforms, please refer to the commands in the [Installation Documentation](installation/requirements).
+#### Worker Migration (NVIDIA GPUs)
 
-## macOS / Windows Migration
+For worker nodes, replace `${your-data-dir}` with the legacy worker data directory path. Use the following command:
 
-Download and install the new version of GPUStack via [Desktop Installer](./installation/desktop-installer.md#download-installer).
+```diff
+sudo docker run -d --name gpustack-worker \
+      --restart=unless-stopped \
+      --privileged \
+      --network=host \
+      --volume /var/run/docker.sock:/var/run/docker.sock \
++     --volume ${your-data-dir}:/var/lib/gpustack \
+      --runtime nvidia \
+      gpustack/gpustack \
+      --server-url ${server-url} \
+      --token ${token}
+```
 
-!!!note
+This will launch the GPUStack worker using your existing data and connect it to the specified server.
 
-    The Installer Upgrade has only been tested upgrading GPUStack from v0.6.2 to v0.7.0. It should be possible to upgrade from versions prior to v0.6.2 to Installer v0.7.0, but it is recommended to upgrade to v0.6.2 first and then use the Installer for migration upgrade.
+#### Other GPU Architectures
 
-1. Start GPUStack and a system tray icon will appear. It will show the `To Upgrade` state if an old version of GPUStack is installed.
+For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process remains the same. To migrate on these platforms:
 
-   ![darwin-to-upgrade-state](./assets/desktop-installer/to-upgrade-darwin.png)
+1. Get the installation commands, please refer to the commands in the [Installation Documentation](installation/requirements.md).
 
-1. To upgrade and migrate to the new GPUStack version, you can click `Start` in the submenu of `Status`.
-1. The original configuration will be migrated to the corresponding location according to the running operating system. Detailed configuration can be reviewed in [desktop configuration](./user-guide/desktop-setup.md#configuration)
+1. Update the installation commands by mounting your legacy data directory to `/var/lib/gpustack`.
 
-   - macOS
-     - Configuration via arguments will be migrated into a single configuration file `~/Library/Application Support/GPUStackHelper/config.yaml`.
-     - Configuration from environment variables will be migrated into the `launchd` plist configuration `~/Library/Application Support/GPUStackHelper/ai.gpustack.plist`.
-     - GPUStack data will be moved to the new data location `/Library/Application Support/GPUStack`.
-   - Windows
-     - Configuration via arguments will be migrated into a single configuration file `C:\Users\<Name>\AppData\Roaming\GPUStackHelper\config.yaml`.
-     - Service configuration such as environment variables won't be merged as the system service `GPUStack` will be reused.
-     - GPUStack data will be moved to the new data location `C:\ProgramData\GPUStack`.
+2. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
+
+The Server and Worker migration commands can be used directly after applying these changes.
