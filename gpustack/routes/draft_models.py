@@ -31,6 +31,18 @@ async def get_draft_models(
         ]
 
     count = len(draft_models)
+
+    if params.page < 1 or params.perPage < 1:
+        # Return all items.
+        pagination = Pagination(
+            page=1,
+            perPage=count,
+            total=count,
+            totalPage=1,
+        )
+        return PaginatedList[DraftModel](items=draft_models, pagination=pagination)
+
+    # Paginate results.
     total_page = math.ceil(count / params.perPage)
 
     start_index = (params.page - 1) * params.perPage
