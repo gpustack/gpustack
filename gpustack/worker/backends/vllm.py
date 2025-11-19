@@ -215,7 +215,8 @@ class VLLMServer(InferenceServer):
         elif extended_kv_cache.ram_ratio and extended_kv_cache.ram_ratio > 0:
             # Calculate RAM size based on ratio of total VRAM claim
             vram_claim = self._get_total_vram_claim()
-            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(vram_claim))
+            ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
+            env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
 
     def _get_speculative_arguments(self) -> List[str]:
         """
