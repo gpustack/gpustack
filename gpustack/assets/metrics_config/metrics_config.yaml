@@ -53,7 +53,7 @@ gpustack_metrics:
 
   gpustack:time_per_output_token_seconds:
     type: Histogram
-    description: "Time per generated token."
+    description: "Average time spent to produce each output token."
 
   gpustack:e2e_request_latency_seconds:
     type: Histogram
@@ -65,7 +65,7 @@ gpustack_metrics:
 
   gpustack:inter_token_latency_seconds:
     type: Histogram
-    description: "Inter-token latency."
+    description: "Time to generate the next token after the previous token has been produced."
 
 
 # -----------------------------
