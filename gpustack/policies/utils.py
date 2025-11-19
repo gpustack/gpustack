@@ -486,14 +486,17 @@ def get_computed_ram_claim(
     """
     Get the computed RAM claim for the model based on the provided model and vram_claim.
     The priority is as follows:
-    1. If ram size is available, use it as the static RAM size.
-    2. If ram ratio for extended KV cache is set and vram_claim is available, calculate RAM as ram_ratio * total_vram_claim.
-    3. If neither is available, return None.
+    1. If static_ram is provided, use it.
+    2. If RAM size for extended KV cache is available, use it.
+    3. If RAM ratio for extended KV cache is set and vram_claim is available, calculate RAM as ram_ratio * total_vram_claim.
+    4. If neither is available, return None.
     """
+    if static_ram:
+        return static_ram
 
     ext = model.extended_kv_cache
     if not ext or not ext.enabled:
-        return static_ram
+        return None
 
     claim = None
     # static ram size
@@ -504,9 +507,6 @@ def get_computed_ram_claim(
     elif ext.ram_ratio and ext.ram_ratio > 0 and vram_claim:
         total_vram_claim = sum(vram_claim.values())
         claim = int(total_vram_claim * ext.ram_ratio)
-
-    if static_ram and claim is not None:
-        claim += static_ram
 
     return claim
 
