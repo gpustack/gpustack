@@ -161,6 +161,7 @@ class ServeManager:
         """
         Synchronize model instances' state.
 
+        - If the model instance is scheduled but not initialized, skip.
         - If the provision process is still alive, skip.
         - If the workload is still launching, skip.
         - If the workload is not existed, unhealthy, inactive or failed, update the model instance state to ERROR.
@@ -176,7 +177,12 @@ class ServeManager:
             return
         model_instances: List[ModelInstance] = []
         for model_instance in model_instances_page.items:
-            if model_instance.worker_id == self._worker_id:
+            # if the model instance is assigned to this worker, it must be scheduled.
+            # But we don't need to sync the scheduled model when it is not initialized yet.
+            if (
+                model_instance.worker_id == self._worker_id
+                and model_instance.state != ModelInstanceStateEnum.SCHEDULED
+            ):
                 model_instances.append(model_instance)
             if (
                 model_instance.distributed_servers
