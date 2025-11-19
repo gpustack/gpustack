@@ -430,7 +430,14 @@ def get_auto_parallelism_arguments(
 ) -> List[str]:
     parallelism = find_parameter(
         backend_parameters,
-        ["tensor-parallel-size", "tp", "pipeline-parallel-size", "pp"],
+        [
+            "tensor-parallel-size",
+            "tp",
+            "pipeline-parallel-size",
+            "pp",
+            "data-parallel-size",
+            "dp",
+        ],
     )
 
     if parallelism is not None:

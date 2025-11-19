@@ -33,6 +33,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
 from gpustack.utils.command import (
+    find_bool_parameter,
     find_parameter,
     find_int_parameter,
 )
@@ -82,7 +83,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         dp = find_int_parameter(
             model.backend_parameters, ["dp-size", "data-parallel-size"]
         )
-        dp_attention = find_parameter(model.backend_parameters, ["enable-dp-attention"])
+        dp_attention = find_bool_parameter(
+            model.backend_parameters, ["enable-dp-attention"]
+        )
         if dp_attention:
             # For DP attention, it's using the TP group GPUs for data parallelism.
             # So we don't need to consider DP size for GPU count calculation.
@@ -185,7 +188,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 )
 
         if dp_size and int(dp_size) > 1 and nnodes != 1:
-            enable_dp_attention = find_parameter(
+            enable_dp_attention = find_bool_parameter(
                 model.backend_parameters, ["enable-dp-attention"]
             )
             if not enable_dp_attention:
