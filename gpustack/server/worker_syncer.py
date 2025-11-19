@@ -48,6 +48,7 @@ class WorkerSyncer:
                 WorkerStateEnum.NOT_READY: [],
                 WorkerStateEnum.UNREACHABLE: [],
                 WorkerStateEnum.READY: [],
+                WorkerStateEnum.MAINTENANCE: [],
             }
             for worker in results:
                 if worker and worker.state in state_to_worker_name:
