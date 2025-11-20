@@ -19,7 +19,6 @@ from gpustack.routes import (
     users,
     models,
     openai,
-    voice,
     workers,
     cloud_credentials,
     worker_pools,
@@ -36,6 +35,7 @@ from gpustack.api.auth import (
     get_worker_user,
 )
 
+versioned_prefix = "/v2"
 
 api_router = APIRouter(responses=error_responses)
 api_router.include_router(probes.router, tags=["Probes"])
@@ -144,16 +144,20 @@ for admin_router in admin_routers:
     v1_admin_router.include_router(**admin_router)
 
 api_router.include_router(
-    worker_client_router, dependencies=[Depends(get_worker_user)], prefix="/v1"
+    worker_client_router,
+    dependencies=[Depends(get_worker_user)],
+    prefix=versioned_prefix,
 )
 api_router.include_router(
-    cluster_client_router, dependencies=[Depends(get_cluster_user)], prefix="/v1"
+    cluster_client_router,
+    dependencies=[Depends(get_cluster_user)],
+    prefix=versioned_prefix,
 )
 api_router.include_router(
-    v1_base_router, dependencies=[Depends(get_current_user)], prefix="/v1"
+    v1_base_router, dependencies=[Depends(get_current_user)], prefix=versioned_prefix
 )
 api_router.include_router(
-    v1_admin_router, dependencies=[Depends(get_admin_user)], prefix="/v1"
+    v1_admin_router, dependencies=[Depends(get_admin_user)], prefix=versioned_prefix
 )
 api_router.include_router(
     debug.router,
@@ -175,7 +179,7 @@ api_router.include_router(
     tags=["OpenAI-Compatible APIs"],
 )
 api_router.include_router(
-    openai.aliasable_router,
+    openai.router,
     dependencies=[Depends(get_current_user)],
     prefix="/v1",
     responses=openai_api_error_responses,
@@ -186,12 +190,6 @@ api_router.include_router(
     dependencies=[Depends(get_current_user)],
     prefix="/v1",
     tags=["Rerank"],
-)
-api_router.include_router(
-    voice.router,
-    dependencies=[Depends(get_current_user)],
-    prefix="/v1",
-    tags=["Voice"],
 )
 api_router.include_router(
     proxy.router,
