@@ -675,6 +675,14 @@ class ModelFileDownloadTask:
             if source == SourceEnum.MODEL_SCOPE:
                 for path in paths:
                     p = Path(str(path))
+                    if p.is_dir():
+                        size = self._get_incomplete_size_from_dir(
+                            p, target_basename, tqdm_instance
+                        )
+                        if size is not None:
+                            return size
+                        continue
+
                     filename_pattern = p.name
                     local_dir = p.parent
                     if target_basename and target_basename != filename_pattern:
@@ -685,6 +693,28 @@ class ModelFileDownloadTask:
                     if incomplete_path.exists():
                         return get_local_file_size_in_byte(str(incomplete_path))
 
+            return None
+        except Exception:
+            return None
+
+    def _get_incomplete_size_from_dir(
+        self, local_dir: Path, target_basename, tqdm_instance
+    ) -> int | None:
+        try:
+            tb = target_basename
+            if tb is None:
+                desc = getattr(tqdm_instance, 'desc', None)
+                temp_dir = local_dir / TEMPORARY_FOLDER_NAME
+                if desc and temp_dir.exists():
+                    for f in temp_dir.iterdir():
+                        name = f.name
+                        if name and name in desc:
+                            tb = name
+                            break
+            if tb:
+                incomplete_path = local_dir / TEMPORARY_FOLDER_NAME / tb
+                if incomplete_path.exists():
+                    return get_local_file_size_in_byte(str(incomplete_path))
             return None
         except Exception:
             return None
