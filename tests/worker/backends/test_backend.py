@@ -2,6 +2,7 @@ import types
 
 import pytest
 
+from gpustack.config import registration
 from gpustack.worker.backends.custom import CustomServer
 
 
@@ -58,10 +59,7 @@ async def test_apply_registry_override(
     backend._config = types.SimpleNamespace(
         system_default_container_registry=container_registry
     )
-    monkeypatch.setattr(
-        "gpustack.worker.backends.base.get_dockerhub_reachable",
-        lambda: can_connet_dockerhub,
-    )
+    registration.dockerhub_reachable = can_connet_dockerhub
     assert backend._apply_registry_override(image_name) == expect_image_name
 
     if container_registry:

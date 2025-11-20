@@ -20,6 +20,7 @@ from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
 from gpustack_runtime.envs import to_bool
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
+from gpustack.config import registration as registration
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
@@ -45,8 +46,6 @@ from gpustack.utils import platform
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
-
-_is_docker_hub_reachable: Optional[bool] = None
 
 
 class ModelInstanceStateError(Exception):
@@ -862,7 +861,7 @@ $@
         # 4) Otherwise, check if Docker Hub is reachable.
         #    If it is, prefix the image with "docker.io".
         #    Otherwise, prefix it with "quay.io".
-        if get_dockerhub_reachable():
+        if registration.dockerhub_reachable:
             logger.info(
                 f"Docker Hub reachable; using Docker Hub for gpustack image: {image}"
             )
@@ -915,12 +914,3 @@ def cal_distributed_parallelism_arguments(
             f"The number of GPUs selected for each worker is not equal: {num_gpus} != {tp}, fallback to using pipeline parallelism."
         )
     return tp, pp
-
-
-def set_dockerhub_reachable(reachable: bool):
-    global _is_docker_hub_reachable
-    _is_docker_hub_reachable = reachable
-
-
-def get_dockerhub_reachable() -> Optional[bool]:
-    return _is_docker_hub_reachable

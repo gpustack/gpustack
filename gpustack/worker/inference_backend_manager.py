@@ -3,12 +3,11 @@ import logging
 import threading
 from typing import Dict, Optional
 
-import requests
 
 from gpustack.client import ClientSet
 from gpustack.schemas.inference_backend import InferenceBackend
 from gpustack.server.bus import EventType, Event
-from gpustack.worker.backends.base import set_dockerhub_reachable
+
 
 logger = logging.getLogger(__name__)
 
@@ -122,18 +121,3 @@ class InferenceBackendManager:
 
         except Exception as e:
             logger.error(f"Error handling InferenceBackend event: {e}")
-
-    async def check_docker_hub_reachable(self):
-        """
-        Check if Docker Hub is reachable.
-        To avoid frequent checks, cache the result for a short period via global lock.
-
-        Returns:
-            bool: True if Docker Hub is reachable, False otherwise.
-        """
-        try:
-            resp = requests.get("https://registry-1.docker.io/v2/", timeout=3)
-            _is_docker_hub_reachable = resp.status_code < 500
-        except Exception:
-            _is_docker_hub_reachable = False
-        set_dockerhub_reachable(_is_docker_hub_reachable)

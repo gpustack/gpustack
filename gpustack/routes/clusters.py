@@ -29,6 +29,7 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import get_global_config
+from gpustack.config import registration
 
 router = APIRouter()
 system_name_prefix = "system/cluster"
@@ -220,11 +221,18 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
     url = get_server_url(request)
+    cfg = get_global_config()
+    container_registry = ""
+    if cfg.system_default_container_registry:
+        container_registry = cfg.system_default_container_registry
+    elif not registration.dockerhub_reachable:
+        container_registry = "quay.io"
 
     return ClusterRegistrationTokenPublic(
         token=cluster.registration_token,
         server_url=url,
         image=get_global_config().get_image_name(),  # Default image, can be customized
+        container_registry=container_registry,
     )
 
 
