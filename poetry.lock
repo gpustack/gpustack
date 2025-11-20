@@ -2770,13 +2770,13 @@ six = ">=1.9.0"
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.20"
+version = "0.1.20.post1"
 description = "GPUStack Runner is library for registering runnable accelerated backends and services in GPUStack."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runner-0.1.20-py3-none-any.whl", hash = "sha256:39994da239b701d76dc368bd289977d67c8e688a80c3bd4846e013fc3a8ad4af"},
-    {file = "gpustack_runner-0.1.20.tar.gz", hash = "sha256:8270b8aa9f1bbec095b735a4129a1389b163052a093c98a634907d2bb09065a2"},
+    {file = "gpustack_runner-0.1.20.post1-py3-none-any.whl", hash = "sha256:99d8774a12be247c13f8052ca010d6a4f31db3bd9097f1ab27e9e41155f37353"},
+    {file = "gpustack_runner-0.1.20.post1.tar.gz", hash = "sha256:355328f6cb742ab45ebbf5c4fad5a2b3dd690e84ff91089d4d4db174098ffb40"},
 ]
 
 [package.dependencies]
@@ -2785,19 +2785,19 @@ dataclasses-json = ">=0.6.7"
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.32.post2"
+version = "0.1.33"
 description = "GPUStack Runtime is library for detecting GPU resources and launching GPU workloads."
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "gpustack_runtime-0.1.32.post2-py3-none-any.whl", hash = "sha256:abbef2e1d86b9c6327e79d9793603d411f082007ed4fcb2700caaf044b892c83"},
-    {file = "gpustack_runtime-0.1.32.post2.tar.gz", hash = "sha256:030b038766a3f4867c933f6ecd3f60a72e285c075a47dab601230a8576144639"},
+    {file = "gpustack_runtime-0.1.33-py3-none-any.whl", hash = "sha256:030a806ccec1cacc39601e70703b6524c30a59061c08524dcc3fb5b76a1931b3"},
+    {file = "gpustack_runtime-0.1.33.tar.gz", hash = "sha256:a47915171103f99378adb1599edd9f096ab844117c179c04cc6986064eb47e84"},
 ]
 
 [package.dependencies]
 argcomplete = ">=3.6.3"
 docker = "*"
-gpustack-runner = ">=0.1.20"
+gpustack-runner = ">=0.1.20.post1"
 kubernetes = "*"
 nvidia-ml-py = ">=13.580.65"
 pyyaml = "*"
@@ -10694,4 +10694,4 @@ vllm = ["bitsandbytes", "mistral_common", "timm", "vllm"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "faf1b6ed64c619af85aa4b2197ea1d92f96cea91d68bb66d5fe984066b681aa4"
+content-hash = "fc7ceb6746b9dd769e791cbe94a3eedf7dd2f606b3320a7d44e461f898424772"
