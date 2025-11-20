@@ -24,7 +24,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
-from gpustack.utils.network import get_free_port
 from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
@@ -58,7 +57,7 @@ class SGLangServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
 
-        is_distributed, _, _ = self._get_distributed_metadata()
+        is_distributed, is_distributed_leader, _ = self._get_distributed_metadata()
 
         # Setup environment variables
         env = self._get_configured_env(is_distributed)
@@ -67,7 +66,9 @@ class SGLangServer(InferenceServer):
 
         # Build SGLang command arguments
         command_args = self._build_command_args(
-            port=self._get_serving_port(), is_distributed=is_distributed
+            port=self._get_serving_port(),
+            is_distributed=is_distributed,
+            is_distributed_leader=is_distributed_leader,
         )
 
         self._create_workload(
@@ -201,7 +202,12 @@ class SGLangServer(InferenceServer):
             env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
             env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
 
-    def _build_command_args(self, port: int, is_distributed: bool) -> List[str]:
+    def _build_command_args(
+        self,
+        port: int,
+        is_distributed: bool,
+        is_distributed_leader: bool,
+    ) -> List[str]:
         """
         Build SGLang command arguments for container execution.
         """
@@ -238,7 +244,9 @@ class SGLangServer(InferenceServer):
 
         # Add multi-node deployment parameters if needed
         if is_distributed:
-            multinode_arguments = self._get_multinode_arguments()
+            multinode_arguments = self._get_multinode_arguments(
+                is_distributed_leader=is_distributed_leader
+            )
             arguments.extend(multinode_arguments)
 
         # Add hierarchical cache arguments if needed
@@ -369,7 +377,7 @@ class SGLangServer(InferenceServer):
 
         return arguments
 
-    def _get_multinode_arguments(self) -> List[str]:
+    def _get_multinode_arguments(self, is_distributed_leader: bool) -> List[str]:
         """
         Get multi-node deployment arguments for SGLang.
         """
@@ -390,17 +398,13 @@ class SGLangServer(InferenceServer):
         # Find the current node's rank
         current_worker_ip = self._worker.ip
         node_rank = 0  # Default to 0 (master node)
-        is_main_worker = current_worker_ip == self._model_instance.worker_ip
 
         # Determine node rank based on worker IP
-        if not is_main_worker:
+        if not is_distributed_leader:
             for idx, worker in enumerate(subordinate_workers):
                 if worker.worker_ip == current_worker_ip:
                     node_rank = idx + 1  # Subordinate workers start from rank 1
                     break
-
-        dist_port_range = self._config.distributed_worker_port_range
-        dist_init_port = get_free_port(port_range=dist_port_range)
 
         # Add multi-node parameters
         arguments.extend(
@@ -410,7 +414,10 @@ class SGLangServer(InferenceServer):
                 "--node-rank",
                 str(node_rank),
                 "--dist-init-addr",
-                f"{self._model_instance.worker_ip}:{dist_init_port}",
+                # During distributed setup,
+                # we must get more than one port here,
+                # so we use ports[1] for distributed initialization.
+                f"{self._model_instance.worker_ip}:{self._model_instance.ports[1]}",
             ]
         )
 

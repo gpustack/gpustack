@@ -97,7 +97,6 @@ gpustack start [OPTIONS]
 | `--worker-metrics-port` value           | `10151`                                | Port to expose metrics.                                                                                                                                                                                                                                          |
 | `--worker-port` value                   | `10150`                                | Port to bind the worker to. Use a consistent value for all workers.                                                                                                                                                                                              |
 | `--service-port-range` value            | `40000-40063`                          | Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                                                                              |
-| `--distributed-worker-port-range` value | `40200-40999`                          | Generic port range for distributed worker processes (e.g., NCCL/TCP communication), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive.                                                                                             |
 | `--log-dir` value                       | (empty)                                | Directory to store logs.                                                                                                                                                                                                                                         |
 | `--system-reserved` value               | `"{\"ram\": 2, \"vram\": 1}"`          | The system reserves resources for the worker during scheduling, measured in GiB. By default, 2 GiB of RAM and 1G of VRAM is reserved, Note: '{\"memory\": 2, \"gpu_memory\": 1}' is also supported, but it is deprecated and will be removed in future releases. |
 | `--tools-download-base-url` value       |                                        | Base URL for downloading dependency tools.                                                                                                                                                                                                                       |
@@ -188,7 +187,6 @@ disable_metrics: false
 worker_metrics_port: 10151
 worker_port: 10150
 service_port_range: 40000-40063
-distributed_worker_port_range: 40200-40999
 log_dir: /path/to/log_dir
 system_reserved:
   ram: 2
