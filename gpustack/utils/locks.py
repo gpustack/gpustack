@@ -4,7 +4,7 @@ import threading
 import json
 import socket
 from typing import Optional
-from filelock import SoftFileLock, Timeout
+from filelock import SoftFileLock, Timeout, FileLock
 from modelscope.hub.utils.utils import model_id_to_group_owner_name
 
 from gpustack.schemas import ModelFile
@@ -40,10 +40,12 @@ class HeartbeatSoftFileLock:
         self._ttl_seconds = ttl_seconds
         self._timeout_seconds = timeout_seconds
         self._heartbeat_seconds = heartbeat_seconds
+        self._os_lock = FileLock(lock_path)
         self._lock = SoftFileLock(lock_path)
         self._hb_stop = threading.Event()
         self._hb_thread: Optional[threading.Thread] = None
         self._owner_worker_id = owner_worker_id
+        self._using_soft_lock = False
 
     def _cleanup_stale_lock(self):
         try:
@@ -57,6 +59,20 @@ class HeartbeatSoftFileLock:
 
     def __enter__(self):
         start = time.time()
+        try:
+            self._os_lock.acquire(timeout=self._timeout_seconds)
+        except NotImplementedError as e:
+            if "use SoftFileLock instead" in str(e):
+                self._using_soft_lock = True
+                pass
+            else:
+                raise e
+        except Exception as e:
+            raise e
+
+        if not self._using_soft_lock:
+            return self
+
         while True:
             try:
                 # Attempt fast acquisition, fall through on contention
@@ -96,19 +112,26 @@ class HeartbeatSoftFileLock:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Stop heartbeat
-        self._hb_stop.set()
-        if self._hb_thread:
-            self._hb_thread.join(timeout=1)
-        # Release underlying lock (deletes the .lock file)
-        try:
-            self._lock.release()
-        except Exception:
-            # Defensive: if release fails, try to remove the file
+        if self._using_soft_lock:
+            self._hb_stop.set()
+            if self._hb_thread:
+                self._hb_thread.join(timeout=1)
             try:
-                if os.path.exists(self._lock_path):
-                    os.remove(self._lock_path)
+                self._lock.release()
+            except Exception:
+                try:
+                    if os.path.exists(self._lock_path):
+                        os.remove(self._lock_path)
+                except Exception:
+                    pass
+        if not self._using_soft_lock:
+            try:
+                self._os_lock.release()
             except Exception:
                 pass
+            finally:
+                if os.path.exists(self._lock_path):
+                    os.remove(self._lock_path)
 
 
 def cleanup_stale_lock_files(base_dir: str, ttl_seconds: int):
