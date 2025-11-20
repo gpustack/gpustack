@@ -39,46 +39,42 @@ logger = logging.getLogger(__name__)
 load_balancer = LoadBalancer()
 
 
-aliasable_router = APIRouter()
+router = APIRouter()
 
 
-@aliasable_router.post("/chat/completions")
+@router.post("/chat/completions")
 async def chat_completions(request: Request):
     return await proxy_request_by_model(request, "chat/completions")
 
 
-@aliasable_router.post("/completions")
+@router.post("/completions")
 async def completions(request: Request):
     return await proxy_request_by_model(request, "completions")
 
 
-@aliasable_router.post("/embeddings")
+@router.post("/embeddings")
 async def embeddings(request: Request):
     return await proxy_request_by_model(request, "embeddings")
 
 
-@aliasable_router.post("/images/generations")
+@router.post("/images/generations")
 async def images_generations(request: Request):
     return await proxy_request_by_model(request, "images/generations")
 
 
-@aliasable_router.post("/images/edits")
+@router.post("/images/edits")
 async def images_edits(request: Request):
     return await proxy_request_by_model(request, "images/edits")
 
 
-@aliasable_router.post("/audio/speech")
+@router.post("/audio/speech")
 async def audio_speech(request: Request):
     return await proxy_request_by_model(request, "audio/speech")
 
 
-@aliasable_router.post("/audio/transcriptions")
+@router.post("/audio/transcriptions")
 async def audio_transcriptions(request: Request):
     return await proxy_request_by_model(request, "audio/transcriptions")
-
-
-router = APIRouter()
-router.include_router(aliasable_router)
 
 
 @router.get("/models")
