@@ -71,12 +71,12 @@ def send_post_commit_events(session: AsyncSession):
         id = getattr(event.event.data, "id", None)
         logger.trace(f"Sending event {event.name} of type {event.event.type}, id {id}")
         bus_event = event.event
-        copied_dict = bus_event.data.model_dump(warnings=False)
-        bus_event.data = type(bus_event.data).model_validate(copied_dict)
         try:
+            copied_dict = bus_event.data.model_dump(warnings=False)
+            bus_event.data = type(bus_event.data).model_validate(copied_dict)
             asyncio.create_task(event_bus.publish(event.name, bus_event))
         except Exception as e:
-            logger.error(f"Failed to publish events: {e}")
+            logger.exception(f"Failed to publish events: {e}")
 
 
 class ActiveRecordMixin:
@@ -268,7 +268,12 @@ class ActiveRecordMixin:
         Return None if failed.
         """
 
-        if isinstance(source, SQLModel):
+        if isinstance(source, cls):
+            obj = source
+            if update:
+                for k, v in update.items():
+                    setattr(obj, k, v)
+        elif isinstance(source, SQLModel):
             obj = cls.from_orm(source, update=update)
         elif isinstance(source, dict):
             obj = cls.parse_obj(source, update=update)
@@ -278,6 +283,8 @@ class ActiveRecordMixin:
         """Refresh all related objects of the given object."""
 
         for rel in self.__mapper__.relationships:
+            if rel.direction.name != "MANYTOONE":
+                continue
             if not hasattr(self, rel.key):
                 continue
             rel_obj = getattr(self, rel.key, None)

@@ -1377,7 +1377,7 @@ class WorkerProvisioningController:
         logger.info(
             f"Reconcile provisioning worker {event.data.name} with event {event.type}"
         )
-        async with AsyncSession(self._engine) as session:
+        async with AsyncSession(self._engine, expire_on_commit=False) as session:
             # Fetch the worker from the database
             worker: Worker = await Worker.one_by_id(session, worker.id)
             if not worker:
@@ -1404,7 +1404,7 @@ class WorkerProvisioningController:
                 await session.commit()
             except Exception as e:
                 message = f"Failed to provision or delete worker {worker.name}: {e}"
-                logger.error(message)
+                logger.exception(message)
                 await session.rollback()
                 await session.refresh(worker)
                 worker.state = WorkerStateEnum.ERROR
