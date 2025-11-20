@@ -31,4 +31,6 @@ exec /usr/local/bin/higress \
     --gatewaySelectorValue=higress-system-higress-gateway \
     --gatewayHttpPort="$GATEWAY_HTTP_PORT" \
     --gatewayHttpsPort="$GATEWAY_HTTPS_PORT" \
-    --ingressClass=
+    --ingressClass= \
+    --httpAddress=localhost:8888 \
+    --grpcAddress=localhost:15051

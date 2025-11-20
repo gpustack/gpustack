@@ -134,8 +134,11 @@ export PILOT_FILTER_GATEWAY_CLUSTER_CONFIG="true"
 exec /usr/local/bin/pilot-discovery \
     discovery \
     --kubeconfig="${EMBEDDED_KUBECONFIG_PATH}" \
-    --httpAddr=:15080 \
-    --monitoringAddr=:15014 \
+    --grpcAddr= \
+    --secureGRPCAddr=localhost:15012 \
+    --httpAddr=localhost:15010 \
+    --httpsAddr= \
+    --monitoringAddr= \
     --log_output_level=default:info \
     --domain=cluster.local \
     --keepaliveMaxServerConnectionAge=30m \
