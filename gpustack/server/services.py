@@ -99,6 +99,9 @@ class UserService:
         result = await User.one_by_id(self.session, user_id)
         if result is None:
             return None
+        if result.worker is not None:
+            # detach worker to avoid lazy loading
+            self.session.expunge(result.worker)
         self.session.expunge(result)
         return result
 
