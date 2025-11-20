@@ -71,8 +71,6 @@ class Config(BaseSettings):
         disable_update_check: Disable update check.
         update_check_url: URL to check for updates.
         model_catalog_file: Path or URL to the model catalog file.
-        ray_port: Port of Ray (GCS server). Used when Ray is enabled. Default is 40096.
-        ray_client_server_port: Port of Ray Client Server. Used when Ray is enabled. Default is 40097.
 
         token: Shared secret used to register worker.
         server_url: URL of the server.
@@ -83,12 +81,7 @@ class Config(BaseSettings):
         worker_metrics_port: Port to expose metrics on.
         worker_port: Port to bind the worker to.
         service_port_range: Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '40000-40063'.
-        ray_node_manager_port: Raylet port for node manager. Used when Ray is enabled. Default is 40098.
-        ray_object_manager_port: Raylet port for object manager. Used when Ray is enabled. Default is 40099.
-        ray_runtime_env_agent_port: Port for Ray Runtime Environment Agent. Used when Ray is enabled. Default is 40100.
-        ray_dashboard_agent_grpc_port: Port for Ray Dashboard Agent gRPC. Used when Ray is enabled. Default is 40101.
-        ray_dashboard_agent_listen_port: Port for Ray Dashboard Agent to listen on. Used when Ray is enabled. Default is 52365.
-        ray_metrics_export_port: Port for Ray Metrics Exporter. Used when Ray is enabled. Default is 40103.
+        ray_port_range: Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '41000-41999'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
         pipx_path: Path to the pipx executable, used to install versioned backends.
@@ -121,12 +114,6 @@ class Config(BaseSettings):
     data_dir: Optional[str] = None
     cache_dir: Optional[str] = None
     huggingface_token: Optional[str] = None
-    ray_node_manager_port: int = 40098
-    ray_object_manager_port: int = 40099
-    ray_runtime_env_agent_port: int = 40100
-    ray_dashboard_agent_grpc_port: int = 40101
-    ray_dashboard_agent_listen_port: int = 52365
-    ray_metrics_export_port: int = 40103
     system_default_container_registry: Optional[str] = None
     image_name_override: Optional[str] = None
     image_repo: str = "gpustack/gpustack"
@@ -156,9 +143,6 @@ class Config(BaseSettings):
     disable_openapi_docs: bool = False
     update_check_url: Optional[str] = None
     model_catalog_file: Optional[str] = None
-    ray_port: int = 40096
-    ray_client_server_port: int = 40097
-    ray_dashboard_port: int = 8265
     enable_cors: bool = False
     allow_origins: Optional[List[str]] = ['*']
     allow_credentials: bool = False
@@ -195,6 +179,7 @@ class Config(BaseSettings):
     worker_port: int = 10150
     worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
+    ray_port_range: Optional[str] = "41000-41999"
     log_dir: Optional[str] = None
     resources: Optional[dict] = None
     bin_dir: Optional[str] = None
@@ -278,9 +263,13 @@ class Config(BaseSettings):
         if self.service_port_range:
             self.check_port_range(self.service_port_range)
 
+        if self.ray_port_range:
+            self.check_port_range(self.ray_port_range, diff=1000)
+
         return self
 
-    def check_port_range(self, port_range: str):
+    @staticmethod
+    def check_port_range(port_range: str, diff: Optional[int] = None):
         ports = port_range.split("-")
         if len(ports) != 2:
             raise Exception(f"Invalid port range: {port_range}")
@@ -288,6 +277,11 @@ class Config(BaseSettings):
             raise Exception("Port range must be numeric")
         if int(ports[0]) > int(ports[1]):
             raise Exception(f"Invalid port range: {ports[0]} > {ports[1]}")
+        if diff is not None:
+            if int(ports[1]) - int(ports[0]) + 1 < diff:
+                raise Exception(
+                    f"Port range is too small: {port_range}, at least {diff} ports are required"
+                )
 
     def make_dirs(self):
         os.makedirs(self.data_dir, exist_ok=True)

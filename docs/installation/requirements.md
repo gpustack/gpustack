@@ -134,6 +134,7 @@ GPUStack uses these ports for communication:
 | TCP 10151       | Default port for worker metrics endpoint      |
 | TCP 8080        | Default port for GPUStack worker internal API |
 | TCP 40000-40063 | Port range for inference services             |
+| TCP 41000-41999 | Port range for Ray services(vLLM distributed deployment using) |
 
 #### Embedded Gateway Ports
 
@@ -154,17 +155,20 @@ The embedded gateway for both server and worker uses the following ports for int
 
 ##### Distributed vLLM with Ray Ports
 
-When distributed vLLM is enabled, GPUStack uses the following Ray ports:
+When using distributed vLLM, GPUStack will parse the above port range for Ray services,
+and assign them in order as below:
 
-| Ray Port        | Description                                      |
-| --------------- | ------------------------------------------------ |
-| TCP 6379        | Default port for Ray (GCS server)                |
-| TCP 10001       | Default port for Ray Client Server               |
-| TCP 8265        | Default port for Ray dashboard                   |
-| TCP <random>    | Default port for Ray node manager                |
-| TCP <random>    | Default port for Ray object manager              |
-| TCP <random>    | Default port for Ray dashboard agent gRPC listen |
-| TCP 52365       | Default port for Ray dashboard agent HTTP listen |
-| TCP 10002-19999 | Port range for Ray worker processes              |
+1. GCS server port (the first port of the range)
+2. Client Server port
+3. Dashboard port
+4. Dashboard gRPC port (no longer used since Ray 2.45.0, kept for backward compatibility)
+5. Dashboard agent gRPC port
+6. Dashboard agent listen port
+7. Metrics export port
+8. Node Manager port
+9. Object Manager port
+10. Raylet runtime env agent port
+11. Minimum port number for the worker
+12. Maximum port number for the worker (the last port of the range)
 
 For more details on Ray ports, see the [Ray documentation](https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations).
