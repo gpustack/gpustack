@@ -61,6 +61,9 @@ class InferenceServer(ABC):
     This is set when the model instance state changes to STARTING.
     """
 
+    _pretrained_config: Optional[Dict] = None
+    """The model configuration, if available."""
+
     @time_decorator
     def __init__(
         self,
@@ -206,6 +209,25 @@ class InferenceServer(ABC):
         is_distributed_follower = is_distributed and not is_distributed_leader
         return is_distributed, is_distributed_leader, is_distributed_follower
 
+    def _get_pretrained_config(self) -> Optional[Dict]:
+        """
+        Get the pretrained model configuration, if available.
+
+        Returns:
+            The pretrained model configuration dictionary, or None if not available.
+        """
+        if self._pretrained_config is not None:
+            return self._pretrained_config
+
+        try:
+            pretrained_config = get_pretrained_config(self._model)
+            self._pretrained_config = pretrained_config
+            return pretrained_config
+        except Exception as e:
+            logger.error(f"Failed to get pretrained config: {e}")
+
+        return None
+
     def _derive_max_model_len(self, default: Optional[int] = None) -> Optional[int]:
         """
         Derive max model length from model config.
@@ -219,7 +241,7 @@ class InferenceServer(ABC):
             The derived max model length, or the default value if derivation fails.
         """
         try:
-            pretrained_config = get_pretrained_config(self._model)
+            pretrained_config = self._get_pretrained_config()
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
             return get_max_model_len(pretrained_or_hf_text_config)
         except Exception as e:

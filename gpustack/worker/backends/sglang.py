@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer import (
     Container,
@@ -437,7 +437,44 @@ class SGLangServer(InferenceServer):
                     ]
                 )
 
+            num_steps = find_parameter(
+                self._model.backend_parameters, ["speculative-num-steps"]
+            )
+            topk = find_parameter(
+                self._model.backend_parameters, ["speculative-eagle-topk"]
+            )
+            if num_steps is None and topk is None:
+                default_steps, default_topk = self._get_default_speculative_steps_topk()
+                arguments.extend(
+                    [
+                        "--speculative-num-steps",
+                        str(default_steps),
+                        "--speculative-eagle-topk",
+                        str(default_topk),
+                    ]
+                )
+
         return arguments
+
+    def _get_default_speculative_steps_topk(self) -> Tuple[int, int]:
+        """
+        Get the default speculative steps and topk for SGLang.
+        Ref: https://github.com/sgl-project/sglang/blob/67fca6b297bf0202941bde7b608c6da14f6a8776/python/sglang/srt/server_args.py#L4363
+        """
+        architectures = getattr(self._pretrained_config, "architectures", []) or []
+        arch = architectures[0] if architectures else ""
+        if arch in [
+            "DeepseekV32ForCausalLM",
+            "DeepseekV3ForCausalLM",
+            "DeepseekV2ForCausalLM",
+            "GptOssForCausalLM",
+            "BailingMoeForCausalLM",
+            "BailingMoeV2ForCausalLM",
+        ]:
+            return (3, 1)
+        else:
+            # The default value for all other models
+            return (5, 4)
 
 
 def get_auto_parallelism_arguments(
