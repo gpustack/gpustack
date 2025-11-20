@@ -500,9 +500,6 @@ RUN --mount=type=cache,target=/root/.cache \
         && rm -rf /tmp/* \
         && rm -rf /workspace/gpustack/dist
 EOF
-## Disable gpustack-runtime auto image correction,
-## let GPUStack to configure the correct runner image.
-ENV GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=0
 ## Copy s6-overlay service scripts.
 COPY pack/s6-overlay /etc/s6-overlay
 
@@ -667,7 +664,14 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
 ##
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 
-ENV GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
+## GPUSTACK_RUNTIME_LOG_EXCEPTION=false: Disable logging exceptions from gpustack-runtime.
+## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT=true: Enable mirrored deployment mode.
+## GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=false: Disable auto correction of runner images.
+## GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS: Configure filter labels for mirrored deployment.
+## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES: Declare volumes to be ignored during mirrored deployment.
+ENV GPUSTACK_RUNTIME_LOG_EXCEPTION="false" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
+    GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE="false" \
     GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS="${GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS}"
 
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh
