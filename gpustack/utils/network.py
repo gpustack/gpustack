@@ -9,6 +9,8 @@ import psutil
 from datetime import datetime, timezone
 import ipaddress
 
+import requests
+
 
 def normalize_route_path(path: str) -> str:
     """
@@ -192,3 +194,19 @@ def is_offline(
     is_offline_flag = (now_ts - last_update_ts) > timeout_seconds
     last_update_str = last_update.strftime("%Y-%m-%d %H:%M:%S UTC")
     return is_offline_flag, last_update_str
+
+
+async def check_docker_hub_reachable() -> bool:
+    """
+    Check if Docker Hub is reachable.
+    To avoid frequent checks, cache the result for a short period via global lock.
+
+    Returns:
+        bool: True if Docker Hub is reachable, False otherwise.
+    """
+    try:
+        resp = requests.get("https://registry-1.docker.io/v2/", timeout=3)
+        reachable = resp.status_code < 500
+    except Exception:
+        reachable = False
+    return reachable

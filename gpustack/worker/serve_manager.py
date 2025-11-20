@@ -19,6 +19,7 @@ from gpustack_runtime.deployer import (
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
 from gpustack import envs
+from gpustack.config import registration
 from gpustack.logging import (
     RedirectStdoutStderr,
 )
@@ -48,10 +49,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
-from gpustack.worker.backends.base import (
-    get_dockerhub_reachable,
-    set_dockerhub_reachable,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +378,7 @@ class ServeManager:
         cfg: Config,
         worker_id: int,
         inference_backend: InferenceBackend,
-        dockerhub_reachable: Optional[bool],
+        _dockerhub_reachable: Optional[bool],
     ):
         """
         Serve model instance in a subprocess.
@@ -398,14 +395,14 @@ class ServeManager:
         """
 
         setproctitle.setproctitle(f"gpustack_model_instance_{mi.id}")
-        if dockerhub_reachable is not None:
-            set_dockerhub_reachable(dockerhub_reachable)
         add_signal_handlers()
 
         clientset = ClientSet(
             base_url=cfg.get_server_url(),
             headers=client_headers,
         )
+
+        registration.dockerhub_reachable = _dockerhub_reachable
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with RedirectStdoutStderr(log_file):
@@ -621,7 +618,7 @@ class ServeManager:
                     self._config,
                     self._worker_id,
                     self._inference_backend_manager.get_backend_by_name(backend),
-                    get_dockerhub_reachable(),
+                    registration.dockerhub_reachable,
                 ),
             )
             process.daemon = False

@@ -11,6 +11,8 @@ from gpustack.utils.uuid import get_legacy_uuid, get_system_uuid
 registration_token_filename = "token"
 worker_token_filename = "worker_token"
 
+dockerhub_reachable: Optional[bool] = None
+
 
 def read_token(data_dir: str, filename) -> Optional[str]:
     token_path = os.path.join(data_dir, filename)

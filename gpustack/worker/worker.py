@@ -23,6 +23,7 @@ from gpustack.server import catalog
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
     get_ifname_by_ip_hostname,
+    check_docker_hub_reachable,
 )
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -38,6 +39,7 @@ from gpustack.worker.tools_manager import ToolsManager
 from gpustack.worker.worker_manager import WorkerManager
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.config.registration import read_worker_token
+from gpustack.config import registration
 from gpustack.worker.worker_gateway import WorkerGatewayController
 from gpustack.gateway.plugins import register as register_gateway_plugins
 
@@ -223,7 +225,8 @@ class Worker:
         inference_backend_manager = InferenceBackendManager(self._clientset)
         # Start InferenceBackend listener to cache backend data
         self._create_async_task(inference_backend_manager.start_listener())
-        self._create_async_task(inference_backend_manager.check_docker_hub_reachable())
+        reachable = await check_docker_hub_reachable()
+        registration.dockerhub_reachable = reachable
 
         serve_manager = ServeManager(
             worker_id=self._worker_id,
