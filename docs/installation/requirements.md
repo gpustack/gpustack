@@ -14,7 +14,7 @@ GPUStack supports most modern Linux distributions on **AMD64** and **ARM64** arc
 GPUStack has been tested and verified on the following operating systems:
 
 | OS        | Versions        |
-|-----------|-----------------|
+| --------- | --------------- |
 | Ubuntu    | \>= 20.04       |
 | Debian    | \>= 11          |
 | RHEL      | \>= 8           |
@@ -118,27 +118,47 @@ GPUStack uses these ports for communication:
 
 #### Server Ports
 
-| Port      | Description                                                              |
-|-----------|--------------------------------------------------------------------------|
-| TCP 80    | Default port for GPUStack UI and API endpoints                           |
-| TCP 443   | Default port for GPUStack UI and API endpoints (TLS enabled)             |
-| TCP 10161 | Default port for GPUStack server metrics                                 |
+| Port      | Description                                                  |
+| --------- | ------------------------------------------------------------ |
+| TCP 80    | Default port for GPUStack UI and API endpoints               |
+| TCP 443   | Default port for GPUStack UI and API endpoints (TLS enabled) |
+| TCP 10161 | Default port for server metrics endpoint                     |
+| TCP 8080  | Default port for GPUStack server internal API                |
+| TCP 5432  | Default port for embedded Postgres Database                  |
 
 #### Worker Ports
 
-| Port            | Description                                  |
-|-----------------|----------------------------------------------|
-| TCP 10150       | Default port for GPUStack worker             |
-| TCP 10151       | Default port for exposing metrics            |
-| TCP 40000-40063 | Port range for inference services            |
-| TCP 40064-40095 | Port range for distributed serving           |
+| Port            | Description                                   |
+| --------------- | --------------------------------------------- |
+| TCP 10150       | Default port for GPUStack worker              |
+| TCP 10151       | Default port for worker metrics endpoint      |
+| TCP 8080        | Default port for GPUStack worker internal API |
+| TCP 40000-40063 | Port range for inference services             |
+| TCP 40064-40095 | Port range for distributed serving            |
+
+#### Embedded Gateway Ports
+
+The embedded gateway for both server and worker uses the following ports for internal communications.
+
+| Port      | Host      | Description                                          |
+| --------- | --------- | ---------------------------------------------------- |
+| TCP 18443 | 127.0.0.1 | Port for the file-based APIServer serving via HTTPS  |
+| TCP 15000 | 127.0.0.1 | Management port for the Envoy gateway                |
+| TCP 15021 | 0.0.0.0   | Health check port for the Envoy gateway              |
+| TCP 15090 | 0.0.0.0   | Metrics port for the Envoy gateway                   |
+| TCP 9876  | 127.0.0.1 | Introspection port for the Pilot-discovery           |
+| TCP 15010 | 127.0.0.1 | Port for Pilot-discovery serving XDS via HTTP/gRPC   |
+| TCP 15012 | 127.0.0.1 | Port for Pilot-discovery serving XDS via secure gRPC |
+| TCP 15020 | 0.0.0.0   | Metrics port for Pilot-agent                         |
+| TCP 8888  | 127.0.0.1 | Port for Controller serving XDS via HTTP             |
+| TCP 15051 | 127.0.0.1 | Port for Controller serving XDS via gRPC             |
 
 ##### Distributed vLLM with Ray Ports
 
 When distributed vLLM is enabled, GPUStack uses the following Ray ports:
 
 | Ray Port        | Description                                      |
-|-----------------|--------------------------------------------------|
+| --------------- | ------------------------------------------------ |
 | TCP 6379        | Default port for Ray (GCS server)                |
 | TCP 10001       | Default port for Ray Client Server               |
 | TCP 8265        | Default port for Ray dashboard                   |
