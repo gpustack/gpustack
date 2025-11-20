@@ -962,13 +962,11 @@ class AscendMindIEServer(InferenceServer):
         backend_config["multiNodesInferEnabled"] = False
         if is_distributed:
             # Add distributed config if in distributed mode.
-            connecting_port = (
-                self._model_instance.ports[1]
-                if len(self._model_instance.ports) > 1
-                else None
-            )
             backend_config["multiNodesInferEnabled"] = True
-            backend_config["multiNodesInferPort"] = connecting_port
+            # During distributed setup,
+            # we must get more than one port here,
+            # so we use ports[1] for distributed initialization.
+            backend_config["multiNodesInferPort"] = self._model_instance.ports[1]
         if is_distributed_follower:
             subworker = next(
                 (sw for sw in subworkers if sw.worker_id == self._worker.id),
