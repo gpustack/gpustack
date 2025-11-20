@@ -13,7 +13,7 @@ from .generated_http_client import HTTPClient
 class ModelInstanceClient:
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v1/model-instances"
+        self._url = f"{client._base_url}/v2/model-instances"
 
     def list(self, params: Dict[str, Any] = None) -> ModelInstancesPublic:
         response = self._client.get_httpx_client().get(self._url, params=params)
