@@ -21,6 +21,7 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
 )
+from gpustack.utils import network
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
@@ -385,44 +386,92 @@ class VLLMServer(InferenceServer):
         self,
         is_leader: bool,
     ) -> (List[str], Optional[List[ContainerPort]]):
-        gcs_server_port = 6379
-        client_port = 10001
-        dashboard_port = 8265
+        # Parse the Ray port range from configuration,
+        # assign ports in order as below:
+        # 1.  GCS server port (the first port of the range)
+        # 2.  Client port
+        # 3.  Dashboard port
+        # 4.  Dashboard gRPC port (no longer used, since Ray 2.45.0 kept for backward compatibility)
+        # 5.  Dashboard agent gRPC port
+        # 6.  Dashboard agent listen port
+        # 7.  Metrics export port
+        # 8.  Node Manager port
+        # 9.  Object Manager port
+        # 10. Raylet runtime env agent port
+        # 11. Minimum port number for the worker
+        # 12. Maximum port number for the worker (the last port of the range)
 
-        if is_leader:
-            arguments = [
-                "ray",
-                "start",
-                "--block",
-                "--head",
-                f"--port={gcs_server_port}",
-                f"--ray-client-server-port={client_port}",
-                f"--dashboard-host={self._worker.ip}",
-                f"--dashboard-port={dashboard_port}",
-                f"--node-ip-address={self._worker.ip}",
-                "--disable-usage-stats",
-                "--verbose",
-            ]
-            ports = [
-                ContainerPort(
-                    internal=port,
-                )
-                for port in [gcs_server_port, client_port, dashboard_port]
-            ]
-
-            return arguments, ports
+        start, end = network.parse_port_range(self._config.ray_port_range)
+        gcs_server_port = start
+        client_port = start + 1
+        dashboard_port = start + 2
+        dashboard_grpc_port = start + 3
+        dashboard_agent_grpc_port = start + 4
+        dashboard_agent_listen_port = start + 5
+        metrics_export_port = start + 6
+        node_manager_port = start + 7
+        object_manager_port = start + 8
+        raylet_runtime_env_agent_port = start + 9
+        worker_port_min = start + 10
+        worker_port_max = end
 
         arguments = [
             "ray",
             "start",
             "--block",
-            f"--address={self._model_instance.worker_ip}:{gcs_server_port}",
-            f"--node-ip-address={self._worker.ip}",
             "--disable-usage-stats",
             "--verbose",
+            f"--node-manager-port={node_manager_port}",
+            f"--object-manager-port={object_manager_port}",
+            f"--runtime-env-agent-port={raylet_runtime_env_agent_port}",
+            f"--dashboard-agent-grpc-port={dashboard_agent_grpc_port}",
+            f"--dashboard-agent-listen-port={dashboard_agent_listen_port}",
+            f"--metrics-export-port={metrics_export_port}",
+            f"--min-worker-port={worker_port_min}",
+            f"--max-worker-port={worker_port_max}",
+            f"--node-ip-address={self._worker.ip}",
+        ]
+        ports = [
+            ContainerPort(
+                internal=port,
+            )
+            for port in [
+                dashboard_grpc_port,
+                dashboard_agent_grpc_port,
+                dashboard_agent_listen_port,
+                metrics_export_port,
+                node_manager_port,
+                object_manager_port,
+                raylet_runtime_env_agent_port,
+            ]
         ]
 
-        return arguments, None
+        if is_leader:
+            arguments.extend(
+                [
+                    "--head",
+                    f"--port={gcs_server_port}",
+                    f"--ray-client-server-port={client_port}",
+                    f"--dashboard-host={self._worker.ip}",
+                    f"--dashboard-port={dashboard_port}",
+                ]
+            )
+            ports.extend(
+                [
+                    ContainerPort(
+                        internal=port,
+                    )
+                    for port in [gcs_server_port, client_port, dashboard_port]
+                ]
+            )
+        else:
+            arguments.extend(
+                [
+                    f"--address={self._model_instance.worker_ip}:{gcs_server_port}",
+                ]
+            )
+
+        return arguments, ports
 
 
 def get_auto_parallelism_arguments(

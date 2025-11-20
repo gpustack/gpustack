@@ -293,10 +293,10 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("SERVICE_PORT_RANGE"),
     )
     group.add_argument(
-        "--ray-worker-port-range",
+        "--ray-port-range",
         type=str,
-        help="[Deprecated] Port range for Ray worker processes. Use --distributed-worker-port-range instead. If provided, this value will be mapped to --distributed-worker-port-range.",
-        default=get_gpustack_env("RAY_WORKER_PORT_RANGE"),
+        help="Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '41000-41999'.",
+        default=get_gpustack_env("RAY_PORT_RANGE"),
     )
     group.add_argument(
         "--disable-worker-metrics",
@@ -565,8 +565,6 @@ def set_common_options(args, config_data: dict):
         "bin_dir",
         "pipx_path",
         "huggingface_token",
-        "ray_node_manager_port",
-        "ray_object_manager_port",
         "system_default_container_registry",
         "image_name_override",
         "image_repo",
@@ -600,8 +598,6 @@ def set_server_options(args, config_data: dict):
         "disable_openapi_docs",
         "update_check_url",
         "model_catalog_file",
-        "ray_port",
-        "ray_client_server_port",
         "enable_cors",
         "allow_origins",
         "allow_credentials",
@@ -641,10 +637,10 @@ def set_worker_options(args, config_data: dict):
         "disable_worker_metrics",
         "worker_metrics_port",
         "service_port_range",
+        "ray_port_range",
         "log_dir",
         "system_reserved",
         "tools_download_base_url",
-        "ray_metrics_export_port",
         "enable_hf_transfer",
         "enable_hf_xet",
     ]
