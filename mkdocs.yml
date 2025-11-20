@@ -141,6 +141,7 @@ nav:
           - Save Images: cli-reference/save-images.md
           - Copy Images: cli-reference/copy-images.md
   - Inference Performance Lab:
+      - Overview: performance-lab/overview.md
       - Optimizing Throughput:
           - GLM-4.6/4.5-Air:
               - A100: performance-lab/glm-4.5-air/a100.md
@@ -173,3 +174,6 @@ nav:
       - Optimizing Latency:
           - Qwen3-8B:
               - H100: performance-lab/qwen3-8b/h100-latency.md
+      - References:
+          - The Impact of Quantization on vLLM Inference Performance: performance-lab/references/the-impact-of-quantization-on-vllm-inference-performance.md
+          - Evaluating LMCache Prefill Acceleration in vLLM: performance-lab/references/evaluating-lmcache-prefill-acceleration-in-vllm.md
