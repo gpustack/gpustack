@@ -248,7 +248,9 @@ async def create_worker(
         if existing_worker is not None:
             if to_create_apikey is not None:
                 new_worker.token = new_token
-            await WorkerService(session).update(existing_worker, new_worker)
+            await WorkerService(session).update(
+                existing_worker, new_worker, auto_commit=False
+            )
             worker = existing_worker
         else:
             worker = await Worker.create(session, new_worker, auto_commit=False)
