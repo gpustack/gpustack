@@ -7,7 +7,7 @@ from gpustack.schemas.models import (
     Model,
     CategoryEnum,
 )
-
+from gpustack.schemas.inference_backend import is_built_in_backend
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +18,19 @@ def get_meta_from_running_instance(
     """
     Get the meta information from the running instance (synchronous version).
     """
+    is_built_in = is_built_in_backend(backend)
+    if not is_built_in or backend == BackendEnum.CUSTOM:
+        # Skip meta fetching for custom or non-built-in backends
+        return {}
+
+    if backend == BackendEnum.SGLANG and CategoryEnum.IMAGE in model.categories:
+        # SGLang Diffusion does not provide metadata endpoints at the moment.
+        return {}
+
     meta_path = "/v1/models"
     if backend == BackendEnum.ASCEND_MINDIE:
         # Ref: https://www.hiascend.com/document/detail/zh/mindie/21RC2/mindieservice/servicedev/mindie_service0066.html
         meta_path = "/info"
-    if backend == BackendEnum.SGLANG and CategoryEnum.IMAGE in model.categories:
-        return {}
 
     try:
         url = f"http://{mi.worker_ip}:{mi.port}{meta_path}"
@@ -37,7 +44,7 @@ def get_meta_from_running_instance(
 
         return parse_v1_models_meta(response_json)
     except Exception as e:
-        logger.error(f"Failed to get meta from running instance {mi.name}: {e}")
+        logger.warning(f"Failed to get meta from running instance {mi.name}: {e}")
         return {}
 
 
