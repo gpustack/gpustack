@@ -134,7 +134,6 @@ GPUStack uses these ports for communication:
 | TCP 10151       | Default port for worker metrics endpoint      |
 | TCP 8080        | Default port for GPUStack worker internal API |
 | TCP 40000-40063 | Port range for inference services             |
-| TCP 40064-40095 | Port range for distributed serving            |
 
 #### Embedded Gateway Ports
 
