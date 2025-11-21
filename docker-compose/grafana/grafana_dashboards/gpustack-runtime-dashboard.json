@@ -681,7 +681,25 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "huggingface": {
+                  "index": 0,
+                  "text": "Hugging Face"
+                },
+                "local_path": {
+                  "index": 2,
+                  "text": "Local Path"
+                },
+                "model_scope": {
+                  "index": 1,
+                  "text": "ModelScope"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
