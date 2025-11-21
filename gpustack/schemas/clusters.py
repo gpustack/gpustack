@@ -348,7 +348,6 @@ class ClusterRegistrationTokenPublic(BaseModel):
     token: str
     server_url: str
     image: str
-    container_registry: Optional[str] = None
 
 
 class CredentialType(str, Enum):

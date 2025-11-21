@@ -592,17 +592,14 @@ class Config(BaseSettings):
     def _is_server(self):
         return self.server_url is None
 
-    def get_image_name(self) -> str:
+    def get_image_name(self, override: Optional[str]) -> str:
         if self.image_name_override:
             return self.image_name_override
         version = __version__
         if version.removeprefix("v") == "0.0.0":
             version = "main"
-        prefix = (
-            f"{self.system_default_container_registry}/"
-            if self.system_default_container_registry
-            else ""
-        )
+        registry = override or self.system_default_container_registry
+        prefix = f"{registry}/" if registry else ""
         return f"{prefix}{self.image_repo}:{version}"
 
     def higress_base_dir(self) -> str:
