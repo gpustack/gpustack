@@ -15,6 +15,8 @@ from sqlmodel import (
     String,
 )
 import sqlalchemy as sa
+from sqlalchemy.orm.state import InstanceState
+from sqlalchemy.orm.attributes import NO_VALUE
 from typing import TYPE_CHECKING
 
 from gpustack.mixins import BaseModelMixin
@@ -26,9 +28,16 @@ if TYPE_CHECKING:
     from gpustack.schemas.users import User
 
 
-def is_in_session(obj: SQLModel) -> bool:
-    insp = sa.inspect(obj)
-    return insp.session is not None
+def is_in_session(obj: SQLModel, attr: Optional[str] = None) -> bool:
+    insp: InstanceState = sa.inspect(obj)
+    if insp.session is None:
+        return False
+    if attr:
+        attr_state = insp.attrs.get(attr)
+        if attr_state is None:
+            return False
+        return attr_state.loaded_value is not NO_VALUE
+    return True
 
 
 class PublicFields:
@@ -105,21 +114,21 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"lazy": "selectin"},
         back_populates="worker_pool",
     )
-    _workers: Optional[int] = None
-    _ready_workers: Optional[int] = None
+    _workers: int = 0
+    _ready_workers: int = 0
 
     @computed_field()
     @property
     def workers(self) -> int:
-        if not is_in_session(self):
-            return 0 if not self._workers else self._workers
+        if not is_in_session(self, "pool_workers"):
+            return self._workers
         return len(self.pool_workers) if self.pool_workers else 0
 
     @computed_field()
     @property
     def ready_workers(self) -> int:
-        if not is_in_session(self):
-            return 0 if not self._workers else self._workers
+        if not is_in_session(self, "pool_workers"):
+            return self._ready_workers
         if self.pool_workers is None or len(self.pool_workers) == 0:
             return 0
         return len([w for w in self.pool_workers if w.state.value == 'ready'])
@@ -134,8 +143,8 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
 
     def __init__(
         self,
-        workers: Optional[int] = None,
-        ready_workers: Optional[int] = None,
+        workers: int = 0,
+        ready_workers: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -260,23 +269,23 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
         back_populates="cluster",
     )
-    _models: Optional[int] = None
-    _workers: Optional[int] = None
-    _ready_workers: Optional[int] = None
-    _gpus: Optional[int] = None
+    _models: int = 0
+    _workers: int = 0
+    _ready_workers: int = 0
+    _gpus: int = 0
 
     @computed_field()
     @property
     def workers(self) -> int:
-        if not is_in_session(self):
-            return 0 if not self._workers else self._workers
+        if not is_in_session(self, "cluster_workers"):
+            return self._workers
         return len(self.cluster_workers) if self.cluster_workers else 0
 
     @computed_field()
     @property
     def ready_workers(self) -> int:
-        if not is_in_session(self):
-            return 0 if not self._ready_workers else self._ready_workers
+        if not is_in_session(self, "cluster_workers"):
+            return self._ready_workers
         if self.cluster_workers is None or len(self.cluster_workers) == 0:
             return 0
         return len([w for w in self.cluster_workers if w.state.value == 'ready'])
@@ -284,8 +293,8 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     @computed_field(alias="gpus")
     @property
     def gpus(self) -> int:
-        if not is_in_session(self):
-            return 0 if not self._gpus else self._gpus
+        if not is_in_session(self, "cluster_workers"):
+            return self._gpus
         if self.workers == 0:
             return 0
         count = 0
@@ -298,8 +307,8 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     @computed_field(alias="models")
     @property
     def models(self) -> int:
-        if not is_in_session(self):
-            return 0 if not self._models else self._models
+        if not is_in_session(self, "cluster_models"):
+            return self._models
         return len(self.cluster_models) if self.cluster_models else 0
 
     def __hash__(self):
@@ -312,10 +321,10 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
 
     def __init__(
         self,
-        workers: Optional[int] = None,
-        ready_workers: Optional[int] = None,
-        gpus: Optional[int] = None,
-        models: Optional[int] = None,
+        workers: int = 0,
+        ready_workers: int = 0,
+        gpus: int = 0,
+        models: int = 0,
         **kwargs,
     ):
         super().__init__(**kwargs)
