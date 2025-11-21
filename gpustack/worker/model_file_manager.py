@@ -497,15 +497,9 @@ class ModelFileDownloadTask:
             current_worker_id = self._model_file.worker_id
 
             if owner_id is None or owner_id != current_worker_id:
-                msg = (
+                logger.warning(
                     f"Download model {self._model_file.readable_source} timed out: "
                     f"lock held by other worker, please try again later."
-                )
-                self._write_to_instance_download_logs(f"{msg}", is_error=True)
-                self._update_model_file(
-                    self._model_file.id,
-                    state=ModelFileStateEnum.ERROR,
-                    state_message=msg,
                 )
                 return
 

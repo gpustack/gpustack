@@ -7,6 +7,7 @@ from typing import Optional
 from filelock import SoftFileLock, Timeout, FileLock
 from modelscope.hub.utils.utils import model_id_to_group_owner_name
 
+from gpustack.envs import DISABLE_OS_FILELOCK
 from gpustack.schemas import ModelFile
 from gpustack.schemas.models import SourceEnum
 
@@ -16,7 +17,6 @@ class HeartbeatSoftFileLock:
         self,
         lock_path: str,
         ttl_seconds: int = 60,
-        timeout_seconds: int = 120,
         heartbeat_seconds: int = 5,
         owner_worker_id: Optional[int] = None,
     ):
@@ -25,20 +25,15 @@ class HeartbeatSoftFileLock:
 
         Parameters:
         - lock_path: Path to the .lock file used for coordination.
-        - ttl_seconds: Lease Time-To-Live (in seconds) for the lock file. If the
+        - ttl_seconds: Only for soft lock, Lease Time-To-Live (in seconds) for the lock file. If the
           current holder crashes and heartbeats stop, a subsequent acquirer will
           treat a lock file whose mtime is older than this TTL as stale and may
           delete it to recover.
-        - timeout_seconds: Maximum total time (in seconds) to wait for acquiring
-          the lock in this call. This is the overall budget; the implementation
-          performs short, repeated acquire attempts and periodic stale-lock
-          cleanup within this window. If exceeded, a TimeoutError is raised.
         - heartbeat_seconds: Interval (in seconds) at which the lock holder
           refreshes the lock file's modification time to signal liveness.
         """
         self._lock_path = lock_path
         self._ttl_seconds = ttl_seconds
-        self._timeout_seconds = timeout_seconds
         self._heartbeat_seconds = heartbeat_seconds
         self._os_lock = FileLock(lock_path)
         self._lock = SoftFileLock(lock_path)
@@ -58,17 +53,18 @@ class HeartbeatSoftFileLock:
             pass
 
     def __enter__(self):
-        start = time.time()
-        try:
-            self._os_lock.acquire(timeout=self._timeout_seconds)
-        except NotImplementedError as e:
-            if "use SoftFileLock instead" in str(e):
-                self._using_soft_lock = True
-                pass
-            else:
+        if DISABLE_OS_FILELOCK:
+            self._using_soft_lock = True
+        else:
+            try:
+                self._os_lock.acquire()
+            except NotImplementedError as e:
+                if "use SoftFileLock instead" in str(e):
+                    self._using_soft_lock = True
+                else:
+                    raise e
+            except Exception as e:
                 raise e
-        except Exception as e:
-            raise e
 
         if not self._using_soft_lock:
             return self
@@ -78,12 +74,11 @@ class HeartbeatSoftFileLock:
                 # Attempt fast acquisition, fall through on contention
                 self._lock.acquire(timeout=1)
                 break
-            except Timeout as te:
+            except Timeout:
                 self._cleanup_stale_lock()
-                if time.time() - start > self._timeout_seconds:
-                    # Ensure has other processes in the same worker holding the lock
-                    raise te
                 time.sleep(1)
+            except Exception as e:
+                raise e
 
         try:
             info = {
