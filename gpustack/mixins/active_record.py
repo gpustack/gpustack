@@ -328,7 +328,6 @@ class ActiveRecordMixin:
 
         cls._publish_event_after_commit(session, EventType.CREATED, obj)
         await obj.save(session, auto_commit=auto_commit)
-        await obj._refresh_related_objects(session)
         return obj
 
     @classmethod
@@ -401,10 +400,11 @@ class ActiveRecordMixin:
             targets = self._get_flush_targets(session)
             await session.flush(targets)
 
-            if not auto_commit:
-                return
-            await session.commit()
-            await session.refresh(self)
+            if auto_commit:
+                await session.commit()
+                await session.refresh(self)
+            if session.is_active:
+                await self._refresh_related_objects(session)
         except (IntegrityError, OperationalError, FlushError) as e:
             await session.rollback()
             raise e
