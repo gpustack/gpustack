@@ -222,7 +222,7 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
         raise NotFoundException(message=f"cluster {id} not found")
     url = get_server_url(request)
     cfg = get_global_config()
-    container_registry = ""
+    container_registry = None
     if cfg.system_default_container_registry:
         container_registry = cfg.system_default_container_registry
     elif not registration.dockerhub_reachable:
@@ -231,8 +231,9 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
     return ClusterRegistrationTokenPublic(
         token=cluster.registration_token,
         server_url=url,
-        image=get_global_config().get_image_name(),  # Default image, can be customized
-        container_registry=container_registry,
+        image=get_global_config().get_image_name(
+            container_registry
+        ),  # Default image, can be customized
     )
 
 
