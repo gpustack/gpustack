@@ -738,20 +738,3 @@ model_sets:
       model_scope_model_id: Qwen/Qwen-Image
       backend: SGLang
       backend_version: 0.5.5
-- name: Qwen-Image-Edit
-  description: Qwen-Image-Edit is an image editing version of Qwen-Image. Built upon our 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image’s unique text rendering capabilities to image editing tasks, enabling precise text editing.
-  home: https://qwen.ai
-  icon: /static/catalog_icons/qwen.png
-  size: 20
-  categories:
-    - image
-  licenses:
-    - apache-2.0
-  release_date: "2025-08-19"
-  specs:
-    - mode: standard
-      quantization: "BF16"
-      source: model_scope
-      model_scope_model_id: Qwen/Qwen-Image-Edit
-      backend: SGLang
-      backend_version: 0.5.5
