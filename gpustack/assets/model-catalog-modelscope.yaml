@@ -738,3 +738,6 @@ model_sets:
       model_scope_model_id: Qwen/Qwen-Image
       backend: SGLang
       backend_version: 0.5.5
+      env:
+        # Miss the weight files in sub-directories at the moment, claim empirical value here.
+        GPUSTACK_MODEL_VRAM_CLAIM: "53687091200" # 50 GiB
