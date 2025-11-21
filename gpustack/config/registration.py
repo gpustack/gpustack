@@ -1,5 +1,6 @@
 import os
 import time
+from cachetools import TTLCache, cached
 from typing import Optional
 from gpustack.client import ClientSet
 from gpustack.client.worker_manager_clients import (
@@ -7,11 +8,10 @@ from gpustack.client.worker_manager_clients import (
 )
 from gpustack.security import API_KEY_PREFIX
 from gpustack.utils.uuid import get_legacy_uuid, get_system_uuid
+from gpustack.utils.network import check_registry_reachable
 
 registration_token_filename = "token"
 worker_token_filename = "worker_token"
-
-dockerhub_reachable: Optional[bool] = None
 
 
 def read_token(data_dir: str, filename) -> Optional[str]:
@@ -83,3 +83,20 @@ def registration_client(
         )
         return WorkerRegistrationClient(clientset.http_client)
     return None
+
+
+cache = TTLCache(maxsize=3, ttl=3600)
+
+
+@cached(cache)
+def determine_default_registry(override: Optional[str] = None) -> Optional[str]:
+    if override is not None and len(override) > 0:
+        return override
+    docker_hub_reachable = check_registry_reachable("https://registry-1.docker.io")
+    quay_io_reachable = check_registry_reachable("https://quay.io")
+    if docker_hub_reachable:
+        return None
+    elif quay_io_reachable:
+        return "quay.io"
+    else:
+        return None
