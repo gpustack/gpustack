@@ -11,7 +11,7 @@ import threading
 from typing import Dict, Tuple
 
 from filelock import Timeout
-from modelscope.hub.constants import TEMPORARY_FOLDER_NAME
+from modelscope.hub.constants import TEMPORARY_FOLDER_NAME, API_FILE_DOWNLOAD_CHUNK_SIZE
 from multiprocessing import Manager, cpu_count
 from huggingface_hub._local_folder import get_local_download_paths
 from huggingface_hub.file_download import get_hf_file_metadata, hf_hub_url
@@ -311,6 +311,11 @@ class ModelFileDownloadTask:
         self._tqdm_file_basename = {}
         # Number of header lines in the log file
         self._log_header_lines = 1
+        self._resume_threshold = 0
+        if self._model_file.source == SourceEnum.MODEL_SCOPE:
+            self._resume_threshold = API_FILE_DOWNLOAD_CHUNK_SIZE
+        elif self._model_file.source == SourceEnum.HUGGING_FACE:
+            self._resume_threshold = huggingface_hub.constants.DOWNLOAD_CHUNK_SIZE
 
     def prerun(self):
         setup_logging(self._config.debug)
@@ -601,7 +606,7 @@ class ModelFileDownloadTask:
         tqdm_id = getattr(tqdm_instance, '_gpustack_id', None)
         if not tqdm_id or tqdm_id not in self._file_line_mapping:
             return
-        if n == tqdm_instance.n:
+        if self._resume_threshold and n > self._resume_threshold:
             # https://github.com/modelscope/modelscope/blob/609442d271bd7ed106a0933b1937289be7c1ad01/modelscope/hub/file_download.py#L417-L422
             # During download reconnection events, the progress bar may recalculate based on the current downloaded size.
             # We need to intercept this behavior and read the actual cached file size to correct the progress display.
@@ -683,6 +688,7 @@ class ModelFileDownloadTask:
                 return n
             base = tqdm_instance.n or 0
             delta = actual_size - base
+            logger.debug(f"_adjust_downloaded_by_cache_size success, delta = {n}")
             return delta if delta > 0 else 0
         except Exception:
             return n
