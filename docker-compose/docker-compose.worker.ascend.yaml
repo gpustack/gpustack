@@ -1,0 +1,29 @@
+# Before starting this service, run the following command to detect the Ascend device:
+#   export ASCEND_VISIBLE_DEVICES=$(ls /dev/davinci* 2>/dev/null | head -1 | grep -o '[0-9]\+' || echo "0")
+#
+# Then start the container with:
+#   sudo -E docker compose -f docker-compose.server.ascend.yaml up -d
+#
+# The -E flag ensures the environment variable is passed to Docker Compose.
+#
+services:
+  gpustack-worker:
+    image: gpustack/gpustack
+    container_name: gpustack-worker
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    environment:
+      ASCEND_VISIBLE_DEVICES: "${ASCEND_VISIBLE_DEVICES}"
+    volumes:
+      - gpustack-data:/var/lib/gpustack
+      - /var/run/docker.sock:/var/run/docker.sock
+    runtime: ascend
+    command: 
+      - --server-url 
+      - http://your_gpustack_server_url # replace with actual server URL and
+      - --token 
+      - your_gpustack_token             # replace with token
+
+volumes:
+  gpustack-data: {}

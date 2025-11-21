@@ -118,6 +118,7 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      - GF_SERVER_HTTP_PORT=3000
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=grafana
       - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
