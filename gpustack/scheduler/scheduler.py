@@ -338,7 +338,11 @@ class Scheduler:
                 model_instance.distributed_servers = DistributedServers(
                     subordinate_workers=candidate.subordinate_workers,
                 )
-                if get_backend(model) in (BackendEnum.VLLM, BackendEnum.ASCEND_MINDIE):
+                if get_backend(model) in (
+                    BackendEnum.VLLM,
+                    BackendEnum.ASCEND_MINDIE,
+                    BackendEnum.SGLANG,
+                ):
                     model_instance.distributed_servers.mode = (
                         DistributedServerCoordinateModeEnum.INITIALIZE_LATER
                     )
