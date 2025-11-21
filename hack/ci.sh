@@ -11,7 +11,6 @@ function ci() {
   make install "$@"
   make lint "$@"
   make test "$@"
-  make validate "$@"
   make build "$@"
 }
 

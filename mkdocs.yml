@@ -72,107 +72,105 @@ repo_url: https://github.com/gpustack/gpustack
 edit_uri: edit/main/docs/
 nav:
   - Home:
-    - Overview: overview.md
-    - Quickstart: quickstart.md
-    - Installation:
-        - Requirements: installation/requirements.md
-        - NVIDIA: installation/nvidia/installation.md
-        - AMD: installation/amd/installation.md
-        - Ascend:  installation/ascend/installation.md
-        - Hygon: installation/hygon/installation.md
-        - MThreads: installation/mthreads/installation.md
-        - Iluvatar: installation/iluvatar/installation.md
-        - Cambricon:  installation/cambricon/installation.md
-        - Air-Gapped Installation: installation/air-gapped.md
-        - Uninstallation: installation/uninstallation.md
-    - Upgrade: upgrade.md
-    - Migration: migration.md
-    - User Guide:
-        - Playground:
-            - Playgound: user-guide/playground/index.md
-            - Chat: user-guide/playground/chat.md
-            - Image: user-guide/playground/image.md
-            - Audio: user-guide/playground/audio.md
-            - Embedding: user-guide/playground/embedding.md
-            - Rerank: user-guide/playground/rerank.md
-        - Model Deployment Management: user-guide/model-deployment-management.md
-        - Model Catalog: user-guide/model-catalog.md
-        - Model File management: user-guide/model-file-management.md
-        - API Key Management: user-guide/api-key-management.md
-        - User Management: user-guide/user-management.md
-        - Single Sign-On (SSO) Authentication: user-guide/sso.md
-        - Inference Backends: user-guide/inference-backends.md
-        - Pinned Backend Versions: user-guide/pinned-backend-versions.md
-        - Compatibility Check: user-guide/compatibility-check.md
-        - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
-        - Image Generation APIs: user-guide/image-generation-apis.md
-        - Rerank API: user-guide/rerank-api.md
-        - Desktop Setup: user-guide/desktop-setup.md
-        - Observability: user-guide/observability.md
-    - Using Models:
-        - Using Large Language Models: using-models/using-large-language-models.md
-        - Using Vision Language Models: using-models/using-vision-language-models.md
-        - Using Embedding Models: using-models/using-embedding-models.md
-        - Using Reranker Models: using-models/using-reranker-models.md
-        - Using Image Generation Models: using-models/using-image-generation-models.md
-        - Recommended Parameters for Image Generation Models: using-models/recommended-parameters-for-image-generation-models.md
-        - Editing Images: using-models/editing-images.md
-        - Using Audio Models: using-models/using-audio-models.md
-    - Tutorials:
-        - Running DeepSeek R1 671B with Distributed vLLM: tutorials/running-deepseek-r1-671b-with-distributed-vllm.md
-        - Running DeepSeek R1 671B with Distributed Ascend Mindie: tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie.md
-        - Performing Distributed Inference Across Workers (llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
-        - Inference On CPUs: tutorials/inference-on-cpus.md
-        - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
-        - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
-        - Custom inference backend: tutorials/custom-inference-backend.md
-    - Integrations:
-        - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
-        - Integrate with Dify: integrations/integrate-with-dify.md
-        - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
-        - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
-    - Architecture: architecture.md
-    - Scheduler: scheduler.md
-    - Troubleshooting: troubleshooting.md
-    - FAQ: faq.md
-    - API Reference: api-reference.md
-    - CLI Reference:
-        - Start: cli-reference/start.md
-        - Download Tools: cli-reference/download-tools.md
-        - Reload Config: cli-reference/reload-config.md
-        - List Images: cli-reference/list-images.md
-        - Save Images: cli-reference/save-images.md
-        - Copy Images: cli-reference/copy-images.md
+      - Overview: overview.md
+      - Quickstart: quickstart.md
+      - Installation:
+          - Requirements: installation/requirements.md
+          - NVIDIA: installation/nvidia/installation.md
+          - AMD: installation/amd/installation.md
+          - Ascend: installation/ascend/installation.md
+          - Hygon: installation/hygon/installation.md
+          - MThreads: installation/mthreads/installation.md
+          - Iluvatar: installation/iluvatar/installation.md
+          - Cambricon: installation/cambricon/installation.md
+          - Air-Gapped Installation: installation/air-gapped.md
+          - Uninstallation: installation/uninstallation.md
+      - Upgrade: upgrade.md
+      - Migration: migration.md
+      - User Guide:
+          - Playground:
+              - Playgound: user-guide/playground/index.md
+              - Chat: user-guide/playground/chat.md
+              - Image: user-guide/playground/image.md
+              - Audio: user-guide/playground/audio.md
+              - Embedding: user-guide/playground/embedding.md
+              - Rerank: user-guide/playground/rerank.md
+          - Model Catalog: user-guide/model-catalog.md
+          - Model Deployment Management: user-guide/model-deployment-management.md
+          - Inference Backends: user-guide/inference-backends.md
+          - Compatibility Check: user-guide/compatibility-check.md
+          - Model File management: user-guide/model-file-management.md
+          - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
+          - Image Generation APIs: user-guide/image-generation-apis.md
+          - Rerank API: user-guide/rerank-api.md
+          - API Key Management: user-guide/api-key-management.md
+          - User Management: user-guide/user-management.md
+          - Single Sign-On (SSO) Authentication: user-guide/sso.md
+          - Observability: user-guide/observability.md
+      - Using Models:
+          - Using Large Language Models: using-models/using-large-language-models.md
+          - Using Vision Language Models: using-models/using-vision-language-models.md
+          - Using Embedding Models: using-models/using-embedding-models.md
+          - Using Reranker Models: using-models/using-reranker-models.md
+          - Using Image Generation Models: using-models/using-image-generation-models.md
+          - Recommended Parameters for Image Generation Models: using-models/recommended-parameters-for-image-generation-models.md
+          - Editing Images: using-models/editing-images.md
+          - Using Audio Models: using-models/using-audio-models.md
+      - Tutorials:
+          - Running DeepSeek R1 671B with Distributed vLLM: tutorials/running-deepseek-r1-671b-with-distributed-vllm.md
+          - Running DeepSeek R1 671B with Distributed Ascend Mindie: tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie.md
+          - Performing Distributed Inference Across Workers (llama-box): tutorials/performing-distributed-inference-across-workers-llama-box.md
+          - Inference On CPUs: tutorials/inference-on-cpus.md
+          - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
+          - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
+          - Custom inference backend: tutorials/custom-inference-backend.md
+      - Integrations:
+          - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
+          - Integrate with Dify: integrations/integrate-with-dify.md
+          - Integrate with RAGFlow: integrations/integrate-with-ragflow.md
+          - Integrate with CherryStudio: integrations/integrate-with-cherrystudio.md
+      - Architecture: architecture.md
+      - Scheduler: scheduler.md
+      - Troubleshooting: troubleshooting.md
+      - FAQ: faq.md
+      - API Reference: api-reference.md
+      - CLI Reference:
+          - Start: cli-reference/start.md
+          - Download Tools: cli-reference/download-tools.md
+          - Reload Config: cli-reference/reload-config.md
+          - List Images: cli-reference/list-images.md
+          - Save Images: cli-reference/save-images.md
+          - Copy Images: cli-reference/copy-images.md
   - Inference Performance Lab:
-    - Optimizing Throughput:
-      - GLM-4.6/4.5-Air:
-          - A100: performance-lab/glm-4.5-air/a100.md
-          - H100: performance-lab/glm-4.5-air/h100.md
-      - GLM-4.6/4.5:
-          - A100: performance-lab/glm-4.6/a100.md
-          - H100: performance-lab/glm-4.6/h100.md
-          - H200: performance-lab/glm-4.6/h200.md
-      - GPT-OSS-20B:
-          - A100: performance-lab/gpt-oss-20b/a100.md
-          - H100: performance-lab/gpt-oss-20b/h100.md
-      - GPT-OSS-120B:
-          - A100: performance-lab/gpt-oss-120b/a100.md
-          - H100: performance-lab/gpt-oss-120b/h100.md
-      - DeepSeek-R1:
-          - H200: performance-lab/deepseek-r1/h200.md
-      - Qwen3-8B:
-          - 910B: performance-lab/qwen3-8b/910b.md
-      - Qwen3-14B:
-          - A100: performance-lab/qwen3-14b/a100.md
-          - H100: performance-lab/qwen3-14b/h100.md
-      - Qwen3-32B:
-          - A100: performance-lab/qwen3-32b/a100.md
-          - H100: performance-lab/qwen3-32b/h100.md
-      - Qwen3-30B-A3B:
-          - 910B: performance-lab/qwen3-30b-a3b/910b.md
-      - Qwen3-235B-A22B:
-          - A100: performance-lab/qwen3-235b-a22b/a100.md
-          - H100: performance-lab/qwen3-235b-a22b/h100.md
-    - Optimizing Latency:
-      - Qwen3-8B:
-          - H100: performance-lab/qwen3-8b/h100-latency.md
+      - Optimizing Throughput:
+          - GLM-4.6/4.5-Air:
+              - A100: performance-lab/glm-4.5-air/a100.md
+              - H100: performance-lab/glm-4.5-air/h100.md
+          - GLM-4.6/4.5:
+              - A100: performance-lab/glm-4.6/a100.md
+              - H100: performance-lab/glm-4.6/h100.md
+              - H200: performance-lab/glm-4.6/h200.md
+          - GPT-OSS-20B:
+              - A100: performance-lab/gpt-oss-20b/a100.md
+              - H100: performance-lab/gpt-oss-20b/h100.md
+          - GPT-OSS-120B:
+              - A100: performance-lab/gpt-oss-120b/a100.md
+              - H100: performance-lab/gpt-oss-120b/h100.md
+          - DeepSeek-R1:
+              - H200: performance-lab/deepseek-r1/h200.md
+          - Qwen3-8B:
+              - 910B: performance-lab/qwen3-8b/910b.md
+          - Qwen3-14B:
+              - A100: performance-lab/qwen3-14b/a100.md
+              - H100: performance-lab/qwen3-14b/h100.md
+          - Qwen3-32B:
+              - A100: performance-lab/qwen3-32b/a100.md
+              - H100: performance-lab/qwen3-32b/h100.md
+          - Qwen3-30B-A3B:
+              - 910B: performance-lab/qwen3-30b-a3b/910b.md
+          - Qwen3-235B-A22B:
+              - A100: performance-lab/qwen3-235b-a22b/a100.md
+              - H100: performance-lab/qwen3-235b-a22b/h100.md
+      - Optimizing Latency:
+          - Qwen3-8B:
+              - H100: performance-lab/qwen3-8b/h100-latency.md

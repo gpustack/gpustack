@@ -12,10 +12,6 @@ Enter the text you want to convert, then click the `Submit` button to generate t
 
 ![text-to-speech](../../assets/playground/text-to-speech.png)
 
-### Clear Text
-
-Click the `Clear` button to reset the text input and remove the generated speech.
-
 ### Select Model
 
 Select an available TTS model in GPUStack by clicking the model dropdown at the top-right corner of the playground UI.
@@ -40,8 +36,8 @@ Switch to the "Speech to Text" tab to test STT models.
 
 You can provide audio for transcription in two ways:
 
-1. **Upload an audio file**.
-2. **Record audio online**.
+1. **Upload an audio file**
+2. **Record audio online**
 
 !!! note
 
@@ -51,7 +47,7 @@ You can provide audio for transcription in two ways:
     2. For access via `http://{host IP}`, the URL must be added to your browser's trusted list.
 
           **Example:**
-          In Chrome, navigate to `chrome://flags/`, add the GPUStack URL to "Insecure origins treated as secure," and enable this option.
+          In Chrome, navigate to `chrome://flags/`, add the GPUStack URL to "Insecure origins treated as secure", and enable this option.
 
 ![speech-to-text](../../assets/playground/audio-permission.png)
 

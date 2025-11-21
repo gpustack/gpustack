@@ -8,7 +8,7 @@ Checks whether the selected inference backend is compatible with the current env
 
 ## Model Compatibility
 
-Determines whether the model is supported by the selected inference backend. This includes checking for supported model formats and architectures (e.g., `LlamaForCausalLM`, `Qwen3ForCausalLM`, etc.). This check is based on built-in inference backends and their supported models. If a custom backend version is used, this check will be skipped.
+Determines whether the model is supported by the selected inference backend. This includes checking for supported model formats and architectures (e.g., `LlamaForCausalLM`, `Qwen3ForCausalLM`, etc.). This check is based on built-in inference backends and their supported models. If a custom backend or backend version is used, this check will be skipped.
 
 ## Schedulability Check
 
