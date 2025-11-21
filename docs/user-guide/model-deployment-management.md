@@ -232,3 +232,24 @@ Enable automatic restart of the model instance if it encounters an error. This f
 ### Enable Generic Proxy
 
 While it is common practice to integrate with the OpenAI compatible APIs, users may have different requirements for their use cases. GPUStack supports any inference APIs other than the OpenAI-compatible ones and make it more flexible for AI application development.
+
+Below is an example of how to use the generic proxy with curl to access model instances:
+
+```bash
+curl http://<server-url>/model/proxy/embed \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <GPUSTACK_API_KEY>" \
+  -H "X-GPUStack-Model: bge-m3-mis-tei" \
+  -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
+```
+
+When using the generic proxy endpoint, the path prefix `/model/proxy` will be removed before forwarding the request. You must provide either the `X-GPUStack-Model` header or the `model` attribute in the JSON body. On the model inference server, the request will look like:
+
+```bash
+curl http://<inference-server-url>/embed \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-GPUStack-Model: bge-m3-mis-tei" \
+  -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
+```
