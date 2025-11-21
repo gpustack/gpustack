@@ -343,6 +343,18 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         Find single worker single GPU candidates for SGLang.
         This function only handles automatic GPU selection.
         """
+        if self._gpu_count is not None and self._gpu_count > 1:
+            # Skip multi-GPU selection
+            return []
+
+        if (
+            self._selected_gpu_worker_count > 1
+            and self._gpu_count
+            and self._gpu_count > 1
+        ):
+            # Skip multi-worker selection
+            return []
+
         candidates = []
 
         # Auto selection only

@@ -30,6 +30,95 @@ from tests.fixtures.workers.fixtures import (
 from tests.utils.scheduler import compare_candidates
 
 
+def expected_candidate(
+    worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
+):
+    candidate = {
+        "worker_id": worker_id,
+        "worker_name": worker_name,
+        "gpu_indexes": gpu_indexes,
+        "is_unified_memory": False,
+        "vram": vram,
+        "subordinate_workers": subworkers or [],
+    }
+    if ram is not None:
+        candidate["ram"] = ram
+    return candidate
+
+
+# TODO aggregate other test cases for SGLangResourceFitSelector here
+@pytest.mark.parametrize(
+    "case_name, m, workers, expected_candidates, final_candidate_index",
+    [
+        # Auto schedule two GPUs from 1 worker with DP2 parameter.
+        # Check point:
+        # - Candidate selection correctness.
+        # - dp-size parameter handling.
+        (
+            "auto_select_2_gpus_1_worker_dp2",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen3-0.6B",
+                backend_parameters=["--data-parallel-size=2"],
+            ),
+            [
+                linux_nvidia_2_4080_16gx2(),
+            ],
+            [
+                expected_candidate(
+                    3,
+                    "host4080",
+                    [0, 1],
+                    {0: 15454332518, 1: 15454332518},
+                )
+            ],
+            0,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates(
+    config, case_name, m, workers, expected_candidates, final_candidate_index
+):
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+        m.backend = BackendEnum.SGLANG
+        resource_fit_selector = SGLangResourceFitSelector(config, m)
+        placement_scorer = PlacementScorer(m)
+
+        actual_candidates = await resource_fit_selector.select_candidates(workers)
+        actual_candidates = await placement_scorer.score(actual_candidates)
+        actual_candidate, _ = await scheduler.find_candidate(config, m, workers)
+
+        try:
+            assert len(actual_candidates) == len(expected_candidates)
+            compare_candidates(actual_candidates, expected_candidates)
+            compare_candidates(
+                [actual_candidate], [expected_candidates[final_candidate_index]]
+            )
+        except AssertionError as e:
+            raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
+
+
 @pytest.mark.asyncio
 async def test_manual_schedule_to_2_worker_2_gpu(config):
     """Test manual GPU selection with 2 workers and 2 GPUs"""
