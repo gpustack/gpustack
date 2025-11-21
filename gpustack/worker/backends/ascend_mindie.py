@@ -49,14 +49,17 @@ class AscendMindIEParameters:
     cpu_mem_size: int = 0
     npu_memory_fraction: float = 0.8
     trust_remote_code: bool = False
+    models: Optional[str] = None
     #
     # Schedule config
     #
     cache_block_size: int = 128
     max_prefill_batch_size: int = 50
+    max_prefill_tokens: int = -1
     prefill_time_ms_per_req: int = 150
     prefill_policy_type: int = 0
     max_batch_size: int = 200
+    max_iter_times: int = -1
     decode_time_ms_per_req: int = 50
     decode_policy_type: int = 0
     max_preempt_count: int = 0
@@ -91,10 +94,12 @@ class AscendMindIEParameters:
     world_size: int = -1  # store validation input
     pipeline_parallel_size: int = 1
     data_parallel_size: int = -1
+    context_parallel_size: int = -1
     tensor_parallel_size: int = -1
     sequence_parallel_size: int = -1
     moe_expert_parallel_size: int = -1
     moe_tensor_parallel_size: int = -1
+    models_parsed: Optional[any] = None  # store JSON parsed result
     enable_buffer_response: bool = False
     prefill_expected_time_ms: Optional[int] = None
     decode_expected_time_ms: Optional[int] = None
@@ -180,6 +185,12 @@ class AscendMindIEParameters:
             action='store_true',
             help="Trust remote code.",
         )
+        parser.add_argument(
+            "--models",
+            type=str,
+            required=False,
+            help="Models configuration in JSON format, for certain specific configurations, like expert parallelism.",
+        )
         #
         # Schedule config
         #
@@ -196,6 +207,12 @@ class AscendMindIEParameters:
             default=self.max_prefill_batch_size,
             help="During prefilling stage, the maximum requests can be batched, "
             "which must be less than `--max-batch-size`.",
+        )
+        parser.add_argument(
+            "--max-prefill-tokens",
+            type=int,
+            default=self.max_prefill_tokens,
+            help="During each prefill, the total number of all input tokens in the current batch cannot exceed `--max-prefill-tokens`. Default is same as `--max-seq-len`.",
         )
         parser.add_argument(
             "--prefill-time-ms-per-req",
@@ -220,6 +237,12 @@ class AscendMindIEParameters:
             type=int,
             default=self.max_batch_size,
             help="During decoding stage, the maximum requests can be batched.",
+        )
+        parser.add_argument(
+            "--max-iter-times",
+            type=int,
+            default=self.max_iter_times,
+            help="Maximum iterations for decoding stage. Default is same as `--max-seq-len`.",
         )
         parser.add_argument(
             "--decode-time-ms-per-req",
@@ -355,7 +378,7 @@ class AscendMindIEParameters:
             "--split-chunk-tokens",
             type=int,
             default=self.split_chunk_tokens,
-            help="Tokens size to batch for split fuse.",
+            help="Tokens size to batch for split fuse. Multiple of 16.",
         )
         parser.add_argument(
             "--split-start-batch-size",
@@ -423,6 +446,15 @@ class AscendMindIEParameters:
             required=False,
             help="Number of data parallel groups for Attention layers. "
             "`-1` means disabling data parallelism, otherwise, must be a power of 2.",
+        )
+        parser.add_argument(
+            "--context-parallel-size",
+            "-cp",
+            type=int,
+            default=self.context_parallel_size,
+            required=False,
+            help="Number of context parallel groups for Attention layers."
+            "`-1` means disabling context parallelism, otherwise, must be power of 2.",
         )
         parser.add_argument(
             "--tensor-parallel-size",
@@ -501,6 +533,10 @@ class AscendMindIEParameters:
         if self.max_input_token_len <= 0:
             self.max_input_token_len = self.max_seq_len
         # Schedule config
+        if self.max_prefill_tokens <= 0:
+            self.max_prefill_tokens = self.max_seq_len
+        if self.max_iter_times <= 0:
+            self.max_iter_times = self.max_seq_len
         if self.max_preempt_count == 0 and self.cpu_mem_size > 0:
             self.cpu_mem_size = 0
         # Extends or Features
@@ -508,7 +544,11 @@ class AscendMindIEParameters:
         if self.world_size > 0:
             if self.tensor_parallel_size < 0:
                 self.tensor_parallel_size = self.world_size
-            if self.moe_tensor_parallel_size < 0:
+                if self.data_parallel_size > 1:
+                    self.tensor_parallel_size //= self.data_parallel_size
+                elif self.context_parallel_size > 1:
+                    self.tensor_parallel_size //= self.context_parallel_size
+            if self.moe_expert_parallel_size < 0 and self.moe_tensor_parallel_size < 0:
                 self.moe_tensor_parallel_size = self.world_size
         else:
             if self.pipeline_parallel_size > 1:
@@ -528,6 +568,15 @@ class AscendMindIEParameters:
                     self.world_size = (
                         self.data_parallel_size * self.tensor_parallel_size
                     )
+                elif self.context_parallel_size > 1:
+                    if self.tensor_parallel_size < 0:
+                        self.tensor_parallel_size = 1
+                    if self.local_world_size < 0:
+                        self.local_world_size = self.tensor_parallel_size
+                    self.world_size = (
+                        self.context_parallel_size * self.tensor_parallel_size
+                    )
+                    self.data_parallel_size = 1
                 if self.moe_expert_parallel_size > 1:
                     if self.moe_tensor_parallel_size < 0:
                         self.moe_tensor_parallel_size = 1
@@ -571,6 +620,13 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--npu-memory-fraction must be in the range (0, 1]"
             )
+        if self.models:
+            try:
+                self.models_parsed = json.loads(self.models)
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"--models must be a valid JSON string: {self.models}"
+                ) from e
         # Schedule config
         if self.cache_block_size & (self.cache_block_size - 1) != 0:
             raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
@@ -585,6 +641,16 @@ class AscendMindIEParameters:
         if not (1 <= self.max_batch_size <= 5000):
             raise argparse.ArgumentTypeError(
                 "--max-batch-size must be in the range [1, 5000]"
+            )
+        if not (
+            self.max_input_token_len <= self.max_prefill_tokens <= self.max_seq_len
+        ):
+            raise argparse.ArgumentTypeError(
+                "--max-prefill-tokens must be in the range [--max-input-token-len, --max-seq-len]"
+            )
+        if not (1 <= self.max_iter_times <= self.max_seq_len):
+            raise argparse.ArgumentTypeError(
+                "--max-iter-times must be in the range [1, --max-seq-len]"
             )
         if not (0 <= self.decode_time_ms_per_req <= 1000):
             raise argparse.ArgumentTypeError(
@@ -614,23 +680,28 @@ class AscendMindIEParameters:
                 self.rope_scaling_parsed = json.loads(self.rope_scaling)
             except json.JSONDecodeError as e:
                 raise argparse.ArgumentTypeError(
-                    f"--rope-scaling must be a valid JSON string: {self.rope_scaling_parsed}"
+                    f"--rope-scaling must be a valid JSON string: {self.rope_scaling}"
                 ) from e
         # -- Split fuse
         if self.enable_split:
-            if not (512 <= self.split_chunk_tokens <= self.max_input_token_len):
+            if not (1 <= self.split_chunk_tokens <= 8192):
                 raise argparse.ArgumentTypeError(
-                    "--split-chunk-tokens must be in the range [512, --max-input-token-len]"
+                    "--split-chunk-tokens must be in the range [1, 8192]"
+                )
+            elif self.split_chunk_tokens % 16 != 0:
+                raise argparse.ArgumentTypeError(
+                    "--split-chunk-tokens must be the multiple of 16"
                 )
             if not (0 <= self.split_start_batch_size <= self.max_batch_size):
                 raise argparse.ArgumentTypeError(
                     "--split-start-batch-size must be in the range [0, --max-batch-size]"
                 )
         # -- Parallelism
-        pp, tp, dp, sp, moe_tp, moe_ep, ws, local_ws = (
+        pp, tp, dp, cp, sp, moe_tp, moe_ep, ws, local_ws = (
             self.pipeline_parallel_size,
             self.tensor_parallel_size,
             self.data_parallel_size,
+            self.context_parallel_size,
             self.sequence_parallel_size,
             self.moe_tensor_parallel_size,
             self.moe_expert_parallel_size,
@@ -648,6 +719,10 @@ class AscendMindIEParameters:
         if dp > 0 and dp & (dp - 1) != 0:
             raise argparse.ArgumentTypeError(
                 "--data-parallel-size must be the power of 2"
+            )
+        if cp > 0 and cp & (cp - 1) != 0:
+            raise argparse.ArgumentTypeError(
+                "--context-parallel-size must be the power of 2"
             )
         if sp > 0 and sp & (sp - 1) != 0:
             raise argparse.ArgumentTypeError(
@@ -667,6 +742,13 @@ class AscendMindIEParameters:
                 f"and --data-parallel-size {dp} "
                 f"cannot be set at the same time, "
                 f"which means enabling both pipeline and data parallelism."
+            )
+        if dp != -1 and cp != -1:
+            raise argparse.ArgumentTypeError(
+                f"--data-parallel-size {dp} "
+                f"and --context-parallel-size {cp} "
+                f"cannot be set at the same time, "
+                f"which means enabling both data and context parallelism."
             )
         # Check pp * tp == world size if enable pipeline parallelism
         if pp > 1:
@@ -689,6 +771,17 @@ class AscendMindIEParameters:
                 if 0 < ws != dp * tp:
                     raise argparse.ArgumentTypeError(
                         f"--data-parallel-size {dp} "
+                        f"and --tensor-parallel-size {tp} "
+                        f"must be multiples of world size: {ws}"
+                    )
+            elif cp > 1:
+                if not (1 <= cp <= 2):
+                    raise argparse.ArgumentTypeError(
+                        f"--context-parallel-size {cp} " f"must be in the range [1, 2]"
+                    )
+                if 0 < ws != cp * tp:
+                    raise argparse.ArgumentTypeError(
+                        f"--context-parallel-size {cp} "
                         f"and --tensor-parallel-size {tp} "
                         f"must be multiples of world size: {ws}"
                     )
@@ -1032,14 +1125,16 @@ class AscendMindIEServer(InferenceServer):
             # -- Model deploy config
             model_deploy_config["maxSeqLen"] = params.max_seq_len
             model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
-            schedule_config["maxIterTimes"] = params.max_seq_len
-            schedule_config["maxPrefillTokens"] = params.max_seq_len
+            schedule_config["maxIterTimes"] = params.max_iter_times
+            schedule_config["maxPrefillTokens"] = params.max_prefill_tokens
             model_deploy_config["truncation"] = params.truncation
             # -- Model config
             model_config["cpuMemSize"] = params.cpu_mem_size
             env["MIES_USE_MB_SWAPPER"] = "1" if params.cpu_mem_size > 0 else "0"
             env["NPU_MEMORY_FRACTION"] = str(params.npu_memory_fraction)
             model_config["trustRemoteCode"] = params.trust_remote_code
+            if params.models_parsed:
+                model_config["models"] = params.models_parsed
             # -- Schedule config
             schedule_config["cacheBlockSize"] = params.cache_block_size
             schedule_config["maxPrefillBatchSize"] = params.max_prefill_batch_size
@@ -1149,7 +1244,7 @@ class AscendMindIEServer(InferenceServer):
             # --- Speculative decoding
             if params.enable_memory_decoding:
                 model_deploy_config["speculationGamma"] = params.memory_decoding_length
-                if max_seq_len < derived_max_seq_len:
+                if derived_max_seq_len > max_seq_len == schedule_config["maxIterTimes"]:
                     schedule_config["maxIterTimes"] = (
                         max_seq_len + params.memory_decoding_length
                     )
@@ -1195,6 +1290,8 @@ class AscendMindIEServer(InferenceServer):
             else:
                 if params.data_parallel_size > 0:
                     model_config["dp"] = params.data_parallel_size
+                if params.context_parallel_size > 0:
+                    model_config["cp"] = params.context_parallel_size
                 if params.tensor_parallel_size > 0:
                     model_config["tp"] = params.tensor_parallel_size
                     model_config["moe_tp"] = params.moe_tensor_parallel_size
