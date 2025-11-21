@@ -196,16 +196,17 @@ def is_offline(
     return is_offline_flag, last_update_str
 
 
-async def check_docker_hub_reachable() -> bool:
+def check_registry_reachable(address: str) -> bool:
     """
-    Check if Docker Hub is reachable.
+    Check if the registry is reachable.
     To avoid frequent checks, cache the result for a short period via global lock.
 
     Returns:
-        bool: True if Docker Hub is reachable, False otherwise.
+        bool: True if the registry is reachable, False otherwise.
     """
+    url = f"{address}/v2/"
     try:
-        resp = requests.get("https://registry-1.docker.io/v2/", timeout=3)
+        resp = requests.get(url, timeout=3)
         reachable = resp.status_code < 500
     except Exception:
         reachable = False
