@@ -50,12 +50,13 @@ To configure GPUStack with Auth0 as the OIDC provider:
 Then, run GPUStack with relevant OIDC configuration. The following example uses Docker with CUDA:
 
 ```bash
-docker run -d --name gpustack \
+sudo docker run -d --name gpustack \
     --restart=unless-stopped \
-    --gpus all \
+    --privileged \
     --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
     -e GPUSTACK_OIDC_ISSUER="https://<your-auth0-domain>" \
     -e GPUSTACK_OIDC_CLIENT_ID="<your-client-id>" \
     -e GPUSTACK_OIDC_CLIENT_SECRET="<your-client-secret>" \
@@ -139,12 +140,13 @@ SP_CERT="$(cat myservice.cert)"
 SP_PRIVATE_KEY="$(cat myservice.key)"
 SP_ATTRIBUTE_PREFIX="http://schemas.auth0.com/"
 
-docker run -d --name gpustack \
+sudo docker run -d --name gpustack \
     --restart=unless-stopped \
-    --gpus all \
+    --privileged \
     --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
     -e GPUSTACK_SAML_IDP_SERVER_URL="<auth0-saml-protocol-url>" \
     -e GPUSTACK_SAML_IDP_ENTITY_ID="urn:<auth0-domain>" \
     -e GPUSTACK_SAML_IDP_X509_CERT="<auth0-x509-cert>" \

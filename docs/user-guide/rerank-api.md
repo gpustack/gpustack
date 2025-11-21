@@ -4,16 +4,15 @@ In the context of Retrieval-Augmented Generation (RAG), reranking refers to the 
 
 GPUStack serves [Jina compatible Rerank API](https://jina.ai/reranker/) using the `/v1/rerank` path.
 
-## Supported Models
+!!! note
 
-The following models are available for reranking:
+    For other APIs, GPUStack allows you to enable the Generic Proxy when deploying a model.
 
-- [bce-reranker-base_v1](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF)
-- [jina-reranker-v1-turbo-en](https://huggingface.co/gpustack/jina-reranker-v1-turbo-en-GGUF)
-- [jina-reranker-v1-tiny-en](https://huggingface.co/gpustack/jina-reranker-v1-tiny-en-GGUF)
-- [bge-reranker-v2-m3](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF)
-- [gte-multilingual-reranker-base](https://huggingface.co/gpustack/gte-multilingual-reranker-base-GGUF) <span title="experimental">🧪</span>
-- [jina-reranker-v2-base-multilingual](https://huggingface.co/gpustack/jina-reranker-v2-base-multilingual-GGUF) <span title="experimental">🧪</span>
+    With the Generic Proxy enabled, you can send API requests to a unified gateway and add the `X-GPUStack-Model` header.
+
+    This header tells GPUStack which model should handle the request.
+
+    For more details, see [Enable Generic Proxy](model-deployment-management.md/#enable-generic-proxy).
 
 ## Usage
 

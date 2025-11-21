@@ -18,7 +18,7 @@ Click the `Clear` button to reset the document and query results.
 
 Input a query and click the `Submit` button to get a ranked list of texts based on their relevance to the query.
 
-![rerank](../../assets/playground/ranker.png)
+![rerank](../../assets/playground/reranker.png)
 
 ## Select Model
 
