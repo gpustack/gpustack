@@ -19,7 +19,7 @@ function download_deps() {
   uv sync
   if [[ "${DEPS_ONLY:-false}" == "false" ]]; then
     uv pip install pre-commit==3.7.1
-    pre-commit install
+    uv run pre-commit install
   fi
 }
 
