@@ -76,6 +76,32 @@ def expected_candidate(
             ],
             0,
         ),
+        # Auto schedule two GPUs from 1 worker with PP2 parameter.
+        # Check point:
+        # - Candidate selection correctness.
+        # - pp-size parameter handling.
+        (
+            "auto_select_2_gpus_1_worker_pp2",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen3-0.6B",
+                backend_parameters=["--pipeline-parallel-size=2"],
+            ),
+            [
+                linux_nvidia_2_4080_16gx2(),
+            ],
+            [
+                expected_candidate(
+                    3,
+                    "host4080",
+                    [0, 1],
+                    {0: 15454332518, 1: 15454332518},
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
