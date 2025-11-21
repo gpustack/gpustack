@@ -276,11 +276,14 @@ def add_metrics(response_dict, request, response_chunk):
     time_to_first_token_ms = (
         request.state.first_token_time - request.state.start_time
     ).total_seconds() * 1000
+
+    tokens_after_first = max(response_chunk.usage.completion_tokens - 1, 1)
     time_per_output_token_ms = (
         (now - request.state.first_token_time).total_seconds()
         * 1000
-        / max(response_chunk.usage.completion_tokens, 1)
+        / tokens_after_first
     )
+
     tokens_per_second = (
         1000 / time_per_output_token_ms if time_per_output_token_ms > 0 else 0
     )
