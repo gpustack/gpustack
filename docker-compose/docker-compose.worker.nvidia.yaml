@@ -10,10 +10,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     runtime: nvidia
     command: 
-      - --server-url 
-      - http://myserver # replace with actual server URL and
-      - --token 
-      - mytoken         # replace with token
+      - --server-url
+      - http://your_gpustack_server_url # replace with actual server URL and
+      - --token
+      - your_gpustack_token             # replace with token
 
 volumes:
   gpustack-data: {}
