@@ -101,6 +101,8 @@ nav:
           - Built-in Inference Backends: user-guide/built-in-inference-backends.md
           - Compatibility Check: user-guide/compatibility-check.md
           - Model File management: user-guide/model-file-management.md
+          - Cluster Management: user-guide/cluster-management.md
+          - Cloud Credential Management: user-guide/cloud-credential-management.md
           - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
           - Image Generation APIs: user-guide/image-generation-apis.md
           - Rerank API: user-guide/rerank-api.md
@@ -123,6 +125,8 @@ nav:
           - Inference On CPUs: tutorials/inference-on-cpus.md
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
+          - Adding GPUCluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
+          - Adding GPUCluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
       - Integrations:
           - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
           - Integrate with Dify: integrations/integrate-with-dify.md
