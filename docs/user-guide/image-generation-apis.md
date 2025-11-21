@@ -4,31 +4,13 @@ GPUStack provides APIs for generating images given a prompt and/or an input imag
 
 !!! note
 
-    The image generation APIs are only available when using the [llama-box](./inference-backends.md#llama-box) inference backend.
+    For other APIs, GPUStack allows you to enable the Generic Proxy when deploying a model.
 
-## Supported Models
+    With the Generic Proxy enabled, you can send API requests to a unified gateway and add the `X-GPUStack-Model` header.
 
-The following models are available for image generation:
+    This header tells GPUStack which model should handle the request.
 
-!!! tip
-
-      Please use the converted GGUF models provided by GPUStack. Check the model link for more details.
-
-- stabilityai/stable-diffusion-3.5-large-turbo [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v3-5-large-turbo-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v3-5-large-turbo-GGUF)
-- stabilityai/stable-diffusion-3.5-large [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v3-5-large-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v3-5-large-GGUF)
-- stabilityai/stable-diffusion-3.5-medium [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v3-5-medium-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v3-5-medium-GGUF)
-- stabilityai/stable-diffusion-3-medium [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v3-medium-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v3-medium-GGUF)
-- TencentARC/FLUX.1-mini [[Hugging Face]](https://huggingface.co/gpustack/FLUX.1-mini-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/FLUX.1-mini-GGUF)
-- Freepik/FLUX.1-lite [[Hugging Face]](https://huggingface.co/gpustack/FLUX.1-lite-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/FLUX.1-lite-GGUF)
-- black-forest-labs/FLUX.1-dev [[Hugging Face]](https://huggingface.co/gpustack/FLUX.1-dev-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/FLUX.1-dev-GGUF)
-- black-forest-labs/FLUX.1-schnell [[Hugging Face]](https://huggingface.co/gpustack/FLUX.1-schnell-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/FLUX.1-schnell-GGUF)
-- stabilityai/sdxl-turbo [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-xl-1.0-turbo-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-xl-1.0-turbo-GGUF)
-- stabilityai/stable-diffusion-xl-refiner-1.0 [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-xl-refiner-1.0-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-xl-refiner-1.0-GGUF)
-- stabilityai/stable-diffusion-xl-base-1.0 [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-xl-base-1.0-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-xl-base-1.0-GGUF)
-- stabilityai/sd-turbo [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v2-1-turbo-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v2-1-turbo-GGUF)
-- stabilityai/stable-diffusion-2-1 [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v2-1-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v2-1-GGUF)
-- stable-diffusion-v1-5/stable-diffusion-v1-5 [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v1-5-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v1-5-GGUF)
-- CompVis/stable-diffusion-v1-4 [[Hugging Face]](https://huggingface.co/gpustack/stable-diffusion-v1-4-GGUF), [[ModelScope]](https://modelscope.cn/models/gpustack/stable-diffusion-v1-4-GGUF)
+    For more details, see [Enable Generic Proxy](model-deployment-management.md/#enable-generic-proxy).
 
 ## API Details
 
@@ -166,7 +148,7 @@ The followings are examples using the image generation APIs:
 
 ```bash
 export GPUSTACK_API_KEY=your_api_key
-curl http://your_gpustack_server_url/v1-openai/image/generate \
+curl http://your_gpustack_server_url/v1/image/generate \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $GPUSTACK_API_KEY" \
     -d '{
@@ -177,17 +159,16 @@ curl http://your_gpustack_server_url/v1-openai/image/generate \
         "quality": "standard",
         "stream": true,
         "stream_options": {
-        "include_usage": true
+          "include_usage": true
         }
-    }'
-
+      }'
 ```
 
 ### curl (Create Image Edit)
 
 ```bash
 export GPUSTACK_API_KEY=your_api_key
-curl http://your_gpustack_server_url/v1-openai/image/edit \
+curl http://your_gpustack_server_url/v1/image/edit \
     -H "Authorization: Bearer $GPUSTACK_API_KEY" \
     -F image="@otter.png" \
     -F mask="@mask.png" \
