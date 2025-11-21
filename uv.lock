@@ -748,9 +748,9 @@ wheels = [
 name = "cfgv"
 version = "3.4.0"
 source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
-sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/11/74/539e56497d9bd1d484fd863dd69cbbfa653cd2aa27abfe35653494d85e94/cfgv-3.4.0.tar.gz", hash = "sha256:e52591d4c5f5dead8e0f673fb16db7949d2cfb3f7da4582893288f0ded8fe560" }
+sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/11/74/539e56497d9bd1d484fd863dd69cbbfa653cd2aa27abfe35653494d85e94/cfgv-3.4.0.tar.gz", hash = "sha256:e52591d4c5f5dead8e0f673fb16db7949d2cfb3f7da4582893288f0ded8fe560", size = 7114 }
 wheels = [
-    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c5/55/51844dd50c4fc7a33b653bfaba4c2456f06955289ca770a5dbd5fd267374/cfgv-3.4.0-py2.py3-none-any.whl", hash = "sha256:b7265b1f29fd3316bfcd2b330d63d024f2bfd8bcb8b0272f8e19a504856c48f9" },
+    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c5/55/51844dd50c4fc7a33b653bfaba4c2456f06955289ca770a5dbd5fd267374/cfgv-3.4.0-py2.py3-none-any.whl", hash = "sha256:b7265b1f29fd3316bfcd2b330d63d024f2bfd8bcb8b0272f8e19a504856c48f9", size = 7249 },
 ]
 
 [[package]]
@@ -1461,7 +1461,7 @@ name = "exceptiongroup"
 version = "1.3.0"
 source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/0b/9f/a65090624ecf468cdca03533906e7c69ed7588582240cfe7cc9e770b50eb/exceptiongroup-1.3.0.tar.gz", hash = "sha256:b241f5885f560bc56a59ee63ca4c6a8bfa46ae4ad651af316d4e81817bb9fd88", size = 29749 }
 wheels = [
@@ -1948,6 +1948,14 @@ all = [
 audio = [
     { name = "vox-box" },
 ]
+vllm = [
+    { name = "bitsandbytes" },
+    { name = "mistral-common", extra = ["opencv"] },
+    { name = "timm" },
+    { name = "vllm" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "black" },
     { name = "coverage", extra = ["toml"] },
@@ -1966,12 +1974,6 @@ dev = [
     { name = "shellcheck-py" },
     { name = "twine" },
 ]
-vllm = [
-    { name = "bitsandbytes" },
-    { name = "mistral-common", extra = ["opencv"] },
-    { name = "timm" },
-    { name = "vllm" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -1981,50 +1983,37 @@ requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "alembic", specifier = ">=1.13.2" },
-    { name = "apscheduler", specifier = ">=3.10.4" },
+    { name = "apscheduler", specifier = ">=3.10.4,<4.0.0" },
     { name = "argon2-cffi", specifier = ">=23.1.0" },
     { name = "asyncmy", specifier = ">=0.2.10" },
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "attrs", specifier = ">=24.2.0" },
     { name = "bitsandbytes", marker = "extra == 'all'", specifier = ">=0.45.2" },
     { name = "bitsandbytes", marker = "extra == 'vllm'", specifier = ">=0.45.2" },
-    { name = "black", marker = "extra == 'dev'", specifier = ">=24.4.2" },
     { name = "blobfile", specifier = ">=3.0.0" },
     { name = "colorama", specifier = ">=0.4.6" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.5.1" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "dataclasses-json", specifier = ">=0.6.7" },
-    { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.16.1" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "flake8", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "flake8-bugbear", marker = "extra == 'dev'", specifier = ">=24.4.26" },
-    { name = "gpustack-runner", specifier = ">=0.1.19" },
-    { name = "gpustack-runtime", specifier = "==0.1.31" },
+    { name = "gpustack-runner", specifier = ">=0.1.20.post1" },
+    { name = "gpustack-runtime", specifier = "==0.1.33.post1" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
-    { name = "httpx-aiohttp", marker = "extra == 'dev'", specifier = ">=0.1.4" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
     { name = "importlib-resources", specifier = ">=6.4.0" },
     { name = "inflection", specifier = ">=0.5.1" },
-    { name = "installer", marker = "extra == 'dev'", specifier = "==0.7.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "kubernetes", specifier = ">=33.1.0" },
     { name = "kubernetes-asyncio", specifier = ">=33.1.0" },
     { name = "lxml", specifier = "==5.2.1" },
-    { name = "mike", marker = "extra == 'dev'", specifier = ">=2.1.3" },
     { name = "mistral-common", extras = ["opencv"], marker = "extra == 'all'", specifier = ">=1.4.3" },
     { name = "mistral-common", extras = ["opencv"], marker = "extra == 'vllm'", specifier = ">=1.4.3" },
-    { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.6.0" },
-    { name = "mkdocs-glightbox", marker = "extra == 'dev'", specifier = ">=0.4.0" },
-    { name = "mkdocs-material", marker = "extra == 'dev'", specifier = ">=9.5.27" },
     { name = "modelscope", specifier = ">=1.28" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "openai", specifier = ">=1.31.1" },
-    { name = "openapi-python-client", marker = "extra == 'dev'", specifier = ">=0.20.0" },
     { name = "packaging", specifier = ">=24.1" },
     { name = "pandas", specifier = ">=2.3.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.1" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.10" },
@@ -2034,7 +2023,6 @@ requires-dist = [
     { name = "pydo", specifier = ">=0.15.0" },
     { name = "pyjwt", specifier = ">=2.8.0" },
     { name = "pymysql", specifier = ">=1.1.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
     { name = "pytest-asyncio", specifier = ">=0.23.7" },
     { name = "python-json-logger", specifier = ">=3.3.0" },
     { name = "python-multipart", specifier = ">=0.0.17" },
@@ -2042,7 +2030,6 @@ requires-dist = [
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=308" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "setproctitle", specifier = ">=1.3.3" },
-    { name = "shellcheck-py", marker = "extra == 'dev'", specifier = ">=0.10.0.1" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.38" },
     { name = "sqlmodel", specifier = ">=0.0.18" },
     { name = "tenacity", specifier = ">=9.0.0" },
@@ -2050,7 +2037,6 @@ requires-dist = [
     { name = "timm", marker = "extra == 'vllm'", specifier = ">=1.0.15" },
     { name = "transformers", specifier = ">=4.51.3,!=4.57.0" },
     { name = "truststore", specifier = ">=0.9.1" },
-    { name = "twine", marker = "extra == 'dev'", specifier = ">=5.1.1" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", specifier = ">=0.32.0" },
     { name = "vllm", marker = "extra == 'all'", specifier = "==0.10.1.1" },
@@ -2060,24 +2046,44 @@ requires-dist = [
     { name = "wmi", marker = "sys_platform == 'win32'", specifier = ">=1.5.1" },
     { name = "xmlsec", specifier = "==1.3.14" },
 ]
-provides-extras = ["vllm", "audio", "all", "dev"]
+provides-extras = ["vllm", "audio", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black", specifier = ">=24.4.2" },
+    { name = "coverage", extras = ["toml"], specifier = ">=7.5.1" },
+    { name = "deptry", specifier = ">=0.16.1" },
+    { name = "flake8", specifier = ">=7.0.0" },
+    { name = "flake8-bugbear", specifier = ">=24.4.26" },
+    { name = "httpx-aiohttp", specifier = ">=0.1.4" },
+    { name = "installer", specifier = "==0.7.0" },
+    { name = "mike", specifier = ">=2.1.3" },
+    { name = "mkdocs", specifier = ">=1.6.0" },
+    { name = "mkdocs-glightbox", specifier = ">=0.4.0" },
+    { name = "mkdocs-material", specifier = ">=9.5.27" },
+    { name = "openapi-python-client", specifier = ">=0.20.0" },
+    { name = "pre-commit", specifier = ">=3.7.1" },
+    { name = "pytest", specifier = ">=8.2.0" },
+    { name = "shellcheck-py", specifier = ">=0.10.0.1" },
+    { name = "twine", specifier = ">=5.1.1" },
+]
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.19.post1"
+version = "0.1.20.post1"
 source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
 ]
-sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ec/e8/266878b26fcc6c48d29693adc8835df804cb288b57acdd742878ca19076a/gpustack_runner-0.1.19.post1.tar.gz", hash = "sha256:b9f7f89107202cc2ca6c21a5d9a1f18a0ee70c1ae81c2b5137e9f7380e836fbe", size = 106641 }
+sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/15/44/8fbfe0881ee5518773003a8b297e05f1852ff96b98d1268533a3db483960/gpustack_runner-0.1.20.post1.tar.gz", hash = "sha256:355328f6cb742ab45ebbf5c4fad5a2b3dd690e84ff91089d4d4db174098ffb40", size = 108196 }
 wheels = [
-    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/70/ea/62c1aa6e699c918efcb78bca4ff82edc402665c0460f18b1ddb2ae6e749c/gpustack_runner-0.1.19.post1-py3-none-any.whl", hash = "sha256:4faeb24838b0f103fc6af62626ee4f446ca9802b3a9d4ed3c65cda9a55155d2e", size = 21055 },
+    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/e5/23/3d2b8e124badca3c8133aa056b3bc6483f8350ce208dc6ec527e992dd01a/gpustack_runner-0.1.20.post1-py3-none-any.whl", hash = "sha256:99d8774a12be247c13f8052ca010d6a4f31db3bd9097f1ab27e9e41155f37353", size = 21389 },
 ]
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.31"
+version = "0.1.33.post1"
 source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
 dependencies = [
     { name = "argcomplete" },
@@ -2087,9 +2093,9 @@ dependencies = [
     { name = "nvidia-ml-py" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/91/82/b7c73895efaf92352a635e0d37f4576f535436d81bcc66a18d60023e4a80/gpustack_runtime-0.1.31.tar.gz", hash = "sha256:19cbfa8b9f27279c35265cc42510be4c42256ab232f3b146cbd47af6bc7d78b8", size = 196537 }
+sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/8c/3d/bd56941687484ee46ff81ad958285ee5f73d5ab3a7390259e123f9b31de9/gpustack_runtime-0.1.33.post1.tar.gz", hash = "sha256:47566899cd7458578690a9ee8436c9373ad6e085925f9165a2a03fd44c706296", size = 197707 }
 wheels = [
-    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/dc/df/763c4585dde21f6e73d20199428733ad52cf2849b41c89a698d212094863/gpustack_runtime-0.1.31-py3-none-any.whl", hash = "sha256:96f375630c37c35cb9ef908a375d614b8f2e62038bf2f246af1e98a405e2d823", size = 168388 },
+    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ee/c9/a8cd629e03ecc7ebceea343344549e611e6517325b63f4c123447d8eb8a3/gpustack_runtime-0.1.33.post1-py3-none-any.whl", hash = "sha256:c3f522fba5f1c3287a1c189cc3e03056950cad4b97d9e2db78a46f5b4066a897", size = 169750 },
 ]
 
 [[package]]
