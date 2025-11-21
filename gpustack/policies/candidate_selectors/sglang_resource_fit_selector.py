@@ -170,19 +170,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 raise ValueError(f"tp-size {world_size} must be divisible by nnodes")
 
         if pp_size and int(pp_size) > 1:
-            disable_overlap_schedule_param = find_parameter(
-                model.backend_parameters, ["disable-overlap-schedule"]
-            )
-            disable_overlap_schedule = (
-                strtobool(disable_overlap_schedule_param)
-                if disable_overlap_schedule_param is not None
-                else False
-            )
-            if (
-                not disable_overlap_schedule
-                or speculative_algorithm is not None
-                or enable_mixed_chunk
-            ):
+            if speculative_algorithm is not None or enable_mixed_chunk:
+                # We don't need to check overlap schedule. SGLang ignore this conflict and proceed.
+                # Ref: https://github.com/sgl-project/sglang/blob/64480ec7124b8c23d9560746ca20415bfaf97a8e/python/sglang/srt/server_args.py#L1548-L1553
                 raise ValueError(
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )

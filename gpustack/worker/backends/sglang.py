@@ -534,7 +534,14 @@ def get_auto_parallelism_arguments(
 
     parallelism = find_parameter(
         backend_parameters,
-        ["tp-size", "tp", "pp-size", "pp", "data-parallel-size", "dp-size"],
+        [
+            "tensor-parallel-size",
+            "tp-size",
+            "pipeline-parallel-size",
+            "pp-size",
+            "data-parallel-size",
+            "dp-size",
+        ],
     )
 
     if parallelism is not None:
