@@ -147,7 +147,7 @@ async def evaluate_model_with_cache(
             result = await evaluate_model(config, session, model, workers)
             evaluate_cache[cache_key] = result
     except Exception as e:
-        logger.error(
+        logger.exception(
             f"Error evaluating model {model.name or model.readable_source}: {e}"
         )
         result = ModelEvaluationResult(
