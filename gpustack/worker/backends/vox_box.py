@@ -103,7 +103,7 @@ class VoxBoxServer(InferenceServer):
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
-        create_workload(workload_plan)
+        create_workload(self._transform_workload_plan(workload_plan))
 
         logger.info(f"Created Vox-Box container workload {self._workload_name}")
 

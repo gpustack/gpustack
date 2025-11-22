@@ -164,7 +164,7 @@ class SGLangServer(InferenceServer):
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
         )
-        create_workload(workload_plan)
+        create_workload(self._transform_workload_plan(workload_plan))
 
         logger.info(
             f"SGLang container workload {self._workload_name} created successfully"

@@ -378,7 +378,7 @@ class ServeManager:
         cfg: Config,
         worker_id: int,
         inference_backend: InferenceBackend,
-        _dockerhub_reachable: Optional[bool],
+        fallback_registry: Optional[str] = None,
     ):
         """
         Serve model instance in a subprocess.
@@ -392,6 +392,7 @@ class ServeManager:
             cfg: The configuration.
             worker_id: The ID of the worker.
             inference_backend: The inference backend configuration.
+            fallback_registry: The fallback container registry to use if needed.
         """
 
         setproctitle.setproctitle(f"gpustack_model_instance_{mi.id}")
@@ -401,8 +402,6 @@ class ServeManager:
             base_url=cfg.get_server_url(),
             headers=client_headers,
         )
-
-        registration.dockerhub_reachable = _dockerhub_reachable
 
         with open(log_file_path, "w", buffering=1, encoding="utf-8") as log_file:
             with RedirectStdoutStderr(log_file):
@@ -414,6 +413,7 @@ class ServeManager:
                         cfg,
                         worker_id,
                         inference_backend,
+                        fallback_registry,
                     )
                     logger.info(f"Provisioning model instance {mi.name}")
                     server_ins.start()
@@ -608,6 +608,14 @@ class ServeManager:
                 f"{'' if not is_main_worker else f' on ports {mi.ports if mi.ports else [mi.port]}'}"
             )
 
+            fallback_registry = (
+                registration.determine_default_registry(
+                    self._config.system_default_container_registry
+                )
+                if is_built_in_backend(backend)
+                else None
+            )
+
             process = multiprocessing.Process(
                 target=ServeManager._serve_model_instance,
                 args=(
@@ -618,7 +626,7 @@ class ServeManager:
                     self._config,
                     self._worker_id,
                     self._inference_backend_manager.get_backend_by_name(backend),
-                    registration.dockerhub_reachable,
+                    fallback_registry,
                 ),
             )
             process.daemon = False

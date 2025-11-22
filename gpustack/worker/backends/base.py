@@ -4,7 +4,7 @@ import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
 
 from gpustack_runner import list_backend_runners
@@ -18,9 +18,14 @@ from gpustack_runtime.detector import (
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
-from gpustack_runtime.envs import to_bool
+from gpustack_runtime.envs import (
+    to_bool,
+    GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE,
+    GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE,
+)
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
-from gpustack.config import registration as registration
+from gpustack_runtime.deployer.docker import DockerWorkloadPlan
+from gpustack_runtime.deployer import WorkloadPlan, DockerDeployer
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
@@ -63,6 +68,9 @@ class InferenceServer(ABC):
     _pretrained_config: Optional[Dict] = None
     """The model configuration, if available."""
 
+    _fallback_registry: Optional[str] = None
+    """The fallback container registry to use if needed."""
+
     @time_decorator
     def __init__(
         self,
@@ -71,6 +79,7 @@ class InferenceServer(ABC):
         cfg: Config,
         worker_id: int,
         inference_backend: InferenceBackend,
+        fallback_registry: Optional[str] = None,
     ):
         setup_logging(debug=cfg.debug)
         setup_runtime_logging()
@@ -80,6 +89,7 @@ class InferenceServer(ABC):
             self._clientset = clientset
             self._model_instance = mi
             self._config = cfg
+            self._fallback_registry = fallback_registry
             self._worker = self._clientset.workers.get(worker_id)
             if not self._worker:
                 raise KeyError(f"Worker {worker_id} not found")
@@ -858,20 +868,31 @@ $@
             )
             return image
 
-        # 4) Otherwise, check if Docker Hub is reachable.
-        #    If it is, prefix the image with "docker.io".
-        #    Otherwise, prefix it with "quay.io".
-        if registration.dockerhub_reachable:
-            logger.info(
-                f"Docker Hub reachable; using Docker Hub for gpustack image: {image}"
-            )
-            return image
-        else:
-            final = f"quay.io/{image}"
-            logger.info(
-                f"Docker Hub not reachable; fallback to Quay.io for gpustack image: {final}"
-            )
-            return final
+        # 4) Otherwise, use fallback registry if configured.
+        #    The fallback registry is Docker Hub or Quay.io depending on reachability.
+        #    If both are not reachable, use docker.io as default.
+        prefix = self._fallback_registry + "/" if self._fallback_registry else ""
+        return f"{prefix}{image}"
+
+    def _transform_workload_plan(
+        self, workload: WorkloadPlan
+    ) -> Union[DockerWorkloadPlan, WorkloadPlan]:
+        """
+        If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
+        and fill the pause image and restart image with registry override.
+        """
+        if not DockerDeployer().is_supported():
+            return workload
+        pause_image = self._apply_registry_override(GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE)
+        restart_image = self._apply_registry_override(
+            GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE
+        )
+        docker_workload = DockerWorkloadPlan(
+            pause_image=pause_image,
+            unhealthy_restart_image=restart_image,
+            **workload.__dict__,
+        )
+        return docker_workload
 
 
 def is_ascend_310p(devices: GPUDevicesInfo) -> bool:

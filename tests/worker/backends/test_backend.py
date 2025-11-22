@@ -2,54 +2,52 @@ import types
 
 import pytest
 
-from gpustack.config import registration
 from gpustack.worker.backends.custom import CustomServer
 
 
 @pytest.mark.parametrize(
-    "image_name, container_registry, expect_image_name, can_connet_dockerhub",
+    "image_name, container_registry, expect_image_name, fallback_registry",
     [
         (
             "ghcr.io/ggml-org/llama.cpp:server",
             "test-registry.io",
             "ghcr.io/ggml-org/llama.cpp:server",
-            True,
+            None,
         ),
         (
             "gpustack/runner:cuda12.8-vllm0.10.2",
             "test-registry.io",
             "test-registry.io/gpustack/runner:cuda12.8-vllm0.10.2",
-            True,
+            None,
         ),
         (
             "foo/bar",
             "test-registry.io",
             "test-registry.io/foo/bar",
-            True,
+            None,
         ),
-        (
-            "ubuntu:24.04",
-            "test-registry.io",
-            "test-registry.io/ubuntu:24.04",
-            True,
-        ),
+        ("ubuntu:24.04", "test-registry.io", "test-registry.io/ubuntu:24.04", None),
         (
             "gpustack/runner:cuda12.8-vllm0.10.2",
-            "",
+            None,
             "quay.io/gpustack/runner:cuda12.8-vllm0.10.2",
-            False,
+            "quay.io",
         ),
         (
             "lmsysorg/sglang:v0.5.5",
             "",
             "lmsysorg/sglang:v0.5.5",
-            False,
+            None,
         ),
     ],
 )
 @pytest.mark.asyncio
 async def test_apply_registry_override(
-    image_name, container_registry, expect_image_name, can_connet_dockerhub, monkeypatch
+    image_name,
+    container_registry,
+    expect_image_name,
+    fallback_registry,
+    monkeypatch,
 ):
     backend = CustomServer.__new__(CustomServer)
     # CustomServer inherits _apply_registry_override from InferenceServer,
@@ -57,9 +55,10 @@ async def test_apply_registry_override(
     # Since we constructed the instance via __new__ (without __init__),
     # the _config attribute does not exist. We attach a minimal stub config here.
     backend._config = types.SimpleNamespace(
-        system_default_container_registry=container_registry
+        system_default_container_registry=container_registry,
     )
-    registration.dockerhub_reachable = can_connet_dockerhub
+    backend._fallback_registry = fallback_registry
+
     assert backend._apply_registry_override(image_name) == expect_image_name
 
     if container_registry:

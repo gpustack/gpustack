@@ -22,7 +22,7 @@ from gpustack.security import (
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
-from gpustack.config.config import Config, GatewayModeEnum, set_global_config
+from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.config import registration
 from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
@@ -42,7 +42,6 @@ from gpustack.server.usage_buffer import flush_usage_to_db
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.metrics_collector import GatewayMetricsCollector
-from gpustack.utils.network import check_docker_hub_reachable
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
@@ -90,7 +89,7 @@ class Server:
         self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
         self._start_gateway_metrics_collector()
-        self._start_dockerhub_checker()
+        self._start_default_registry_checker()
 
         jwt_manager = JWTManager(self._config.jwt_secret_key)
         # Start FastAPI server
@@ -138,12 +137,10 @@ class Server:
 
         await asyncio.gather(*self._async_tasks)
 
-    def _start_dockerhub_checker(self):
-        async def _check():
-            registration.dockerhub_reachable = await check_docker_hub_reachable()
-            set_global_config(self._config)
-
-        self._create_async_task(_check())
+    def _start_default_registry_checker(self):
+        registration.determine_default_registry(
+            self._config.system_default_container_registry,
+        ),
 
     def _run_migrations(self):
         logger.info("Running database migration.")

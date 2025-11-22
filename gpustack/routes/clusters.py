@@ -222,11 +222,9 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
         raise NotFoundException(message=f"cluster {id} not found")
     url = get_server_url(request)
     cfg = get_global_config()
-    container_registry = None
-    if cfg.system_default_container_registry:
-        container_registry = cfg.system_default_container_registry
-    elif not registration.dockerhub_reachable:
-        container_registry = "quay.io"
+    container_registry = registration.determine_default_registry(
+        cfg.system_default_container_registry
+    )
 
     return ClusterRegistrationTokenPublic(
         token=cluster.registration_token,

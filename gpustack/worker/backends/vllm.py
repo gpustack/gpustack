@@ -178,7 +178,7 @@ class VLLMServer(InferenceServer):
                 else [run_container, sidecar_container]
             ),
         )
-        create_workload(workload_plan)
+        create_workload(self._transform_workload_plan(workload_plan))
 
         logger.info(f"Created vLLM container workload {self._workload_name}")
 

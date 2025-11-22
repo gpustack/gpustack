@@ -23,7 +23,6 @@ from gpustack.server import catalog
 from gpustack.utils.network import (
     get_first_non_loopback_ip,
     get_ifname_by_ip_hostname,
-    check_docker_hub_reachable,
 )
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -225,8 +224,10 @@ class Worker:
         inference_backend_manager = InferenceBackendManager(self._clientset)
         # Start InferenceBackend listener to cache backend data
         self._create_async_task(inference_backend_manager.start_listener())
-        reachable = await check_docker_hub_reachable()
-        registration.dockerhub_reachable = reachable
+        # Trigger cache refresh
+        registration.determine_default_registry(
+            self._config.system_default_container_registry
+        )
 
         serve_manager = ServeManager(
             worker_id=self._worker_id,
