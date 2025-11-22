@@ -26,23 +26,23 @@ function Lint {
         GPUStack.Log.Fatal "failed with Invoke-ScriptAnalyzer lint."
     }
 
-    poetry run pre-commit run flake8 --all-files
+    uv run pre-commit run flake8 --all-files
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed with flake8 lint."
     }
-    poetry run pre-commit run black --all-files
+    uv run pre-commit run black --all-files
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed with black lint."
     }
-    poetry run pre-commit run check-yaml --all-files
+    uv run pre-commit run check-yaml --all-files
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed with check-yaml lint."
     }
-    poetry run pre-commit run debug-statements --all-files
+    uv run pre-commit run debug-statements --all-files
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed with debug-statements lint."
     }
-    poetry run pre-commit run end-of-file-fixer --all-files
+    uv run pre-commit run end-of-file-fixer --all-files
     if ($LASTEXITCODE -ne 0) {
         GPUStack.Log.Fatal "failed with end-of-file-fixer lint."
     }
