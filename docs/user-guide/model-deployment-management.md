@@ -10,35 +10,39 @@ Currently, models from [Hugging Face](https://huggingface.co), [ModelScope](http
 
 1. Click the `Deploy Model` button, then select `Hugging Face` in the dropdown.
 
-2. Search the model by name from Hugging Face using the search bar in the top left. For example, `microsoft/Phi-3-mini-4k-instruct-gguf`. If you only want to search for GGUF models, check the "GGUF" checkbox.
+2. Search the model by name from `Hugging Face` using the search bar in the top left. For example, `Qwen/Qwen3-0.6B`.
 
-3. Select a file with the desired quantization format from `Available Files`.
+3. Adjust the `Name`, `Cluster`, `Backend`, `Backend Version`, and `Replicas` as needed.
 
-4. Adjust the `Name` and `Replicas` as needed.
+4. Expand the `Performance` section for performance configurations if needed. Please refer to the [Performance-Related Configuration](#performance-related-configuration) section for more details.
 
-5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
+5. Expand the `Scheduling` section for scheduling configurations if needed. Please refer to the [Scheduling Configuration](#scheduling-configuration) section for more details.
 
-6. Click the `Save` button.
+6. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Configuration](#advanced-configuration) section for more details.
+
+7. Click the `Save` button.
 
 ### Deploying a ModelScope Model
 
 1. Click the `Deploy Model` button, then select `ModelScope` in the dropdown.
 
-2. Search the model by name from ModelScope using the search bar in the top left. For example, `Qwen/Qwen2-0.5B-Instruct`. If you only want to search for GGUF models, check the "GGUF" checkbox.
+2. Search the model by name from `ModelScope` using the search bar in the top left. For example, `Qwen/Qwen3-0.6B`.
 
-3. Select a file with the desired quantization format from `Available Files`.
+3. Adjust the `Name`, `Cluster`, `Backend`, `Backend Version`, and `Replicas` as needed.
 
-4. Adjust the `Name` and `Replicas` as needed.
+4. Expand the `Performance` section for performance configurations if needed. Please refer to the [Performance-Related Configuration](#performance-related-configuration) section for more details.
 
-5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
+5. Expand the `Scheduling` section for scheduling configurations if needed. Please refer to the [Scheduling Configuration](#scheduling-configuration) section for more details.
 
-6. Click the `Save` button.
+6. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Configuration](#advanced-configuration) section for more details.
+
+7. Click the `Save` button.
 
 ### Deploying a Local Path Model
 
 You can deploy a model from a local path. The model path can be a directory (e.g., a downloaded Hugging Face model directory) or a file (e.g., a GGUF model file) located on workers. This is useful when running in an air-gapped environment.
 
-!!!note
+!!! note
 
     1. GPUStack does not check the validity of the model path for scheduling, which may lead to deployment failure if the model path is inaccessible. It is recommended to ensure the model path is accessible on all workers(e.g., using NFS, rsync, etc.). You can also use the worker selector configuration to deploy the model to specific workers.
     2. GPUStack cannot evaluate the model's resource requirements unless the server has access to the same model path. Consequently, you may observe empty VRAM/RAM allocations for a deployed model. To mitigate this, it is recommended to make the model files available on the same path on the server. Alternatively, you can customize backend parameters, such as `tensor-split`, to configure how the model is distributed across the GPUs.
@@ -51,11 +55,25 @@ To deploy a local path model:
 
 3. Fill in the `Model Path`.
 
-4. Adjust the `Replicas` as needed.
+4. Adjust the `Cluster`, `Backend`, `Backend Version`, and `Replicas` as needed.
 
-5. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Model Configuration](#advanced-model-configuration) section for more details.
+5. Expand the `Performance` section for performance configurations if needed. Please refer to the [Performance-Related Configuration](#performance-related-configuration) section for more details.
 
-6. Click the `Save` button.
+6. Expand the `Scheduling` section for scheduling configurations if needed. Please refer to the [Scheduling Configuration](#scheduling-configuration) section for more details.
+
+7. Expand the `Advanced` section for advanced configurations if needed. Please refer to the [Advanced Configuration](#advanced-configuration) section for more details.
+
+8. Click the `Save` button.
+
+### Backend
+
+Currently, GPUStack supports some built-in backends: vLLM, SGLang, MindIE and VoxBox.
+
+For more details, please refer to the [Inference Backends](./inference-backends.md) section.
+
+### Backend Version
+
+Select a backend version. The version availability depend on the selected backend. This option is useful for ensuring compatibility or taking advantage of features introduced in specific backend versions.
 
 ## Edit Model Deployment
 
@@ -123,19 +141,56 @@ You can enable extended KV cache to offload the KV cache to CPU memory or remote
 
 Available options:
 
-- **Maximum CPU Cache Size**: The maximum size of the KV cache (in GiB) that can be offloaded to CPU memory.
+- **RAM-to-VRAM Ratio**: The ratio of system RAM to GPU VRAM used for KV cache. For example, 2.0 means the cache in RAM can be twice as large as the GPU VRAM.
+- **Maximum RAM Size**: The maximum size of the KV cache stored in system memory (GiB). If set, this value overrides `RAM-to-VRAM Ratio`.
 - **Size of Cache Chunks**: Number of tokens per KV cache chunk.
-- **Remote Storage URL**: The remote storage URL for offloading KV cache. Format: `protocol://host:port`. e.g., `redis://your-redis-server:6379`. For more details, please refer to the [LMCache documentation](https://docs.lmcache.ai/).
 
 This feature works for certain backends and frameworks only.
 
 #### Compatibility Matrix
 
-| Backend    | Framework  |
-|------------|------------|
-| vLLM       | CUDA, ROCm |
+| Backend | Framework  |
+| ------- | ---------- |
+| vLLM    | CUDA, ROCm |
+| SGLang  | CUDA, ROCm |
 
-## Advanced Model Configuration
+## Scheduling Configuration
+
+### Schedule Mode
+
+#### Auto
+
+GPUStack automatically schedules model instances to appropriate GPUs/Workers based on current resource availability.
+
+- **Placement Strategy**
+
+Spread: Make the resources of the entire cluster relatively evenly distributed among all workers. It may produce more resource fragmentation on a single worker.
+
+Binpack: Prioritize the overall utilization of cluster resources, reducing resource fragmentation on Workers/GPUs.
+
+- **Worker Selector**
+
+When configured, the scheduler will deploy the model instance to the worker containing specified labels.
+
+1. Navigate to the `Workers` page and edit the desired worker. Assign custom labels to the worker by adding them in the labels section.
+
+2. Go to the `Deployments` page and click on the `Deploy Model` button. Expand the `Scheduling` section and input the previously assigned worker labels in the `Worker Selector` configuration. During deployment, the Model Instance will be allocated to the corresponding worker based on these labels.
+
+#### Manual
+
+This schedule type allows users to specify which GPU to deploy the model instance on.
+
+- **GPU Selector**
+
+  Select one or more GPUs from the list. The model instance will attempt to deploy to the selected GPU if resources permit.
+
+- **GPUs per Replica**
+
+Auto: The system automatically calculates the GPU count per replica, using powers of two by default and capped by the selected GPUs.
+
+Manual: Select the number of GPUs each replica should use from the dropdown.
+
+## Advanced Configuration
 
 GPUStack supports tailored configurations for model deployment.
 
@@ -143,48 +198,10 @@ GPUStack supports tailored configurations for model deployment.
 
 The model category helps you organize and filter models. By default, GPUStack automatically detects the model category based on the model's metadata. You can also customize the category by selecting it from the dropdown list.
 
-### Schedule Type
-
-#### Auto
-
-GPUStack automatically schedules model instances to appropriate GPUs/Workers based on current resource availability.
-
-- Placement Strategy
-
-  - Spread: Make the resources of the entire cluster relatively evenly distributed among all workers. It may produce more resource fragmentation on a single worker.
-
-  - Binpack: Prioritize the overall utilization of cluster resources, reducing resource fragmentation on Workers/GPUs.
-
-- Worker Selector
-
-  When configured, the scheduler will deploy the model instance to the worker containing specified labels.
-
-  1. Navigate to the `Workers` page and edit the desired worker. Assign custom labels to the worker by adding them in the labels section.
-
-  2. Go to the `Deployments` page and click on the `Deploy Model` button. Expand the `Advanced` section and input the previously assigned worker labels in the `Worker Selector` configuration. During deployment, the Model Instance will be allocated to the corresponding worker based on these labels.
-
-#### Manual
-
-This schedule type allows users to specify which GPU to deploy the model instance on.
-
-- GPU Selector
-
-  Select one or more GPUs from the list. The model instance will attempt to deploy to the selected GPU if resources permit.
-
-### Backend
-
-The inference backend. Currently, GPUStack supports three backends: llama-box, vLLM and vox-box. GPUStack automatically selects the backend based on the model's configuration.
-
-For more details, please refer to the [Inference Backends](./inference-backends.md) section.
-
-### Backend Version
-
-Specify a backend version, such as `v1.0.0`. The version format and availability depend on the selected backend. This option is useful for ensuring compatibility or taking advantage of features introduced in specific backend versions. Refer to the [Pinned Backend Versions](./pinned-backend-versions.md) section for more information.
-
 ### Backend Parameters
 
 Input the parameters for the backend you want to customize when running the model. The parameter should be in the format `--parameter=value`, `--bool-parameter` or as separate fields for `--parameter` and `value`.
-For example, use `--ctx-size=8192` for llama-box.
+For example, use `--max-model-length=8192` for vLLM.
 
 For full list of supported parameters, please refer to the [Inference Backends](./inference-backends.md) section.
 
@@ -196,18 +213,22 @@ Environment variables used when running the model. These variables are passed to
 
 !!! note
 
-    Available for llama-box backend only.
+    Available for custom backends only.
 
-After enabling CPU offloading, GPUStack prioritizes loading as many layers as possible onto the GPU to optimize performance. If GPU resources are limited, some layers will be offloaded to the CPU, with full CPU inference used only when no GPU is available.
+When CPU offloading is enabled, GPUStack will use CPU memory if GPU resources are insufficient. The inference backend must support CPU inference for the model to run properly.
 
 ### Allow Distributed Inference Across Workers
 
 !!! note
 
-    Available for llama-box, vLLM and MindIE backends.
+    Available for vLLM, SGLang, and MindIE backends.
 
 Enable distributed inference across multiple workers. The primary Model Instance will communicate with backend instances on one or more other workers, offloading computation tasks to them.
 
 ### Auto-Restrat on Error
 
 Enable automatic restart of the model instance if it encounters an error. This feature ensures high availability and reliability of the model instance. If an error occurs, GPUStack will automatically attempt to restart the model instance using an exponential backoff strategy. The delay between restart attempts increases exponentially, up to a maximum interval of 5 minutes. This approach prevents the system from being overwhelmed by frequent restarts in the case of persistent errors.
+
+### Enable Generic Proxy
+
+While it is common practice to integrate with the OpenAI compatible APIs, users may have different requirements for their use cases. GPUStack supports any inference APIs other than the OpenAI-compatible ones and make it more flexible for AI application development.

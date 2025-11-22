@@ -1,6 +1,16 @@
 # OpenAI Compatible APIs
 
-GPUStack serves [OpenAI-compatible APIs](https://platform.openai.com/docs/api-reference) using the `/v1-openai` path. Most of the APIs also work under the `/v1` path as an alias, except for the `models` endpoint, which is reserved for GPUStack management APIs.
+GPUStack serves [OpenAI-compatible APIs](https://platform.openai.com/docs/api-reference) using the `/v1` path.
+
+!!! note
+
+    For other APIs, GPUStack allows you to enable the Generic Proxy when deploying a model.
+
+    With the Generic Proxy enabled, you can send API requests to a unified gateway and add the `X-GPUStack-Model` header.
+
+    This header tells GPUStack which model should handle the request.
+
+    For more details, see [Enable Generic Proxy](model-deployment-management.md#enable-generic-proxy).
 
 ## Supported Endpoints
 
@@ -19,15 +29,15 @@ The following API endpoints are supported:
 
 The following are examples using the APIs in different languages:
 
-### curl
+### Curl
 
 ```bash
 export GPUSTACK_API_KEY=your_api_key
-curl http://your_gpustack_server_url/v1-openai/chat/completions \
+curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "llama3",
+    "model": "qwen3",
     "messages": [
       {
         "role": "system",
@@ -50,7 +60,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
 
 completion = client.chat.completions.create(
-  model="llama3",
+  model="qwen3",
   messages=[
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello!"}
@@ -72,7 +82,7 @@ const openai = new OpenAI({
 
 async function main() {
   const params = {
-    model: "llama3",
+    model: "qwen3",
     messages: [
       {
         role: "system",
