@@ -96,10 +96,7 @@ For more details, please refer to [SGLang documentation](https://docs.sglang.ai/
 
 Please refer to the SGLang [documentation](https://docs.sglang.ai/supported_models/generative_models.html) for supported models.
 
-SGLang Diffusion also support open-source image and video generation models, including:
-
-- Video models: Wan-series, FastWan, Hunyuan
-- Image models: Qwen-Image, Qwen-Image-Edit, Flux
+SGLang also supports image models. The ones we have verified include: Qwen-Image, Flux 1 Dev. For more information, please refer to the [SGLang Diffusion documentation](https://lmsys.org/blog/2025-11-07-sglang-diffusion/).
 
 ### Supported Features
 
