@@ -3,11 +3,11 @@
 ## Supported
 
 - **Target Devices**
-    + [x] MThreads GPUs
+  - [x] MThreads GPUs
 - **Operating Systems**
-    + [x] Linux AMD64
+  - [x] Linux AMD64
 - **Available Inference Backends**
-    + [x] Custom Engines
+  - [x] Custom Engines
 
 !!! note
 
@@ -55,7 +55,7 @@ sudo docker run -d --name gpustack \
     gpustack/gpustack
 ```
 
-- To restrict GPU access, remove `--privileged` flag and set the `MTHREADS_VISIBLE_DEVICES` environment variable. 
+- To restrict GPU access, remove `--privileged` flag and set the `MTHREADS_VISIBLE_DEVICES` environment variable.
   See [MThreads Container Toolkit - GPU Enumeration](https://docs.mthreads.com/cloud-native/cloud-native-doc-online/start).
 - The `--network=host` option is necessary for port awareness.
 - Mounting `/var/run/docker.sock` allows GPUStack to manage Docker containers for inference engines.
@@ -66,7 +66,7 @@ You can reuse model files stored on the host in two ways.
 
 #### Bind Mount (Recommended)
 
-Avoid re-downloading model files inside the container:
+Mount pre-downloaded model files into the container so they can be deployed from a local path without re-downloading:
 
 ```diff
  sudo docker run -d --name gpustack \
@@ -80,7 +80,7 @@ Avoid re-downloading model files inside the container:
 
 #### Override Cache Directory
 
-Mount your model directory to the container’s cache path:
+Mount a dedicated directory for storing downloaded models rather than relying on the default Docker volume:
 
 ```diff
  sudo docker run -d --name gpustack \
@@ -115,7 +115,7 @@ Check the GPUStack container logs:
 sudo docker logs -f gpustack
 ```
 
-If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI. 
+If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI.
 
 Log in with username `admin` and the default password. Retrieve the initial password with:
 
@@ -124,8 +124,8 @@ sudo docker exec -it gpustack \
     cat /var/lib/gpustack/initial_admin_password
 ```
 
-### (Optional) Add Worker
+## (Optional) Add Worker
 
-You can add more nodes to GPUStack to form a cluster. 
+You can add more nodes to GPUStack to form a cluster.
 
 Please navigate to the **Workers** page in the GPUStack UI to get the command for adding workers.

@@ -81,8 +81,8 @@ For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process r
 
 1. Get the installation commands, please refer to the commands in the [Installation Documentation](installation/requirements.md).
 
-1. Update the installation commands by mounting your legacy data directory to `/var/lib/gpustack`.
+2. Update the installation commands by mounting your legacy data directory to `/var/lib/gpustack`.
 
-1. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
+3. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
 
 The Server and Worker migration commands can be used directly after applying these changes.

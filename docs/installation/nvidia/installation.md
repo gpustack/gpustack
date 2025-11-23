@@ -3,20 +3,21 @@
 ## Supported
 
 - **Target Devices**
-    + [x] NVIDIA GPUs
+  - [x] NVIDIA GPUs
 - **Operating Systems**
-    + [x] Linux AMD64
-    + [x] Linux ARM64
+  - [x] Linux AMD64
+  - [x] Linux ARM64
 - **Available Inference Backends**
-    + [x] [vLLM](https://github.com/vllm-project/vllm)
-    + [x] [SGLang](https://github.com/sgl-project/sglang)
-    + [x] [VoxBox](https://github.com/gpustack/vox-box)
-    + [x] Custom Engines
+  - [x] [vLLM](https://github.com/vllm-project/vllm)
+  - [x] [SGLang](https://github.com/sgl-project/sglang)
+  - [x] [VoxBox](https://github.com/gpustack/vox-box)
+  - [x] Custom Engines
 
 !!! note
 
     1. Whether a target device can run a specific inference backend depends on whether the corresponding version of the inference backend (container image) supports that device.
        Please verify compatibility with your target devices using [NVIDIA Compute Compatibility](https://developer.nvidia.com/cuda-gpus) before proceeding.
+
     2. Default container images, such as vLLM, SGLang, and VoxBox, are provided by the [GPUStack runner](https://github.com/gpustack/runner?tab=readme-ov-file#nvidia-cuda).
 
 ## Prerequisites
@@ -27,7 +28,6 @@ Ensure your system has an [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drive
 
 ```bash
 sudo nvidia-smi
-
 ```
 
 ### Container Running Environment
@@ -38,32 +38,6 @@ It is recommended to use [Docker](https://docs.docker.com/engine/install/) with 
 sudo docker info 2>/dev/null | grep -q "nvidia" \
     && echo "NVIDIA Container Toolkit OK" \
     || (echo "NVIDIA Container Toolkit not configured"; exit 1)
-
-```
-
-### Configure CGroup Driver
-
-Set Docker to use the native CGroup driver (cgroupfs):
-
-```diff
-vim /etc/docker/daemon.json
- {
-   ...,
-+  "exec-opts": [
-+    "native.cgroupdriver=cgroupfs"
-+  ],
-   ...
- }
-```
-
-If this step is skipped, GPU devices may become inaccessible within containers after certain operations (e.g.,
-`systemctl daemon-reload`), see [NVIDIA Container Toolkit #48](https://github.com/NVIDIA/nvidia-container-toolkit/issues/48) for details.
-
-Remember to restart the Docker service to apply the above changes:
-
-```bash
-sudo systemctl daemon-reload \
-    && sudo systemctl restart docker
 ```
 
 ### Port Requirements
@@ -86,7 +60,7 @@ sudo docker run -d --name gpustack \
 ```
 
 - To restrict GPU access, it's usually to remove `--privileged` flag and set the `NVIDIA_VISIBLE_DEVICES` environment variable as [NVIDIA Container Toolkit - GPU Enumeration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#gpu-enumeration) described.
-  However, disabling privileged mode and limiting GPU visibility may cause the GPUStack built-in worker to lose access to GPUs with the error: "Failed to initialize NVML: Unknown Error". 
+  However, disabling privileged mode and limiting GPU visibility may cause the GPUStack built-in worker to lose access to GPUs with the error: "Failed to initialize NVML: Unknown Error".
   A workaround (without restarting Docker) is to explicitly inject the device into the container using the `--device` declaration as below example,
   for more details, please refer to the [NVIDIA Container Toolkit - Troubleshooting](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/troubleshooting.html#containers-losing-access-to-gpus-with-error-failed-to-initialize-nvml-unknown-error).
 
@@ -113,7 +87,7 @@ You can reuse model files stored on the host in two ways.
 
 #### Bind Mount (Recommended)
 
-Avoid re-downloading model files inside the container:
+Mount pre-downloaded model files into the container so they can be deployed from a local path without re-downloading:
 
 ```diff
  sudo docker run -d --name gpustack \
@@ -127,7 +101,7 @@ Avoid re-downloading model files inside the container:
 
 #### Override Cache Directory
 
-Mount your model directory to the container’s cache path:
+Mount a dedicated directory for storing downloaded models rather than relying on the default Docker volume:
 
 ```diff
  sudo docker run -d --name gpustack \
@@ -162,7 +136,7 @@ Check the GPUStack container logs:
 sudo docker logs -f gpustack
 ```
 
-If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI. 
+If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI.
 
 Log in with username `admin` and the default password. Retrieve the initial password with:
 
@@ -171,8 +145,8 @@ sudo docker exec -it gpustack \
     cat /var/lib/gpustack/initial_admin_password
 ```
 
-### (Optional) Add Worker
+## (Optional) Add Worker
 
-You can add more nodes to GPUStack to form a cluster. 
+You can add more nodes to GPUStack to form a cluster.
 
 Please navigate to the **Workers** page in the GPUStack UI to get the command for adding workers.
