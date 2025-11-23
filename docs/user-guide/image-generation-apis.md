@@ -12,6 +12,14 @@ GPUStack provides APIs for generating images given a prompt and/or an input imag
 
     For more details, see [Enable Generic Proxy](model-deployment-management.md/#enable-generic-proxy).
 
+## Supported Models
+
+The following models are available for image generation:
+
+- black-forest-labs/FLUX.1-dev [[Hugging Face]](https://huggingface.co/black-forest-labs/FLUX.1-dev), [[ModelScope]](https://modelscope.cn/models/black-forest-labs/FLUX.1-dev)
+- Qwen/Qwen-Image [[Hugging Face]](https://huggingface.co/Qwen/Qwen-Image), [[ModelScope]](https://modelscope.cn/models/Qwen/Qwen-Image)
+
+
 ## API Details
 
 The image generation APIs adhere to OpenAI API specification. While OpenAI APIs for image generation are simple and opinionated, GPUStack extends these capabilities with additional features.
