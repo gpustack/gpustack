@@ -45,4 +45,4 @@ curl http://your_gpustack_server_url/model/proxy/embed \
 -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
 ```
 
-For more details, see [Enable Generic Proxy](model-deployment-management.md#enable-generic-proxy).
+For more details, see [Enable Generic Proxy](../user-guide/model-deployment-management.md#enable-generic-proxy).
