@@ -6,7 +6,7 @@ GPUStack supports deploying and running **Image Generation Models**. In this gui
 
 Before you begin, ensure that you have the following:
 
-- A GPU with at least 48 GB of VRAM.
+- A GPU with at least 55 GB of VRAM.
 - Access to Hugging Face or ModelScope to download the `Qwen/Qwen-Image` repository.
 - GPUStack is installed and running. If not, refer to the [Quickstart Guide](../quickstart.md).
 

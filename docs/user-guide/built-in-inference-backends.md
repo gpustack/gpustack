@@ -1,4 +1,4 @@
-# Inference Backends
+# Built-in Inference Backends
 
 GPUStack supports the following inference backends:
 
@@ -10,6 +10,7 @@ GPUStack supports the following inference backends:
 When initiating a model deployment, the UI will automatically pre-select a backend based on the following criteria:
 
 - If the model is a known `Text-to-Speech` or `Speech-to-Text` model, `VoxBox` is used.
+- If the model is a known `Image` model, `SGLang` is used.
 - Otherwise, `vLLM` is used.
 
 This pre-selection only populates the default value in the deployment form. The actual backend used for deployment will be the one explicitly selected by the user when submitting the deployment request. Users can select from the list of supported backends provided above.
