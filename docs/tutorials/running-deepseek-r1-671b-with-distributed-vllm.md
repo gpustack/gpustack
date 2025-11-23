@@ -1,6 +1,6 @@
 # Running DeepSeek R1 671B with Distributed vLLM
 
-This tutorial guides you through the process of configuring and running the unquantized **DeepSeek R1 671B** using **Distributed vLLM** on a GPUStack cluster. Due to the extremely large size of the model, distributed inference across multiple workers is usually required.
+This tutorial guides you through the process of configuring and running the original **DeepSeek R1 671B** using **Distributed vLLM** on a GPUStack cluster. Due to the extremely large size of the model, distributed inference across multiple workers is usually required.
 
 GPUStack enables easy setup and orchestration of distributed inference using vLLM, making it possible to run massive models like DeepSeek R1 with minimal manual configuration.
 
@@ -29,70 +29,70 @@ Before you begin, make sure the following requirements are met:
 
 ## Step 1: Install GPUStack Server
 
-In this tutorial, we will use Docker to install GPUStack. You can also use other installation methods if you prefer.
-
-Use the following command to start the GPUStack server:
+According to the [NVIDIA Installation](../installation/nvidia/installation.md), you can use the following command to start the GPUStack server **with the built-in worker**:
 
 ```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-	-v /path/to/your/model:/path/to/your/model \
-	-e NCCL_SOCKET_IFNAME=eth2 \
-	-e GLOO_SOCKET_IFNAME=eth2 \
-    gpustack/gpustack --enable-ray
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --volume /path/to/your/model:/path/to/your/model \
+    --runtime nvidia \
+    gpustack/gpustack
+
 ```
 
 !!! note
 
     - Replace `/path/to/your/model` with the actual path.
-    - Set `NCCL_SOCKET_IFNAME` and `GLOO_SOCKET_IFNAME` to the network interface used for inter-node communication. We use eth2 as an example.
-    - The `--enable-ray` flag enables Ray for distributed inference, which is required by vLLM.
 
-After GPUStack server is up and running, run the following commands to get the initial admin password and the token for worker registration:
+After GPUStack server is up and running, run the following commands to get the initial admin password:
 
 ```bash
-docker exec gpustack cat /var/lib/gpustack/initial_admin_password
-docker exec gpustack cat /var/lib/gpustack/token
+sudo docker exec gpustack \
+    cat /var/lib/gpustack/initial_admin_password
+
 ```
 
-## Step 2: Install GPUStack Workers
+## Step 2: Access GPUStack UI
 
-On **each worker node**, run the following command to start a GPUStack worker:
-
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v gpustack-data:/var/lib/gpustack \
-	-v /path/to/your/model:/path/to/your/model \
-	-e NCCL_SOCKET_IFNAME=eth2 \
-	-e GLOO_SOCKET_IFNAME=eth2 \
-    gpustack/gpustack \
-    --server-url http://your_gpustack_server_ip_or_hostname \
-	--token your_gpustack_token \
-	--enable-ray
-```
-
-!!! note
-
-    - Replace the placeholder paths, IP address/hostname, and token accordingly.
-    - Ensure the model path matches that of the server and is valid on all worker nodes.
-
-## Step 3: Access GPUStack UI
-
-Once the server and all workers are running, access the GPUStack UI via your browser:
+Login to the GPUStack UI using the `admin` user and the obtained password.
 
 ```
 http://your_gpustack_server_ip_or_hostname
 ```
 
-Log in using the `admin` username and the password obtained in Step 1. Navigate to the `Workers` page to verify that all workers are in the Ready state and their GPUs are listed.
+## Step 3: Install GPUStack Workers
+
+Navigate to the `Workers` page in the GPUStack UI, click `Add Worker` button to get the command for adding workers.
+
+And then on **each worker node**, run the worker adding command to start a GPUStack worker:
+
+```bash
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --volume /path/to/your/model:/path/to/your/model \
+    --runtime nvidia \
+    gpustack/gpustack \
+    --server-url http://your_gpustack_server_ip_or_hostname \
+	--token your_gpustack_cluster_token
+
+```
+
+!!! note
+
+    - Replace the placeholder paths, IP address/hostname, and cluster token accordingly.
+    - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
+
+After all workers are added, return to the GPUStack UI.
+
+Navigate to the `Workers` page to verify that all workers are in the Ready state and their GPUs are listed.
 
 ![initial-resources](../assets/tutorials/running-deepseek-r1-671b-with-distributed-vllm/initial-resources.png)
 
@@ -128,7 +128,7 @@ Once the model is deployed and running, you can test it using the GPUStack Playg
 
 ![playground-chat](../assets/tutorials/running-deepseek-r1-671b-with-distributed-vllm/playground-chat.png)
 
-You can also use the `Compare` tab to test conccurrent inference scenarios.
+You can also use the `Compare` tab to test concurrent inference scenarios.
 
 ![playground-compare](../assets/tutorials/running-deepseek-r1-671b-with-distributed-vllm/playground-compare.png)
 

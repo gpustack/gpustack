@@ -30,107 +30,74 @@ Before you begin, make sure the following requirements are met:
 
 ## Step 1: Install GPUStack Server
 
-In this tutorial, we will use Docker to install GPUStack. You can also use other installation methods if you prefer.
-
-Use the following command to start the GPUStack server:
+According to the [Ascend Installation](../installation/ascend/installation.md), you can use the following command to start the GPUStack server **with the built-in worker**:
 
 ```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --device /dev/davinci0 \
-    --device /dev/davinci1 \
-    --device /dev/davinci2 \
-    --device /dev/davinci3 \
-    --device /dev/davinci4 \
-    --device /dev/davinci5 \
-    --device /dev/davinci6 \
-    --device /dev/davinci7 \
-    --device /dev/davinci_manager \
-    --device /dev/devmm_svm \
-    --device /dev/hisi_hdc \
-    -v /usr/local/dcmi:/usr/local/dcmi \
-    -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-    -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
-    -v /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro \
-    -v /etc/hccn.conf:/etc/hccn.conf:ro \
-    -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
-    -v gpustack-data:/var/lib/gpustack \
-    -v /path/to/your/model:/path/to/your/model \
-    --shm-size=1g \
-    --network=host \
-    --ipc=host \
-    gpustack/gpustack:latest-npu
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --env "ASCEND_VISIBLE_DEVICES=$(sudo ls /dev/davinci* | head -1 | grep -o '[0-9]\+' || echo "0")" \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --volume /path/to/your/model:/path/to/your/model \
+    --runtime ascend \
+    gpustack/gpustack
+
 ```
 
 !!! note
 
     - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
-    - Ensure the `npu-smi` tool is installed and configured correctly on your system. This is required for discovering the NPU devices.
-      Replace `/usr/local/bin/npu-smi:/usr/local/bin/npu-smi` with the actual path to the `npu-smi` binary if it is located elsewhere,
-      e.g., `/path/to/your/npu-smi:/usr/local/bin/npu-smi`.
     - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
-      Add `/path/to/your/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool` to the `-v` options if it is located elsewhere.
 
-After GPUStack server is up and running, run the following commands to get the initial admin password and the token for worker registration:
+After GPUStack server is up and running, run the following commands to get the initial admin password:
 
 ```bash
-docker exec gpustack cat /var/lib/gpustack/initial_admin_password
-docker exec gpustack cat /var/lib/gpustack/token
+sudo docker exec gpustack \
+    cat /var/lib/gpustack/initial_admin_password
+
 ```
 
-## Step 2: Install GPUStack Workers
+## Step 2: Access GPUStack UI
 
-On **each worker node**, run the following command to start a GPUStack worker:
-
-```bash
-docker run -d --name gpustack \
-    --restart=unless-stopped \
-    --device /dev/davinci0 \
-    --device /dev/davinci1 \
-    --device /dev/davinci2 \
-    --device /dev/davinci3 \
-    --device /dev/davinci4 \
-    --device /dev/davinci5 \
-    --device /dev/davinci6 \
-    --device /dev/davinci7 \
-    --device /dev/davinci_manager \
-    --device /dev/devmm_svm \
-    --device /dev/hisi_hdc \
-    -v /usr/local/dcmi:/usr/local/dcmi \
-    -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-    -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
-    -v /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro \
-    -v /etc/hccn.conf:/etc/hccn.conf:ro \
-    -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
-    -v gpustack-data:/var/lib/gpustack \
-    -v /path/to/your/model:/path/to/your/model \
-    --shm-size=1g \
-    --network=host \
-    --ipc=host \
-    gpustack/gpustack:latest-npu \
-    --server-url http://your_gpustack_server_ip_or_hostname \
-    --token your_gpustack_token
-```
-
-!!! note
-
-    - Replace the placeholder paths, IP address/hostname, and token accordingly.
-    - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
-    - Ensure the `npu-smi` tool is installed and configured correctly on your system. This is required for discovering the NPU devices.
-      Replace `/usr/local/bin/npu-smi:/usr/local/bin/npu-smi` with the actual path to the `npu-smi` binary if it is located elsewhere,
-      e.g., `/path/to/your/npu-smi:/usr/local/bin/npu-smi`.
-    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
-      Add `/path/to/your/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool` to the `-v` options if it is located elsewhere.
-
-## Step 3: Access GPUStack UI
-
-Once the server and all workers are running, access the GPUStack UI via your browser:
+Login to the GPUStack UI using the `admin` user and the obtained password.
 
 ```
 http://your_gpustack_server_ip_or_hostname
 ```
 
-Log in using the `admin` username and the password obtained in Step 1. Navigate to the `Workers` page to verify that all workers are in the Ready state and their GPUs are listed.
+## Step 3: Install GPUStack Workers
+
+Navigate to the `Workers` page in the GPUStack UI, click `Add Worker` button to get the command for adding workers.
+
+And then on **each worker node**, run the worker adding command to start a GPUStack worker:
+
+```bash
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --env "ASCEND_VISIBLE_DEVICES=$(sudo ls /dev/davinci* | head -1 | grep -o '[0-9]\+' || echo "0")" \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --volume /path/to/your/model:/path/to/your/model \
+    --runtime ascend \
+    gpustack/gpustack \
+    --server-url http://your_gpustack_server_ip_or_hostname \
+    --token your_gpustack_cluster_token
+
+```
+
+!!! note
+
+    - Replace the placeholder paths, IP address/hostname, and cluster token accordingly.
+    - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
+    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
+
+After all workers are added, return to the GPUStack UI.
+
+Navigate to the `Workers` page to verify that all workers are in the Ready state and their GPUs are listed.
 
 ![initial-resources](../assets/tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie/initial-resources.png)
 
