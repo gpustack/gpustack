@@ -35,7 +35,7 @@
           gpustack/gpustack
     ```
 
-    For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](installation/installation-requirements.md).
+    For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](installation/requirements.md).
 
     After the server starts, run the following command to get the default admin password:
 
