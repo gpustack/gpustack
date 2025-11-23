@@ -71,10 +71,11 @@ Screenshots:
     default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}}'
     version_configs:
       v1-custom:
-        image_name: docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_full
+        image_name: docker.io/rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu24.04_full
         custom_framework: rocm
     default_version: v1-custom
     ```
+   old gpu use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_full
 2. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
 
    
