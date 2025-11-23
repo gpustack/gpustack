@@ -6,7 +6,7 @@ In this tutorial, you’ll learn how to set up and use tool calling within GPUSt
 
 !!! note
 
-    1. Tool calling is supported in both [llama-box](../user-guide/inference-backends.md#llama-box) and [vLLM](../user-guide/inference-backends.md#vllm) inference backends.
+    1. Tool calling is supported in [vLLM](../user-guide/built-in-inference-backends.md#vllm) and [SGLang](../user-guide/built-in-inference-backends.md#sglang) inference backends.
     2. Tool calling is essentially achieved through prompt engineering, requiring models to be trained with internalized templates to enable this capability. Therefore, not all LLMs support tool calling.
 
 ## Prerequisites
