@@ -8,13 +8,14 @@
     + [x] Linux AMD64
     + [x] Linux ARM64
 - **Available Inference Backends**
-    + [x] vLLM
-    + [x] SGLang
+    + [x] [vLLM](https://github.com/vllm-project/vllm)
     + [x] Custom Engines
 
 !!! note
 
-    Whether a target device can run a specific inference engine depends on whether the corresponding version of the inference engine (container image) provides support for that device.
+    1. Whether a target device can run a specific inference backend depends on whether the corresponding version of the inference backend (container image) provides support for that device. 
+       Please verify compatibility with your target devices using [ROCm Compatibility](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html) before proceeding.
+    2. Default container images, such as vLLM, are provided by the [GPUStack runner](https://github.com/gpustack/runner?tab=readme-ov-file#amd-rocm).
 
 ## Prerequisites
 
