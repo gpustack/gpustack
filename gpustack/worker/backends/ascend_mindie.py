@@ -50,6 +50,7 @@ class AscendMindIEParameters:
     npu_memory_fraction: float = 0.8
     trust_remote_code: bool = False
     models: Optional[str] = None
+    models_parsed: Optional[any] = None  # store JSON parsed result
     #
     # Schedule config
     #
@@ -99,7 +100,6 @@ class AscendMindIEParameters:
     sequence_parallel_size: int = -1
     moe_expert_parallel_size: int = -1
     moe_tensor_parallel_size: int = -1
-    models_parsed: Optional[any] = None  # store JSON parsed result
     enable_buffer_response: bool = False
     prefill_expected_time_ms: Optional[int] = None
     decode_expected_time_ms: Optional[int] = None
@@ -189,7 +189,7 @@ class AscendMindIEParameters:
             "--models",
             type=str,
             required=False,
-            help="Models configuration in JSON format, for certain specific configurations, like expert parallelism.",
+            help="Models configuration in JSON format, for certain specific configurations, like Expert Parallelism Implementation Method, Tensor Parallelism LM Header/Output Attention Split.",
         )
         #
         # Schedule config
@@ -542,15 +542,29 @@ class AscendMindIEParameters:
         # Extends or Features
         # -- Parallelism
         if self.world_size > 0:
+            # Base on the world size to infer other parallel sizes.
+            #
             if self.tensor_parallel_size < 0:
-                self.tensor_parallel_size = self.world_size
-                if self.data_parallel_size > 1:
-                    self.tensor_parallel_size //= self.data_parallel_size
-                elif self.context_parallel_size > 1:
-                    self.tensor_parallel_size //= self.context_parallel_size
-            if self.moe_expert_parallel_size < 0 and self.moe_tensor_parallel_size < 0:
-                self.moe_tensor_parallel_size = self.world_size
+                if self.pipeline_parallel_size > 1:
+                    self.tensor_parallel_size = (
+                        self.world_size // self.pipeline_parallel_size
+                    )
+                else:
+                    self.tensor_parallel_size = self.world_size
+                    if self.data_parallel_size > 1:
+                        self.tensor_parallel_size //= self.data_parallel_size
+                    elif self.context_parallel_size > 1:
+                        self.tensor_parallel_size //= self.context_parallel_size
+            if self.moe_tensor_parallel_size < 0 and self.pipeline_parallel_size <= 1:
+                if self.moe_expert_parallel_size > 1:
+                    self.moe_tensor_parallel_size = (
+                        self.world_size // self.moe_expert_parallel_size
+                    )
+                else:
+                    self.moe_tensor_parallel_size = self.world_size
         else:
+            # Infer the world size from other parallel sizes.
+            #
             if self.pipeline_parallel_size > 1:
                 if self.tensor_parallel_size < 0:
                     self.tensor_parallel_size = 1
