@@ -3,19 +3,21 @@
 ## Supported
 
 - **Target Devices**
-    + [x] NVIDIA GPUs (Compute Capability 7.5 and above, check [Your GPU Compute Capability](https://developer.nvidia.com/cuda-gpus))
+    + [x] NVIDIA GPUs
 - **Operating Systems**
     + [x] Linux AMD64
     + [x] Linux ARM64
 - **Available Inference Backends**
-    + [x] vLLM
-    + [x] SGLang
-    + [x] Vox-Box
+    + [x] [vLLM](https://github.com/vllm-project/vllm)
+    + [x] [SGLang](https://github.com/sgl-project/sglang)
+    + [x] [VoxBox](https://github.com/gpustack/vox-box)
     + [x] Custom Engines
 
 !!! note
 
-    Whether a target device can run a specific inference engine depends on whether the corresponding version of the inference engine (container image) provides support for that device.
+    1. Whether a target device can run a specific inference backend depends on whether the corresponding version of the inference backend (container image) supports that device.
+       Please verify compatibility with your target devices using [NVIDIA Compute Compatibility](https://developer.nvidia.com/cuda-gpus) before proceeding.
+    2. Default container images, such as vLLM, SGLang, and VoxBox, are provided by the [GPUStack runner](https://github.com/gpustack/runner?tab=readme-ov-file#nvidia-cuda).
 
 ## Prerequisites
 
@@ -83,8 +85,25 @@ sudo docker run -d --name gpustack \
     gpustack/gpustack
 ```
 
-- To restrict GPU access, remove `--privileged` flag and set the `NVIDIA_VISIBLE_DEVICES` environment variable. 
-  See [NVIDIA Container Toolkit - GPU Enumeration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#gpu-enumeration).
+- To restrict GPU access, it's usually to remove `--privileged` flag and set the `NVIDIA_VISIBLE_DEVICES` environment variable as [NVIDIA Container Toolkit - GPU Enumeration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#gpu-enumeration) described.
+  However, disabling privileged mode and limiting GPU visibility may cause the GPUStack built-in worker to lose access to GPUs with the error: "Failed to initialize NVML: Unknown Error". 
+  A workaround (without restarting Docker) is to explicitly inject the device into the container using the `--device` declaration as below example,
+  for more details, please refer to the [NVIDIA Container Toolkit - Troubleshooting](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/troubleshooting.html#containers-losing-access-to-gpus-with-error-failed-to-initialize-nvml-unknown-error).
+
+  ```diff
+   sudo docker run -d --name gpustack \
+       ...
+  -    --privileged \
+  +    --env NVIDIA_VISIBLE_DEVICES=0,1 \
+  +    --device /dev/nvidiactl \
+  +    --device /dev/nvidia-uvm \
+  +    --device /dev/nvidia-uvm-tools \
+  +    --device /dev/nvidia-modeset \
+  +    --device /dev/nvidia0 \
+  +    --device /dev/nvidia1 \
+       ...
+  ```
+
 - The `--network=host` option is necessary for port awareness.
 - Mounting `/var/run/docker.sock` allows GPUStack to manage Docker containers for inference engines.
 

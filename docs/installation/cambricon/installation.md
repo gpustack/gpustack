@@ -11,7 +11,8 @@
 
 !!! note
 
-    Whether a target device can run a specific inference engine depends on whether the corresponding version of the inference engine (container image) provides support for that device.
+    Whether a target device can run a specific inference backend depends on whether the corresponding version of the inference backend (container image) provides support for that device. 
+    Please verify compatibility with your target devices.
 
 ## Prerequisites
 
