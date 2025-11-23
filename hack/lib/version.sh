@@ -68,6 +68,11 @@ function gpustack::version::get_version_vars() {
 
     # specify to v0.0.0 if the tree is dirty.
     if [[ "${GIT_TREE_STATE:-dirty}" == "dirty" ]]; then
+      echo "GIT Tree is dirty"
+      echo "======= GIT STATUS ======="
+      git status --short
+      echo "======= GIT DIFF ======="
+      git --no-pager diff
       GIT_VERSION="v0.0.0"
     elif ! [[ "${GIT_VERSION}" =~ ^v([0-9]+)\.([0-9]+)(\.[0-9]+)?(-?[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
       GIT_VERSION="v0.0.0"

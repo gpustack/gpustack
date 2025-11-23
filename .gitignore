@@ -28,6 +28,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+scratch/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
