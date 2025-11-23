@@ -122,7 +122,6 @@ nav:
           - Running DeepSeek R1 671B with Distributed Ascend Mindie: tutorials/running-deepseek-r1-671b-with-distributed-ascend-mindie.md
           - Inference On CPUs: tutorials/inference-on-cpus.md
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
-          - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
       - Integrations:
           - OpenAI Compatible APIs: integrations/openai-compatible-apis.md

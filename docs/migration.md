@@ -1,4 +1,3 @@
-
 # Migration from v0.7 and Earlier
 
 In v0.7 and earlier, GPUStack used an embedded SQLite database by default to store management data. Starting from v2.0.0, GPUStack dropped SQLite support and now uses an embedded PostgreSQL database by default for improved performance and scalability.
@@ -6,20 +5,32 @@ In v0.7 and earlier, GPUStack used an embedded SQLite database by default to sto
 If you previously deployed GPUStack with the embedded SQLite database, follow the steps below to migrate your data to the new PostgreSQL-based format.
 
 !!! warning
-      **Backup First:** Before starting the migration, it is strongly recommended to back up your database. For default installations, stop the GPUStack server and create a backup of `/var/lib/gpustack/database.db`.
+
+      **Backup First:** Before starting the migration, it’s strongly recommended to back up your database.
+
+      For default installations on v0.7 or earlier, stop the GPUStack server and create a backup of the SQLite database file located inside the container at:
+
+      ```
+      /var/lib/gpustack/database.db
+      ```
+
+      If you are using an external database, please back it up according to the backup procedure for your specific database system.
 
 ## Migration Guide
 
 !!! note
-    Since v2.0.0, GPUStack supports Linux only, and this migration must be run on Linux.
+
+      Since v2.0.0, GPUStack supports Linux only. For other OS, move the data directory to a Linux system and run the migration.
 
 ### Step 1: Identify Your Legacy Data Directory
 
 Locate the data directory used by your previous GPUStack installation. The default path is:
 
-```bash
+```
 /var/lib/gpustack
 ```
+
+For other installation methods, refer to this [link](faq.md/#where-are-gpustacks-data-stored) to locate the data directory.
 
 In the following steps, this path is referenced as `${your-data-dir}`.
 
@@ -72,6 +83,6 @@ For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process r
 
 1. Update the installation commands by mounting your legacy data directory to `/var/lib/gpustack`.
 
-2. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
+1. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
 
 The Server and Worker migration commands can be used directly after applying these changes.
