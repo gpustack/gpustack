@@ -215,7 +215,7 @@ Environment variables used when running the model. These variables are passed to
 
     Available for custom backends only.
 
-When CPU offloading is enabled, GPUStack will use CPU memory if GPU resources are insufficient. The inference backend must support CPU inference for the model to run properly.
+When CPU offloading is enabled, GPUStack will allocate CPU memory if GPU resources are insufficient. You must correctly configure the inference backend to use hybrid CPU+GPU or full CPU inference.
 
 ### Allow Distributed Inference Across Workers
 
