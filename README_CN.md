@@ -27,8 +27,6 @@
 
 <br>
 
-![demo](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-demo.gif)
-
 GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。
 
 ### 核心特性
@@ -50,39 +48,56 @@ GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。
 
 ## 安装
 
-### Linux
+> GPUStack 现在仅支持 Linux。对于 Windows，请使用 WSL2 并避免使用 Docker Desktop。
 
-如果你是 NVIDIA GPU 环境，请确保 [Docker](https://docs.docker.com/engine/install/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) 都已经在系统中安装。 然后，执行如下命令启动 GPUStack：
+如果你是 NVIDIA GPU 环境，请确保 NVIDIA 驱动，[Docker](https://docs.docker.com/engine/install/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) 都已经在系统中安装。 然后，执行如下命令启动 GPUStack：
 
 ```bash
-docker run -d --name gpustack \
-      --restart=unless-stopped \
-      --gpus all \
-      --network=host \
-      --ipc=host \
-      -v gpustack-data:/var/lib/gpustack \
-      gpustack/gpustack
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    gpustack/gpustack
 ```
 
-有关其它平台的安装或详细配置选项，请参考[安装文档](docs/installation/requirements)。
+如果你不能从 `Docker Hub` 下载镜像或下载速度很慢，你可以使用我们提供的 `Quay.io` 镜像源。通过将 Registry 指向 `quay.io` 来使用镜像源：
+
+```bash
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    quay.io/gpustack/gpustack \
+    --system-default-container-registry quay.io
+```
+
+有关其它平台的安装或详细配置选项，请参考[安装需求](docs/installation/requirements.md)。
+
+检查 GPUStack 的启动日志：
+
+```bash
+sudo docker logs -f gpustack
+```
 
 容器正常运行后，执行以下命令获取默认密码：
 
 ```bash
-docker exec gpustack cat /var/lib/gpustack/initial_admin_password
+sudo docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
 在浏览器中打开 `http://your_host_ip`，访问 GPUStack 界面。使用 `admin` 用户名和默认密码登录 GPUStack。
-
-### macOS & Windows
-
-对于 macOS 和 Windows，我们提供了桌面安装程序。请参阅[文档](https://docs.gpustack.ai/latest/installation/desktop-installer/)了解安装细节。
 
 ## 部署模型
 
 1. 在 GPUStack 界面，在菜单中点击“模型库”。
 
-2. 从模型列表中选择 `Qwen3` 模型。
+2. 从模型列表中选择 `Qwen3 0.6B` 模型。
 
 3. 在部署兼容性检查通过之后，选择保存部署模型。
 
@@ -92,7 +107,7 @@ docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 ![model is running](docs/assets/quick-start/model-running.png)
 
-5. 点击菜单中的“试验场 - 对话”，在右上方模型菜单中选择模型 `qwen3`。现在你可以在试验场中与 LLM 进行对话。
+5. 点击菜单中的“试验场 - 对话”，在右上方模型菜单中选择模型 `qwen3-0.6b`。现在你可以在试验场中与 LLM 进行对话。
 
 ![quick chat](docs/assets/quick-start/quick-chat.png)
 
@@ -114,7 +129,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3",
+    "model": "qwen3-0.6b",
     "messages": [
       {
         "role": "system",
@@ -129,26 +144,22 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
-## 平台支持
+## 加速器支持
 
-- [x] Linux
-- [x] macOS
-- [x] Windows
-
-## 加速框架支持
-
-- [x] NVIDIA CUDA ([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 以上)
-- [x] Apple Metal (M 系列芯片)
-- [x] AMD ROCm
-- [x] 昇腾 CANN
-- [x] 海光 DTK
-- [x] 摩尔线程 MUSA
-- [x] 天数智芯 Corex
-- [x] 寒武纪 MLU
+- [x] NVIDIA GPU
+- [x] AMD GPU
+- [x] 昇腾 NPU
+- [x] 海光 DCU （实验性）
+- [x] 摩尔线程 GPU （实验性）
+- [x] 天数智芯 GPU （实验性）
+- [x] 沐曦 GPU （实验性）
+- [x] 寒武纪 MLU （实验性）
 
 ## 模型支持
 
-GPUStack 使用 [vLLM](https://github.com/vllm-project/vllm)、 [Ascend MindIE](https://www.hiascend.com/en/software/mindie)、[llama-box](https://github.com/gpustack/llama-box)（基于 [llama.cpp](https://github.com/ggml-org/llama.cpp) 和 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)）和 [vox-box](https://github.com/gpustack/vox-box) 作为后端并提供广泛的模型支持。支持从以下来源部署模型：
+GPUStack 使用 [vLLM](https://github.com/vllm-project/vllm)、[SGLang](https://github.com/sgl-project/sglang)、[MindIE](https://www.hiascend.com/en/software/mindie) 和 [vox-box](https://github.com/gpustack/vox-box) 作为内置推理后端，还支持自定义任何可以在容器中运行并公开服务 API 的后端。这使得 GPUStack 可以提供广泛的模型支持。
+
+支持从以下来源部署模型：
 
 1. [Hugging Face](https://huggingface.co/)
 
@@ -156,22 +167,11 @@ GPUStack 使用 [vLLM](https://github.com/vllm-project/vllm)、 [Ascend MindIE](
 
 3. 本地文件路径
 
-### 示例模型
-
-| **类别**               | **模型**                                                                                                                                                                                                                                                                                                                                         |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **大语言模型（LLM）**  | [Qwen](https://huggingface.co/models?search=Qwen/Qwen), [LLaMA](https://huggingface.co/meta-llama), [Mistral](https://huggingface.co/mistralai), [DeepSeek](https://huggingface.co/models?search=deepseek-ai/deepseek), [Phi](https://huggingface.co/models?search=microsoft/phi), [Gemma](https://huggingface.co/models?search=Google/gemma)    |
-| **多模态模型（VLM）**  | [Llama3.2-Vision](https://huggingface.co/models?pipeline_tag=image-text-to-text&search=llama3.2), [Pixtral](https://huggingface.co/models?search=pixtral) , [Qwen2.5-VL](https://huggingface.co/models?search=Qwen/Qwen2.5-VL), [LLaVA](https://huggingface.co/models?search=llava), [InternVL3](https://huggingface.co/models?search=internvl3) |
-| **Diffusion 扩散模型** | [Stable Diffusion](https://huggingface.co/models?search=gpustack/stable-diffusion), [FLUX](https://huggingface.co/models?search=gpustack/flux)                                                                                                                                                                                                   |
-| **Embedding 模型**     | [BGE](https://huggingface.co/gpustack/bge-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-embedding-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-embeddings), [Qwen3-Embedding](https://huggingface.co/models?search=qwen/qwen3-embedding)                                                                       |
-| **Reranker 模型**      | [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-reranker), [Qwen3-Reranker](https://huggingface.co/models?search=qwen/qwen3-reranker)                                                                |
-| **语音模型**           | [Whisper](https://huggingface.co/models?search=Systran/faster) (Speech-to-Text), [CosyVoice](https://huggingface.co/models?search=FunAudioLLM/CosyVoice) (Text-to-Speech)                                                                                                                                                                        |
-
-有关支持模型的完整列表，请参阅 [inference backends](https://docs.gpustack.ai/latest/user-guide/inference-backends/) 文档中的 Supported Models 部分。
+有关每个内置推理后端支持哪些模型的信息，请参阅 [Built-in Inference Backends](https://docs.gpustack.ai/latest/user-guide/built-in-inference-backends/) 文档中的 Supported Models 部分。
 
 ## OpenAI 兼容 API
 
-GPUStack 在 `/v1-openai` 路径提供以下 OpenAI 兼容 API：
+GPUStack 在 `/v1` 路径提供以下 OpenAI 兼容 API：
 
 - [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
 - [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
@@ -186,7 +186,7 @@ GPUStack 在 `/v1-openai` 路径提供以下 OpenAI 兼容 API：
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://your_gpustack_server_url/v1-openai", api_key="your_api_key")
+client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
 
 completion = client.chat.completions.create(
   model="llama3.2",

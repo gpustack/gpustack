@@ -27,8 +27,6 @@
 
 <br>
 
-![demo](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-demo.gif)
-
 GPUStack is an open-source GPU cluster manager for running AI models.
 
 ### Key Features
@@ -50,39 +48,56 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 
 ## Installation
 
-### Linux
+> GPUStack now supports Linux only. For Windows, use WSL2 and avoid Docker Desktop.
 
-If you are using NVIDIA GPUs, ensure [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on your system. Then, run the following command to start the GPUStack server.
+If you are using NVIDIA GPUs, ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed. Then start the GPUStack with the following command:
 
 ```bash
-docker run -d --name gpustack \
-      --restart=unless-stopped \
-      --gpus all \
-      --network=host \
-      --ipc=host \
-      -v gpustack-data:/var/lib/gpustack \
-      gpustack/gpustack
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    gpustack/gpustack
 ```
 
-For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](docs/installation/requirements).
-
-After the server starts, run the following command to get the default admin password:
+If you cannot pull images from `Docker Hub` or the download is very slow, you can use our `Quay.io` mirror by pointing your registry to `quay.io`:
 
 ```bash
-docker exec gpustack cat /var/lib/gpustack/initial_admin_password
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    quay.io/gpustack/gpustack \
+    --system-default-container-registry quay.io
+```
+
+For more details on the installation or other GPU hardware platforms, please refer to the [Installation Requirements](installation/requirements.md).
+
+Check the GPUStack startup logs:
+
+```bash
+sudo docker logs -f gpustack
+```
+
+After GPUStack starts, run the following command to get the default admin password:
+
+```bash
+sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
 Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
-
-### macOS & Windows
-
-A desktop installer is available for macOS and Windows — see the [documentation](https://docs.gpustack.ai/latest/installation/desktop-installer/) for installation details.
 
 ## Deploy a Model
 
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
-2. Select the `Qwen3` model from the list of available models.
+2. Select the `Qwen3 0.6B` model from the list of available models.
 
 3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
 
@@ -92,7 +107,7 @@ A desktop installer is available for macOS and Windows — see the [documentatio
 
 ![model is running](docs/assets/quick-start/model-running.png)
 
-5. Click `Playground - Chat` in the navigation menu, check that the model `qwen3` is selected from the top-right `Model` dropdown. Now you can chat with the model in the UI playground.
+5. Click `Playground - Chat` in the navigation menu, check that the model `qwen3-0.6b` is selected from the top-right `Model` dropdown. Now you can chat with the model in the UI playground.
 
 ![quick chat](docs/assets/quick-start/quick-chat.png)
 
@@ -114,7 +129,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3",
+    "model": "qwen3-0.6b",
     "messages": [
       {
         "role": "system",
@@ -129,26 +144,24 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
-## Supported Platforms
-
-- [x] Linux
-- [x] macOS
-- [x] Windows
-
 ## Supported Accelerators
 
-- [x] NVIDIA CUDA ([Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 and above)
-- [x] Apple Metal (M-series chips)
-- [x] AMD ROCm
-- [x] Ascend CANN
-- [x] Hygon DTK
-- [x] Moore Threads MUSA
-- [x] Iluvatar Corex
-- [x] Cambricon MLU
+GPUStack supports a variety of General-Purpose Accelerators, including:
+
+- [x] NVIDIA GPU
+- [x] AMD GPU
+- [x] Ascend NPU
+- [x] Hygon DCU (Experimental)
+- [x] MThreads GPU (Experimental)
+- [x] Iluvatar GPU (Experimental)
+- [x] MetaX GPU (Experimental)
+- [x] Cambricon MLU (Experimental)
 
 ## Supported Models
 
-GPUStack uses [vLLM](https://github.com/vllm-project/vllm), [Ascend MindIE](https://www.hiascend.com/en/software/mindie), [llama-box](https://github.com/gpustack/llama-box) (bundled [llama.cpp](https://github.com/ggml-org/llama.cpp) and [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) server) and [vox-box](https://github.com/gpustack/vox-box) as the backends and supports a wide range of models. Models from the following sources are supported:
+GPUStack uses [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [MindIE](https://www.hiascend.com/en/software/mindie) and [vox-box](https://github.com/gpustack/vox-box) as built-in inference backends, and it also supports any custom backend that can run in a container and expose a serving API. This allows GPUStack to work with a wide range of models.
+
+Models can come from the following sources:
 
 1. [Hugging Face](https://huggingface.co/)
 
@@ -156,22 +169,11 @@ GPUStack uses [vLLM](https://github.com/vllm-project/vllm), [Ascend MindIE](http
 
 3. Local File Path
 
-### Example Models
-
-| **Category**                     | **Models**                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Large Language Models(LLMs)**  | [Qwen](https://huggingface.co/models?search=Qwen/Qwen), [LLaMA](https://huggingface.co/meta-llama), [Mistral](https://huggingface.co/mistralai), [DeepSeek](https://huggingface.co/models?search=deepseek-ai/deepseek), [Phi](https://huggingface.co/models?search=microsoft/phi), [Gemma](https://huggingface.co/models?search=Google/gemma)    |
-| **Vision Language Models(VLMs)** | [Llama3.2-Vision](https://huggingface.co/models?pipeline_tag=image-text-to-text&search=llama3.2), [Pixtral](https://huggingface.co/models?search=pixtral) , [Qwen2.5-VL](https://huggingface.co/models?search=Qwen/Qwen2.5-VL), [LLaVA](https://huggingface.co/models?search=llava), [InternVL3](https://huggingface.co/models?search=internvl3) |
-| **Diffusion Models**             | [Stable Diffusion](https://huggingface.co/models?search=gpustack/stable-diffusion), [FLUX](https://huggingface.co/models?search=gpustack/flux)                                                                                                                                                                                                   |
-| **Embedding Models**             | [BGE](https://huggingface.co/gpustack/bge-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-embedding-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-embeddings), [Qwen3-Embedding](https://huggingface.co/models?search=qwen/qwen3-embedding)                                                                       |
-| **Reranker Models**              | [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-reranker), [Qwen3-Reranker](https://huggingface.co/models?search=qwen/qwen3-reranker)                                                                |
-| **Audio Models**                 | [Whisper](https://huggingface.co/models?search=Systran/faster) (Speech-to-Text), [CosyVoice](https://huggingface.co/models?search=FunAudioLLM/CosyVoice) (Text-to-Speech)                                                                                                                                                                        |
-
-For full list of supported models, please refer to the supported models section in the [inference backends](https://docs.gpustack.ai/latest/user-guide/inference-backends/) documentation.
+For information on which models are supported by each built-in inference backend, please refer to the supported models section in the [Built-in Inference Backends](docs/user-guide/built-in-inference-backends.md) documentation.
 
 ## OpenAI-Compatible APIs
 
-GPUStack serves the following OpenAI compatible APIs under the `/v1-openai` path:
+GPUStack serves the following OpenAI compatible APIs under the `/v1` path:
 
 - [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
 - [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
@@ -186,7 +188,7 @@ For example, you can use the official [OpenAI Python API library](https://github
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://your_gpustack_server_url/v1-openai", api_key="your_api_key")
+client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
 
 completion = client.chat.completions.create(
   model="llama3.2",

@@ -240,7 +240,7 @@ curl http://<server-url>/model/proxy/embed \
   -X POST \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <GPUSTACK_API_KEY>" \
-  -H "X-GPUStack-Model: bge-m3-mis-tei" \
+  -H "X-GPUStack-Model: bge-m3" \
   -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
 ```
 
@@ -250,6 +250,6 @@ When using the generic proxy endpoint, the path prefix `/model/proxy` will be re
 curl http://<inference-server-url>/embed \
   -X POST \
   -H "Content-Type: application/json" \
-  -H "X-GPUStack-Model: bge-m3-mis-tei" \
+  -H "X-GPUStack-Model: bge-m3" \
   -d '{"inputs":["What is Deep Learning?", "Deep Learning is not..."]}'
 ```
