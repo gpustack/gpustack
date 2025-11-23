@@ -27,15 +27,13 @@
 
 <br>
 
-![demo](https://raw.githubusercontent.com/gpustack/gpustack/main/docs/assets/gpustack-demo.gif)
-
 GPUStack は、AI モデルを実行するためのオープンソース GPU クラスタマネージャーです。
 
 ### 主な機能
 
 - **幅広い GPU 互換性:** Apple Mac、Windows PC、Linux サーバー上のさまざまなベンダーの GPU をシームレスにサポート。
 - **豊富なモデルサポート:** LLM、VLM、画像モデル、音声モデル、埋め込みモデル、リランクモデルを含む幅広いモデルをサポート。
-- **柔軟な推論バックエンド:** vLLM、Ascend MindIE、llama-box（llama.cpp と stable-diffusion.cpp）、vox-box と統合。
+- **柔軟な推論バックエンド:** vLLM、SGLang、MindIE、vox-box と統合。
 - **マルチバージョンバックエンドサポート:** 異なるモデルの多様なランタイム要件を満たすために、推論バックエンドの複数バージョンを同時実行。
 - **分散推論:** ベンダーやランタイム環境をまたぐ異種 GPU を含む、シングルノードおよびマルチノードのマルチ GPU 推論をサポート。
 - **スケーラブルな GPU アーキテクチャ:** インフラストラクチャに GPU やノードを追加することで簡単にスケールアップ。
@@ -50,39 +48,56 @@ GPUStack は、AI モデルを実行するためのオープンソース GPU ク
 
 ## インストール
 
-### Linux
+> GPUStack は現在 Linux のみをサポートしています。Windows を使用する場合は WSL2 を利用し、Docker Desktop は使用しないでください。
 
-NVIDIA GPU を使用している場合は、Docker と NVIDIA Container Toolkit をインストールしてください。その後、以下のコマンドで GPUStack サーバーを起動します：
+NVIDIA GPU を使用している場合は、NVIDIA ドライバー、Docker、および NVIDIA Container Toolkit をインストールしてください。その後、以下のコマンドで GPUStack サーバーを起動します：
 
 ```bash
-docker run -d --name gpustack \
-      --restart=unless-stopped \
-      --gpus all \
-      --network=host \
-      --ipc=host \
-      -v gpustack-data:/var/lib/gpustack \
-      gpustack/gpustack
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    gpustack/gpustack
 ```
 
-詳細なインストール手順やその他の GPU ハードウェアプラットフォームについては、インストールドキュメント を参照してください。
+もし Docker Hub からイメージをダウンロードできない、またはダウンロードが非常に遅い場合は、提供している `Quay.io` ミラーを利用できます。Registry を `quay.io` に指定してミラーを使用してください：
+
+```bash
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    quay.io/gpustack/gpustack \
+    --system-default-container-registry quay.io
+```
+
+他のプラットフォームへのインストール方法や詳細な設定オプションについては、[インストール要件](docs/installation/requirements.md) を参照してください。
+
+GPUStack の起動ログを確認するには：
+
+```bash
+sudo docker logs -f gpustack
+```
 
 サーバー起動後、次のコマンドでデフォルト管理者パスワードを取得できます：
 
 ```bash
-cat /var/lib/gpustack/initial_admin_password
+sudo docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
 ブラウザで http://your_host_ip にアクセスし、ユーザー名 admin と取得したパスワードでログインします。
-
-### macOS & Windows
-
-macOS および Windows 向けにデスクトップインストーラーが用意されています。インストールの詳細は [ドキュメント](https://docs.gpustack.ai/latest/installation/desktop-installer/) をご覧ください。
 
 ## モデルのデプロイ
 
 1. GPUStack UI の Catalog ページに移動します。
 
-2. モデルリストから Qwen3 モデルを選択します。
+2. モデルリストから Qwen3 0.6B モデルを選択します。
 
 3. デプロイ互換性チェックが完了したら、Save ボタンをクリックしてデプロイします。
 
@@ -92,7 +107,7 @@ macOS および Windows 向けにデスクトップインストーラーが用�
 
 ![model is running](docs/assets/quick-start/model-running.png)
 
-5. ナビゲーションメニューから Playground - Chat を選択し、右上の Model ドロップダウンで qwen3 が選択されていることを確認してチャットを開始します。
+5. ナビゲーションメニューから Playground - Chat を選択し、右上の Model ドロップダウンで qwen3-0.6B が選択されていることを確認してチャットを開始します。
 
 ![quick chat](docs/assets/quick-start/quick-chat.png)
 
@@ -114,7 +129,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3",
+    "model": "qwen3-0.6B",
     "messages": [
       {
         "role": "system",
@@ -129,26 +144,22 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
-## サポートされているプラットフォーム
-
-- [x] Linux
-- [x] macOS
-- [x] Windows
-
 ## サポートされているアクセラレータ
 
-- [x] NVIDIA CUDA（[Compute Capability](https://developer.nvidia.com/cuda-gpus) 6.0 以上）
-- [x] Apple Metal（M 系チップ）
-- [x] AMD ROCm
-- [x] Ascend CANN
-- [x] Hygon DTK
-- [x] Moore Threads MUSA
-- [x] Iluvatar Corex
-- [x] Cambricon MLU
+- [x] NVIDIA GPU
+- [x] AMD GPU
+- [x] Ascend NPU
+- [x] Hygon DCU (Experimental)
+- [x] MThreads GPU (Experimental)
+- [x] Iluvatar GPU (Experimental)
+- [x] MetaX GPU (Experimental)
+- [x] Cambricon MLU (Experimental)
 
 ## サポートされているモデル
 
-GPUStack は[vLLM](https://github.com/vllm-project/vllm)、[Ascend MindIE](https://www.hiascend.com/en/software/mindie)、[llama-box](https://github.com/gpustack/llama-box)（バンドルされた[llama.cpp](https://github.com/ggml-org/llama.cpp)と[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)サーバー）、[vox-box](https://github.com/gpustack/vox-box)をバックエンドとして使用し、幅広いモデルをサポートしています。以下のソースからのモデルがサポートされています：
+GPUStack は [vLLM](https://github.com/vllm-project/vllm)、[SGLang](https://github.com/sgl-project/sglang)、[MindIE](https://www.hiascend.com/en/software/mindie)、および [vox-box](https://github.com/gpustack/vox-box) をバックエンドとして使用し、さらにコンテナ上で実行可能でサービス API を提供できる任意のカスタム推論バックエンドもサポートすることで、幅広いモデルに対応しています。
+
+以下のソースからのモデルがサポートされています：
 
 1. [Hugging Face](https://huggingface.co/)
 
@@ -156,22 +167,11 @@ GPUStack は[vLLM](https://github.com/vllm-project/vllm)、[Ascend MindIE](https
 
 3. ローカルファイルパス
 
-### モデル例
-
-| **カテゴリ**                  | **モデル**                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **大規模言語モデル（LLM）**   | [Qwen](https://huggingface.co/models?search=Qwen/Qwen), [LLaMA](https://huggingface.co/meta-llama), [Mistral](https://huggingface.co/mistralai), [DeepSeek](https://huggingface.co/models?search=deepseek-ai/deepseek), [Phi](https://huggingface.co/models?search=microsoft/phi), [Gemma](https://huggingface.co/models?search=Google/gemma)    |
-| **ビジョン言語モデル（VLM）** | [Llama3.2-Vision](https://huggingface.co/models?pipeline_tag=image-text-to-text&search=llama3.2), [Pixtral](https://huggingface.co/models?search=pixtral) , [Qwen2.5-VL](https://huggingface.co/models?search=Qwen/Qwen2.5-VL), [LLaVA](https://huggingface.co/models?search=llava), [InternVL3](https://huggingface.co/models?search=internvl3) |
-| **拡散モデル**                | [Stable Diffusion](https://huggingface.co/models?search=gpustack/stable-diffusion), [FLUX](https://huggingface.co/models?search=gpustack/flux)                                                                                                                                                                                                   |
-| **埋め込みモデル**            | [BGE](https://huggingface.co/gpustack/bge-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-embedding-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-embeddings), [Qwen3-Embedding](https://huggingface.co/models?search=qwen/qwen3-embedding)                                                                       |
-| **リランカーモデル**          | [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-reranker), [Qwen3-Reranker](https://huggingface.co/models?search=qwen/qwen3-reranker)                                                                |
-| **音声モデル**                | [Whisper](https://huggingface.co/models?search=Systran/faster)（音声認識）、[CosyVoice](https://huggingface.co/models?search=FunAudioLLM/CosyVoice)（音声合成）                                                                                                                                                                                  |
-
-サポートされているモデルの完全なリストについては、[推論バックエンド](https://docs.gpustack.ai/latest/user-guide/inference-backends/)ドキュメントのサポートされているモデルセクションを参照してください。
+各組み込み推論バックエンドがサポートするモデルについては、[Built-in Inference Backends](https://docs.gpustack.ai/latest/user-guide/built-in-inference-backends/) ドキュメントの Supported Models セクションを参照してください。
 
 ## OpenAI 互換 API
 
-GPUStack は`/v1-openai`パスの下で以下の OpenAI 互換 API を提供します：
+GPUStack は`/v1`パスの下で以下の OpenAI 互換 API を提供します：
 
 - [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
 - [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
@@ -186,7 +186,7 @@ GPUStack は`/v1-openai`パスの下で以下の OpenAI 互換 API を提供し�
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://your_gpustack_server_url/v1-openai", api_key="your_api_key")
+client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
 
 completion = client.chat.completions.create(
   model="llama3.2",
