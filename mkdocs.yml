@@ -97,7 +97,7 @@ nav:
               - Rerank: user-guide/playground/rerank.md
           - Model Catalog: user-guide/model-catalog.md
           - Model Deployment Management: user-guide/model-deployment-management.md
-          - Inference Backends: user-guide/inference-backends.md
+          - Built-in Inference Backends: user-guide/built-in-inference-backends.md
           - Compatibility Check: user-guide/compatibility-check.md
           - Model File management: user-guide/model-file-management.md
           - OpenAI Compatible APIs: user-guide/openai-compatible-apis.md
@@ -122,7 +122,7 @@ nav:
           - Inference On CPUs: tutorials/inference-on-cpus.md
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
           - Running on Copilot+ PCs with Snapdragon X: tutorials/running-on-copilot-plus-pcs-with-snapdragon-x.md
-          - Custom inference backend: tutorials/custom-inference-backend.md
+          - Using Custom Inference Backend: tutorials/using-custom-backend.md
       - Integrations:
           - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
           - Integrate with Dify: integrations/integrate-with-dify.md

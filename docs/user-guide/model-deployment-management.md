@@ -69,7 +69,7 @@ To deploy a local path model:
 
 Currently, GPUStack supports some built-in backends: vLLM, SGLang, MindIE and VoxBox.
 
-For more details, please refer to the [Inference Backends](./inference-backends.md) section.
+For more details, please refer to the [Inference Backends](built-in-inference-backends.md) section.
 
 ### Backend Version
 
@@ -203,7 +203,7 @@ The model category helps you organize and filter models. By default, GPUStack au
 Input the parameters for the backend you want to customize when running the model. The parameter should be in the format `--parameter=value`, `--bool-parameter` or as separate fields for `--parameter` and `value`.
 For example, use `--max-model-length=8192` for vLLM.
 
-For full list of supported parameters, please refer to the [Inference Backends](./inference-backends.md) section.
+For full list of supported parameters, please refer to the [Inference Backends](built-in-inference-backends.md) section.
 
 ### Environment Variables
 

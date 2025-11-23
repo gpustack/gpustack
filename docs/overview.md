@@ -82,7 +82,7 @@ GPUStack uses [vLLM](https://github.com/vllm-project/vllm), [Ascend MindIE](http
 | **Reranker Models**              | [BGE](https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF), [BCE](https://huggingface.co/gpustack/bce-reranker-base_v1-GGUF), [Jina](https://huggingface.co/models?search=gpustack/jina-reranker), [Qwen3-Reranker](https://huggingface.co/models?search=qwen/qwen3-reranker)                                                                |
 | **Audio Models**                 | [Whisper](https://huggingface.co/models?search=Systran/faster) (Speech-to-Text), [CosyVoice](https://huggingface.co/models?search=FunAudioLLM/CosyVoice) (Text-to-Speech)                                                                                                                                                                        |
 
-For full list of supported models, please refer to the supported models section in the [inference backends](./user-guide/inference-backends.md) documentation.
+For full list of supported models, please refer to the supported models section in the [inference backends](user-guide/built-in-inference-backends.md) documentation.
 
 ## OpenAI-Compatible APIs
 

@@ -2,7 +2,7 @@
 
 **Vision Language Models** can process both visual (image) and language (text) data simultaneously, making them versatile tools for various applications, such as image captioning, visual question answering, and more. In this guide, you will learn how to deploy and interact with Vision Language Models (VLMs) in GPUStack.
 
-The procedure for deploying and interacting with these models in GPUStack is similar. The main difference is the parameters you need to set when deploying the models. For more information on the parameters you can set, please refer to [Backend Parameters](../user-guide/inference-backends.md#parameters-reference_1) .
+The procedure for deploying and interacting with these models in GPUStack is similar. The main difference is the parameters you need to set when deploying the models. For more information on the parameters you can set, please refer to [Backend Parameters](../user-guide/built-in-inference-backends.md#parameters-reference_1) .
 
 In this guide, we will cover the deployment of the following models:
 
