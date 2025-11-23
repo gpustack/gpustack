@@ -3,15 +3,15 @@
 ## Supported
 
 - **Target Devices**
-    + [x] Cambricon MLUs
+  - [x] Cambricon MLUs
 - **Operating Systems**
-    + [x] Linux AMD64
+  - [x] Linux AMD64
 - **Available Inference Backends**
-    + [x] Custom Engines
+  - [x] Custom Engines
 
 !!! note
 
-    Whether a target device can run a specific inference backend depends on whether the corresponding version of the inference backend (container image) provides support for that device. 
+    Whether a target device can run a specific inference backend depends on whether the corresponding version of the inference backend (container image) provides support for that device.
     Please verify compatibility with your target devices.
 
 ## Prerequisites
@@ -60,7 +60,7 @@ You can reuse model files stored on the host in two ways.
 
 #### Bind Mount (Recommended)
 
-Avoid re-downloading model files inside the container:
+Mount pre-downloaded model files into the container so they can be deployed from a local path without re-downloading:
 
 ```diff
  sudo docker run -d --name gpustack \
@@ -73,7 +73,7 @@ Avoid re-downloading model files inside the container:
 
 #### Override Cache Directory
 
-Mount your model directory to the container’s cache path:
+Mount a dedicated directory for storing downloaded models rather than relying on the default Docker volume:
 
 ```diff
  sudo docker run -d --name gpustack \
@@ -107,7 +107,7 @@ Check the GPUStack container logs:
 sudo docker logs -f gpustack
 ```
 
-If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI. 
+If everything is normal, open `http://your_host_ip` in a browser to access the GPUStack UI.
 
 Log in with username `admin` and the default password. Retrieve the initial password with:
 
@@ -116,8 +116,8 @@ sudo docker exec -it gpustack \
     cat /var/lib/gpustack/initial_admin_password
 ```
 
-### (Optional) Add Worker
+## (Optional) Add Worker
 
-You can add more nodes to GPUStack to form a cluster. 
+You can add more nodes to GPUStack to form a cluster.
 
 Please navigate to the **Workers** page in the GPUStack UI to get the command for adding workers.

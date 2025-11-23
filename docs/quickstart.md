@@ -21,59 +21,58 @@
 
 ## Install GPUStack
 
-=== "Linux"
+!!! note
 
-    If you are using NVIDIA GPUs, ensure [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on your system. Then, run the following command to start the GPUStack server.
+    GPUStack now supports Linux only. For Windows, use WSL2 and avoid Docker Desktop.
 
-    ```bash
-    docker run -d --name gpustack \
-          --restart=unless-stopped \
-          --gpus all \
-          --network=host \
-          --ipc=host \
-          -v gpustack-data:/var/lib/gpustack \
-          gpustack/gpustack
-    ```
+If you are using NVIDIA GPUs, ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed. Then start the GPUStack with the following command:
 
-    For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](installation/requirements.md).
+```bash
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    gpustack/gpustack
+```
 
-    After the server starts, run the following command to get the default admin password:
+If you cannot pull images from `Docker Hub` or the download is very slow, you can use our `Quay.io` mirror by pointing your registry to `quay.io`:
 
-    ```bash
-    docker exec gpustack cat /var/lib/gpustack/initial_admin_password
-    ```
+```bash
+sudo docker run -d --name gpustack \
+    --restart unless-stopped \
+    --privileged \
+    --network host \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --volume gpustack-data:/var/lib/gpustack \
+    --runtime nvidia \
+    quay.io/gpustack/gpustack \
+    --system-default-container-registry quay.io
+```
 
-    Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
+For more details on the installation or other GPU hardware platforms, please refer to the [Installation Requirements](installation/requirements.md).
 
-=== "macOS"
+Check the GPUStack startup logs:
 
-    Download the [installer](https://gpustack.ai/download/gpustack.pkg) and run it to install GPUStack.
+```bash
+sudo docker logs -f gpustack
+```
 
-    !!! note
+After GPUStack starts, run the following command to get the default admin password:
 
-        **Supported platforms:** Apple Silicon (M series), macOS 14 or later
+```bash
+sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
+```
 
-    After the installation is complete, the GPUStack icon will appear in the status bar. Click the GPUStack icon in the status bar and select `Web Console` to open the GPUStack UI in your browser.
-
-    ![mac installer](assets/quick-start/mac-done.png){width=30%}
-
-=== "Windows"
-
-    Download the [installer](https://gpustack.ai/download/GPUStackInstaller.msi) and run it to install GPUStack.
-
-    !!! note
-
-        **Supported platforms:** Windows 10 and Windows 11
-
-    After the installation is complete, the GPUStack icon will appear in the system tray. Click the GPUStack icon in the system tray and select `Web Console` to open the GPUStack UI in your browser.
-
-    ![windows done](assets/quick-start/windows-done.png){width=30%}
+Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
 
 ## Deploy a Model
 
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
-2. Select the `Qwen3` model from the list of available models.
+2. Select the `Qwen3 0.6B` model from the list of available models.
 
 3. After the deployment compatibility checks pass, click the `Save` button to deploy the model.
 
@@ -83,7 +82,7 @@
 
 ![model is running](assets/quick-start/model-running.png)
 
-5. Click `Playground - Chat` in the navigation menu, check that the model `qwen3` is selected from the top-right `Model` dropdown. Now you can chat with the model in the UI playground.
+5. Click `Playground - Chat` in the navigation menu, check that the model `qwen3-0.6b` is selected from the top-right `Model` dropdown. Now you can chat with the model in the UI playground.
 
 ![quick chat](assets/quick-start/quick-chat.png)
 
@@ -105,7 +104,7 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GPUSTACK_API_KEY" \
   -d '{
-    "model": "qwen3",
+    "model": "qwen3-0.6b",
     "messages": [
       {
         "role": "system",
