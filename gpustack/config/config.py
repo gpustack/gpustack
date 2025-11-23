@@ -592,7 +592,7 @@ class Config(BaseSettings):
     def _is_server(self):
         return self.server_url is None
 
-    def get_image_name(self, override: Optional[str]) -> str:
+    def get_image_name(self, override: Optional[str] = None) -> str:
         if self.image_name_override:
             return self.image_name_override
         version = __version__
