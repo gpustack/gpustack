@@ -31,7 +31,7 @@ CherryStudio integrates with GPUStack to leverage locally hosted LLMs, embedding
 
     - `API Key`: Input the API key you copied from previous steps.
 
-    - `API Host`: `Access URL` in the `API Access Info` panel, but slightly modified to `http://your-gpustack-url/v1-openai/`.
+    - `API Host`: `Access URL` in the `API Access Info` panel.
 
    ![CherryStudio GPUStack setup](../assets/integrations/integration-cherrystudio-01.png)
 
@@ -40,14 +40,6 @@ CherryStudio integrates with GPUStack to leverage locally hosted LLMs, embedding
    ![Manage models](../assets/integrations/integration-cherrystudio-02.png)
 
    ![Enable models](../assets/integrations/integration-cherrystudio-03.png)
-
-   Because OpenAI does not provide a dedicated rerank API, GPUStack provides a [Jina](https://jina.ai/reranker/#apiform) compatible API under `/v1/rerank`.
-
-   In the current GPUStack version, the `/v1/models` endpoint is for internal use and does not support the "list models" operation. To enable automatic model listing in CherryStudio, first set API Host to: `http://your-gpustack-url/v1-openai/` (the trailing slash is required).
-
-   Then change API Host to: `http://your-gpustack-url`, so the rerank endpoint works correctly, as shown below:
-
-   ![Adjust API Host](../assets/integrations/integration-cherrystudio-07.png)
 
 3. (Optional) Test the API:
 
