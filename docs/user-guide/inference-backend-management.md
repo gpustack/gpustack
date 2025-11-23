@@ -1,5 +1,4 @@
 # Inference Backend Management
-GPUStack allows admins to configure inference backends and backend versions.
 
 This article serves as an operational guide for the Inference Backend page. For supported built-in backends and their capabilities, see [Built-in Inference Backends](built-in-inference-backends.md).
 
@@ -27,24 +26,16 @@ Version Configs parameter description:
 | Execution Command               | Version-specific startup command. If omitted, the Default Execution Command is used | No       |
 
 
-## Add Custom Inference Backend
-1. Click the "Add Backend" button in the top-right corner.
-2. You can add a custom inference backend by completing the form or by pasting a YAML definition. Refer to the parameter descriptions above for field meanings.
-3. The backend name cannot be modified after creation. Custom backend names must end with "-custom" (pre-filled in the form).
-4. Click "Save" to submit.
+## Backend List
 
+You can browse and manage inference backends on the `Inference Backend Management` page.
+The list supports filtering by backend name.
 
-## Edit Inference Backend or Add Custom Version
-1. On the Inference Backend page, locate the target backend. From the card's top-right dropdown menu, choose "Edit".
-2. Modify backend properties (the name cannot be changed), or add a new version.
-3. For built-in backends, custom versions must end with "-custom" (pre-filled in the form).
-4. Click "Save" to submit.
+The screenshot below shows the Backends page:
 
-## Delete Custom Inference Backend
-1. On the Inference Backend page, locate the target backend and select "Delete" from the card's top-right dropdown menu.
-2. Built-in backends cannot be deleted.
-3. Click "Delete" in the confirmation dialog.
+![backend-list](../assets/backends/backend-list.png)
 
+<<<<<<< HEAD
 ## List Versions of Inference Backend
 On the Inference Backend page, click anywhere on the backend card (except the action buttons) to open a modal where you can browse all built-in and custom-added versions.
 
@@ -55,3 +46,96 @@ Use this mode to quickly verify or tweak the image and startup command without e
 2. In the Basic tab, open the "Backend" dropdown and select "Custom" under the "Built-in" section.
 3. Two fields appear: `image_name` and `run_command`. These override the backend configuration for this deployment only.
 4. Review the remaining required settings and submit the deployment.
+=======
+## Create Backend
+
+1. Navigate to the `Inference Backend Management` page.
+2. Click `Add Backend`.
+3. Choose between **Form Mode** and **YAML Mode**.
+4. Newly created backends automatically append the suffix **-custom**.
+5. Every backend must contain at least one version.
+
+![two-add-modes](../assets/backends/add-backend.png)
+
+### Form Mode
+
+1. Fill the backend `Name` and add at least one `Version`.
+
+![form-mode](../assets/backends/add-backend-01.png)
+
+**Add Versions**
+
+1. Specify the `Version` and its corresponding `Image Name`.
+2. Select a `Framework` that is supported by the image and appropriate for the target device.
+3. When multiple versions exist, you may designate one as the **default version**.
+4. Click the `Save` button.
+
+![add-version](../assets/backends/add-backend-versions.png)
+
+### Yaml Mode
+
+Click the `Yaml Mode` tab at the top of the modal.
+
+1. Fill in the `backend_name` and `version_configs` fields. default_version is optional.
+2. The backend name must be endwith **-custom**.
+2. Click the `Save` button.
+
+![yaml-mode](../assets/backends/yaml-mode.png)
+
+## Update Custom Backend
+
+1. Navigate to the `Inference Backend Management` page.
+2. Find the backend you want to edit.
+3. Hover over the card's dropdown button.
+3. Click the `Edit` button in the dropdown.
+4. Update the editable attributes in **Form Mode** or **YAML Mode**.
+5. Click the `Save` button.
+
+![edit-custom](../assets/backends/edit-custom-backend.png)
+
+## Update Built-in Backend
+
+1. Navigate to the `Inference Backend Management` page.
+2. Find the backend you want to edit.
+3. Hover over the card's dropdown button.
+3. Click the `Edit` button in the dropdown.
+4. Update the editable attributes in **Form Mode** or **YAML Mode**:
+
+    - For built-in backends, adding versions is optional.
+    - However, built-in backends cannot set a default version.
+
+5. Click the `Save` button.
+
+![edit-builtin-backend](../assets/backends/edit-builtin-backend.png)
+![edit-builtin-form](../assets/backends/edit-buitin-form.png)
+
+## Delete Backend
+
+1. Navigate to the `Inference Backend Management` page.
+2. Find the backend you want to delete.(Built-in backends cannot be deleted.)
+3. Hover over the card’s dropdown button.
+3. Click the `Delete` button in the dropdown.
+4. Confirm the deletion.
+
+## View Versions
+
+1. Navigate to the `Inference Backend Management` page.
+2. Click the backend card you want to inspect.
+3. Filter versions by framework if needed.
+4. For built-in backends, both built-in and custom-added versions will be displayed.
+
+![backend-versions](../assets/backends/backend-versions.png)
+
+## Use Inference Backend
+
+1. Navigate to the `Deployments` page.
+2. Click the `Deploy Model`, then select `Hugging Face` in the dropdown.
+3. Search the model you want to deploy.
+4. In the Backend dropdown, you will see two groups:
+    - **Built-in**
+    - **User-defined** (your custom backends)
+5. Select a backend version if needed. The version list includes both built-in and custom versions.
+
+![backend](../assets/backends/use-custom-backend.png)
+![backend-versions](../assets/backends/use-custom-backend-version.png)
+>>>>>>> 8857df4b (docs: update inference backend management)
