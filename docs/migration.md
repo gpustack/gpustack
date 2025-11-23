@@ -86,3 +86,7 @@ For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process r
 3. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
 
 The Server and Worker migration commands can be used directly after applying these changes.
+
+### Step 3: Recreating Model Instances
+
+After the upgrade is complete, existing Model Instances may remain stuck in the `Starting` state. If this happens, recreating the Model Instance will allow the model to run normally.
