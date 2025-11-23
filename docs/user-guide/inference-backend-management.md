@@ -55,4 +55,3 @@ For quick and flexible verification or adjustment of the image and startup comma
 2. In the Basic tab, click "Backend" and select "Custom" under the built-in category from the dropdown.
 3. Two new input fields will appear to specify custom `image_name` and `run_command`.
 4. After completing the inputs, confirm other required deployment settings and click the submit button.
-![img.png](../assets/tutorials/custom-inference-backend/flexible-testing-deployment.png)

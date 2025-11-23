@@ -31,14 +31,14 @@ version_configs:
     You can also add custom versions to these Built-in inference backends and specify the image names you need.
 
 4. In Deployment page, select the newly added inference backend and deploy the model.
-![image.png](../assets/tutorials/custom-inference-backend/deploy-by-custom-backend.png)
+![image.png](../assets/tutorials/using-custom-backend/deploy-by-custom-backend.png)
 
 **Result**
 
 After the inference backend service starts, you can see the model_instance status becomes RUNNING.
-![image.png](../assets/tutorials/custom-inference-backend/custom-backend-running.png)
+![image.png](../assets/tutorials/using-custom-backend/custom-backend-running.png)
 You can engage in conversations in the Playground.
-![image.png](../assets/tutorials/custom-inference-backend/use-custom-backend-in-playground.png)
+![image.png](../assets/tutorials/using-custom-backend/use-custom-backend-in-playground.png)
 
 
 ## Typical Examples
@@ -60,8 +60,8 @@ You can engage in conversations in the Playground.
 For more information, refer to the llama.cpp [GitHub repository](https://github.com/ggml-org/llama.cpp).
 
 Screenshots:
-![gguf-deploy.png](../assets/tutorials/custom-inference-backend/gguf-deploy.png)
-![gguf-resp.png](../assets/tutorials/custom-inference-backend/gguf-resp.png)
+![gguf-deploy.png](../assets/tutorials/using-custom-backend/gguf-deploy.png)
+![gguf-resp.png](../assets/tutorials/using-custom-backend/gguf-resp.png)
 
 ### Use Kokoro-FastAPI
 1. Find the image name in the [documentation](https://github.com/remsky/Kokoro-FastAPI?tab=readme-ov-file#get-started), and choose the variant that matches your worker platform:
@@ -102,5 +102,5 @@ Screenshots:
 
 Screenshots:
 
-![kokoro-run2.png](../assets/tutorials/custom-inference-backend/kokoro-run2.png)
-![kokoro-run.png](../assets/tutorials/custom-inference-backend/kokoro-run-1.png)
+![kokoro-run2.png](../assets/tutorials/using-custom-backend/kokoro-run2.png)
+![kokoro-run.png](../assets/tutorials/using-custom-backend/kokoro-run-1.png)
