@@ -119,12 +119,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 self._mem_fraction_static = float(mem_fraction_static)
 
     def _get_nnodes(self) -> int:
-        if (
-            self._model.gpu_selector
-            and self._model.gpu_selector.gpu_ids
-            and len(self._model.gpu_selector.gpu_ids) > 1
-        ):
-            return len(self._model.gpu_selector.gpu_ids)
         if self._model.backend_parameters:
             nnodes_param = find_parameter(self._model.backend_parameters, ["nnodes"])
             if nnodes_param:

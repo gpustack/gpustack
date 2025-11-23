@@ -50,6 +50,35 @@ def expected_candidate(
 @pytest.mark.parametrize(
     "case_name, m, workers, expected_candidates, final_candidate_index",
     [
+        # Manually select two GPUs from 1 worker with DP2 parameter.
+        # Check point:
+        # - Candidate selection correctness.
+        # - Manual GPU selection handling.
+        # - dp-size parameter handling.
+        (
+            "manual_select_2_gpus_1_worker_dp2",
+            make_model(
+                0,
+                [
+                    "host4080:cuda:0",
+                    "host4080:cuda:1",
+                ],
+                "Qwen/Qwen3-0.6B",
+                backend_parameters=["--data-parallel-size=2"],
+            ),
+            [
+                linux_nvidia_2_4080_16gx2(),
+            ],
+            [
+                expected_candidate(
+                    3,
+                    "host4080",
+                    [0, 1],
+                    {0: 15454332518, 1: 15454332518},
+                )
+            ],
+            0,
+        ),
         # Auto schedule two GPUs from 1 worker with DP2 parameter.
         # Check point:
         # - Candidate selection correctness.
