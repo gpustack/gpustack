@@ -77,6 +77,7 @@ Screenshots:
     ```
    old gpu use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_full
 2. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
+3. More install use [rocm.docs.amd.com]([https://github.com/ggml-org/llama.cpp](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/previous-versions/llama-cpp-install-v25.9.html#build-llama-cpp-docker-image)). 
 
    
 
