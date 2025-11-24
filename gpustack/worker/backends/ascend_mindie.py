@@ -757,7 +757,7 @@ class AscendMindIEParameters:
                 f"cannot be set at the same time, "
                 f"which means enabling both pipeline and data parallelism."
             )
-        if dp != -1 and cp != -1:
+        if dp > 1 and cp > 1:
             raise argparse.ArgumentTypeError(
                 f"--data-parallel-size {dp} "
                 f"and --context-parallel-size {cp} "
@@ -788,11 +788,8 @@ class AscendMindIEParameters:
                         f"and --tensor-parallel-size {tp} "
                         f"must be multiples of world size: {ws}"
                     )
+            # Check cp * tp == world size if enable context parallelism
             elif cp > 1:
-                if not (1 <= cp <= 2):
-                    raise argparse.ArgumentTypeError(
-                        f"--context-parallel-size {cp} " f"must be in the range [1, 2]"
-                    )
                 if 0 < ws != cp * tp:
                     raise argparse.ArgumentTypeError(
                         f"--context-parallel-size {cp} "
