@@ -76,8 +76,8 @@ Screenshots:
     default_version: v1-custom
     ```
    ROCM gpu
-   a) use docker.io/rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu24.04_full
-   b) use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_full
+   a) use docker.io/rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu24.04_server
+   b) use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_server
    
 3. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
    ghcr.io/ggml-org/llama.cpp:server-vulkan
