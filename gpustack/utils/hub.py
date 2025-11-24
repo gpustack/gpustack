@@ -19,6 +19,7 @@ from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
+from gpustack.schemas import ModelFile
 from gpustack.schemas.models import Model, SourceEnum, get_mmproj_filename
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 
@@ -44,7 +45,7 @@ class FileEntry:
         self.size = size
 
 
-def get_model_path_and_name(model: Model) -> (str, str):
+def get_model_path_and_name(model: ModelFile) -> (str, str):
     if model.source == SourceEnum.HUGGING_FACE:
         return model.huggingface_repo_id, model.huggingface_filename
     elif model.source == SourceEnum.MODEL_SCOPE:
@@ -57,7 +58,7 @@ def get_model_path_and_name(model: Model) -> (str, str):
 
 def match_file_and_calculate_size(
     files: List[FileEntry],
-    model: Model,
+    model: ModelFile,
     cache_dir: str,
 ) -> (int, List[str]):
     """
@@ -73,9 +74,10 @@ def match_file_and_calculate_size(
     extra_filename = get_mmproj_filename(model)
 
     if file_path and not filename:
+        base_dir = model.local_dir or f"{cache_dir}/{model.source.value}/{file_path}"
         return (
             sum(f.size for f in files if getattr(f, 'size', None) is not None),
-            [f"{cache_dir}/{model.source.value}/{file_path}"],
+            [base_dir],
         )
 
     for sibling in files:
@@ -106,9 +108,8 @@ def match_file_and_calculate_size(
         SourceEnum.HUGGING_FACE,
         SourceEnum.MODEL_SCOPE,
     ]:
-        selected_files = [
-            f"{cache_dir}/{model.source.value}/{file_path}/{f}" for f in selected_files
-        ]
+        base_dir = model.local_dir or f"{cache_dir}/{model.source.value}/{file_path}"
+        selected_files = [os.path.join(base_dir, f) for f in selected_files]
 
     return sum_size, selected_files
 
