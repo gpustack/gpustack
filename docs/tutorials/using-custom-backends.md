@@ -63,7 +63,7 @@ Screenshots:
 ![gguf-deploy.png](../assets/tutorials/using-custom-backend/gguf-deploy.png)
 ![gguf-resp.png](../assets/tutorials/using-custom-backend/gguf-resp.png)
 
-### Fast Deploy GGUF Models with llama.cpp for all AMD GPU
+### Fast Deploy GGUF Models with llama.cpp for all AMD GPU ROCM/VULKAN
 
 1. Add the following backend configuration on the Inference Backend page:
     ```yaml
@@ -71,13 +71,17 @@ Screenshots:
     default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}}'
     version_configs:
       v1-custom:
-        image_name: docker.io/rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu24.04_full
+        image_name: ghcr.io/ggml-org/llama.cpp:server-vulkan
         custom_framework: rocm
     default_version: v1-custom
     ```
-   old gpu use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_full
-2. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
-3. More install use [rocm.docs.amd.com]([https://github.com/ggml-org/llama.cpp](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/previous-versions/llama-cpp-install-v25.9.html#build-llama-cpp-docker-image)). 
+   ROCM gpu
+   a) use docker.io/rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu24.04_full
+   b) use docker.io/rocm/llama.cpp:llama.cpp-b6356_rocm6.4.3_ubuntu22.04_full
+   
+3. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
+   ghcr.io/ggml-org/llama.cpp:server-vulkan
+4. More install use [rocm.docs.amd.com]([https://github.com/ggml-org/llama.cpp](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/3rd-party/previous-versions/llama-cpp-install-v25.9.html#build-llama-cpp-docker-image)). 
 
    
 
