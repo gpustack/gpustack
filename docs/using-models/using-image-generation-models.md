@@ -1,6 +1,6 @@
 # Using Image Generation Models
 
-GPUStack supports deploying and running **Image Generation Models**. In this guide, you will deploy and use the Qwen-Image text-to-image model via the SGLang backend, then generate images from textual descriptions in the GPUStack UI.
+GPUStack supports deploying and running **Image Generation Models**. In this guide, you deploy and use the Qwen-Image text-to-image model via the SGLang backend, then generate images from textual prompts in the GPUStack UI.
 
 ## Prerequisites
 
@@ -17,8 +17,8 @@ Follow these steps to deploy the model from Hugging Face:
 1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Hugging Face` as the source for your model.
-4. Use the search bar in the top left to search for the repository `Qwen/Qwen-Image`.
-5. Leave everything as default and click the `Save` button to deploy. GPUStack will start the SGLang backend for Qwen-Image and download the necessary files.
+4. Use the search bar in the top-left to search for the repository `Qwen/Qwen-Image`.
+5. Keep the default settings and click the `Save` button to deploy. GPUStack will start the SGLang backend for Qwen-Image and download the required files.
 
 ![Deploy Model](../assets/using-models/using-image-generation-models/deploy-model.png)
 
@@ -42,7 +42,7 @@ a female character with long, flowing hair that appears to be made of ethereal, 
 The generated image will be displayed in the UI. Results vary with randomness, seeds, and prompt details.
 ![Generated](../assets/using-models/using-image-generation-models/image-playground.png)
 
-Since diffusion models consume additional VRAM after generating an image, we observe that the memory usage increased from 45GB (weights only) to 54GB., we observe that after completing an image generation task, the memory usage increased from 45GB (weights only) to 54GB. If additional models like LoRA are used, VRAM consumption will further increase.
+After completing an image generation task, memory usage typically increases from ~45 GB (weights only) to ~54 GB due to additional VRAM consumption by diffusion models. If additional models like LoRA are used, VRAM consumption will further increase.
 
 ![qwen-image-usage-after.png](../assets/using-models/using-image-generation-models/qwen-image-usage-after.png)
 

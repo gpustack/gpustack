@@ -1,30 +1,30 @@
 # Inference Backend Management
 GPUStack allows admins to configure inference backends and backend versions.
 
-This article serves as an operations guide for the Inference Backend page. For supported built-in backends and their capabilities, see [Built-in Inference Backends](built-in-inference-backends.md).
+This article serves as an operational guide for the Inference Backend page. For supported built-in backends and their capabilities, see [Built-in Inference Backends](built-in-inference-backends.md).
 
-For guidelines on configuring custom backends and example for custom backends verified as functional, see [Custom Inference Backends](../tutorials/using-custom-backends.md).
+For guidelines for configuring custom backends and examples of custom backends that have been verified to work, see [Custom Inference Backends](../tutorials/using-custom-backends.md).
 
 ## Parameter Description
 
 | Parameter Name             | Description                                                                                                                                                                                                                                                                                                                                                                                              | Required |
 |----------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|
 | Name                       | Inference backend name                                                                                                                                                                                                                                                                                                                                                                                   | Yes      |
-| Health Check Path          | Health check path used to verify if the inference backend has started and is running properly. Default value is /v1/models (OpenAI API specification)                                                                                                                                                                                                                                                    | No       |
-| Default Execution Command  | Execution command passed as `args` when the inference backend container starts. For example, for vllm backend, this would be `vllm serve {{model_path}} --port {{port}} --served-model-name {{model_name}} --host {{worker_ip}}`. Note that this command supports {{model_path}}, {{model_name}}, {{port}}, {{worker_ip}} templates, allowing automatic substitution of model path and port number and model name(optional) after scheduling | No       |
-| Default Backend Parameters | Default backend parameters used to pre-fill Advanced-Backend Parameters during deployment for convenient deployment and adjustment                                                                                                                                                                                                                                                                       | No       |
+| Health Check Path          | Health check path used to verify the backend is up and responding. Default: /v1/models (OpenAI-compatible).                                                                                                                                                                                                                                                   | No       |
+| Default Execution Command  | Container startup command/args. For example (vLLM): `vllm serve {{model_path}} --port {{port}} --served-model-name {{model_name}} --host {{worker_ip}}`. The placeholders `{{model_path}}`, `{{model_name}}`, `{{port}}`, and `{{worker_ip}}` are automatically substituted when the deployment is scheduled to a worker. | No       |
+| Default Backend Parameters | Pre-populate the Advanced Backend Parameters section during deployment; you can adjust them before launching                                                                                                                                                                                                                                                                                             | No       |
 | Description                | Description                                                                                                                                                                                                                                                                                                                                                                                              | No       |
-| Version Configs            | Inference backend version configurations, used to add inference backend versions                                                                                                                                                                                                                                                                                                                         | Yes      |
-| Default Version            | Dropdown option used to pre-fill during deployment. If no version is selected during deployment, the image corresponding to Default Version will be used                                                                                                                                                                                                                                                 | No       |
+| Version Configs            | Configure available versions of this backend                                                                                                                                                                                                                                                                                                                                                             | Yes      |
+| Default Version            | Preselected during deployment. If you don’t choose a version, its image is used                                                                                                                                                                                                                                                                                                                          | No       |
 
 Version Configs parameter description:
 
 | Parameter Name                  | Description                                         | Required |
 |---------------------------------|-----------------------------------------------------|----------|
-| Version                         | Version name, displayed in BackendVersion options during deployment | Yes      |
-| Image Name                      | Inference backend image name                         | Yes      |
-| Framework<br/>(custom_framework) | Inference backend framework. Deployment and scheduling will filter based on supported Frameworks | Yes      |
-| Execution Command               | Execution command for this version. If not set, uses Default Execution Command | No       |
+| Version                         | Version name shown in the Backend Version dropdown during deployment | Yes      |
+| Image Name                      | Container image name for the backend (e.g., `ghcr.io/org/image:tag`) | Yes      |
+| Framework<br/>(custom_framework) | Backend framework (internal identifier: `custom_framework`). Deployment and scheduling are filtered by supported frameworks | Yes      |
+| Execution Command               | Version-specific startup command. If omitted, the Default Execution Command is used | No       |
 
 
 ## Add Custom Inference Backend
@@ -46,12 +46,12 @@ Version Configs parameter description:
 3. Click "Delete" in the confirmation dialog.
 
 ## List Versions of Inference Backend
-On the Inference Backend page, click the blank area of the backend card to open a modal where you can browse all built-in and custom-added versions.
+On the Inference Backend page, click anywhere on the backend card (except the action buttons) to open a modal where you can browse all built-in and custom-added versions.
 
 ## Flexible Testing Deployment
-For quick and flexible verification or adjustment of the image and startup command.
+Use this mode to quickly verify or tweak the image and startup command without editing the backend definition.
 
 1. Navigate to the Deployments page, click the "Deploy Model" button, and choose any model source.
-2. In the Basic tab, click "Backend" and select "Custom" under the built-in category from the dropdown.
-3. Two new input fields will appear to specify custom `image_name` and `run_command`.
-4. After completing the inputs, confirm other required deployment settings and click the submit button.
+2. In the Basic tab, open the "Backend" dropdown and select "Custom" under the "Built-in" section.
+3. Two fields appear: `image_name` and `run_command`. These override the backend configuration for this deployment only.
+4. Review the remaining required settings and submit the deployment.
