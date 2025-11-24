@@ -84,6 +84,7 @@ nav:
           - Iluvatar: installation/iluvatar/installation.md
           - Cambricon: installation/cambricon/installation.md
           - Air-Gapped Installation: installation/air-gapped.md
+          - Installation via Docker Compose: installation/docker-compose.md
           - Uninstallation: installation/uninstallation.md
       - Upgrade: upgrade.md
       - Migration: migration.md
