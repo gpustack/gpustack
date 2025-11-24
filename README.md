@@ -31,19 +31,21 @@ GPUStack is an open-source GPU cluster manager for running AI models.
 
 ### Key Features
 
-- **Broad GPU Compatibility:** Seamlessly supports GPUs from various vendors across Apple Macs, Windows PCs, and Linux servers.
-- **Extensive Model Support:** Supports a wide range of models including LLMs, VLMs, image models, audio models, embedding models, and rerank models.
-- **Flexible Inference Backends:** Flexibly integrates with multiple inference backends including vLLM, SGLang, Ascend MindIE and vox-box.
-- **Multi-Version Backend Support:** Run multiple versions of inference backends concurrently to meet the diverse runtime requirements of different models.
-- **Distributed Inference:** Supports single-node and multi-node multi-GPU inference, including heterogeneous GPUs across vendors and runtime environments.
-- **Scalable GPU Architecture:** Easily scale up by adding more GPUs or nodes to your infrastructure.
-- **Robust Model Stability:** Ensures high availability with automatic failure recovery, multi-instance redundancy, and load balancing for inference requests.
-- **Intelligent Deployment Evaluation:** Automatically assess model resource requirements, backend and architecture compatibility, OS compatibility, and other deployment-related factors.
-- **Automated Scheduling:** Dynamically allocate models based on available resources.
-- **OpenAI-Compatible APIs:** Fully compatible with OpenAI’s API specifications for seamless integration.
+- **High Performance:** Optimized for high-throughput and low-latency inference.
+- **GPU Cluster Management:** Efficiently manage multiple GPU clusters across different providers, including Docker-based, Kubernetes, and cloud platforms such as DigitalOcean.
+- **Broad GPU Compatibility:** Seamless support for GPUs from various vendors.
+- **Extensive Model Support:** Supports a wide range of models, including LLMs, VLMs, image models, audio models, embedding models, and rerank models.
+- **Flexible Inference Backends:** Built-in support for fast inference engines such as vLLM and SGLang, with the ability to integrate custom backends.
+- **Multi-Version Backend Support:** Run multiple versions of inference backends concurrently to meet diverse runtime requirements.
+- **Distributed Inference:** Supports single-node and multi-node, multi-GPU inference, including heterogeneous GPUs across vendors and environments.
+- **Scalable GPU Architecture:** Easily scale by adding more GPUs, nodes, or clusters to your infrastructure.
+- **Robust Model Stability:** Ensures high availability through automatic failure recovery, multi-instance redundancy, and intelligent load balancing.
+- **Intelligent Deployment Evaluation:** Automatically assesses model resource requirements, backend and architecture compatibility, OS compatibility, and other deployment factors.
+- **Automated Scheduling:** Dynamically allocates models based on available resources.
+- **OpenAI-Compatible APIs:** Fully compatible with OpenAI API specifications for seamless integration.
 - **User & API Key Management:** Simplified management of users and API keys.
-- **Real-Time GPU Monitoring:** Track GPU performance and utilization in real time.
-- **Token and Rate Metrics:** Monitor token usage and API request rates.
+- **Real-Time GPU Monitoring:** Monitor GPU performance and utilization in real time.
+- **Token and Rate Metrics:** Track token usage and API request rates.
 
 ## Installation
 
