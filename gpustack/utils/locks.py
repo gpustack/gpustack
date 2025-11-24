@@ -4,7 +4,9 @@ import threading
 import json
 import socket
 from typing import Optional
-from filelock import SoftFileLock, Timeout, FileLock
+from filelock import SoftFileLock, Timeout
+import fcntl
+import errno
 from modelscope.hub.utils.utils import model_id_to_group_owner_name
 
 from gpustack.envs import DISABLE_OS_FILELOCK
@@ -25,7 +27,8 @@ class HeartbeatSoftFileLock:
 
         Parameters:
         - lock_path: Path to the .lock file used for coordination.
-        - ttl_seconds: Only for soft lock, Lease Time-To-Live (in seconds) for the lock file. If the
+        - ttl_seconds: Only for soft lock, Lease Time-To-Live (in seconds)
+          for the lock file. If the
           current holder crashes and heartbeats stop, a subsequent acquirer will
           treat a lock file whose mtime is older than this TTL as stale and may
           delete it to recover.
@@ -35,7 +38,7 @@ class HeartbeatSoftFileLock:
         self._lock_path = lock_path
         self._ttl_seconds = ttl_seconds
         self._heartbeat_seconds = heartbeat_seconds
-        self._os_lock = FileLock(lock_path)
+        self._os_lock: Optional[int] = None
         self._lock = SoftFileLock(lock_path)
         self._hb_stop = threading.Event()
         self._hb_thread: Optional[threading.Thread] = None
@@ -56,15 +59,7 @@ class HeartbeatSoftFileLock:
         if DISABLE_OS_FILELOCK:
             self._using_soft_lock = True
         else:
-            try:
-                self._os_lock.acquire()
-            except NotImplementedError as e:
-                if "use SoftFileLock instead" in str(e):
-                    self._using_soft_lock = True
-                else:
-                    raise e
-            except Exception as e:
-                raise e
+            self._acquire_os_lock()
 
         if not self._using_soft_lock:
             return self
@@ -120,13 +115,33 @@ class HeartbeatSoftFileLock:
                 except Exception:
                     pass
         if not self._using_soft_lock:
-            try:
-                self._os_lock.release()
-            except Exception:
-                pass
-            finally:
-                if os.path.exists(self._lock_path):
-                    os.remove(self._lock_path)
+            self._release_os_lock()
+
+    def _acquire_os_lock(self):
+        fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX)
+        except OSError as e:
+            os.close(fd)
+            if e.errno in (errno.ENOSYS, errno.ENOTSUP):
+                # File system don't support fcntl
+                self._using_soft_lock = True
+            else:
+                raise e
+        else:
+            self._os_lock = fd
+
+    def _release_os_lock(self):
+        fd = self._os_lock
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_UN)
+            if os.path.exists(self._lock_path):
+                os.remove(self._lock_path)
+        except Exception as e:
+            raise e
+        finally:
+            os.close(fd)
+            self._os_lock = None
 
 
 def cleanup_stale_lock_files(base_dir: str, ttl_seconds: int):
