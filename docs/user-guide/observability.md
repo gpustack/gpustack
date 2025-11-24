@@ -71,82 +71,77 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 
 > **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.
 
-## Deploy GPUStack with the Observability Stack
+## Deploy Observability Stack
 
-The observability stack consists of three main components:
+The observability stack consists of two components:
 
-- **GPUStack Server**: Exposes metrics at `/metrics` endpoint, expose worker metrics targets at `/metrics/targets`.
 - **Prometheus**: Scrapes metrics from GPUStack and stores them.
 - **Grafana**: Visualizes metrics from Prometheus.
 
-All components are deployed via Docker Compose for easy management.
+All components can be deployed together via Docker Compose for easy management.
 
-### Docker Compose Configuration
+### Deploying alongside GPUStack Server
 
-GPUStack provides a `docker-compose.yaml` file to deploy the observability stack in NVIDIA GPU environments, please refer to [Docker Compose](https://github.com/gpustack/gpustack/blob/main/docker-compose/docker-compose.server.nvidia.yaml).
+You can deploy GPUStack together with the observability stack using the provided `docker-compose.yaml` for a one-step setup. For details, refer to the [Installation via Docker Compose](../installation/docker-compose.md).
 
-Below is a sample `docker-compose.yaml` for deploying GPUStack Server, Prometheus, and Grafana:
+### Deploying Separately
 
-```yaml
-services:
-  gpustack-server:
-    image: gpustack/gpustack
-    container_name: gpustack-server
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
+If you started GPUStack using `docker run` (not Compose), you can deploy the observability components separately and connect them to your existing GPUStack server as follows:
+
+#### Steps
+
+1. **Docker Compose Configuration**
+
+    Compose file location: [docker-compose.observability.yaml (GitHub)](https://github.com/gpustack/gpustack/blob/main/docker-compose/docker-compose.observability.yaml)
+
+    ```yaml
+    services:
+    prometheus:
+        image: prom/prometheus
+        container_name: gpustack-prometheus
+        restart: unless-stopped
+        network_mode: host
+        command:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--web.enable-remote-write-receiver"
+        volumes:
+        - ./prometheus:/etc/prometheus
+        - prom_data:/prometheus
+
+    grafana:
+        image: grafana/grafana
+        container_name: gpustack-grafana
+        restart: unless-stopped
+        network_mode: host
+        environment:
+        - GF_SERVER_HTTP_PORT=3000
+        - GF_SECURITY_ADMIN_USER=admin
+        - GF_SECURITY_ADMIN_PASSWORD=grafana
+        - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
+        volumes:
+        - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
+        - ./grafana/grafana_dashboards:/etc/dashboards:ro
+
     volumes:
-      - gpustack-data:/var/lib/gpustack
-      - /var/run/docker.sock:/var/run/docker.sock
-    runtime: nvidia
+    prom_data: {}
+    ```
 
-  prometheus:
-    image: prom/prometheus
-    container_name: gpustack-prometheus
-    restart: unless-stopped
-    network_mode: host
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--web.enable-remote-write-receiver"
-    volumes:
-      - ./prometheus:/etc/prometheus
-      - prom_data:/prometheus
+2. **Edit the Prometheus configuration file `prometheus.yml`**.
 
-  grafana:
-    image: grafana/grafana
-    container_name: gpustack-grafana
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - GF_SERVER_HTTP_PORT=3000
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=grafana
-      - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
-    volumes:
-      - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/grafana_dashboards:/etc/dashboards:ro
+    Configure Prometheus to scrape metrics from GPUStack by editing the `prometheus.yml`, file location: [prometheus.yaml (GitHub)](https://github.com/gpustack/gpustack/blob/main/docker-compose/prometheus/prometheus.yml)
 
-volumes:
-  prom_data: {}
-  gpustack-data: {}
-```
-
-### Prometheus Configuration
-
-Configure Prometheus to scrape metrics from GPUStack Server and Worker by adding the following to `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: gpustack-worker-discovery
-    scrape_interval: 5s
-    http_sd_configs:
-      - url: "http://localhost:10161/metrics/targets"
-        refresh_interval: 1m
-  - job_name: gpustack-server
-    scrape_interval: 10s
-    static_configs:
-      - targets: ["localhost:10161"]
-```
+    ```yaml
+    scrape_configs:
+    - job_name: gpustack-worker-discovery
+        scrape_interval: 5s
+        http_sd_configs:
+        - url: "http://<gpustack_server_host>:10161/metrics/targets"
+            refresh_interval: 1m
+    - job_name: gpustack-server
+        scrape_interval: 10s
+        static_configs:
+        - targets: ["<gpustack_server_host>:10161"]
+    ```
 
 ### Accessing Metrics
 
@@ -159,11 +154,11 @@ scrape_configs:
 - **Grafana UI**:  
   Access Grafana at `http://<host>:3000` (default user: `admin`, password: `grafana`)
 
-### Customizing Metrics Mapping
+## Customizing Metrics Mapping
 
 GPUStack supports dynamic customization of metrics mapping through its configuration API. This allows you to update how runtime engine metrics are mapped to GPUStack metrics without restarting the service. The configuration is managed centrally on the server and can be accessed or modified via HTTP API.
 
-#### API Endpoints
+### API Endpoints
 
 - **Get Current Metrics Config**
 
@@ -179,7 +174,7 @@ GPUStack supports dynamic customization of metrics mapping through its configura
   - GET `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/default-config`
   - Returns the default metrics mapping configuration in JSON format, useful for reference or resetting.
 
-#### Example Usage
+### Example Usage
 
 **Get current config:**
 
