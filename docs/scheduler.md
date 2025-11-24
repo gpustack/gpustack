@@ -10,9 +10,19 @@ The scheduler's primary responsibility is to calculate the resources required by
 
 The filtering phase aims to narrow down the available workers or GPUs to those that meet specific criteria. The main policies involved are:
 
+- Cluster Matching Policy
+- GPU Matching Policy
 - Label Matching Policy
 - Status Policy
 - Resource Fit Policy
+
+#### Cluster Matching Policy
+
+This policy filters workers based on the cluster configuration of the model. Only those workers that belong to the specified cluster are retained for further evaluation.
+
+#### GPU Matching Policy
+
+This policy filters workers based on the user selected GPUs. Only workers that included the selected GPUs are retained for further evaluation.
 
 #### Label Matching Policy
 
@@ -22,15 +32,39 @@ This policy filters workers based on the label selectors configured for the mode
 
 This policy filters workers based on their status, retaining only those that are in a READY state.
 
+#### Backend Framework Matching Policy
+
+This policy filters workers based on the backend framework required by the model (e.g., vLLM, SGLang). Only those workers with GPUs that support the specified backend framework are retained for further evaluation.
+
 #### Resource Fit Policy
 
-The Resource Fit Policy is a critical strategy in the scheduling system, used to filter workers or GPUs based on resource compatibility. The goal of this policy is to ensure that model instances can run on the selected nodes without exceeding resource limits. The Resource Fit Policy prioritizes candidates in the following order:
+The Resource Fit Policy is a critical strategy in the scheduling system, used to filter workers or GPUs based on resource compatibility. The goal of this policy is to ensure that model instances can run on the selected workers. The Resource Fit Policy prioritizes candidates in the following order:
 
-- Single Worker Node, Single GPU Full Offload: Identifies candidates where a single GPU on a single worker can fully offload the model, which usually offers the best performance.
-- Single Worker Node, Multiple GPU Full Offload: Identifies candidates where multiple GPUs on a single worker can fully the offload the model.
-- Distributed Inference Across Multiple Workers: Identifies candidates where a combination of GPUs across multiple workers can handle full or partial offloading, used only when distributed inference across nodes is permitted.
-- Single Worker Node Partial Offload: Identifies candidates on a single worker that can handle a partial offload, used only when partial offloading is allowed.
-- Single Worker Node, CPU: When no GPUs are available, the system will use the CPU for inference, identifying candidates where memory resources on a single worker are sufficient.
+Resource requirements are determined based on:
+
+- For GGUF models: Uses the [GGUF parser](https://github.com/gpustack/gguf-parser-go) to estimate the model's resource requirements.
+
+- For other model types: Estimated by the backend (e.g., vLLM, SGLang, MindIE, VoxBox).
+
+Backends have different capabilities:
+
+- vLLM, SGLang, MindIE: GPU-only, no CPU or partial offload.
+
+- Custom backends, VoxBox: Support GPU offload or CPU execution.
+
+Candidates are evaluated in the following order, and the process stops once the first valid placement is found:
+
+1. Single Worker, Single GPU (Full Fit)
+A single GPU fully satisfies the model’s requirements.
+
+2. Single Worker, Multiple GPUs (Full Fit)
+Multiple GPUs on the same worker jointly satisfy the requirements.
+
+3. Distributed Inference (Across Workers)
+GPUs across multiple workers can be used when the backend supports distributed execution.
+
+4. Single Worker, CPU Execution
+CPU-only execution, supported only for Custom and VoxBox backends.
 
 ### Scoring Phase
 
@@ -46,4 +80,4 @@ The scoring phase evaluates the filtered candidates, scoring them to select the 
 
 - Spread
 
-  This strategy seeks to distribute multiple model instances across different worker nodes as evenly as possible, improving system fault tolerance and load balancing.
+  This strategy seeks to distribute multiple model instances across different workers as evenly as possible, improving system fault tolerance and load balancing.
