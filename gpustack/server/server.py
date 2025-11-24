@@ -2,6 +2,7 @@ import asyncio
 from multiprocessing import Process
 import os
 import re
+import aiohttp
 from typing import List
 
 import uvicorn
@@ -253,8 +254,26 @@ class Server:
         logger.debug("Update checker started.")
 
     def _start_sub_processes(self):
-        for process in self._sub_processes:
-            process.start()
+        async def start_process_after_api_ready():
+            api_url = f"http://127.0.0.1:{self._config.api_port}/healthz"
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    try:
+                        await asyncio.sleep(2)
+                        async with session.get(api_url) as response:
+                            if response.status == 200:
+                                break
+                    except aiohttp.ClientError:
+                        pass
+                    except asyncio.CancelledError:
+                        return
+
+            for process in self._sub_processes:
+                process.start()
+
+        if len(self._sub_processes) == 0:
+            return
+        self._create_async_task(start_process_after_api_ready())
 
     def _start_metrics_exporter(self):
         if self._config.disable_metrics:
