@@ -88,7 +88,7 @@ class ExtendedKVCacheConfig(BaseModel):
 
     chunk_size: Optional[int] = None
     """ Size for each KV cache chunk (unit: number of tokens). """
-
+    
     disk_path: Optional[str] = None
     """ Path to SSD storage for KV cache offloading (L3 cache). If set, enables disk-based cache.
     The path should be accessible from the container. GPUStack will automatically mount this path if it exists on the host."""
