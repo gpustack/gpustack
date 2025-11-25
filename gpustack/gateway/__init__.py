@@ -32,7 +32,6 @@ from gpustack.gateway.utils import (
 from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
 )
-from gpustack.utils.network import get_first_non_loopback_ip
 
 mcp_registry_port = 80
 
@@ -71,7 +70,7 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
         if cfg.gateway_mode == GatewayModeEnum.external:
             address = cfg.get_advertise_address()
         elif cfg.gateway_mode == GatewayModeEnum.embedded:
-            address = get_first_non_loopback_ip()
+            address = "127.0.0.1"
         domain = f"{address}:{port}"
 
     mcp_registry_name = (

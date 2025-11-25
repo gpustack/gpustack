@@ -51,12 +51,12 @@ class Config(BaseSettings):
     Attributes:
         port: Port to bind the server to. Default is 80.
         tls_port: Port to bind the TLS server to. Default is 443.
+        api_port: Port to bind the gpustack API server to. Default is 8080.
         advertise_address: The address to expose for external access. Auto-detected by default.
         debug: Enable debug mode.
         data_dir: Directory to store data. Default is OS specific.
         huggingface_token: User Access Token to authenticate to the Hugging Face Hub.
 
-        api_port: Port to bind the gpustack server to.
         metrics_port: Port to expose metrics on.
         disable_metrics: Disable server metrics.
         ssl_keyfile: Path to the SSL key file.
@@ -109,6 +109,8 @@ class Config(BaseSettings):
     # The port and tls_port are used in gateway configuration.
     port: Optional[int] = 80
     tls_port: Optional[int] = 443
+    # The api_port is used in gpustack server/worker serving API requests.
+    api_port: Optional[int] = 8080
     advertise_address: Optional[str] = None
     debug: bool = False
     data_dir: Optional[str] = None
@@ -126,8 +128,6 @@ class Config(BaseSettings):
     # Server options
     # Deprecated, as we using docker image to run the server, host is not used.
     host: Optional[str] = None
-    # The api_port is used in gpustack server serving API requests.
-    api_port: Optional[int] = 8080
     database_port: Optional[int] = 5432
     database_url: Optional[str] = None
     disable_worker: bool = False

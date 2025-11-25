@@ -83,7 +83,6 @@ class Worker:
         self._config = cfg
         self._is_embedded = cfg.server_role() == Config.ServerRole.BOTH
         self._log_dir = cfg.log_dir
-        self._address = "0.0.0.0"
         self._exporter_enabled = not cfg.disable_worker_metrics
         self._async_tasks = []
         # worker ip should be determined by out going interface to server
@@ -297,22 +296,28 @@ class Worker:
         register_gateway_plugins(self._config, app)
         exceptions.register_handlers(app)
 
+        serving_host = (
+            "127.0.0.1"
+            if self._config.gateway_mode == GatewayModeEnum.embedded
+            else "0.0.0.0"
+        )
         config = uvicorn.Config(
             app,
-            host=self._address,
+            host=serving_host,
             port=self._config.get_api_port(self._is_embedded),
             access_log=False,
             log_level="error",
         )
 
         setup_logging()
-        logger.info(f"Serving worker APIs on {config.host}:{config.port}.")
+        worker_api_message = f"Serving worker APIs on {config.host}:{config.port}."
         if not self._is_embedded:
+            logger.debug(worker_api_message)
             logger.info(f"Worker gateway mode: {self._config.gateway_mode.value}.")
             if self._config.gateway_mode == GatewayModeEnum.embedded:
-                logger.info(
-                    f"Embedded gateway will serve on {self._config.get_gateway_port()}."
-                )
+                logger.info(f"Serving worker on {self._config.get_gateway_port()}.")
+        else:
+            logger.info(worker_api_message)
         server = uvicorn.Server(config)
 
         await server.serve()

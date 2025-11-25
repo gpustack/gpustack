@@ -69,14 +69,14 @@ async def get_current_user(
         user, api_key = await get_user_from_bearer_token(session, bearer_token)
 
     server_config: Config = request.app.state.server_config
-    client_ip_from_header = (
-        request.headers.get("X-GPUStack-Real-IP", "")
-        if server_config.gateway_mode == GatewayModeEnum.embedded
-        else ""
-    )
-    if user is None and (
-        request.client.host == "127.0.0.1" or client_ip_from_header == "127.0.0.1"
-    ):
+
+    def client_ip_getter() -> str:
+        if server_config.gateway_mode != GatewayModeEnum.disabled:
+            return request.headers.get("X-GPUStack-Real-IP", "")
+        else:
+            return request.client.host
+
+    if user is None and client_ip_getter() == "127.0.0.1":
         if not server_config.force_auth_localhost:
             try:
                 user = await User.first_by_field(session, "is_admin", True)
