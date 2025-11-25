@@ -22,7 +22,7 @@
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
-ARG GPUSTACK_RUNTIME_ROCM_VERSION=6.2.4
+ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.8
 ARG HIGRESS_APISERVER_VERSION=0.0.25
@@ -533,6 +533,21 @@ RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/sha
     uv pip install --no-build-isolation \
         /opt/rocm/share/amd_smi
     uv pip tree
+
+    # Hack to avoid: Fail to open libdrm_amdgpu.so: libdrm_amdgpu.so: cannot open shared object file: No such file or directory
+    TARGET_DIR="/usr/lib/$(uname -m)-linux-gnu"
+    TARGET_LIB="libdrm_amdgpu.so.1.0.0"
+    TARGET_LINK="libdrm_amdgpu.so"
+    TARGET_LIB_EXISTED="true"
+    if [[ ! -e "${TARGET_DIR}/${TARGET_LIB}" ]]; then
+        TARGET_LIB_EXISTED="false"
+        touch "${TARGET_DIR}/${TARGET_LIB}"
+    fi
+    pushd "${TARGET_DIR}" \
+        && ln -sf "${TARGET_LIB}" "${TARGET_LINK}"
+    if [[ "${TARGET_LIB_EXISTED}" == "false" ]]; then
+        rm -f "${TARGET_DIR}/${TARGET_LIB}"
+    fi
 EOF
 ENV AMD_VISIBLE_DEVICES="all" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm"
