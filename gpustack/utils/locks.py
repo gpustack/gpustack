@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import threading
@@ -12,6 +13,8 @@ from modelscope.hub.utils.utils import model_id_to_group_owner_name
 from gpustack.envs import DISABLE_OS_FILELOCK
 from gpustack.schemas import ModelFile
 from gpustack.schemas.models import SourceEnum
+
+logger = logging.getLogger(__name__)
 
 
 class HeartbeatSoftFileLock:
@@ -51,9 +54,9 @@ class HeartbeatSoftFileLock:
                 mtime = os.path.getmtime(self._lock_path)
                 if time.time() - mtime > self._ttl_seconds:
                     os.remove(self._lock_path)
-        except Exception:
+        except Exception as e:
             # Swallow cleanup errors to avoid interfering with lock acquisition loop
-            pass
+            logger.warning(f"Failed to cleanup stale lock: {e}")
 
     def __enter__(self):
         if DISABLE_OS_FILELOCK:
@@ -84,8 +87,8 @@ class HeartbeatSoftFileLock:
             }
             with open(self._lock_path, "w") as f:
                 json.dump(info, f)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to write lock info: {e}")
 
         # Start heartbeat to keep lock mtime fresh
         self._hb_thread = threading.Thread(target=self._heartbeat, daemon=True)
@@ -96,8 +99,8 @@ class HeartbeatSoftFileLock:
         while not self._hb_stop.is_set():
             try:
                 os.utime(self._lock_path, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to update lock mtime: {e}")
             self._hb_stop.wait(self._heartbeat_seconds)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -112,8 +115,8 @@ class HeartbeatSoftFileLock:
                 try:
                     if os.path.exists(self._lock_path):
                         os.remove(self._lock_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to release soft lock: {e}")
         if not self._using_soft_lock:
             self._release_os_lock()
 
@@ -138,28 +141,10 @@ class HeartbeatSoftFileLock:
             if os.path.exists(self._lock_path):
                 os.remove(self._lock_path)
         except Exception as e:
-            raise e
+            logger.warning(f"Failed to release OS lock: {e}")
         finally:
             os.close(fd)
             self._os_lock = None
-
-
-def cleanup_stale_lock_files(base_dir: str, ttl_seconds: int):
-    """Scan base_dir recursively, remove .lock files older than ttl_seconds."""
-    if not base_dir or not os.path.exists(base_dir):
-        return
-    now = time.time()
-    for dirpath, _, filenames in os.walk(base_dir):
-        for fname in filenames:
-            if not fname.endswith(".lock"):
-                continue
-            fpath = os.path.join(dirpath, fname)
-            try:
-                if now - os.path.getmtime(fpath) > ttl_seconds:
-                    os.remove(fpath)
-            except Exception:
-                # Ignore failures, best-effort cleanup
-                pass
 
 
 def get_lock_path(cache_dir: str, model_file: ModelFile):
