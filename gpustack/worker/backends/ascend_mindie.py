@@ -555,6 +555,7 @@ class AscendMindIEParameters:
                         self.tensor_parallel_size //= self.data_parallel_size
                     elif self.context_parallel_size > 1:
                         self.tensor_parallel_size //= self.context_parallel_size
+                        self.data_parallel_size = 1
             if self.moe_tensor_parallel_size < 0 and self.pipeline_parallel_size <= 1:
                 if self.moe_expert_parallel_size > 1:
                     self.moe_tensor_parallel_size = (
@@ -754,15 +755,15 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 f"--pipeline-parallel-size {pp} "
                 f"and --data-parallel-size {dp} "
-                f"cannot be set at the same time, "
-                f"which means enabling both pipeline and data parallelism."
+                "are incompatible, "
+                "set --pipeline-parallel-size to 1 or disable data parallelism"
             )
         if dp > 1 and cp > 1:
             raise argparse.ArgumentTypeError(
                 f"--data-parallel-size {dp} "
                 f"and --context-parallel-size {cp} "
-                f"cannot be set at the same time, "
-                f"which means enabling both data and context parallelism."
+                "are incompatible, "
+                "set --data-parallel-size to 1 or disable context parallelism"
             )
         # Check pp * tp == world size if enable pipeline parallelism
         if pp > 1:
