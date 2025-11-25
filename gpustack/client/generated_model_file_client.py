@@ -13,7 +13,7 @@ from .generated_http_client import HTTPClient
 class ModelFileClient:
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v2/model-files"
+        self._url = "/model-files"
 
     def list(self, params: Dict[str, Any] = None) -> ModelFilesPublic:
         response = self._client.get_httpx_client().get(self._url, params=params)

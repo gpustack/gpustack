@@ -5,6 +5,8 @@ import truststore
 import httpx
 from attrs import define, evolve, field
 
+default_versioned_prefix = "/v2"
+
 
 @define
 class HTTPClient:
@@ -28,6 +30,7 @@ class HTTPClient:
 
         ``httpx_args``: A dictionary of additional arguments to be passed to the ``httpx.Client`` and ``httpx.AsyncClient`` constructor.
 
+        ``versioned_prefix``: A string to append to the base_url for versioning purposes (e.g., "/v2"). Default is "/v2".
 
     Attributes:
         raise_on_unexpected_status: Whether or not to raise an errors.UnexpectedStatus if the API returns a
@@ -37,6 +40,9 @@ class HTTPClient:
 
     raise_on_unexpected_status: bool = field(default=False, kw_only=True)
     _base_url: str = field(alias="base_url")
+    _versioned_prefix: str = field(
+        alias="versioned_prefix", kw_only=True, default=default_versioned_prefix
+    )
     _cookies: Dict[str, str] = field(factory=dict, kw_only=True, alias="cookies")
     _headers: Dict[str, str] = field(factory=dict, kw_only=True, alias="headers")
     _timeout: Optional[httpx.Timeout] = field(
@@ -51,6 +57,10 @@ class HTTPClient:
     _httpx_args: Dict[str, Any] = field(factory=dict, kw_only=True, alias="httpx_args")
     _client: Optional[httpx.Client] = field(default=None, init=False)
     _async_client: Optional[httpx.AsyncClient] = field(default=None, init=False)
+
+    @property
+    def versioned_url(self) -> str:
+        return self._base_url + self._versioned_prefix
 
     def with_headers(self, headers: Dict[str, str]) -> "HTTPClient":
         """Get a new client matching this one with additional headers"""
@@ -92,7 +102,7 @@ class HTTPClient:
             verify = self._verify_ssl
         if self._client is None:
             self._client = httpx.Client(
-                base_url=self._base_url,
+                base_url=self.versioned_url,
                 cookies=self._cookies,
                 headers=self._headers,
                 timeout=self._timeout,
@@ -127,7 +137,7 @@ class HTTPClient:
             verify = self._verify_ssl
         if self._async_client is None:
             self._async_client = httpx.AsyncClient(
-                base_url=self._base_url,
+                base_url=self.versioned_url,
                 cookies=self._cookies,
                 headers=self._headers,
                 timeout=self._timeout,
@@ -169,6 +179,7 @@ class AuthenticatedHTTPClient:
 
         ``httpx_args``: A dictionary of additional arguments to be passed to the ``httpx.Client`` and ``httpx.AsyncClient`` constructor.
 
+        ``versioned_prefix``: A string to append to the base_url for versioning purposes (e.g., "/v2"). Default is "/v2".
 
     Attributes:
         raise_on_unexpected_status: Whether or not to raise an errors.UnexpectedStatus if the API returns a
@@ -181,6 +192,9 @@ class AuthenticatedHTTPClient:
 
     raise_on_unexpected_status: bool = field(default=False, kw_only=True)
     _base_url: str = field(alias="base_url")
+    _versioned_prefix: str = field(
+        alias="versioned_prefix", kw_only=True, default=default_versioned_prefix
+    )
     _cookies: Dict[str, str] = field(factory=dict, kw_only=True, alias="cookies")
     _headers: Dict[str, str] = field(factory=dict, kw_only=True, alias="headers")
     _timeout: Optional[httpx.Timeout] = field(
@@ -199,6 +213,10 @@ class AuthenticatedHTTPClient:
     token: str
     prefix: str = "Bearer"
     auth_header_name: str = "Authorization"
+
+    @property
+    def versioned_url(self) -> str:
+        return self._base_url + self._versioned_prefix
 
     def with_headers(self, headers: Dict[str, str]) -> "AuthenticatedHTTPClient":
         """Get a new client matching this one with additional headers"""
@@ -244,7 +262,7 @@ class AuthenticatedHTTPClient:
                 f"{self.prefix} {self.token}" if self.prefix else self.token
             )
             self._client = httpx.Client(
-                base_url=self._base_url,
+                base_url=self.versioned_url,
                 cookies=self._cookies,
                 headers=self._headers,
                 timeout=self._timeout,
@@ -280,7 +298,7 @@ class AuthenticatedHTTPClient:
                 f"{self.prefix} {self.token}" if self.prefix else self.token
             )
             self._async_client = httpx.AsyncClient(
-                base_url=self._base_url,
+                base_url=self.versioned_url,
                 cookies=self._cookies,
                 headers=self._headers,
                 timeout=self._timeout,

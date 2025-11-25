@@ -61,7 +61,7 @@ class InferenceBackendManager:
         try:
             logger.info("Initializing InferenceBackend cache")
             resp = self._clientset.http_client.get_httpx_client().get(
-                self._clientset.base_url + "/v2/inference-backends/all"
+                "/inference-backends/all"
             )
             backends = resp.json()
             if backends:
