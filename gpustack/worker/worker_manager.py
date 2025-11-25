@@ -12,6 +12,9 @@ from gpustack.schemas.workers import (
     WorkerCreate,
     WorkerUpdate,
 )
+from gpustack.schemas.users import (
+    UserPublic,
+)
 from gpustack.security import API_KEY_PREFIX
 from gpustack.utils import platform
 from gpustack.worker.collector import WorkerStatusCollector
@@ -50,8 +53,6 @@ class WorkerManager:
             self._prepare_clients(worker_token)
 
     def _prepare_clients(self, token: str):
-        if self._clientset is not None and self._status_client is not None:
-            return
         self._clientset = ClientSet(
             base_url=self._cfg.get_server_url(),
             api_key=token,
@@ -78,8 +79,20 @@ class WorkerManager:
     def register_with_server(self) -> ClientSet:
         # If the worker has been registered, self._clientset should be valid.
         # the clientset is built in WorkerManager.__init__ if cfg._worker_token is stored.
-        if self._clientset:
-            return self._clientset
+        try:
+            if self._clientset:
+                response = self._clientset.http_client.get_httpx_client().get(
+                    "/users/me"
+                )
+                if response.status_code == 200:
+                    user = UserPublic.model_validate(response.json())
+                    if user.worker_id is not None:
+                        return self._clientset
+                logger.warning(
+                    "Existing worker_token is invalid, trying to re-register."
+                )
+        except Exception:
+            raise
         try:
             token = self._register_worker()
             write_worker_token(self._cfg.data_dir, token)

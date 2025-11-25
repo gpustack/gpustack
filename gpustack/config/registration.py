@@ -56,9 +56,6 @@ def registration_client(
     wait_token_file: bool = False,
 ) -> Optional[WorkerRegistrationClient]:
     # if token exists, skip registration
-    worker_token = read_worker_token(data_dir)
-    if worker_token is not None:
-        return None
     if registration_token is None and wait_token_file:
         timeout = 10
         start_time = time.time()

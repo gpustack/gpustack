@@ -13,7 +13,7 @@ from .generated_http_client import HTTPClient
 class {{ class_name }}Client:
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v2/{{ class_name | to_dash_plural }}"
+        self._url = "/{{ class_name | to_dash_plural }}"
 
     def list(self, params: Dict[str, Any] = None) -> {{ class_name | to_plural }}Public:
         response = self._client.get_httpx_client().get(self._url, params=params)
