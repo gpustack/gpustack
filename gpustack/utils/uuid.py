@@ -31,12 +31,11 @@ def write_legacy_uuid(data_dir: str) -> str:
 
 def get_system_uuid(data_dir: str, write: bool = True) -> str:
     system = sys.platform
+    linux_uuid_path = '/sys/class/dmi/id/product_uuid'
     try:
-        if system == 'linux':
-            uuid_path = '/sys/class/dmi/id/product_uuid'
-            if os.path.exists(uuid_path):
-                with open(uuid_path, 'r') as f:
-                    return f.read().strip()
+        if system == 'linux' and os.path.exists(linux_uuid_path):
+            with open(linux_uuid_path, 'r') as f:
+                return f.read().strip()
         elif system == 'darwin':  # MacOS
             output = subprocess.check_output(
                 ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice']
@@ -51,12 +50,15 @@ def get_system_uuid(data_dir: str, write: bool = True) -> str:
             lines = output.decode().split('\n')
             if len(lines) > 1:
                 return lines[1].strip()
+        else:
+            raise RuntimeError(f"Not supported OS or unable to retrieve {system} UUID")
     except Exception as e:
-        logger.warning(f"Failed to retrieve system UUID: {e}")
+        logger.warning(f"{e}")
         logger.info("try to create legacy uuid for worker")
         if write:
             return write_legacy_uuid(data_dir)
-    raise RuntimeError("Not supported OS")
+        else:
+            raise e
 
 
 def get_machine_id() -> str:
