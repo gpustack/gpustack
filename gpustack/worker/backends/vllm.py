@@ -205,7 +205,7 @@ class VLLMServer(InferenceServer):
     def _set_lmcache_env(self, env: Dict[str, str]):
         """
         Set up LMCache environment variables and configuration file if extended KV cache is enabled.
-        
+    
         GPUStack uses LMCache configuration file (YAML) to configure multi-tier cache:
         - L1: GPU VRAM (handled by vLLM)
         - L2: CPU RAM (via LMCache)
@@ -228,12 +228,12 @@ class VLLMServer(InferenceServer):
     def _generate_lmcache_config(self, extended_kv_cache) -> Optional[Dict]:
         """
         Generate LMCache configuration dictionary.
-        
+    
         Returns:
             Configuration dict for LMCache, or None if no valid configuration.
         """
         config = {}
-        
+    
         # Chunk size configuration
         if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
             config["chunk_size"] = extended_kv_cache.chunk_size
