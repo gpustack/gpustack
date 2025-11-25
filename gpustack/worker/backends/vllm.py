@@ -205,7 +205,7 @@ class VLLMServer(InferenceServer):
     def _set_lmcache_env(self, env: Dict[str, str]):
         """
         Set up LMCache environment variables and configuration file if extended KV cache is enabled.
-        
+
         GPUStack uses LMCache configuration file (YAML) to configure multi-tier cache:
         - L1: GPU VRAM (handled by vLLM)
         - L2: CPU RAM (via LMCache)
@@ -228,16 +228,16 @@ class VLLMServer(InferenceServer):
     def _generate_lmcache_config(self, extended_kv_cache) -> Optional[Dict]:
         """
         Generate LMCache configuration dictionary.
-        
+
         Returns:
             Configuration dict for LMCache, or None if no valid configuration.
         """
         config = {}
-        
+
         # Chunk size configuration
         if extended_kv_cache.chunk_size and extended_kv_cache.chunk_size > 0:
             config["chunk_size"] = extended_kv_cache.chunk_size
-        
+
         # CPU (L2) cache configuration
         config["local_cpu"] = True
         if extended_kv_cache.ram_size and extended_kv_cache.ram_size > 0:
@@ -247,57 +247,57 @@ class VLLMServer(InferenceServer):
             vram_claim = self._get_total_vram_claim()
             ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
             config["max_local_cpu_size"] = byte_to_gib(ram_size)
-        
+
         # SSD (L3) cache configuration
         if extended_kv_cache.disk_path:
             config["local_disk"] = extended_kv_cache.disk_path
             if extended_kv_cache.disk_size and extended_kv_cache.disk_size > 0:
                 config["max_local_disk_size"] = extended_kv_cache.disk_size
-        
+
         return config if config else None
 
     def _write_lmcache_config(self, config: Dict) -> str:
         """
         Write LMCache configuration to a temporary file.
-        
+
         The file will be created in a location accessible from the container.
         For containerized deployment, the file should be in a mounted volume.
-        
+
         Args:
             config: LMCache configuration dictionary
-            
+
         Returns:
             Path to the configuration file
         """
         # Create config directory in data_dir to ensure it's accessible from containers
         config_dir = os.path.join(self._config.data_dir, "lmcache_configs")
         os.makedirs(config_dir, exist_ok=True)
-        
+
         # Use model instance name to create unique config file
         config_filename = f"lmcache_config_{self._model_instance.name}.yaml"
         config_path = os.path.join(config_dir, config_filename)
-        
+
         # Write YAML configuration
         with open(config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False)
-        
+
         logger.debug(f"LMCache config written to {config_path}")
         return config_path
 
     def _add_lmcache_ssd_mount(self, mounts: List[ContainerMount]):
         """
         Add SSD mount for LMCache L3 cache if disk_path is configured.
-        
+
         Args:
             mounts: List of container mounts to append to
         """
         extended_kv_cache = self._model.extended_kv_cache
         if not (extended_kv_cache and extended_kv_cache.enabled):
             return
-        
+
         if not extended_kv_cache.disk_path:
             return
-        
+
         # Check if the path exists on the host
         disk_path = extended_kv_cache.disk_path
         if os.path.exists(disk_path):
@@ -308,9 +308,7 @@ class VLLMServer(InferenceServer):
                     path=disk_path,
                 )
             )
-            logger.info(
-                f"Added SSD mount for LMCache L3 cache: {disk_path}"
-            )
+            logger.info(f"Added SSD mount for LMCache L3 cache: {disk_path}")
         else:
             logger.warning(
                 f"SSD path for LMCache L3 cache does not exist on host: {disk_path}. "
