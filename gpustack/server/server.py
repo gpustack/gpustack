@@ -111,9 +111,15 @@ class Server:
             ssl_keyfile = self._config.ssl_keyfile
             ssl_certfile = self._config.ssl_certfile
 
+        serving_host = (
+            "127.0.0.1"
+            if self._config.gateway_mode == GatewayModeEnum.embedded
+            else "0.0.0.0"
+        )
+
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=serving_host,
             port=self._config.get_api_port(),
             access_log=False,
             log_level="error",
@@ -122,17 +128,18 @@ class Server:
         )
 
         setup_logging()
-
-        logger.info(f"Serving on {config.host}:{config.port}.")
         logger.info(f"Gateway mode: {self._config.gateway_mode.value}.")
+        serving_api_message = f"Serving GPUStack API on {config.host}:{config.port}."
         if self._config.gateway_mode == GatewayModeEnum.embedded:
+            logger.debug(serving_api_message)
             logger.info(
-                f"Embedded gateway will serve on {self._config.get_gateway_port()}."
+                f"Serving GPUStack on 0.0.0.0:{self._config.get_gateway_port()}."
             )
             if self._config.get_tls_secret_name() is not None:
-                logger.info(
-                    f"Embedded gateway will serve TLS on port {self._config.tls_port}."
-                )
+                logger.info(f"TLS Serving GPUStack on {self._config.tls_port}.")
+        else:
+            logger.info(serving_api_message)
+
         server = uvicorn.Server(config)
         self._create_async_task(server.serve())
 

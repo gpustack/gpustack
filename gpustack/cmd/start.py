@@ -61,6 +61,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("TLS_PORT"),
     )
     group.add_argument(
+        "--api-port",
+        type=int,
+        help="Port to bind the GPUStack API server to.",
+        default=get_gpustack_env("API_PORT"),
+    )
+    group.add_argument(
         "--config-file",
         type=str,
         help="Path to the YAML config file.",
@@ -153,12 +159,6 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     )
 
     group = parser_server.add_argument_group("Server settings")
-    group.add_argument(
-        "--api-port",
-        type=int,
-        help="Port to bind the GPUStack API server to.",
-        default=get_gpustack_env("API_PORT"),
-    )
     group.add_argument(
         "--database-port",
         type=int,
@@ -571,6 +571,7 @@ def set_common_options(args, config_data: dict):
         "advertise_address",
         "port",
         "tls_port",
+        "api_port",
         "gateway_mode",
         "gateway_kubeconfig",
         "gateway_concurrency",
@@ -584,7 +585,6 @@ def set_common_options(args, config_data: dict):
 
 def set_server_options(args, config_data: dict):
     options = [
-        "api_port",
         "metrics_port",
         "database_port",
         "disable_metrics",
