@@ -15,6 +15,7 @@ from gpustack_runtime.deployer import (
     WorkloadStatusStateEnum,
     delete_workload,
 )
+from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
@@ -864,8 +865,11 @@ def is_ready(
         and model
         and CategoryEnum.IMAGE in model.categories
     ):
-        # SGLang diffusion has not health check endpoint. It only serves for image/video generation.
-        return True
+        # SGLang Diffusion supported health check path at v0.5.5.post3
+        if compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+            health_check_path = "/health"
+        else:
+            return True
     elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
         # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.
         health_check_path = "/v1/models"
