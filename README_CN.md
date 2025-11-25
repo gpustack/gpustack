@@ -78,7 +78,7 @@ sudo docker run -d --name gpustack \
     --system-default-container-registry quay.io
 ```
 
-有关其它平台的安装或详细配置选项，请参考[安装需求](docs/installation/requirements.md)。
+有关其它平台的安装或详细配置选项，请参考[安装需求](https://docs.gpustack.ai/latest/installation/requirements/)。
 
 检查 GPUStack 的启动日志：
 
