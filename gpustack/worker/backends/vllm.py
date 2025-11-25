@@ -297,7 +297,7 @@ class VLLMServer(InferenceServer):
         
         if not extended_kv_cache.disk_path:
             return
-        
+
         # Check if the path exists on the host
         disk_path = extended_kv_cache.disk_path
         if os.path.exists(disk_path):
