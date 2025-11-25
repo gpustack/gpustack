@@ -121,6 +121,9 @@ class HeartbeatSoftFileLock:
             self._release_os_lock()
 
     def _acquire_os_lock(self):
+        dirpath = os.path.dirname(self._lock_path)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
         fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
         try:
             fcntl.lockf(fd, fcntl.LOCK_EX)
