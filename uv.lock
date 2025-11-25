@@ -1996,7 +1996,7 @@ requires-dist = [
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.20.post1" },
+    { name = "gpustack-runner", specifier = ">=0.1.21" },
     { name = "gpustack-runtime", specifier = "==0.1.33.post1" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -2070,15 +2070,16 @@ dev = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.20.post1"
+version = "0.1.21"
 source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
+    { name = "requests" },
 ]
-sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/15/44/8fbfe0881ee5518773003a8b297e05f1852ff96b98d1268533a3db483960/gpustack_runner-0.1.20.post1.tar.gz", hash = "sha256:355328f6cb742ab45ebbf5c4fad5a2b3dd690e84ff91089d4d4db174098ffb40", size = 108196 }
+sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c8/aa/2cf87ae41ac085db875e18e9e1d0759a7add610b6c63dee430c235d58db0/gpustack_runner-0.1.21.tar.gz", hash = "sha256:9d2f9fbe4ef21fe11c572e3c7445c14b9316d975b07913cf5ff2806926c38c4b", size = 110042 }
 wheels = [
-    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/e5/23/3d2b8e124badca3c8133aa056b3bc6483f8350ce208dc6ec527e992dd01a/gpustack_runner-0.1.20.post1-py3-none-any.whl", hash = "sha256:99d8774a12be247c13f8052ca010d6a4f31db3bd9097f1ab27e9e41155f37353", size = 21389 },
+    { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/93/86/06fef5c2ee3618fa9aebee57a45e1e6b17441f703417bc14fb607fb3fa9b/gpustack_runner-0.1.21-py3-none-any.whl", hash = "sha256:52774c23fc05147948e827cb33ed2ec272c0d0b6f9ade0c7d18b22e4258071e9", size = 23212 },
 ]
 
 [[package]]
