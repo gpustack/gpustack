@@ -3,7 +3,7 @@ import logging
 import gzip
 import os
 import tempfile
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 import fnmatch
 from threading import Lock
@@ -376,6 +376,51 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     )
 
 
+def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -> int:
+    """
+    Get the size of the diffusion model weights.
+    This is the sum of all weight files with extensions .safetensors, .bin, .pt, or .pth located in the root directory
+    and also specified in the model_index.
+    Args:
+        model: Model to get the weight size for
+        token: Optional Hugging Face API token
+    Returns:
+        int: The size of the model weights
+    """
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+    if model.source == SourceEnum.HUGGING_FACE:
+        repo_id = model.huggingface_repo_id
+    elif model.source == SourceEnum.MODEL_SCOPE:
+        repo_id = model.model_scope_model_id
+    else:
+        raise ValueError(f"Unknown source {model.source}")
+    if not model.categories or CategoryEnum.IMAGE not in model.categories:
+        raise ValueError("Model is not an image model")
+
+    # In different repositories, model files may be stored in different dir.
+    # However, during runtime, the diffusers loads components from corresponding dir according to the pipeline defined in model_index.json.
+    # We can follow the definition in model_index.json to determine which file weights should be included in the calculation.
+    pipeline_data = get_diffusers_model_index_json(model, token)
+    if pipeline_data is None:
+        raise ValueError(f"No model_index.json in repo {repo_id}")
+    if isinstance(pipeline_data, list) and len(pipeline_data) > 0:
+        pipeline_data = pipeline_data[0]
+
+    sum_size = 0
+    repo_file_infos = list_repo(repo_id, model.source, token=token, root_dir_only=False)
+    for file_info in repo_file_infos:
+        name_split = file_info.get("name", "").split("/", 1)
+        if (
+            len(name_split) <= 1
+            or pipeline_data.get(name_split[0], None) is None
+            or not name_split[1].endswith(weight_file_extensions)
+        ):
+            continue
+        sum_size += file_info.get("size", 0)
+
+    return sum_size
+
+
 def get_pretrained_config(model: Model, **kwargs):
     """
     Get the pretrained config of the model from Hugging Face or ModelScope.
@@ -659,6 +704,28 @@ def get_model_scope_model_min_gguf_path(
     return gguf_files[0]
 
 
+def get_diffusers_model_index_json(
+    model: Model, token: Optional[str] = None
+) -> Optional[Dict[str, Any] | List[Dict[str, Any]]]:
+    # Read model_index.json content based on model source
+    content_bytes = read_repo_file_content(model, "model_index.json", token=token)
+    if content_bytes is None:
+        return None
+
+    # Decode and parse JSON
+    try:
+        content = (content_bytes or b"").decode("utf-8")
+    except Exception:
+        content = (content_bytes or b"").decode()
+
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None
+
+    return data
+
+
 def has_diffusers_model_index(  # noqa: C901
     model: Model, token: Optional[str] = None
 ) -> bool:
@@ -671,22 +738,8 @@ def has_diffusers_model_index(  # noqa: C901
     - Local Path: reads model_index.json in the provided directory
     """
     try:
-        content_bytes: Optional[bytes] = None
-
-        # Read model_index.json content based on model source
-        content_bytes = read_repo_file_content(model, "model_index.json", token=token)
-        if content_bytes is None:
-            return False
-
-        # Decode and parse JSON
-        try:
-            content = (content_bytes or b"").decode("utf-8")
-        except Exception:
-            content = (content_bytes or b"").decode()
-
-        try:
-            data = json.loads(content)
-        except Exception:
+        data = get_diffusers_model_index_json(model, token=token)
+        if data is None:
             return False
 
         # The typical structure is a dict containing _diffusers_version

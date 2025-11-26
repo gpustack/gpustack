@@ -17,7 +17,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import AsyncEngine
 from pydantic import BaseModel
 
-from gpustack.utils.hub import get_model_weight_size
+from gpustack.utils.hub import get_model_weight_size, get_diffusion_model_weight_size
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +283,34 @@ async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
 
     # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
     return weight_size * 1.2 + framework_overhead
+
+
+async def estimate_diffusion_model_vram(
+    model: Model, token: Optional[str] = None
+) -> int:
+    """ """
+    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
+        # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
+        return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
+    weight_size = 0
+    timeout_in_seconds = 15
+    try:
+        if (
+            model.source == SourceEnum.HUGGING_FACE
+            or model.source == SourceEnum.MODEL_SCOPE
+        ):
+            weight_size = await asyncio.wait_for(
+                asyncio.to_thread(get_diffusion_model_weight_size, model, token),
+                timeout=timeout_in_seconds,
+            )
+        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
+            weight_size = get_local_model_weight_size(model.local_path)
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout when getting weight size for model {model.name}")
+    except Exception as e:
+        logger.warning(f"Cannot get weight size for model {model.name}: {e}")
+
+    return weight_size
 
 
 async def get_worker_model_instances(
