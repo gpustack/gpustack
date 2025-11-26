@@ -4,7 +4,7 @@
 
 !!! note
 
-    GPUStack now supports Linux only. For Windows, use WSL2 and avoid Docker Desktop.
+    GPUStack now supports Linux only.
 
 If you are using NVIDIA GPUs, ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed. Then start the GPUStack with the following command:
 
