@@ -131,6 +131,67 @@ def expected_candidate(
             ],
             0,
         ),
+        # Auto schedule 1 GPU from 1 worker for diffusion model.
+        # Check point:
+        # - mem-fraction-static shouldn't affect.
+        (
+            "auto_select_1_gpus_1_worker_for_diffusion",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen-Image",
+                categories=[CategoryEnum.IMAGE],
+            ),
+            [
+                linux_nvidia_5_a100_80gx2(),
+            ],
+            [
+                expected_candidate(
+                    8,
+                    "llm01-A100",
+                    [0],
+                    {0: 57699249390},
+                ),
+                expected_candidate(
+                    8,
+                    "llm01-A100",
+                    [1],
+                    {1: 57699249390},
+                ),
+            ],
+            0,
+        ),
+        # Manually select 2 GPUs from 1 worker for diffusion model.
+        # Check point:
+        # - both gpu claims should be equal.
+        # - mem-fraction-static shouldn't affect.
+        (
+            "auto_select_2_gpus_1_worker_for_diffusion",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen-Image",
+                categories=[CategoryEnum.IMAGE],
+                backend_parameters=["--tp-size=2"],
+                gpu_selector=GPUSelector(
+                    gpu_ids=["llm01-A100:cuda:0", "llm01-A100:cuda:1"]
+                ),
+            ),
+            [
+                linux_nvidia_5_a100_80gx2(),
+            ],
+            [
+                expected_candidate(
+                    8,
+                    "llm01-A100",
+                    [0, 1],
+                    {0: 57699249390, 1: 57699249390},
+                ),
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -747,6 +808,23 @@ async def test_auto_schedule_single_work_single_gpu(config):
                 """- The model requires approximately 75.23 GiB of VRAM.
 - With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
+            ],
+        ),
+        (
+            3,
+            [linux_nvidia_4_4080_16gx4()],
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen-Image",
+                cpu_offloading=False,
+                backend_parameters=[],
+                categories=[CategoryEnum.IMAGE],
+            ),
+            [
+                """- The model requires approximately 53.74 GiB of VRAM.
+- SGLang Diffusion requires each GPU to provide 53.74 GiB of allocatable VRAM when running in parallel."""
             ],
         ),
     ],
