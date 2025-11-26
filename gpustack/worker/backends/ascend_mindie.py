@@ -38,6 +38,11 @@ class AscendMindIEParameters:
     token_timeout: int = 600
     e2e_timeout: int = 600
     #
+    # Backend config
+    #
+    kv_pool_config: Optional[str] = None
+    kv_pool_config_parsed: Optional[Dict[str, Any]] = None  # store JSON parsed result
+    #
     # Model deploy config
     #
     max_seq_len: int = 8192
@@ -51,6 +56,7 @@ class AscendMindIEParameters:
     trust_remote_code: bool = False
     models: Optional[str] = None
     models_parsed: Optional[any] = None  # store JSON parsed result
+    async_scheduler_wait_time: int = 120
     #
     # Schedule config
     #
@@ -66,6 +72,7 @@ class AscendMindIEParameters:
     max_preempt_count: int = 0
     support_select_batch: bool = False
     max_queue_delay_microseconds: int = 5000
+    max_first_token_wait_time: int = 2500
     #
     # Extends or Features
     #
@@ -138,6 +145,16 @@ class AscendMindIEParameters:
             help="E2E (from request accepted to inference stopped) timeout in seconds.",
         )
         #
+        # Backend config
+        #
+        parser.add_argument(
+            "--kv-pool-config",
+            type=str,
+            default=self.kv_pool_config,
+            help="KV pool configuration in JSON format. "
+            "For example: `{\"backend\":\"<KV pool backend name>\", \"configPath\":\"/path/to/your/config/file\"}`.",
+        )
+        #
         # Model deploy config
         #
         parser.add_argument(
@@ -190,6 +207,12 @@ class AscendMindIEParameters:
             type=str,
             required=False,
             help="Models configuration in JSON format, for certain specific configurations, like Expert Parallelism Implementation Method, Tensor Parallelism LM Header/Output Attention Split.",
+        )
+        parser.add_argument(
+            "--async-scheduler-wait-time",
+            type=int,
+            default=self.async_scheduler_wait_time,
+            help="The wait time (in seconds) for the asynchronous scheduler to start.",
         )
         #
         # Schedule config
@@ -280,7 +303,14 @@ class AscendMindIEParameters:
         parser.add_argument(
             "--max-queue-delay-microseconds",
             type=int,
+            default=self.max_queue_delay_microseconds,
             help="Maximum microseconds of queue waiting.",
+        )
+        parser.add_argument(
+            "--max-first-token-wait-time",
+            type=int,
+            default=self.max_first_token_wait_time,
+            help="Maximum milliseconds to wait for the first token generation.",
         )
         #
         # Extends or Features
@@ -531,7 +561,12 @@ class AscendMindIEParameters:
     def _default(self):  # noqa: C901
         # Model deploy config
         if self.max_input_token_len <= 0:
-            self.max_input_token_len = self.max_seq_len
+            if self.max_prefill_tokens > 0:
+                self.max_input_token_len = min(
+                    self.max_seq_len, self.max_prefill_tokens
+                )
+            else:
+                self.max_input_token_len = self.max_seq_len
         # Schedule config
         if self.max_prefill_tokens <= 0:
             self.max_prefill_tokens = self.max_seq_len
@@ -619,6 +654,14 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--e2e-timeout must be in the range [1, 3600]"
             )
+        # Backend config
+        if self.kv_pool_config:
+            try:
+                self.kv_pool_config_parsed = json.loads(self.kv_pool_config)
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"--kv-pool-config must be a valid JSON string: {self.kv_pool_config}"
+                ) from e
         # Model deploy config
         if self.max_seq_len <= 0:
             raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
@@ -642,6 +685,10 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     f"--models must be a valid JSON string: {self.models}"
                 ) from e
+        if not (1 <= self.async_scheduler_wait_time <= 3600):
+            raise argparse.ArgumentTypeError(
+                "--async-scheduler-wait-time must be in the range [1, 3600]"
+            )
         # Schedule config
         if self.cache_block_size & (self.cache_block_size - 1) != 0:
             raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
@@ -678,6 +725,10 @@ class AscendMindIEParameters:
         if not (500 <= self.max_queue_delay_microseconds <= 1000000):
             raise argparse.ArgumentTypeError(
                 "--max-queue-delay-microseconds must be in the range [500, 1000000]"
+            )
+        if not (0 <= self.max_first_token_wait_time <= 3600000):
+            raise argparse.ArgumentTypeError(
+                "--max-first-token-wait-time must be in the range [0, 3600000]"
             )
         # Extends or Features
         if self.override_generation_config:
@@ -1134,6 +1185,9 @@ class AscendMindIEServer(InferenceServer):
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
             # -- Server config
             server_config["maxLinkNum"] = params.max_link_num
+            # -- Backend config
+            if params.kv_pool_config_parsed:
+                backend_config["kvPoolConfig"] = params.kv_pool_config_parsed
             # -- Model deploy config
             model_deploy_config["maxSeqLen"] = params.max_seq_len
             model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
@@ -1147,6 +1201,7 @@ class AscendMindIEServer(InferenceServer):
             model_config["trustRemoteCode"] = params.trust_remote_code
             if params.models_parsed:
                 model_config["models"] = params.models_parsed
+            model_config["async_scheduler_wait_time"] = params.async_scheduler_wait_time
             # -- Schedule config
             schedule_config["cacheBlockSize"] = params.cache_block_size
             schedule_config["maxPrefillBatchSize"] = params.max_prefill_batch_size
@@ -1160,6 +1215,7 @@ class AscendMindIEServer(InferenceServer):
             schedule_config["maxQueueDelayMicroseconds"] = (
                 params.max_queue_delay_microseconds
             )
+            schedule_config["maxFirstTokenWaitTime"] = params.max_first_token_wait_time
             # -- Extends or Features
             # --- Disable exposing metrics
             if params.no_metrics:
@@ -1718,7 +1774,7 @@ fi
                     "modelName" : "llama_65b",
                     "modelWeightPath" : "/data/atb_testdata/weights/llama1-65b-safetensors",
                     "worldSize" : 4,
-                    "cpuMemSize" : 5,
+                    "cpuMemSize" : 0,
                     "npuMemSize" : -1,
                     "backendType" : "atb",
                     "trustRemoteCode" : false,
@@ -1747,7 +1803,8 @@ fi
             "maxIterTimes" : 512,
             "maxPreemptCount" : 0,
             "supportSelectBatch" : false,
-            "maxQueueDelayMicroseconds" : 5000
+            "maxQueueDelayMicroseconds" : 5000,
+            "maxFirstTokenWaitTime": 2500
         }
     }
 }
