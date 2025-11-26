@@ -610,6 +610,7 @@ def set_server_options(args, config_data: dict):
         "oidc_client_id",
         "oidc_client_secret",
         "oidc_redirect_uri",
+        "oidc_use_userinfo",
         "saml_idp_server_url",
         "saml_idp_entity_id",
         "saml_idp_x509_cert",
