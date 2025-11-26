@@ -27,29 +27,55 @@
 
 <br>
 
-GPUStack is an open-source GPU cluster manager for running AI models.
+## Overview
 
-### Key Features
+GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It lets you run models efficiently on your own GPU hardware by choosing the best inference engines, scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
 
-- **High Performance:** Optimized for high-throughput and low-latency inference.
-- **GPU Cluster Management:** Efficiently manage multiple GPU clusters across different providers, including Docker-based, Kubernetes, and cloud platforms such as DigitalOcean.
-- **Broad GPU Compatibility:** Seamless support for GPUs from various vendors.
-- **Extensive Model Support:** Supports a wide range of models, including LLMs, VLMs, image models, audio models, embedding models, and rerank models.
-- **Flexible Inference Backends:** Built-in support for fast inference engines such as vLLM and SGLang, with the ability to integrate custom backends.
-- **Multi-Version Backend Support:** Run multiple versions of inference backends concurrently to meet diverse runtime requirements.
-- **Distributed Inference:** Supports single-node and multi-node, multi-GPU inference, including heterogeneous GPUs across vendors and environments.
-- **Scalable GPU Architecture:** Easily scale by adding more GPUs, nodes, or clusters to your infrastructure.
-- **Robust Model Stability:** Ensures high availability through automatic failure recovery, multi-instance redundancy, and intelligent load balancing.
-- **Intelligent Deployment Evaluation:** Automatically assesses model resource requirements, backend and architecture compatibility, OS compatibility, and other deployment factors.
-- **Automated Scheduling:** Dynamically allocates models based on available resources.
-- **OpenAI-Compatible APIs:** Fully compatible with OpenAI API specifications for seamless integration.
-- **User & API Key Management:** Simplified management of users and API keys.
-- **Real-Time GPU Monitoring:** Monitor GPU performance and utilization in real time.
-- **Token and Rate Metrics:** Track token usage and API request rates.
+The following figure shows how GPUStack delivers improved inference throughput over the unoptimized vLLM baseline:
+
+![a100-throughput-comparison](docs/assets/a100-throughput-comparison.png)
+
+For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
+
+## Tested Inference Engines, GPUs, and Models
+
+GPUStack uses a plug-in architecture that makes it easy to add new AI models, inference engines, and GPU hardware. We work closely with partners and the open-source community to test and optimize emerging models across different inference engines and GPUs. Below is the current list of supported inference engines, GPUs, and models, which will continue to expand over time.
+
+**Tested Inference Engines:**
+- vLLM
+- SGLang
+- TensorRT-LLM
+- MindIE
+
+**Tested GPUs:**
+- NVIDIA A100
+- NVIDIA H100/H200
+- Ascend 910B
+
+**Tuned Models:**
+- Qwen3
+- gpt-oss
+- GLM-4.5-Air
+- GLM-4.5/4.6
+- DeepSeek-R1
+
+## Architecture
+
+GPUStack enables development teams, IT organizations, and service providers to deliver Model-as-a-Service at scale. It supports industry-standard APIs for LLM, voice, image, and video models. The platform includes built-in user authentication and access control, real-time monitoring of GPU performance and utilization, and detailed metering of token usage and API request rates.
+
+The figure below illustrates how a single GPUStack server can manage multiple GPU clusters across both on-premises and cloud environments. The GPUStack scheduler allocates GPUs to maximize resource utilization and selects the appropriate inference engines for optimal performance. Administrators also gain full visibility into system health and metrics through integrated Grafana and Prometheus dashboards.
+
+![gpustack-v2-architecture](docs/assets/gpustack-v2-architecture.png)
+
+GPUStack provides a powerful framework for deploying AI models. Its core features include:
+- **Multi-Cluster GPU Management.** Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+- **Pluggable Inference Engines.** Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
+- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
+- **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
 
 ## Installation
 
-> GPUStack now supports Linux only. For Windows, use WSL2 and avoid Docker Desktop.
+> GPUStack now supports Linux only.
 
 If you are using NVIDIA GPUs, ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed. Then start the GPUStack with the following command:
 
@@ -145,65 +171,6 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
-## Supported Accelerators
-
-GPUStack supports a variety of General-Purpose Accelerators, including:
-
-- [x] NVIDIA GPU
-- [x] AMD GPU
-- [x] Ascend NPU
-- [x] Hygon DCU (Experimental)
-- [x] MThreads GPU (Experimental)
-- [x] Iluvatar GPU (Experimental)
-- [x] MetaX GPU (Experimental)
-- [x] Cambricon MLU (Experimental)
-
-## Supported Models
-
-GPUStack uses [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [MindIE](https://www.hiascend.com/en/software/mindie) and [vox-box](https://github.com/gpustack/vox-box) as built-in inference backends, and it also supports any custom backend that can run in a container and expose a serving API. This allows GPUStack to work with a wide range of models.
-
-Models can come from the following sources:
-
-1. [Hugging Face](https://huggingface.co/)
-
-2. [ModelScope](https://modelscope.cn/)
-
-3. Local File Path
-
-For information on which models are supported by each built-in inference backend, please refer to the supported models section in the [Built-in Inference Backends](docs/user-guide/built-in-inference-backends.md) documentation.
-
-## OpenAI-Compatible APIs
-
-GPUStack serves the following OpenAI compatible APIs under the `/v1` path:
-
-- [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
-- [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
-- [x] [Create Chat Completion](https://platform.openai.com/docs/api-reference/chat/create)
-- [x] [Create Embeddings](https://platform.openai.com/docs/api-reference/embeddings/create)
-- [x] [Create Image](https://platform.openai.com/docs/api-reference/images/create)
-- [x] [Create Image Edit](https://platform.openai.com/docs/api-reference/images/createEdit)
-- [x] [Create Speech](https://platform.openai.com/docs/api-reference/audio/createSpeech)
-- [x] [Create Transcription](https://platform.openai.com/docs/api-reference/audio/createTranscription)
-
-For example, you can use the official [OpenAI Python API library](https://github.com/openai/openai-python) to consume the APIs:
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
-
-completion = client.chat.completions.create(
-  model="llama3.2",
-  messages=[
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
-  ]
-)
-
-print(completion.choices[0].message)
-```
-
-GPUStack users can generate their own API keys in the UI.
-
 ## Documentation
 
 Please see the [official docs site](https://docs.gpustack.ai) for complete documentation.
@@ -226,7 +193,7 @@ Any issues or have suggestions, feel free to join our [Community](https://discor
 
 ## License
 
-Copyright (c) 2024 The GPUStack authors
+Copyright (c) 2024-2025 The GPUStack authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

@@ -27,31 +27,57 @@
 
 <br>
 
-GPUStack 是一个用于运行 AI 模型的开源 GPU 集群管理器。
+## 概述
 
-### 核心特性
+GPUStack 是一个开源的 GPU 集群管理器，专为高效的 AI 模型部署而设计。它允许您在自己的 GPU 硬件上高效运行模型，通过选择最佳推理引擎、调度 GPU 资源、分析模型架构以及自动配置部署参数来实现。
 
-- **高性能：** 针对高吞吐量与低延迟推理的优化部署支持。
-- **GPU 集群管理：** 高效管理来自不同服务商的多个 GPU 集群，支持 Docker、Kubernetes 及 DigitalOcean 等云平台。
-- **广泛的 GPU 兼容性：** 无缝支持来自不同厂商的 GPU 设备。
-- **全面的模型支持：** 覆盖 LLM、VLM、图像模型、音频模型、Embedding 模型及重排模型等多种类型。
-- **灵活的推理后端：** 原生支持 vLLM、SGLang 等高性能推理引擎，并支持自定义后端集成。
-- **多版本后端共存：** 支持同时运行不同版本的推理后端，以满足多样化运行需求。
-- **分布式推理能力：** 支持单节点与多节点、多 GPU 推理，兼容跨厂商与异构 GPU 环境。
-- **可扩展 GPU 架构：** 通过增加 GPU、节点或集群实现平滑扩展。
-- **高可靠模型运行：** 通过自动故障恢复、多实例冗余与智能负载均衡保障高可用性。
-- **智能部署评估：** 自动检测模型资源需求、后端与架构兼容性、操作系统适配性等关键因素。
-- **自动化调度：** 根据可用资源动态分配模型，提高资源利用率。
-- **OpenAI 兼容 API：** 完全符合 OpenAI API 规范，便于无缝集成现有应用。
-- **用户与 API Key 管理：** 提供简洁高效的用户与 API 密钥管理机制。
-- **GPU 实时监控：** 实时追踪 GPU 性能与使用率。
-- **Token 与速率统计：** 精确记录 Token 使用量与 API 请求速率。
+下图展示了 GPUStack 相较于未优化的 vLLM 基线如何提供更高的推理吞吐量：
+
+![a100-throughput-comparison](docs/assets/a100-throughput-comparison.png)
+
+有关详细的基准测试方法和结果，请访问我们的 [推理性能实验室](https://docs.gpustack.ai/latest/performance-lab/overview/)。
+
+## 经过测试的推理引擎、GPU 和模型
+
+GPUStack 采用插件式架构，可以轻松添加新的 AI 模型、推理引擎和 GPU 硬件。我们与合作伙伴和开源社区紧密合作，在不同的推理引擎和 GPU 上测试和优化新兴模型。以下是当前支持的推理引擎、GPU 和模型列表，该列表将随着时间的推移继续扩展。
+
+**经过测试的推理引擎：**
+- vLLM
+- SGLang
+- TensorRT-LLM
+- MindIE
+
+**经过测试的 GPU：**
+- NVIDIA A100
+- NVIDIA H100/H200
+- Ascend 910B
+
+**经过调优的模型：**
+- Qwen3
+- gpt-oss
+- GLM-4.5-Air
+- GLM-4.5/4.6
+- DeepSeek-R1
+
+## 架构
+
+GPUStack 使开发团队、IT 组织和服务提供商能够大规模地提供模型即服务。它支持用于 LLM、语音、图像和视频模型的行业标准 API。该平台内置用户认证和访问控制、GPU 性能和利用率的实时监控，以及令牌使用量和 API 请求率的详细计量。
+
+下图展示了单个 GPUStack 服务器如何管理跨本地和云环境的多个 GPU 集群。GPUStack 调度器分配 GPU 以最大化资源利用率，并选择合适的推理引擎以实现最佳性能。管理员还可以通过集成的 Grafana 和 Prometheus 仪表板全面了解系统运行状况和指标。
+
+![gpustack-v2-architecture](docs/assets/gpustack-v2-architecture.png)
+
+GPUStack 为部署 AI 模型提供了一个强大的框架。其核心功能包括：
+- **多集群 GPU 管理。** 跨多个环境管理 GPU 集群。这包括本地服务器、Kubernetes 集群和云提供商。
+- **可插拔推理引擎。** 自动配置高性能推理引擎，如 vLLM、SGLang 和 TensorRT-LLM。您也可以根据需要添加自定义推理引擎。
+- **性能优化配置。** 提供预调优模式，用于低延迟或高吞吐量。GPUStack 支持扩展的 KV 缓存系统，如 LMCache 和 HiCache，以减少 TTFT。它还包括对推测性解码方法（如 EAGLE3、MTP 和 N-grams）的内置支持。
+- **企业级运维能力。** 支持自动故障恢复、负载均衡、监控、认证和访问控制。
 
 ## 安装
 
-> GPUStack 现在仅支持 Linux。对于 Windows，请使用 WSL2 并避免使用 Docker Desktop。
+> GPUStack 目前仅支持 Linux。
 
-如果你是 NVIDIA GPU 环境，请确保 NVIDIA 驱动，[Docker](https://docs.docker.com/engine/install/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) 都已经在系统中安装。 然后，执行如下命令启动 GPUStack：
+如果您使用 NVIDIA GPU，请确保已安装 NVIDIA 驱动程序、[Docker](https://docs.docker.com/engine/install/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。然后使用以下命令启动 GPUStack：
 
 ```bash
 sudo docker run -d --name gpustack \
@@ -64,7 +90,7 @@ sudo docker run -d --name gpustack \
     gpustack/gpustack
 ```
 
-如果你不能从 `Docker Hub` 下载镜像或下载速度很慢，你可以使用我们提供的 `Quay.io` 镜像源。通过将 Registry 指向 `quay.io` 来使用镜像源：
+如果您无法从 `Docker Hub` 拉取镜像或下载速度很慢，可以使用我们的 `Quay.io` 镜像，将仓库指向 `quay.io`：
 
 ```bash
 sudo docker run -d --name gpustack \
@@ -78,53 +104,48 @@ sudo docker run -d --name gpustack \
     --system-default-container-registry quay.io
 ```
 
-有关其它平台的安装或详细配置选项，请参考[安装需求](https://docs.gpustack.ai/latest/installation/requirements/)。
+有关安装或其他 GPU 硬件平台的更多详细信息，请参阅 [安装要求](https://docs.gpustack.ai/latest/installation/requirements/)。
 
-检查 GPUStack 的启动日志：
+检查 GPUStack 启动日志：
 
 ```bash
 sudo docker logs -f gpustack
 ```
 
-容器正常运行后，执行以下命令获取默认密码：
+GPUStack 启动后，运行以下命令获取默认管理员密码：
 
 ```bash
-sudo docker exec -it gpustack cat /var/lib/gpustack/initial_admin_password
+sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
-在浏览器中打开 `http://your_host_ip`，访问 GPUStack 界面。使用 `admin` 用户名和默认密码登录 GPUStack。
+打开浏览器并访问 `http://您的服务器IP` 以进入 GPUStack 用户界面。使用默认用户名 `admin` 和上面获取的密码登录。
 
 ## 部署模型
 
-1. 在 GPUStack 界面，在菜单中点击“模型库”。
+1.  在 GPUStack 用户界面中导航到 `Catalog` 页面。
+2.  从可用模型列表中选择 `Qwen3 0.6B` 模型。
+3.  部署兼容性检查通过后，点击 `Save` 按钮部署模型。
 
-2. 从模型列表中选择 `Qwen3 0.6B` 模型。
+![从目录部署 qwen3](docs/assets/quick-start/quick-start-qwen3.png)
 
-3. 在部署兼容性检查通过之后，选择保存部署模型。
+4.  GPUStack 将开始下载模型文件并部署模型。当部署状态显示为 `Running` 时，表示模型已成功部署。
 
-![deploy qwen3 from catalog](docs/assets/quick-start/quick-start-qwen3.png)
+![模型运行中](docs/assets/quick-start/model-running.png)
 
-4. GPUStack 将开始下载模型文件并部署模型。当部署状态显示为 `Running` 时，表示模型已成功部署。
+5.  点击导航菜单中的 `Playground - Chat`，检查右上角 `Model` 下拉菜单中是否选中了 `qwen3-0.6b` 模型。现在您可以在 UI  playground 中与模型聊天了。
 
-![model is running](docs/assets/quick-start/model-running.png)
-
-5. 点击菜单中的“试验场 - 对话”，在右上方模型菜单中选择模型 `qwen3-0.6b`。现在你可以在试验场中与 LLM 进行对话。
-
-![quick chat](docs/assets/quick-start/quick-chat.png)
+![快速聊天](docs/assets/quick-start/quick-chat.png)
 
 ## 通过 API 使用模型
 
-1. 将鼠标移动到右下角的用户头像上，选择“API 密钥”，然后点击“新建 API 秘钥”按钮。
-
-2. 填写“名称”，然后点击“保存”按钮。
-
-3. 复制生成的 API 密钥并将其保存。请注意，秘钥只在创建时可见。
-
-4. 现在你可以使用 API 密钥访问 OpenAI 兼容 API。例如，curl 的用法如下：
+1.  将鼠标悬停在用户头像上，导航到 `API Keys` 页面，然后点击 `New API Key` 按钮。
+2.  填写 `Name` 并点击 `Save` 按钮。
+3.  复制生成的 API 密钥并将其保存在安全的地方。请注意，该密钥仅在创建时可见一次。
+4.  您现在可以使用该 API 密钥访问 GPUStack 提供的 OpenAI 兼容 API 端点。例如，使用 curl 如下所示：
 
 ```bash
-# Replace `your_api_key` and `your_gpustack_server_url`
-# with your actual API key and GPUStack server URL.
+# 将 `your_api_key` 和 `your_gpustack_server_url`
+# 替换为您实际的 API 密钥和 GPUStack 服务器 URL。
 export GPUSTACK_API_KEY=your_api_key
 curl http://your_gpustack_server_url/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -145,95 +166,32 @@ curl http://your_gpustack_server_url/v1/chat/completions \
   }'
 ```
 
-## 加速器支持
-
-- [x] NVIDIA GPU
-- [x] AMD GPU
-- [x] 昇腾 NPU
-- [x] 海光 DCU （实验性）
-- [x] 摩尔线程 GPU （实验性）
-- [x] 天数智芯 GPU （实验性）
-- [x] 沐曦 GPU （实验性）
-- [x] 寒武纪 MLU （实验性）
-
-## 模型支持
-
-GPUStack 使用 [vLLM](https://github.com/vllm-project/vllm)、[SGLang](https://github.com/sgl-project/sglang)、[MindIE](https://www.hiascend.com/en/software/mindie) 和 [vox-box](https://github.com/gpustack/vox-box) 作为内置推理后端，还支持自定义任何可以在容器中运行并公开服务 API 的后端。这使得 GPUStack 可以提供广泛的模型支持。
-
-支持从以下来源部署模型：
-
-1. [Hugging Face](https://huggingface.co/)
-
-2. [ModelScope](https://modelscope.cn/)
-
-3. 本地文件路径
-
-有关每个内置推理后端支持哪些模型的信息，请参阅 [Built-in Inference Backends](https://docs.gpustack.ai/latest/user-guide/built-in-inference-backends/) 文档中的 Supported Models 部分。
-
-## OpenAI 兼容 API
-
-GPUStack 在 `/v1` 路径提供以下 OpenAI 兼容 API：
-
-- [x] [List Models](https://platform.openai.com/docs/api-reference/models/list)
-- [x] [Create Completion](https://platform.openai.com/docs/api-reference/completions/create)
-- [x] [Create Chat Completion](https://platform.openai.com/docs/api-reference/chat/create)
-- [x] [Create Embeddings](https://platform.openai.com/docs/api-reference/embeddings/create)
-- [x] [Create Image](https://platform.openai.com/docs/api-reference/images/create)
-- [x] [Create Image Edit](https://platform.openai.com/docs/api-reference/images/createEdit)
-- [x] [Create Speech](https://platform.openai.com/docs/api-reference/audio/createSpeech)
-- [x] [Create Transcription](https://platform.openai.com/docs/api-reference/audio/createTranscription)
-
-例如，你可以使用官方的 [OpenAI Python API 库](https://github.com/openai/openai-python)来调用 API：
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://your_gpustack_server_url/v1", api_key="your_api_key")
-
-completion = client.chat.completions.create(
-  model="llama3.2",
-  messages=[
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
-  ]
-)
-
-print(completion.choices[0].message)
-```
-
-GPUStack 用户可以在 UI 中生成自己的 API 密钥。
-
 ## 文档
 
-完整文档请参见[官方文档](https://docs.gpustack.ai)。
+请参阅 [官方文档站点](https://docs.gpustack.ai) 获取完整文档。
 
 ## 构建
 
-1. 安装 Python（版本 3.10 ~ 3.12）。
+1.  安装 Python（版本 3.10 到 3.12）。
+2.  运行 `make build`。
 
-2. 运行 `make build`。
+您可以在 `dist` 目录中找到构建好的 wheel 包。
 
-你可以在 `dist` 目录下找到构建的 wheel 包。
+## 贡献
 
-## Contributing
-
-如果你有兴趣参与 GPUStack 贡献代码，请阅读[贡献指南](./docs/contributing.md)。
+如果您有兴趣为 GPUStack 做贡献，请阅读 [贡献指南](./docs/contributing.md)。
 
 ## 加入社区
 
-扫码加入社区群：
+如有任何问题或建议，欢迎加入我们的 [社区](https://discord.gg/VXYJzuaqwD) 寻求支持。
 
-<p align="left">
-    <img alt="Wechat-group" src="./docs/assets/wechat-group-qrcode.jpg" width="300px"/>
-</p>
+## 许可证
 
-## License
+版权所有 (c) 2024-2025 GPUStack 作者
 
-版权所有 (c) 2024 GPUStack 作者
+根据 Apache License, Version 2.0（"许可证"）授权；
+除非符合许可证，否则您不得使用此文件。
+您可以在 [LICENSE](./LICENSE) 文件中获取许可证副本。
 
-本项目基于 Apache-2.0 许可证（以下简称“许可证”）授权。
-您只能在遵守许可证条款的前提下使用本项目。
-许可证的完整内容请参阅 [LICENSE](./LICENSE) 文件。
-
-除非适用法律另有规定或双方另有书面约定，依据许可证分发的软件按“原样”提供，
-不附带任何明示或暗示的保证或条件。
-有关许可证规定的具体权利和限制，请参阅许可证了解更多详细信息。
+除非适用法律要求或书面同意，根据许可证分发的软件按"原样"分发，无任何明示或暗示的担保或条件。
+请参阅许可证中规定的特定语言管理权限及许可证下的限制。
