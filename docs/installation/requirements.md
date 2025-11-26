@@ -96,12 +96,6 @@ To use Cambricon MLU, install:
 
 ## Networking Requirements
 
-### Network Architecture
-
-The following diagram illustrates the GPUStack network architecture:
-
-![gpustack-network-architecture](../assets/gpustack-network-architecture.png)
-
 ### Connectivity Requirements
 
 The following network connectivity is required for GPUStack to function properly:
