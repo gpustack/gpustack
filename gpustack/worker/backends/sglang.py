@@ -254,8 +254,7 @@ class SGLangServer(InferenceServer):
         arguments.extend(hicache_arguments)
 
         # Add user-defined backend parameters
-        if self._model.backend_parameters:
-            arguments.extend(self._model.backend_parameters)
+        self._flatten_backend_param()
 
         # Add platform-specific parameters
         if is_ascend(self._get_selected_gpu_devices()):
@@ -300,8 +299,7 @@ class SGLangServer(InferenceServer):
         arguments.extend(attention_arguments)
 
         # Add user-defined backend parameters
-        if self._model.backend_parameters:
-            arguments.extend(self._model.backend_parameters)
+        arguments.extend(self._flatten_backend_param())
 
         # Set host and port
         arguments.extend(

@@ -60,8 +60,8 @@ class CustomServer(InferenceServer):
         )
         if command:
             command_args.extend(command.split())
-        if self._model.backend_parameters:
-            command_args.extend(self._model.backend_parameters)
+
+        command_args.extend(self._flatten_backend_param())
 
         self._create_workload(
             command_args=command_args,
