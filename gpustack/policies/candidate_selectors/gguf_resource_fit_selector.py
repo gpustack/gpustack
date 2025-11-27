@@ -31,7 +31,7 @@ from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
-from gpustack.utils.gpu import parse_gpu_id, parse_gpu_ids_by_worker
+from gpustack.utils.gpu import parse_gpu_id, group_gpu_ids_by_worker
 from gpustack.utils.unit import byte_to_gib, byte_to_kib
 
 
@@ -152,7 +152,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._selected_gpu_ids_by_worker = {}
         self._selected_gpu_ids = []
         if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            self._selected_gpu_ids_by_worker = parse_gpu_ids_by_worker(
+            self._selected_gpu_ids_by_worker = group_gpu_ids_by_worker(
                 self._model.gpu_selector.gpu_ids
             )
             self._selected_gpu_ids = sorted(self._model.gpu_selector.gpu_ids)
