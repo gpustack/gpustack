@@ -52,6 +52,7 @@ Run the following command to start the GPUStack server **with the built-in worke
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
     --privileged \
+    --volume /opt/rocm:/opt/rocm:ro \
     --network host \
     --volume /var/run/docker.sock:/var/run/docker.sock \
     --volume gpustack-data:/var/lib/gpustack \
@@ -62,6 +63,7 @@ sudo docker run -d --name gpustack \
 - The `--privileged` flag is required for device vendor-agnostic access.
 - To restrict GPU access, remove `--privileged` flag and set the `AMD_VISIBLE_DEVICES` environment variable.
   See [AMD Container Runtime - Migration Guide](https://instinct.docs.amd.com/projects/container-toolkit/en/latest/container-runtime/migration-guide.html).
+- If the `/opt/rocm` directory does not exist, please create a symbolic link pointing to the ROCm installed path: `ln -s /path/to/rocm /opt/rocm`.
 - The `--network=host` option is necessary for port awareness.
 - Mounting `/var/run/docker.sock` allows GPUStack to manage Docker containers for inference engines.
 
