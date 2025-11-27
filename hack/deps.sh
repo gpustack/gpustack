@@ -7,18 +7,16 @@ set -o pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
-function ci() {
-  make install "$@"
-  make deps "$@"
-  make lint "$@"
-  make test "$@"
-  make build "$@"
+function deps() {
+  uv sync --all-packages
+  uv lock
+  uv tree
 }
 
 #
 # main
 #
 
-gpustack::log::info "+++ CI +++"
-ci "$@"
-gpustack::log::info "--- CI ---"
+gpustack::log::info "+++ DEPS +++"
+deps
+gpustack::log::info "--- DEPS ---"
