@@ -4,7 +4,7 @@ from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
-from gpustack.utils.gpu import parse_gpu_ids_by_worker
+from gpustack.utils.gpu import group_gpu_ids_by_worker
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class GPUMatchingFilter(WorkerFilter):
         ):
             return workers, []
 
-        gpu_ids_by_worker = parse_gpu_ids_by_worker(self._model.gpu_selector.gpu_ids)
+        gpu_ids_by_worker = group_gpu_ids_by_worker(self._model.gpu_selector.gpu_ids)
         seleted_workers = gpu_ids_by_worker.keys()
 
         candidates = []
