@@ -23,7 +23,7 @@ from gpustack.utils.hub import (
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
     parse_gpu_id,
-    parse_gpu_ids_by_worker,
+    group_gpu_ids_by_worker,
 )
 from gpustack.server.db import get_engine
 from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
@@ -244,7 +244,7 @@ class ScheduleCandidatesSelector(ABC):
     ):
         model = self._model
         if model.gpu_selector and model.gpu_selector.gpu_ids:
-            gpu_ids_by_worker = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+            gpu_ids_by_worker = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
             self._selected_gpu_workers = list(gpu_ids_by_worker.keys())
             self._selected_gpu_worker_count = len(self._selected_gpu_workers)
             for worker_name, gpu_ids in gpu_ids_by_worker.items():
