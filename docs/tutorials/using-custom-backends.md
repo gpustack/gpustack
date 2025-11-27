@@ -50,7 +50,10 @@ You can engage in conversations in the Playground.
     backend_name: llama.cpp-custom
     default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}}'
     version_configs:
-      v1-custom:
+      v1-cuda:
+        image_name: ghcr.io/ggml-org/llama.cpp:server-cuda
+        custom_framework: cuda
+      v1-cpu:
         image_name: ghcr.io/ggml-org/llama.cpp:server
         custom_framework: cpu
     default_version: v1-custom
