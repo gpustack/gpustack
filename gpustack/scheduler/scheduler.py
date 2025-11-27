@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -9,6 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from gpustack.policies.scorers.gpu_type_scorer import GPUTypeScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.config.config import Config, get_global_config
 from gpustack.policies.base import (
@@ -67,6 +69,11 @@ from gpustack.utils.task import run_in_thread
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
+
+SCORER_WEIGHTS = {
+    GPUTypeScorer: 100,
+    PlacementScorer: 1,
+}
 
 
 class Scheduler:
@@ -335,6 +342,7 @@ class Scheduler:
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim
                 )
+                model_instance.gpu_type = candidate.gpu_type
                 model_instance.gpu_indexes = candidate.gpu_indexes
                 model_instance.gpu_addresses = candidate.gpu_addresses
                 model_instance.distributed_servers = DistributedServers(
@@ -371,6 +379,8 @@ async def find_candidate(
                 - The schedule candidate.
                 - A list of messages for the scheduling process.
     """
+
+    # Filter workers.
     filters = [
         ClusterFilter(model),
         GPUMatchingFilter(model),
@@ -385,6 +395,7 @@ async def find_candidate(
     if filter_messages:
         messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
 
+    # Initialize candidate selector.
     try:
         if is_gguf_model(model):
             candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
@@ -403,13 +414,19 @@ async def find_candidate(
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
+    # Select candidates.
     candidates = await candidates_selector.select_candidates(workers)
 
-    placement_scorer = PlacementScorer(model)
-    candidates = await placement_scorer.score(candidates)
+    # Score candidates.
+    scorers = [cls(model) for cls in SCORER_WEIGHTS]
+    weights = [weight for _, weight in SCORER_WEIGHTS.items()]
 
+    await combine_candidate_scores(candidates, model, scorers, weights)
+
+    # Pick the highest score candidate.
     candidate = pick_highest_score_candidate(candidates)
 
+    # Collect messages.
     if candidate is None and len(workers) > 0:
         resource_fit_messages = candidates_selector.get_messages() or [
             "No workers meet the resource requirements."
@@ -418,6 +435,7 @@ async def find_candidate(
     elif candidate and candidate.overcommit:
         messages.extend(candidates_selector.get_messages())
 
+    # Return the candidate and messages.
     return candidate, messages
 
 
@@ -760,3 +778,27 @@ def set_model_gpus_per_replica(model: Model) -> bool:
         # Ignore if the given model is not a SQLModel instance.
         pass
     return True
+
+
+async def combine_candidate_scores(candidates, model, scorers, weights=None):
+    """
+    Combine scores from multiple scorers for each candidate.
+    Args:
+        candidates: List of ModelInstanceScheduleCandidate.
+        model: Model to schedule.
+        scorers: List of Scorer instances.
+        weights: List of weights for each scorer.
+    Returns:
+        List of ModelInstanceScheduleCandidate with combined scores.
+    """
+    weights = weights or [1] * len(scorers)
+    scored_lists = []
+    for scorer in scorers:
+        scored = await scorer.score(copy.deepcopy(candidates))
+        scored_lists.append(scored)
+    for idx, candidate in enumerate(candidates):
+        score = 0
+        for i, scored in enumerate(scored_lists):
+            score += weights[i] * scored[idx].score
+        candidate.score = score
+    return candidates

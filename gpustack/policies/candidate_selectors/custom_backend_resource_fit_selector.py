@@ -19,6 +19,7 @@ from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     get_local_model_weight_size,
     ListMessageBuilder,
+    group_workers_by_gpu_type,
 )
 from gpustack.schemas.models import (
     CategoryEnum,
@@ -185,6 +186,9 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             candidate_functions.append(self._find_cpu_only_candidates)
 
         for candidate_func in candidate_functions:
+            if self.should_skip_candidate_func(candidate_func):
+                continue
+
             logger.debug(
                 f"Custom backend for model {self._model.readable_source}, "
                 f"trying candidate selector: {candidate_func.__name__}"
@@ -201,21 +205,31 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         self._set_messages()
         return []
 
+    def should_skip_candidate_func(self, candidate_func) -> bool:
+        # Skip conditions for manual GPU selection.
+        if (
+            self._selected_gpu_workers
+            and candidate_func != self.find_manual_gpu_selection_candidates
+        ):
+            return True
+
+        return False
+
     async def find_manual_gpu_selection_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         # Single worker scenarios
-        if self._selected_gpu_worker_count == 1:
+        if self._selected_gpu_workers and len(self._selected_gpu_workers) == 1:
             request = RequestEstimateUsage(
                 ram=self._ram_claim,
                 vram=self._vram_claim,
             )
             return await self._find_manual_gpu_selection_candidates(
-                workers, 0, request, self._event_collector
+                workers, {"*": 0}, request, self._event_collector
             )
 
         # Multi-worker scenarios are not supported for custom backends
-        elif self._selected_gpu_worker_count > 1:
+        elif self._selected_gpu_workers and len(self._selected_gpu_workers) > 1:
             # Record unsupported manual multi-worker selection
             self._event_collector.add(
                 EventLevelEnum.ERROR,
@@ -237,27 +251,34 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
         largest_vram = 0
 
-        for worker in workers:
-            if not worker.status or not worker.status.gpu_devices:
-                continue
+        workers_by_gpu_type = group_workers_by_gpu_type(workers)
+        for gpu_type, workers_of_type in workers_by_gpu_type.items():
+            for worker in workers_of_type:
+                if not worker.status or not worker.status.gpu_devices:
+                    continue
 
-            allocatable = await get_worker_allocatable_resource(self._engine, worker)
+                allocatable = await get_worker_allocatable_resource(
+                    self._engine, worker, gpu_type
+                )
 
-            for gpu_device in worker.status.gpu_devices:
-                gpu_index = gpu_device.index
+                for gpu_device in worker.status.gpu_devices:
+                    gpu_index = gpu_device.index
 
-                # Check if GPU has enough VRAM
-                if gpu_index in allocatable.vram:
-                    available_vram = allocatable.vram[gpu_index]
+                    # Check if GPU has enough VRAM
+                    if gpu_index in allocatable.vram:
+                        available_vram = allocatable.vram[gpu_index]
 
-                    if available_vram >= self._vram_claim:
-                        # Check RAM requirement
-                        if allocatable.ram >= self._ram_claim:
-                            candidate = self._create_single_gpu_candidate(
-                                worker, [gpu_index], {gpu_index: self._vram_claim}
-                            )
-                            candidates.append(candidate)
-                    largest_vram = max(largest_vram, available_vram)
+                        if available_vram >= self._vram_claim:
+                            # Check RAM requirement
+                            if allocatable.ram >= self._ram_claim:
+                                candidate = self._create_single_gpu_candidate(
+                                    worker,
+                                    [gpu_index],
+                                    {gpu_index: self._vram_claim},
+                                    gpu_type,
+                                )
+                                candidates.append(candidate)
+                        largest_vram = max(largest_vram, available_vram)
 
         if not candidates:
             # Add diagnostic message similar to vLLM single GPU path (without utilization)
@@ -281,43 +302,50 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         largest_worker_vram = 0
         largest_worker_gpu_count = 0
 
-        for worker in workers:
-            if not worker.status or not worker.status.gpu_devices:
-                continue
+        workers_by_gpu_type = group_workers_by_gpu_type(workers)
+        for gpu_type, workers_of_type in workers_by_gpu_type.items():
+            for worker in workers_of_type:
+                if not worker.status or not worker.status.gpu_devices:
+                    continue
 
-            if len(worker.status.gpu_devices) < 2:
-                continue  # Need at least 2 GPUs for multi-GPU
+                if len(worker.status.gpu_devices) < 2:
+                    continue  # Need at least 2 GPUs for multi-GPU
 
-            allocatable = await get_worker_allocatable_resource(self._engine, worker)
+                allocatable = await get_worker_allocatable_resource(
+                    self._engine, worker, gpu_type
+                )
 
-            # Try to distribute VRAM across multiple GPUs
-            available_gpus = []
-            total_available_vram = 0
+                # Try to distribute VRAM across multiple GPUs
+                available_gpus = []
+                total_available_vram = 0
 
-            for gpu_device in worker.status.gpu_devices:
-                gpu_index = gpu_device.index
-                if gpu_index in allocatable.vram:
-                    available_vram = allocatable.vram[gpu_index]
-                    available_gpus.append((gpu_index, available_vram))
-                    total_available_vram += available_vram
+                for gpu_device in worker.status.gpu_devices:
+                    gpu_index = gpu_device.index
+                    if gpu_index in allocatable.vram:
+                        available_vram = allocatable.vram[gpu_index]
+                        available_gpus.append((gpu_index, available_vram))
+                        total_available_vram += available_vram
 
-            # Check if total VRAM is sufficient
-            if total_available_vram >= self._vram_claim and len(available_gpus) >= 2:
-                # Check RAM requirement
-                if allocatable.ram >= self._ram_claim:
-                    # Distribute VRAM evenly across GPUs
-                    gpu_indexes = [gpu[0] for gpu in available_gpus]
-                    vram_per_gpu = self._vram_claim // len(gpu_indexes)
-                    vram_distribution = {idx: vram_per_gpu for idx in gpu_indexes}
+                # Check if total VRAM is sufficient
+                if (
+                    total_available_vram >= self._vram_claim
+                    and len(available_gpus) >= 2
+                ):
+                    # Check RAM requirement
+                    if allocatable.ram >= self._ram_claim:
+                        # Distribute VRAM evenly across GPUs
+                        gpu_indexes = [gpu[0] for gpu in available_gpus]
+                        vram_per_gpu = self._vram_claim // len(gpu_indexes)
+                        vram_distribution = {idx: vram_per_gpu for idx in gpu_indexes}
 
-                    candidate = self._create_multi_gpu_candidate(
-                        worker, gpu_indexes, vram_distribution
-                    )
-                    candidates.append(candidate)
-            # Track largest worker VRAM for diagnostics
-            if total_available_vram > largest_worker_vram:
-                largest_worker_vram = total_available_vram
-                largest_worker_gpu_count = len(available_gpus)
+                        candidate = self._create_multi_gpu_candidate(
+                            worker, gpu_indexes, vram_distribution, gpu_type
+                        )
+                        candidates.append(candidate)
+                # Track largest worker VRAM for diagnostics
+                if total_available_vram > largest_worker_vram:
+                    largest_worker_vram = total_available_vram
+                    largest_worker_gpu_count = len(available_gpus)
 
         if not candidates:
             # Add diagnostic message similar to vLLM multi-GPU path (without utilization)
@@ -360,7 +388,11 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         return candidates
 
     def _create_single_gpu_candidate(
-        self, worker: Worker, gpu_indexes: List[int], vram_distribution: Dict[int, int]
+        self,
+        worker: Worker,
+        gpu_indexes: List[int],
+        vram_distribution: Dict[int, int],
+        gpu_type: Optional[str] = None,
     ) -> ModelInstanceScheduleCandidate:
         """
         Create a single GPU candidate.
@@ -372,12 +404,17 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
 
         return ModelInstanceScheduleCandidate(
             worker=worker,
+            gpu_type=gpu_type,
             gpu_indexes=gpu_indexes,
             computed_resource_claim=computed_resource_claim,
         )
 
     def _create_multi_gpu_candidate(
-        self, worker: Worker, gpu_indexes: List[int], vram_distribution: Dict[int, int]
+        self,
+        worker: Worker,
+        gpu_indexes: List[int],
+        vram_distribution: Dict[int, int],
+        gpu_type: Optional[str] = None,
     ) -> ModelInstanceScheduleCandidate:
         """
         Create a multi-GPU candidate.
@@ -389,6 +426,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
 
         return ModelInstanceScheduleCandidate(
             worker=worker,
+            gpu_type=gpu_type,
             gpu_indexes=gpu_indexes,
             computed_resource_claim=computed_resource_claim,
         )
