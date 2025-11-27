@@ -352,7 +352,7 @@ class WorkerBase(WorkerCreate):
                 "Server cannot access the "
                 f"worker's health check endpoint at {healthz_url}. "
                 "Please verify the port requirements in the "
-                "<a href='https://docs.gpustack.ai/latest/installation/installation-requirements/'>documentation</a>"
+                "<a href='https://docs.gpustack.ai/latest/installation/requirements/#port-requirements'>documentation</a>"
             )
             self.state = WorkerStateEnum.UNREACHABLE
             self.state_message = msg
