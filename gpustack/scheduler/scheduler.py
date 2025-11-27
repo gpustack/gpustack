@@ -57,7 +57,7 @@ from gpustack.scheduler.calculator import (
 )
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
-from gpustack.utils.gpu import parse_gpu_ids_by_worker
+from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import (
     get_pretrained_config_with_fallback,
     has_diffusers_model_index,
@@ -212,7 +212,7 @@ class Scheduler:
             and model.gpu_selector
             and model.gpu_selector.gpu_ids
         ):
-            worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+            worker_gpu_ids = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
             if len(worker_gpu_ids) > 1:
                 instance.state = ModelInstanceStateEnum.ERROR
                 instance.state_message = (
@@ -481,7 +481,7 @@ async def evaluate_gguf_model(
         model.distributable = True
 
     if model.gpu_selector and model.gpu_selector.gpu_ids:
-        worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+        worker_gpu_ids = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
         if (
             len(worker_gpu_ids) > 1
             and model.distributable
