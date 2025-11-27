@@ -125,8 +125,8 @@ nav:
           - Inference On CPUs: tutorials/inference-on-cpus.md
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
-          - Adding GPUCluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
-          - Adding GPUCluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
+          - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
+          - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
       - Integrations:
           - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
           - Integrate with Dify: integrations/integrate-with-dify.md
