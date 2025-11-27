@@ -36,7 +36,9 @@ help:
 	#
 	# Usage:
 	#
-	#   * [dev] `make install`, install all dependencies.
+	#   * [dev] `make install`, install development tools, like uv, pre-commit hooks and so on.
+	#
+	#   * [dev] `make deps`, prepare all dependencies.
 	#
 	#   * [dev] `make generate`, generate codes.
 	#
@@ -50,7 +52,7 @@ help:
 	#
 	#   * [dev] `make serve-docs`, serve docs, not supported on Windows.
 	#
-	#   * [ci]  `make ci`, execute `make install`, `make lint`, `make test`, `make build`.
+	#   * [ci]  `make ci`, execute `make install`, `make deps`, `make lint`, `make test`, `make build`.
 	#
 	@echo
 
