@@ -4,6 +4,7 @@ from typing import Optional, List
 from fastapi import FastAPI
 from gpustack.config.config import Config, GatewayModeEnum
 from gpustack.utils.network import get_first_non_loopback_ip
+from gpustack.envs import HIGRESS_PLUGIN_DIR
 from fastapi.staticfiles import StaticFiles
 
 oci_plugin_prefix = "oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/"
@@ -64,7 +65,7 @@ supported_plugins: List[HigressPlugin] = [
 
 
 def get_wasm_plugin_dir(mkdirs: bool = False) -> Optional[str]:
-    plugin_dir = os.getenv("GPUSTACK_HIGRESS_PLUGIN_DIR", None)
+    plugin_dir = HIGRESS_PLUGIN_DIR
     if plugin_dir is not None:
         full_path = os.path.join(plugin_dir, http_path_prefix)
         if not mkdirs:
@@ -102,7 +103,7 @@ def get_plugin_url_prefix(cfg: Optional[Config] = None):
 
 
 def register(cfg: Config, app: FastAPI):
-    plugin_dir = os.getenv("GPUSTACK_HIGRESS_PLUGIN_DIR", None)
+    plugin_dir = HIGRESS_PLUGIN_DIR
     plugin_prefix = get_plugin_url_prefix(cfg)
     if plugin_dir is not None and plugin_prefix.startswith("http://"):
         app.mount(

@@ -144,6 +144,7 @@ nav:
           - List Images: cli-reference/list-images.md
           - Save Images: cli-reference/save-images.md
           - Copy Images: cli-reference/copy-images.md
+      - Environment Variables: environment-variables.md
   - Inference Performance Lab:
       - Overview: performance-lab/overview.md
       - Optimizing Throughput:

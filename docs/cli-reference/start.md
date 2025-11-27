@@ -99,19 +99,9 @@ gpustack start [OPTIONS]
 
 ### Available Environment Variables
 
-Most of the options can be set via environment variables. The environment variables are prefixed with `GPUSTACK_` and are in uppercase. For example, `--data-dir` can be set via the `GPUSTACK_DATA_DIR` environment variable.
+Most command line parameters can also be set via environment variables with the `GPUSTACK_` prefix and in uppercase format (e.g., `--data-dir` can be set via `GPUSTACK_DATA_DIR`). 
 
-Below are additional environment variables that can be set:
-
-| <div style="width:360px">Flag</div> | Description                                              |
-| ----------------------------------- | -------------------------------------------------------- |
-| `HF_ENDPOINT`                       | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` |
-
-Below are prefixed with `GPUSTACK_` special environment variables that can be set:
-
-| <div style="width:360px">Flag</div>       | Description                                                                        |
-| ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `GPUSTACK_DISABLE_DYNAMIC_LINK_LLAMA_BOX` | Dynamic linking is used by default. Setting this to `true` enables static linking. |
+For environment variables beyond the command-line parameters mentioned above, please refer to the [environment variables documentation](../environment-variables.md).
 
 ## Config File
 
