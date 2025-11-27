@@ -89,28 +89,34 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         serving_params = AscendMindIEParameters()
         serving_params.from_args(model.backend_parameters)
 
-        tp, pp, dp, moe_tp, moe_ep, ws = (
-            serving_params.tensor_parallel_size,
+        pp, tp, dp, cp, sp, moe_tp, moe_ep, ws = (
             serving_params.pipeline_parallel_size,
+            serving_params.tensor_parallel_size,
             serving_params.data_parallel_size,
+            serving_params.context_parallel_size,
+            serving_params.sequence_parallel_size,
             serving_params.moe_tensor_parallel_size,
             serving_params.moe_expert_parallel_size,
             serving_params.world_size,
         )
 
-        if tp or pp or dp or moe_tp or moe_ep:
+        if pp > 1 or tp > 0 or dp > 0 or cp > 0 or sp > 0 or moe_tp > 0 or moe_ep > 0:
             world_size = ws
             strategies = []
+            if pp > 1:
+                strategies.append("pp")
             if tp > 0:
                 strategies.append("tp")
-            if pp > 0:
-                strategies.append("pp")
             if dp > 0:
                 strategies.append("dp")
-            if moe_ep > 0:
-                strategies.append("moe_ep")
+            if cp > 0:
+                strategies.append("cp")
+            if sp > 0:
+                strategies.append("sp")
             if moe_tp > 0:
                 strategies.append("moe_tp")
+            if moe_ep > 0:
+                strategies.append("moe_ep")
 
             return world_size, strategies
 
