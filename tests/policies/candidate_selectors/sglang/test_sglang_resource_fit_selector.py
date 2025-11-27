@@ -15,6 +15,7 @@ from gpustack.schemas.models import (
     BackendEnum,
 )
 from tests.fixtures.workers.fixtures import (
+    linux_mix_1_nvidia_4080_16gx1_rocm_7800_16gx1,
     linux_nvidia_1_4090_24gx1,
     linux_nvidia_22_H100_80gx8,
     linux_nvidia_23_H100_80gx8,
@@ -26,6 +27,8 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_6_a100_80gx2,
     linux_nvidia_7_a100_80gx2,
     linux_nvidia_2_4080_16gx2,
+    linux_rocm_1_7800_16gx1,
+    linux_rocm_2_7800_16gx2,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -198,9 +201,6 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
-
     with (
         patch(
             'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
@@ -221,8 +221,6 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
         ),
     ):
 
-        candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
         candidate, _ = await scheduler.find_candidate(config, m, workers)
 
         expected_candidates = [
@@ -249,9 +247,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
             },
         ]
 
-        assert len(candidates) == 1
-        assert candidate == candidates[0]
-        compare_candidates(candidates, expected_candidates)
+        compare_candidates([candidate], expected_candidates)
 
 
 @pytest.mark.asyncio
@@ -282,9 +278,6 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
-
     with (
         patch(
             'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
@@ -305,8 +298,6 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
         ),
     ):
 
-        candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
         candidate, _ = await scheduler.find_candidate(config, m, workers)
 
         expected_candidates = [
@@ -334,9 +325,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
             },
         ]
 
-        assert len(candidates) == 1
-        assert candidate == candidates[0]
-        compare_candidates(candidates, expected_candidates)
+        compare_candidates([candidate], expected_candidates)
 
 
 @pytest.mark.asyncio
@@ -370,9 +359,6 @@ async def test_manual_schedule_to_3_workers_4_gpus(
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
-
     with (
         patch(
             'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
@@ -393,8 +379,6 @@ async def test_manual_schedule_to_3_workers_4_gpus(
         ),
     ):
 
-        candidates = await resource_fit_selector.select_candidates(workers())
-        candidates = await placement_scorer.score(candidates)
         candidate, _ = await scheduler.find_candidate(config, m, workers())
 
         expected_candidates = [
@@ -430,9 +414,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
             },
         ]
 
-        assert len(candidates) == 1
-        assert candidate == candidates[0]
-        compare_candidates(candidates, expected_candidates)
+        compare_candidates([candidate], expected_candidates)
 
 
 @pytest.mark.asyncio
@@ -524,9 +506,6 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
-
     with (
         patch(
             'gpustack.policies.utils.get_worker_model_instances',
@@ -543,8 +522,6 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
         ),
     ):
 
-        candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
         candidate, _ = await scheduler.find_candidate(config, m, workers)
 
         expected_candidates = [
@@ -586,9 +563,7 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
             },
         ]
 
-        assert len(candidates) == 1
-        assert candidate == candidates[0]
-        compare_candidates(candidates, expected_candidates)
+        compare_candidates([candidate], expected_candidates)
 
 
 @pytest.mark.asyncio
@@ -609,9 +584,6 @@ async def test_auto_schedule_embedding_models(config):
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
-
     with (
         patch(
             'gpustack.policies.utils.get_worker_model_instances',
@@ -628,8 +600,6 @@ async def test_auto_schedule_embedding_models(config):
         ),
     ):
 
-        candidates = await resource_fit_selector.select_candidates(workers)
-        candidates = await placement_scorer.score(candidates)
         candidate, _ = await scheduler.find_candidate(config, m, workers)
 
         expected_candidates = [
@@ -644,9 +614,7 @@ async def test_auto_schedule_embedding_models(config):
             },
         ]
 
-        assert len(candidates) == 1
-        assert candidate == candidates[0]
-        compare_candidates(candidates, expected_candidates)
+        compare_candidates([candidate], expected_candidates)
 
 
 @pytest.mark.asyncio
@@ -1208,3 +1176,251 @@ async def test_output_schedule_msg(config, index, workers, model, expect_msg):
         _ = await placement_scorer.score(candidates)
 
         assert resource_fit_selector._messages == expect_msg
+
+
+@pytest.mark.parametrize(
+    "case_name, m, workers, expected_candidates, final_candidate_index",
+    [
+        # Manually select 1 cuda gpu and 1 amd rocm gpu.
+        # Check point:
+        # - Candidate selection correctness, final candidate should be the cuda gpu.
+        (
+            "manual_select_1_cuda+1_rocm",
+            make_model(1, ["host4090:cuda:0", "host01-7800:rocm:0"], "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_1_4090_24gx1(),
+                linux_rocm_1_7800_16gx1(),
+            ],
+            [
+                {
+                    "worker_id": 2,
+                    "worker_name": "host4090",
+                    "gpu_indexes": [0],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 23413653504,
+                    },
+                    "score": 10060,
+                },
+                {
+                    "worker_id": 13,
+                    "worker_name": "host01-7800",
+                    "gpu_indexes": [0],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                    },
+                    "score": 8059.9999,
+                },
+            ],
+            0,
+        ),
+        # Manually select 1 cuda gpu and 1 amd rocm gpu with gpus_per_replica=2.
+        # Check point:
+        # - No candidates.
+        (
+            "manual_select_1_cuda+1_rocm_with_gpus_per_replica_2",
+            make_model(2, ["host4090:cuda:0", "host01-7800:rocm:0"], "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_1_4090_24gx1(),
+                linux_rocm_1_7800_16gx1(),
+            ],
+            [],
+            None,
+        ),
+        # Manually select 2 cuda GPUs + 2 rocm GPUs and set gpus_per_replica=2.
+        # Check point:
+        # - Candidate should use 2 cuda GPUs.
+        (
+            "manual_select_2_cuda+2_rocm_with_gpus_per_replica_2",
+            make_model(
+                2,
+                [
+                    "host4080:cuda:0",
+                    "host4080:cuda:1",
+                    "host02-7800:rocm:0",
+                    "host02-7800:rocm:1",
+                ],
+                "Qwen/Qwen3-0.6B",
+            ),
+            [
+                linux_nvidia_2_4080_16gx2(),
+                linux_rocm_2_7800_16gx2(),
+            ],
+            [
+                {
+                    "worker_id": 3,
+                    "worker_name": "host4080",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 15454332518,
+                        1: 15454332518,
+                    },
+                    "score": 10059.9999,
+                },
+                {
+                    "worker_id": 28,
+                    "worker_name": "host02-7800",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                        1: 15446782771,
+                    },
+                    "score": 8059.9999,
+                },
+            ],
+            0,
+        ),
+        # Manually select 1 cuda GPUs from mixed gpu worker + 1 cuda GPUs from cuda gpu worker and set gpus_per_replica=2.
+        # Check point:
+        # - Candidate should use 2 cuda GPUs.
+        (
+            "manual_select_1_cuda_from_mix+1_cuda_with_gpus_per_replica_2",
+            make_model(2, ["host4080:cuda:0", "host-mix-01:cuda:0"], "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_2_4080_16gx2(),
+                linux_mix_1_nvidia_4080_16gx1_rocm_7800_16gx1(),
+            ],
+            [
+                {
+                    "worker_id": 3,
+                    "worker_name": "host4080",
+                    "gpu_indexes": [0],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 15454332518,
+                    },
+                    "score": 10059.9999,
+                    "subordinate_workers": [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=29,
+                            worker_ip="192.168.50.31",
+                            total_gpus=1,
+                            gpu_type="cuda",
+                            gpu_indexes=[0],
+                            computed_resource_claim=ComputedResourceClaim(
+                                vram={0: 15454332518},
+                            ),
+                        )
+                    ],
+                },
+            ],
+            0,
+        ),
+        # Auto select use single gpu from nvidia and amd workers.
+        # Check point:
+        # - Candidate selection correctness, final candidate should be the cuda gpu.
+        (
+            "auto_select_single_gpu_from_cuda+rocm",
+            make_model(1, None, "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_1_4090_24gx1(),
+                linux_rocm_1_7800_16gx1(),
+            ],
+            [
+                {
+                    "worker_id": 2,
+                    "worker_name": "host4090",
+                    "gpu_indexes": [0],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 23413653504,
+                    },
+                    "score": 10060,
+                },
+                {
+                    "worker_id": 13,
+                    "worker_name": "host01-7800",
+                    "gpu_indexes": [0],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                    },
+                    "score": 8059.9999,
+                },
+            ],
+            0,
+        ),
+        # Auto select single worker multi gpu from nvidia and amd workers.
+        # Check point:
+        # - Candidate selection correctness, final candidate should be the cuda gpu.
+        (
+            "auto_select_single_worker_multi_gpu_from_2_cuda+2_rocm_with_gpus_per_replica_2",
+            make_model(2, None, "Qwen/Qwen3-8B"),
+            [
+                linux_nvidia_2_4080_16gx2(),
+                linux_rocm_2_7800_16gx2(),
+            ],
+            [
+                {
+                    "worker_id": 3,
+                    "worker_name": "host4080",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 15454332518,
+                        1: 15454332518,
+                    },
+                    "score": 10059.9999,
+                },
+                {
+                    "worker_id": 28,
+                    "worker_name": "host02-7800",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                        1: 15446782771,
+                    },
+                    "score": 8059.9999,
+                },
+            ],
+            0,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates_from_different_gpu_types(
+    config, case_name, m, workers, expected_candidates, final_candidate_index
+):
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+        m.backend = BackendEnum.SGLANG.value
+        resource_fit_selector = SGLangResourceFitSelector(config, m)
+        scorers = [cls(m) for cls in scheduler.SCORER_WEIGHTS]
+        scorer_weights = [weight for _, weight in scheduler.SCORER_WEIGHTS.items()]
+
+        actual_candidates = await resource_fit_selector.select_candidates(workers)
+        actual_candidates = await scheduler.combine_candidate_scores(
+            actual_candidates, m, scorers, scorer_weights
+        )
+        actual_candidate, _ = await scheduler.find_candidate(config, m, workers)
+
+        try:
+            assert len(actual_candidates) == len(expected_candidates)
+            compare_candidates(actual_candidates, expected_candidates)
+            if final_candidate_index is not None:
+                compare_candidates(
+                    [actual_candidate], [expected_candidates[final_candidate_index]]
+                )
+        except AssertionError as e:
+            raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
