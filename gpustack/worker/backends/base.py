@@ -13,9 +13,8 @@ from gpustack_runner.runner import BackendVersionedRunner
 from gpustack_runtime.deployer import ContainerResources, ContainerMount, ContainerPort
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import (
-    manufacturer_to_backend,
     ManufacturerEnum,
-    backend_to_manufacturer,
+    supported_backends,
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
@@ -42,7 +41,6 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.server.bus import Event
-from gpustack.utils.gpu import parse_gpu_id
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -351,6 +349,7 @@ class InferenceServer(ABC):
         """
         minstance = self._model_instance
         dservers = minstance.distributed_servers
+        gpu_type = None
         if (
             dservers
             and dservers.subordinate_workers
@@ -365,60 +364,29 @@ class InferenceServer(ABC):
                 None,
             )
             gpu_indexes = sorted(subworker.gpu_indexes or [])
+            gpu_type = subworker.gpu_type
         else:
             gpu_indexes = sorted(self._model_instance.gpu_indexes or [])
-
-        # When doing manual selection, the device type is further confirmed in the selection information.
-        # This helps to find the correct item when there are multiple devices mixed in one node.
-        # For example, a node includes both NVIDIA device and AMD device.
-        #
-        # FIXME(thxCode): Currently, there is not field to indicate the device vendor corresponding to a certain device index.
-        #                 We should extend the processing of indexes selection, preserving both index and device type,
-        #                 and support automatic selection as well.
-        gpu_index_types: Dict[int, set[int]] = {}  # device index -> {device type}
-        if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            for gpu_id in self._model.gpu_selector.gpu_ids:
-                is_valid, matched = parse_gpu_id(gpu_id)
-                if not is_valid:
-                    continue
-                if matched.get("worker_name") != self._worker.name:
-                    continue
-                gpu_device_type = matched.get("device")
-                gpu_index = int(matched.get("gpu_index"))
-                if gpu_index not in gpu_index_types:
-                    gpu_index_types[gpu_index] = set()
-                gpu_index_types[gpu_index].add(gpu_device_type)
+            gpu_type = self._model_instance.gpu_type
 
         gpu_devices: GPUDevicesInfo = []
         if gpu_indexes and self._worker.status.gpu_devices:
-            if gpu_index_types:
-                for i, d in enumerate(self._worker.status.gpu_devices):
-                    if d.index not in gpu_indexes:
-                        continue
-                    if d.type not in gpu_index_types[d.index]:
-                        continue
-                    # For example, with d = {"index": 0, "type": "cuda"},
-                    # before discard: gpu_index_types = {0: {cuda,rocm}, 1: {cuda}}
-                    # after discard:  gpu_index_types = {0: {     rocm}, 1: {cuda}}
-                    gpu_index_types[d.index].discard(d.type)
-                    gpu_devices.append(self._worker.status.gpu_devices[i])
-            else:
-                for index in gpu_indexes:
-                    gpu_device = next(
-                        (
-                            d
-                            for d in self._worker.status.gpu_devices
-                            if d.index == index
-                        ),
-                        None,
-                    )
-                    if gpu_device:
-                        gpu_devices.append(gpu_device)
+            for index in gpu_indexes:
+                gpu_device = next(
+                    (
+                        d
+                        for d in self._worker.status.gpu_devices
+                        if d.index == index and (gpu_type is None or d.type == gpu_type)
+                    ),
+                    None,
+                )
+                if gpu_device:
+                    gpu_devices.append(gpu_device)
         return gpu_devices
 
     def _get_device_info(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """Get the device information for the serving. Get vendor from selected devices at first,
-        if not specified, retrieve from the first device of the worker.
+        """Get the device information for the serving.
+        If not found, retrieve from the first device of the worker.
 
         Returns:
             A tuple of (vendor, runtime_version, arch_family).
@@ -427,14 +395,14 @@ class InferenceServer(ABC):
         if gpu_devices:
             gpu_device = gpu_devices[0]
             return (
-                gpu_device.vendor,
+                gpu_device.type,
                 gpu_device.runtime_version,
                 gpu_device.arch_family,
             )
         elif self._worker.status.gpu_devices:
             gpu_device = self._worker.status.gpu_devices[0]
             return (
-                gpu_device.vendor,
+                gpu_device.type,
                 gpu_device.runtime_version,
                 gpu_device.arch_family,
             )
@@ -707,18 +675,15 @@ $@
         def get_docker_image(bvr: BackendVersionedRunner) -> str:
             return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
 
-        vendor, runtime_version, arch_family = self._get_device_info()
-        if not vendor:
+        backend, runtime_version, arch_family = self._get_device_info()
+        if not backend:
             # Return directly if there is not a valid device.
             # GPUStack-Runner does not provide CPU-only platform images.
             # To use a CPU-only version, user must configure in `Inference Backend` page.
             return None
 
-        # Determine backend if not provided.
-        if not backend:
-            backend = manufacturer_to_backend(ManufacturerEnum(vendor))
-        elif vendor != backend_to_manufacturer(backend):
-            # Return directly if selected vendor is not matched the backend.
+        if backend not in supported_backends():
+            # Return directly if found backend is not within the supported backends.
             return None
 
         """
