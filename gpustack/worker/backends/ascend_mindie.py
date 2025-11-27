@@ -1127,7 +1127,7 @@ class AscendMindIEServer(InferenceServer):
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
-            params.from_args(self._model.backend_parameters)
+            params.from_args(self._flatten_backend_param())
 
             # -- Log config
             log_config["logLevel"] = params.log_level

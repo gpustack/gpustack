@@ -874,6 +874,19 @@ $@
         prefix = self._fallback_registry + "/" if self._fallback_registry else ""
         return f"{prefix}{image}"
 
+    def _flatten_backend_param(self) -> List[str]:
+        """
+        Flattens all backend parameter strings into a list of individual tokens.
+
+        Each entry in `backend_parameters` may contain one or more whitespace-separated
+        arguments. This method splits them and returns a single flattened list.
+        e.g.
+            self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
+        """
+        return [
+            p for param in (self._model.backend_parameters or []) for p in param.split()
+        ]
+
     def _transform_workload_plan(
         self, workload: WorkloadPlan
     ) -> Union[DockerWorkloadPlan, WorkloadPlan]:
