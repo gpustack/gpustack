@@ -41,3 +41,8 @@ DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower()
     "true",
     "1",
 ]
+
+# External authentication defaults
+EXTERNAL_AUTH_DEFAULT_ACTIVE = os.getenv(
+    "GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE", "false"
+).lower() in ["true", "1"]
