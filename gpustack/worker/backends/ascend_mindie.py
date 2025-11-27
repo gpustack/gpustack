@@ -538,22 +538,23 @@ class AscendMindIEParameters:
             "This will merge into the `config.json` of the model structure.",
         )
 
-        args_parsed = parser.parse_known_args(args=args)
-        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
-            try:
-                attr_value = getattr(args_parsed[0], attr_name, None)
-                if attr_value is not None:
-                    try:
-                        setattr(self, attr_name, attr_value)
-                    except ValueError as e:
-                        # Never reach here, but just in case.
-                        raise argparse.ArgumentTypeError(
-                            f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
-                        ) from e
-            except AttributeError:
-                # If reach here, that means the field is an internal property,
-                # which would not register in the argument parser.
-                pass
+        if args:
+            args_parsed = parser.parse_known_args(args=args)
+            for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+                try:
+                    attr_value = getattr(args_parsed[0], attr_name, None)
+                    if attr_value is not None:
+                        try:
+                            setattr(self, attr_name, attr_value)
+                        except ValueError as e:
+                            # Never reach here, but just in case.
+                            raise argparse.ArgumentTypeError(
+                                f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
+                            ) from e
+                except AttributeError:
+                    # If reach here, that means the field is an internal property,
+                    # which would not register in the argument parser.
+                    pass
 
         self._default()
         self._validate()
