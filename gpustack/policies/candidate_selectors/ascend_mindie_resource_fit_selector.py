@@ -744,6 +744,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                         # Increase main worker's devices.
                         if subworker_index < 0:
+                            candidate.gpu_type = device.type
                             candidate.gpu_indexes.append(device.index)
                             candidate.gpu_addresses.append(device.network.inet)
                             candidate.computed_resource_claim.vram[device.index] = (
@@ -751,6 +752,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                             )
                         # Increase subordinate worker's devices.
                         else:
+                            subworker.gpu_type = device.type
                             subworker.gpu_indexes.append(device.index)
                             subworker.gpu_addresses.append(device.network.inet)
                             subworker.computed_resource_claim.vram[device.index] = (
