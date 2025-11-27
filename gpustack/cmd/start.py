@@ -391,6 +391,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Mapping of external authentication user information to user's avatar URL. e.g.,'picture'. For SAML, you must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.",
         default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
     )
+    group.add_argument(
+        "--external-auth-default-active",
+        action=OptionalBoolAction,
+        help="Set newly created externally authenticated users active by default.",
+        default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_ACTIVE"),
+    )
     # OIDC settings
     group.add_argument(
         "--oidc-issuer",
@@ -606,6 +612,7 @@ def set_server_options(args, config_data: dict):
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",
+        "external_auth_default_active",
         "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",
@@ -665,6 +672,15 @@ def set_third_party_env(cfg: Config):
     if not cfg.enable_hf_xet:
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.debug("set env HF_HUB_DISABLE_XET=1")
+
+    # Bridge config to env for existing env-based consumers
+    if cfg.external_auth_default_active is not None:
+        os.environ["GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE"] = (
+            "true" if cfg.external_auth_default_active else "false"
+        )
+        logger.debug(
+            f"set env GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE={'true' if cfg.external_auth_default_active else 'false'}"
+        )
 
 
 # Adapted from: https://github.com/vllm-project/vllm/blob/main/vllm/utils.py#L2438
