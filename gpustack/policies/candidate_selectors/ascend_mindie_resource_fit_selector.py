@@ -61,17 +61,16 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Store and format the abnormal message during scheduling, finally it will be extended to self._diagnostic_messages.
         self._scheduling_messages: ListMessageBuilder = ListMessageBuilder([])
         # Parse model params.
-        if model.backend_parameters:
-            max_seq_len = self._model_params.derived_max_seq_len
-            if max_seq_len > 8192:
-                max_seq_len = 8192
-            self._serving_params.max_seq_len = max_seq_len
-            try:
-                self._serving_params.from_args(model.backend_parameters)
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to parse model {model.name} serve parameters: {e}"
-                )
+        max_seq_len = self._model_params.derived_max_seq_len
+        if max_seq_len > 8192:
+            max_seq_len = 8192
+        self._serving_params.max_seq_len = max_seq_len
+        try:
+            self._serving_params.from_args(model.backend_parameters or [])
+        except Exception as e:
+            raise ValueError(
+                f"Failed to parse model {model.name} serve parameters: {e}"
+            )
 
         world_size, strategies = (
             AscendMindIEResourceFitSelector.get_world_size_from_backend_parameters(
