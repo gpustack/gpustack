@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import aiohttp
+from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
@@ -19,12 +20,15 @@ logger = logging.getLogger(__name__)
     methods=["GET", "POST", "OPTIONS", "HEAD"],
 )
 async def proxy(path: str, request: Request):
+    worker_ip_getter: Callable[[], str] = request.app.state.worker_ip_getter
+    if worker_ip_getter is None:
+        worker_ip_getter = localhost_fallback
     target_service_port = request.headers.get("X-Target-Port")
     if not target_service_port:
         raise HTTPException(status_code=400, detail="Missing X-Target-Port header")
 
     try:
-        url = f"http://127.0.0.1:{target_service_port}/{path}"
+        url = f"http://{worker_ip_getter()}:{target_service_port}/{path}"
         content = await request.body()
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -66,3 +70,7 @@ async def proxy(path: str, request: Request):
             message=error_message,
             is_openai_exception=True,
         )
+
+
+def localhost_fallback() -> str:
+    return "127.0.0.1"

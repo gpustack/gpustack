@@ -284,6 +284,7 @@ class Worker:
         )
         app.state.config = self._config
         app.state.token = read_worker_token(self._config.data_dir)
+        app.state.worker_ip_getter = self.worker_ip
 
         app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)
