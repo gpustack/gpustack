@@ -17,6 +17,7 @@ The following CLI flags are available for OIDC configuration:
 | `--external-auth-name` (Optional)       | Mapping of OIDC user information to username, e.g., `preferred_username`. By default, the `email` claim is used if available.                                        |
 | `--external-auth-full-name` (Optional)  | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used. |
 | `--external-auth-avatar-url` (Optional) | Mapping of OIDC user information to user's avatar URL. By default, the `picture` claim is used if available.                                                         |
+| `--external-auth-default-active` (Optional) | True if new users should be automatically active. Default is false                                                                                               |
 
 You can also set these options via environment variables instead of CLI flags:
 
@@ -29,6 +30,7 @@ GPUSTACK_OIDC_REDIRECT_URI="{your-server-url}/auth/oidc/callback"
 GPUSTACK_EXTERNAL_AUTH_NAME="email"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
+GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE="True"
 ```
 
 ### Example: Integrate with Auth0 OIDC
@@ -84,6 +86,7 @@ The following CLI flags are available for SAML configuration:
 | `--external-auth-name` (Optional)       | Mapping of SAML user information to username. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.                            |
 | `--external-auth-full-name` (Optional)  | Mapping of SAML user information to user's full name. Multiple elements can be combined. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'. |
 | `--external-auth-avatar-url` (Optional) | Mapping of SAML user information to user's avatar URL. You must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.                                                          |
+| `--external-auth-default-active` (Optional) | True if new users should be automatically active. Default is false                                                                                               |
 
 You can also set these options via environment variables instead of CLI flags:
 
@@ -101,6 +104,7 @@ GPUSTACK_SAML_SECURITY="{}"
 GPUSTACK_EXTERNAL_AUTH_NAME="emailaddress"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
+GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE="True"
 ```
 
 ### Example: Integrate with Auth0 SAML
