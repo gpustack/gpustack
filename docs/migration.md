@@ -1,4 +1,4 @@
-# Migration from v0.7 and Earlier
+# Migrating from v0.7 and Earlier Versions to v2
 
 !!! note
 
@@ -93,19 +93,19 @@ After the upgrade is complete, existing Model Instances may remain stuck in the 
 
 ## External Database Migration
 
-GPUStack supported used an external database to store management data. If you previously deployed GPUStack with the external database, follow the steps below to migrate your data.
+GPUStack supports using an external database to store the management data. If you previously deployed GPUStack with an external database, follow the steps below to migrate your data.
 
 !!! warning
 
-      **Backup Required:** Make sure to:
+      **Backup Required.** Before proceeding, back up the following:
 
-      - Back up the data directory at:
+      - The data directory used by your previous GPUStack installation, typically located at:
 
         ```
         /var/lib/gpustack
         ```
 
-      - Back up your external database using your database system’s recommended backup procedure.
+      - Your external database, using the backup procedure recommended by your database system.
 
 ### Migration Steps
 
