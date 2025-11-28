@@ -673,15 +673,6 @@ def set_third_party_env(cfg: Config):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.debug("set env HF_HUB_DISABLE_XET=1")
 
-    # Bridge config to env for existing env-based consumers
-    if cfg.external_auth_default_active is not None:
-        os.environ["GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE"] = (
-            "true" if cfg.external_auth_default_active else "false"
-        )
-        logger.debug(
-            f"set env GPUSTACK_EXTERNAL_AUTH_DEFAULT_ACTIVE={'true' if cfg.external_auth_default_active else 'false'}"
-        )
-
 
 # Adapted from: https://github.com/vllm-project/vllm/blob/main/vllm/utils.py#L2438
 def set_ulimit(target_soft_limit=65535):
