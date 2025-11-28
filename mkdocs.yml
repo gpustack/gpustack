@@ -117,7 +117,6 @@ nav:
           - Using Embedding Models: using-models/using-embedding-models.md
           - Using Reranker Models: using-models/using-reranker-models.md
           - Using Image Generation Models: using-models/using-image-generation-models.md
-          - Recommended Parameters for Image Generation Models: using-models/recommended-parameters-for-image-generation-models.md
           - Editing Images: using-models/editing-images.md
           - Using Audio Models: using-models/using-audio-models.md
       - Tutorials:
