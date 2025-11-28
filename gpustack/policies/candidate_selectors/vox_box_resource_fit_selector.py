@@ -173,6 +173,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
                     ModelInstanceScheduleCandidate(
                         worker=worker,
                         gpu_indexes=[gpu_index],
+                        gpu_type=gpu.type,
                         computed_resource_claim=ComputedResourceClaim(
                             vram={gpu_index: int(self._gpu_vram_claim)},
                             ram=self._gpu_ram_claim,
