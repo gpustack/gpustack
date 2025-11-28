@@ -14,7 +14,7 @@ This guide explains how to deploy GPUStack and observability components (Prometh
 ## Prerequisites
 
 - Docker Compose installed ([guide](https://docs.docker.com/compose/install/)).
-- Required ports available ([see requirements](../requirements.md#port-requirements)).
+- Required ports available ([see requirements](./requirements.md#port-requirements)).
 
 ## NVIDIA
 
@@ -81,7 +81,7 @@ This guide explains how to deploy GPUStack and observability components (Prometh
   ```
 
 ## Other GPU Platforms
-Refer to [requirements](../requirements) for platform-specific setup (AMD, MLU, etc.).
+Refer to [requirements](./requirements.md) for platform-specific setup (AMD, MLU, etc.).
 
 ### Deployment
 
