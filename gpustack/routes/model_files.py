@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from sqlmodel import String, cast, func, or_
+from pathlib import Path
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -130,6 +131,26 @@ async def create_model_file(session: SessionDep, model_file_in: ModelFileCreate)
             message="Model file with the same model source already exists on the worker."
         )
 
+    if model_file_in.local_dir is not None:
+        fields = {
+            "worker_id": model_file_in.worker_id,
+            "local_dir": model_file_in.local_dir,
+        }
+        worker_existing_files = await ModelFile.all_by_field(
+            session, field="worker_id", value=model_file_in.worker_id
+        )
+        if worker_existing_files:
+            for file in worker_existing_files:
+                if (
+                    file.local_dir is not None
+                    and file.huggingface_filename is None
+                    and file.model_scope_file_path is None
+                    and Path(file.local_dir).resolve()
+                    == Path(model_file_in.local_dir).resolve()
+                ):
+                    raise AlreadyExistsException(
+                        message=f"The local directory {model_file_in.local_dir} is already occupied by {file.readable_source} on this worker."
+                    )
     try:
         model_file = ModelFile(
             **model_file_in.model_dump(), source_index=model_file_in.model_source_index

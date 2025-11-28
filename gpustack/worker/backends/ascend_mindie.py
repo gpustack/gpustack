@@ -538,22 +538,23 @@ class AscendMindIEParameters:
             "This will merge into the `config.json` of the model structure.",
         )
 
-        args_parsed = parser.parse_known_args(args=args)
-        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
-            try:
-                attr_value = getattr(args_parsed[0], attr_name, None)
-                if attr_value is not None:
-                    try:
-                        setattr(self, attr_name, attr_value)
-                    except ValueError as e:
-                        # Never reach here, but just in case.
-                        raise argparse.ArgumentTypeError(
-                            f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
-                        ) from e
-            except AttributeError:
-                # If reach here, that means the field is an internal property,
-                # which would not register in the argument parser.
-                pass
+        if args:
+            args_parsed = parser.parse_known_args(args=args)
+            for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+                try:
+                    attr_value = getattr(args_parsed[0], attr_name, None)
+                    if attr_value is not None:
+                        try:
+                            setattr(self, attr_name, attr_value)
+                        except ValueError as e:
+                            # Never reach here, but just in case.
+                            raise argparse.ArgumentTypeError(
+                                f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
+                            ) from e
+                except AttributeError:
+                    # If reach here, that means the field is an internal property,
+                    # which would not register in the argument parser.
+                    pass
 
         self._default()
         self._validate()
@@ -567,6 +568,10 @@ class AscendMindIEParameters:
                 )
             else:
                 self.max_input_token_len = self.max_seq_len
+        # Model config
+        self.max_prefill_batch_size = min(
+            self.max_prefill_batch_size, self.max_batch_size
+        )
         # Schedule config
         if self.max_prefill_tokens <= 0:
             self.max_prefill_tokens = self.max_seq_len
@@ -1178,7 +1183,7 @@ class AscendMindIEServer(InferenceServer):
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
-            params.from_args(self._model.backend_parameters)
+            params.from_args(self._flatten_backend_param())
 
             # -- Log config
             log_config["logLevel"] = params.log_level

@@ -3,6 +3,8 @@ import logging
 import os
 from typing import Dict, List, Optional, Tuple
 
+from gpustack_runtime.deployer.__utils__ import compare_versions
+
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -18,6 +20,7 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     get_local_model_weight_size,
 )
+from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
@@ -61,17 +64,16 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Store and format the abnormal message during scheduling, finally it will be extended to self._diagnostic_messages.
         self._scheduling_messages: ListMessageBuilder = ListMessageBuilder([])
         # Parse model params.
-        if model.backend_parameters:
-            max_seq_len = self._model_params.derived_max_seq_len
-            if max_seq_len > 8192:
-                max_seq_len = 8192
-            self._serving_params.max_seq_len = max_seq_len
-            try:
-                self._serving_params.from_args(model.backend_parameters)
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to parse model {model.name} serve parameters: {e}"
-                )
+        max_seq_len = self._model_params.derived_max_seq_len
+        if max_seq_len > 8192:
+            max_seq_len = 8192
+        self._serving_params.max_seq_len = max_seq_len
+        try:
+            self._serving_params.from_args(model.backend_parameters or [])
+        except Exception as e:
+            raise ValueError(
+                f"Failed to parse model {model.name} serve parameters: {e}"
+            )
 
         world_size, strategies = (
             AscendMindIEResourceFitSelector.get_world_size_from_backend_parameters(
@@ -90,28 +92,34 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         serving_params = AscendMindIEParameters()
         serving_params.from_args(model.backend_parameters)
 
-        tp, pp, dp, moe_tp, moe_ep, ws = (
-            serving_params.tensor_parallel_size,
+        pp, tp, dp, cp, sp, moe_tp, moe_ep, ws = (
             serving_params.pipeline_parallel_size,
+            serving_params.tensor_parallel_size,
             serving_params.data_parallel_size,
+            serving_params.context_parallel_size,
+            serving_params.sequence_parallel_size,
             serving_params.moe_tensor_parallel_size,
             serving_params.moe_expert_parallel_size,
             serving_params.world_size,
         )
 
-        if tp or pp or dp or moe_tp or moe_ep:
+        if pp > 1 or tp > 0 or dp > 0 or cp > 0 or sp > 0 or moe_tp > 0 or moe_ep > 0:
             world_size = ws
             strategies = []
+            if pp > 1:
+                strategies.append("pp")
             if tp > 0:
                 strategies.append("tp")
-            if pp > 0:
-                strategies.append("pp")
             if dp > 0:
                 strategies.append("dp")
-            if moe_ep > 0:
-                strategies.append("moe_ep")
+            if cp > 0:
+                strategies.append("cp")
+            if sp > 0:
+                strategies.append("sp")
             if moe_tp > 0:
                 strategies.append("moe_tp")
+            if moe_ep > 0:
+                strategies.append("moe_ep")
 
             return world_size, strategies
 
@@ -164,6 +172,11 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if request_vram > 0:
                 return RequestEstimateUsage(reqeust_ram, request_vram)
 
+        is_multimodal = (
+            is_multimodal_model(self._model_params.architectures)
+            and compare_versions(self._model.backend_version or "0.0.0", "2.2.rc1") >= 0
+        )
+
         """
         RAM
         """
@@ -178,12 +191,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         VRAM
         """
 
-        # Hardcode the VRAM footprint for now.
+        # Treat the VRAM footprint as 3 GiB by default.
         vram_footprint = 3 * 1024**3
-        if self._model.env:
-            reserved_memory_gb = safe_int(
-                self._model.env.get("RESERVED_MEMORY_GB", "3")
-            )
+
+        # Override vram_footprint if RESERVED_MEMORY_GB is set.
+        if "RESERVED_MEMORY_GB" in (self._model.env or {}):
+            reserved_memory_gb = safe_int(self._model.env.get("RESERVED_MEMORY_GB"))
             if reserved_memory_gb > 0:
                 vram_footprint = reserved_memory_gb * 1024**3
 
@@ -251,6 +264,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
             vram_kv_cache = n_heads * d_head * n_layers * n_tokens * ct_size
 
+        # Correct multimodal vram_kv_cache.
+        if is_multimodal:
+            vram_kv_cache = self._serving_params.max_prefill_tokens * (
+                n_layers * d_head * 4
+            )
+
         # Get cache type size,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0288.html.
         at_size = t_size
@@ -278,6 +297,14 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             * self._serving_params.cache_block_size
             * (n_layers * n_heads * d_head * at_size)
         )
+
+        # Correct multimodal vram_computation.
+        if is_multimodal:
+            vram_computation = (
+                self._serving_params.max_batch_size
+                * self._serving_params.max_iter_times
+                * (n_layers * d_head * 4)
+            )
 
         ram = ram_footprint + ram_kv_cache_swappable
         vram = vram_footprint + vram_weight + vram_kv_cache + vram_computation
@@ -307,6 +334,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                             f"Model's attention heads ({num_attention_heads}) must be divisible by "
                             f"the world size ({self._serving_params.world_size}), "
                             f"multiplied by --data-parallel-size ({self._serving_params.data_parallel_size}) "
+                            f"and --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
+                        )
+                    elif self._serving_params.context_parallel_size > 1:
+                        self._diagnostic_messages.append(
+                            f"Model's attention heads ({num_attention_heads}) must be divisible by "
+                            f"the world size ({self._serving_params.world_size}), "
+                            f"multiplied by --context-parallel-size ({self._serving_params.context_parallel_size}) "
                             f"and --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
                         )
                     elif self._serving_params.moe_expert_parallel_size > 1:
@@ -864,7 +898,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Available worker devices: {Worker: {Device Index: Device}},
         # all devices are in sorted.
         available_worker_devices_idx = await self._get_available_worker_devices_idx(
-            workers, request_usage.vram
+            workers, request_usage.ram
         )
         if not available_worker_devices_idx:
             return candidates

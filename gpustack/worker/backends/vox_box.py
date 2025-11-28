@@ -122,8 +122,7 @@ class VoxBoxServer(InferenceServer):
             model_path=self._model_path,
             port=port,
         )
-        if self._model.backend_parameters:
-            arguments.extend(self._model.backend_parameters)
+        arguments.extend(self._flatten_backend_param())
         # Append immutable arguments to ensure proper operation for accessing
         immutable_arguments = [
             "--host",
