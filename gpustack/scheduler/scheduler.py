@@ -32,11 +32,7 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
-from gpustack.scheduler.model_registry import (
-    vllm_supported_embedding_architectures,
-    vllm_supported_llm_architectures,
-    vllm_supported_reranker_architectures,
-)
+from gpustack.scheduler.model_registry import detect_model_type
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.inference_backend import is_built_in_backend
@@ -756,17 +752,3 @@ def set_model_gpus_per_replica(model: Model) -> bool:
         # Ignore if the given model is not a SQLModel instance.
         pass
     return True
-
-
-def detect_model_type(architectures: List[str]) -> CategoryEnum:
-    """
-    Detect the model type based on the architectures.
-    """
-    for architecture in architectures:
-        if architecture in vllm_supported_embedding_architectures:
-            return CategoryEnum.EMBEDDING
-        if architecture in vllm_supported_reranker_architectures:
-            return CategoryEnum.RERANKER
-        if architecture in vllm_supported_llm_architectures:
-            return CategoryEnum.LLM
-    return CategoryEnum.UNKNOWN

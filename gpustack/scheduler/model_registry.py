@@ -2,6 +2,9 @@
 # Update these when the builtin vLLM is updated
 # List of supported model architectures for the default version of the vLLM backend
 # TODO version-aware support list
+from typing import List
+
+from gpustack.schemas.models import CategoryEnum
 
 _TEXT_GENERATION_MODELS = [
     # [Decoder-only]
@@ -258,13 +261,45 @@ _TRANSFORMERS_BACKEND_MODELS = [
     "TransformersForMultimodalLM",
 ]
 
-vllm_supported_embedding_architectures = _EMBEDDING_MODELS
-
-vllm_supported_reranker_architectures = _CROSS_ENCODER_MODELS
-
-vllm_supported_llm_architectures = (
+_LLM_MODELS = (
     _TEXT_GENERATION_MODELS
     + _MULTIMODAL_MODELS
     + _TRANSFORMERS_SUPPORTED_MODELS
     + _TRANSFORMERS_BACKEND_MODELS
 )
+
+
+def detect_model_type(architectures: List[str]) -> CategoryEnum:
+    """
+    Detect the model type based on the architectures.
+
+    Args:
+        architectures: List of model architecture names.
+
+    Returns:
+        The detected model category.
+    """
+    for architecture in architectures:
+        if architecture in _EMBEDDING_MODELS:
+            return CategoryEnum.EMBEDDING
+        if architecture in _CROSS_ENCODER_MODELS:
+            return CategoryEnum.RERANKER
+        if architecture in _LLM_MODELS:
+            return CategoryEnum.LLM
+    return CategoryEnum.UNKNOWN
+
+
+def is_multimodal_model(architectures: List[str]) -> bool:
+    """
+    Check if the model is a multimodal model based on the architectures.
+
+    Args:
+        architectures: List of model architecture names.
+
+    Returns:
+        True if the model is multimodal, False otherwise.
+    """
+    for architecture in architectures:
+        if architecture in _MULTIMODAL_MODELS:
+            return True
+    return False

@@ -3,6 +3,8 @@ import logging
 import os
 from typing import Dict, List, Optional, Tuple
 
+from gpustack_runtime.deployer.__utils__ import compare_versions
+
 from gpustack.policies.base import (
     Allocatable,
     ModelInstanceScheduleCandidate,
@@ -18,6 +20,7 @@ from gpustack.policies.utils import (
     ListMessageBuilder,
     get_local_model_weight_size,
 )
+from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
@@ -169,6 +172,11 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             if request_vram > 0:
                 return RequestEstimateUsage(reqeust_ram, request_vram)
 
+        is_multimodal = (
+            is_multimodal_model(self._model_params.architectures)
+            and compare_versions(self._model.backend_version or "0.0.0", "2.2.rc1") >= 0
+        )
+
         """
         RAM
         """
@@ -183,12 +191,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         VRAM
         """
 
-        # Hardcode the VRAM footprint for now.
+        # Treat the VRAM footprint as 3 GiB by default.
         vram_footprint = 3 * 1024**3
-        if self._model.env:
-            reserved_memory_gb = safe_int(
-                self._model.env.get("RESERVED_MEMORY_GB", "3")
-            )
+
+        # Override vram_footprint if RESERVED_MEMORY_GB is set.
+        if "RESERVED_MEMORY_GB" in (self._model.env or {}):
+            reserved_memory_gb = safe_int(self._model.env.get("RESERVED_MEMORY_GB"))
             if reserved_memory_gb > 0:
                 vram_footprint = reserved_memory_gb * 1024**3
 
@@ -256,6 +264,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
             vram_kv_cache = n_heads * d_head * n_layers * n_tokens * ct_size
 
+        # Correct multimodal vram_kv_cache.
+        if is_multimodal:
+            vram_kv_cache = self._serving_params.max_prefill_tokens * (
+                n_layers * d_head * 4
+            )
+
         # Get cache type size,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/mindiellm/llmdev/mindie_llm0288.html.
         at_size = t_size
@@ -283,6 +297,14 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             * self._serving_params.cache_block_size
             * (n_layers * n_heads * d_head * at_size)
         )
+
+        # Correct multimodal vram_computation.
+        if is_multimodal:
+            vram_computation = (
+                self._serving_params.max_batch_size
+                * self._serving_params.max_iter_times
+                * (n_layers * d_head * 4)
+            )
 
         ram = ram_footprint + ram_kv_cache_swappable
         vram = vram_footprint + vram_weight + vram_kv_cache + vram_computation
@@ -312,6 +334,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                             f"Model's attention heads ({num_attention_heads}) must be divisible by "
                             f"the world size ({self._serving_params.world_size}), "
                             f"multiplied by --data-parallel-size ({self._serving_params.data_parallel_size}) "
+                            f"and --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
+                        )
+                    elif self._serving_params.context_parallel_size > 1:
+                        self._diagnostic_messages.append(
+                            f"Model's attention heads ({num_attention_heads}) must be divisible by "
+                            f"the world size ({self._serving_params.world_size}), "
+                            f"multiplied by --context-parallel-size ({self._serving_params.context_parallel_size}) "
                             f"and --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
                         )
                     elif self._serving_params.moe_expert_parallel_size > 1:
@@ -869,7 +898,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Available worker devices: {Worker: {Device Index: Device}},
         # all devices are in sorted.
         available_worker_devices_idx = await self._get_available_worker_devices_idx(
-            workers, request_usage.vram
+            workers, request_usage.ram
         )
         if not available_worker_devices_idx:
             return candidates
