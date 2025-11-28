@@ -234,26 +234,6 @@ class ModelSpecBase(SQLModel, ModelSource):
 
 
 class ModelBase(ModelSpecBase):
-    @model_validator(mode="after")
-    def validate(self):
-        backend = get_backend(self)
-        if self.cpu_offloading and backend in [
-            BackendEnum.VLLM,
-            BackendEnum.SGLANG,
-            BackendEnum.ASCEND_MINDIE,
-        ]:
-            raise ValueError(
-                f"CPU offloading is not supported for the {backend} backend"
-            )
-
-        if backend == BackendEnum.VOX_BOX:
-            if self.distributed_inference_across_workers:
-                raise ValueError(
-                    "Distributed inference across workers is not supported for the vox-box backend"
-                )
-
-        return self
-
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
 
