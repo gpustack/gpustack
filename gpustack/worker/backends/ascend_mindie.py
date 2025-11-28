@@ -568,6 +568,10 @@ class AscendMindIEParameters:
                 )
             else:
                 self.max_input_token_len = self.max_seq_len
+        # Model config
+        self.max_prefill_batch_size = min(
+            self.max_prefill_batch_size, self.max_batch_size
+        )
         # Schedule config
         if self.max_prefill_tokens <= 0:
             self.max_prefill_tokens = self.max_seq_len
