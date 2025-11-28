@@ -8,7 +8,7 @@ In this guide, we will walk you through deploying and using Speech-to-Text and T
 
 Before you begin, ensure that you have the following:
 
-- A Linux system with AMD64 architecture or macOS.
+- A Linux system with AMD64 architecture.
 - Access to Hugging Face for downloading the model files.
 - GPUStack is installed and running. If not, refer to the [Quickstart Guide](../quickstart.md).
 
@@ -21,7 +21,7 @@ Follow these steps to deploy the model from Hugging Face:
 1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click the `Deploy Model` button.
 3. In the dropdown, select `Hugging Face` as the source for your model.
-4. Use the search bar in the top left to search for the model name `Systran/faster-whisper-medium`.
+4. Use the search bar in the top left to search for the model name `Systran/faster-whisper-large-v3`.
 5. Leave everything as default and click the `Save` button to deploy the model.
 
 ![Deploy Model](../assets/using-models/using-audio-models/deploy-stt-model.png)
