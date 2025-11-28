@@ -866,10 +866,8 @@ async def sync_instance_files_state(
 ):
     for file in files:
         if file.worker_id == instance.worker_id:
-            if (
-                instance.draft_model_source
-                and file.source_index == instance.draft_model_source.model_source_index
-            ):
+            is_draft_model = _is_draft_model_file(file, instance)
+            if is_draft_model:
                 await sync_main_worker_model_file_state(
                     session, file, instance, is_draft_model=True
                 )
@@ -877,6 +875,28 @@ async def sync_instance_files_state(
                 await sync_main_worker_model_file_state(session, file, instance)
         else:
             await sync_distributed_model_file_state(session, file, instance)
+
+
+def _is_draft_model_file(file: ModelFile, instance: ModelInstance) -> bool:
+    """
+    Check if the model file is the draft model file for the given model instance.
+    """
+    if not instance.draft_model_source:
+        return False
+
+    if file.model_source_index == instance.draft_model_source.model_source_index:
+        return True
+
+    # The model uses a local path as its draft source, but the model file may come from a remote source.
+    # Match by resolved path.
+    if (
+        instance.draft_model_source.source == SourceEnum.LOCAL_PATH
+        and file.resolved_paths
+        and file.resolved_paths[0] == instance.draft_model_source.local_path
+    ):
+        return True
+
+    return False
 
 
 async def sync_main_worker_model_file_state(
