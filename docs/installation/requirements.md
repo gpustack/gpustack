@@ -130,23 +130,6 @@ GPUStack uses these ports for communication:
 | TCP 40000-40063 | Port range for inference services             |
 | TCP 41000-41999 | Port range for Ray services(vLLM distributed deployment using) |
 
-#### Embedded Gateway Ports
-
-The embedded gateway for both server and worker uses the following ports for internal communications.
-
-| Port      | Host      | Description                                          |
-| --------- | --------- | ---------------------------------------------------- |
-| TCP 18443 | 127.0.0.1 | Port for the file-based APIServer serving via HTTPS  |
-| TCP 15000 | 127.0.0.1 | Management port for the Envoy gateway                |
-| TCP 15021 | 0.0.0.0   | Health check port for the Envoy gateway              |
-| TCP 15090 | 0.0.0.0   | Metrics port for the Envoy gateway                   |
-| TCP 9876  | 127.0.0.1 | Introspection port for the Pilot-discovery           |
-| TCP 15010 | 127.0.0.1 | Port for Pilot-discovery serving XDS via HTTP/gRPC   |
-| TCP 15012 | 127.0.0.1 | Port for Pilot-discovery serving XDS via secure gRPC |
-| TCP 15020 | 0.0.0.0   | Metrics port for Pilot-agent                         |
-| TCP 8888  | 127.0.0.1 | Port for Controller serving XDS via HTTP             |
-| TCP 15051 | 127.0.0.1 | Port for Controller serving XDS via gRPC             |
-
 ##### Distributed vLLM with Ray Ports
 
 When using distributed vLLM, GPUStack will parse the above port range for Ray services,
@@ -166,3 +149,20 @@ and assign them in order as below:
 12. Maximum port number for the worker (the last port of the range)
 
 For more details on Ray ports, see the [Ray documentation](https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations).
+
+#### Embedded Gateway Ports
+
+The embedded gateway for both server and worker uses the following ports for internal communications.
+
+| Port      | Host      | Description                                          |
+| --------- | --------- | ---------------------------------------------------- |
+| TCP 18443 | 127.0.0.1 | Port for the file-based APIServer serving via HTTPS  |
+| TCP 15000 | 127.0.0.1 | Management port for the Envoy gateway                |
+| TCP 15021 | 0.0.0.0   | Health check port for the Envoy gateway              |
+| TCP 15090 | 0.0.0.0   | Metrics port for the Envoy gateway                   |
+| TCP 9876  | 127.0.0.1 | Introspection port for the Pilot-discovery           |
+| TCP 15010 | 127.0.0.1 | Port for Pilot-discovery serving XDS via HTTP/gRPC   |
+| TCP 15012 | 127.0.0.1 | Port for Pilot-discovery serving XDS via secure gRPC |
+| TCP 15020 | 0.0.0.0   | Metrics port for Pilot-agent                         |
+| TCP 8888  | 127.0.0.1 | Port for Controller serving XDS via HTTP             |
+| TCP 15051 | 127.0.0.1 | Port for Controller serving XDS via gRPC             |
