@@ -70,7 +70,7 @@ These environment variables are typically used for third-party service integrati
 | `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.               | `3600`  |
 | `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                   | `false` |
 
-### Model Script Configuration
+### Model Deployment Configuration
 
 !!! note
     
@@ -101,6 +101,8 @@ The serving command script automatically handles:
 ## GPUStack Runtime Environment Variables
 
 These environment variables are used by GPUStack runtime. Commonly used to adjust the behavior of inference backends running in Docker/Kubernetes.
+
+They are only usable within workers. Please set the environment variables in the workers’ containers to ensure they take effect properly.
 
 ### Global Variables
 
@@ -161,7 +163,7 @@ These environment variables are used by GPUStack runtime. Commonly used to adjus
 | `GPUSTACK_RUNTIME_KUBERNETES_SERVICE_TYPE` | Service type for Kubernetes services. Options: ClusterIP, NodePort, LoadBalancer. | `ClusterIP` |
 | `GPUSTACK_RUNTIME_KUBERNETES_QUORUM_READ` | Whether to use quorum read for Kubernetes services. | `0` |
 
-### ROCm Variables
+### ROCm Detector Variables
 
 | Variable | Description | Default |
 | -------- | ----------- | ------- |
@@ -169,44 +171,3 @@ These environment variables are used by GPUStack runtime. Commonly used to adjus
 | `ROCM_HOME` | ROCm home directory. | (empty) |
 | `ROCM_PATH` | ROCm path. | `/opt/rocm` |
 | `ROCM_CORE_LIB_PATH` | ROCm core library path. | (empty) |
-
-## GPUStack Runner Environment Variables
-
-### Container Registry Authentication
-
-| Variable Name          | Description                                        | Default |
-|------------------------|----------------------------------------------------|---------|
-| `SOURCE_USERNAME`      | Source registry authentication username            | (empty) |
-| `SOURCE_PASSWORD`      | Source registry authentication password/token      | (empty) |
-| `DESTINATION_USERNAME` | Destination registry authentication username       | (empty) |
-| `DESTINATION_PASSWORD` | Destination registry authentication password/token | (empty) |
-
-### GPU Runtime Configuration
-
-| Variable Name            | Description                | Default                           |
-|--------------------------|----------------------------|-----------------------------------|
-| `RUNTIME`                | Docker runtime type        | `auto-detect (nvidia/amd/ascend)` |
-| `NVIDIA_VISIBLE_DEVICES` | NVIDIA GPU visible devices | `all`                             |
-| `NVIDIA_DISABLE_REQUIRE` | NVIDIA disable requirement | `true`                            |
-| `AMD_VISIBLE_DEVICES`    | AMD GPU visible devices    | `all`                             |
-| `ASCEND_VISIBLE_DEVICES` | Ascend GPU visible devices | `all`                             |
-
-### Network Communication Configuration
-
-| Variable Name        | Description                           | Default                               |
-|----------------------|---------------------------------------|---------------------------------------|
-| `NCCL_SOCKET_IFNAME` | NCCL network interface name           | `auto-detect default route interface` |
-| `GLOO_SOCKET_IFNAME` | GLOO network interface name           | `auto-detect default route interface` |
-| `NCCL_IB_*`          | NCCL InfiniBand related configuration | (empty)                               |
-
-### Build and Tag Management
-
-| Variable Name    | Description             | Default                                               |
-|------------------|-------------------------|-------------------------------------------------------|
-| `TAG`            | Image tag               | `auto-generated based on backend and service version` |
-| `TAG_PREFIX`     | Tag prefix              | `auto-generated based on backend type`                |
-| `TAG_SUFFIX`     | Tag suffix              | `"-dev" for development, empty for release`           |
-| `TAG_X`          | Major version tag       | `auto-generated based on service major version`       |
-| `TAG_XY`         | Major-minor version tag | `auto-generated based on service major-minor version` |
-| `PLATFORM_TAG`   | Platform-specific tag   | `tag+os+architecture`                                 |
-| `PYTHON_VERSION` | Python version          | `determined by build configuration`                   |
