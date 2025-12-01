@@ -173,12 +173,10 @@ In the following steps, this path is referenced as `${your-data-dir}`.
 After the upgrade is complete, existing Model Instances may remain stuck in the `Starting` state. If this happens, recreating the Model Instance will allow the model to run normally.
 
 #### Migration from llama-box
-If you were using llama-box as the inference backend in previous versions, please note that llama-box is no longer supported after v2.0.0. Use llama.cpp as the inference backend instead.
+If you were using llama-box as the inference backend in previous versions, please note that llama-box is no longer supported after v2.0.0. Use llama.cpp via the custom inference backend instead.
 
 1. Configure llama.cpp on Inference Backend page. For llama.cpp configuration, refer to this [document](./tutorials/using-custom-backends.md/#deploy-gguf-models-with-llamacpp).
 2. Go to the Deployment page, modify the model originally launched with llama-box, change the backend to llama.cpp
-3. Rebuild the model instance after saving.
+3. Recreate the model instance after saving.
 
-Regarding distributed inference for GGUF models, after v2.0.0 we will only support automatic scheduling for single-worker multi-GPU setups.
-- If you require multi-worker multi-GPU scheduling, please manually configure the selection and set the corresponding concurrency parameters.
-- When encountering the error message "Manual GPU selection across multiple workers is not supported for custom backends," select "Submit Anyway."
+> Note: As of v2.0.0, llama-box is no longer supported, and the system now uses a custom inference backend for GGUF model deployments. Distributed inference across multiple workers is currently not supported with custom inference backends.
