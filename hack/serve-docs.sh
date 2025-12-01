@@ -4,4 +4,4 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-uv run mkdocs serve
+uv run mkdocs serve --livereload
