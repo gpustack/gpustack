@@ -74,7 +74,7 @@ These environment variables are typically used for third-party service integrati
     
     These environment variables are **not** set when starting GPUStack. Instead, they should be configured in the **Advanced Options > Environment Variables** section when deploying a model. They are used to customize the model serving behavior.
 
-| Variable                                         | Description                                                                                                                                                                                    | Default |
+| <div style="width:180px">Variable</div>          | Description                                                                                                                                                                                    | Default |
 |--------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED` | Disable the automatic serving command script execution. When set to `1` or `true`, the script that handles package installation and other setup tasks will not run.                            | `0`     |
 | `PYPI_PACKAGES_INSTALL`                          | Additional PyPI packages to install in the model serving environment. Multiple packages should be space-separated. The script will use `uv pip install` if available, otherwise `pip install`. | (empty) |
@@ -92,6 +92,7 @@ GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED=1
 ```
 
 The serving command script automatically handles:
+
 - Installing additional PyPI packages specified in `PYPI_PACKAGES_INSTALL`
 - Supporting both `uv pip` and `pip` for package installation
 - Handling custom PyPI indices via `PIP_INDEX_URL` and `PIP_EXTRA_INDEX_URL`
