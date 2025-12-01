@@ -14,7 +14,7 @@ from aiolimiter import AsyncLimiter
 from gpustack.api.exceptions import HTTPException
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
-from gpustack.envs import MODEL_EVALUATION_CACHE_MAX_SIZE, MODEL_EVALUATION_CACHE_TTL
+from gpustack import envs
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
 from gpustack.server.catalog import model_set_specs_by_key
@@ -45,7 +45,7 @@ from gpustack.utils.profiling import time_decorator
 logger = logging.getLogger(__name__)
 
 evaluate_cache = TTLCache(
-    maxsize=MODEL_EVALUATION_CACHE_MAX_SIZE, ttl=MODEL_EVALUATION_CACHE_TTL
+    maxsize=envs.MODEL_EVALUATION_CACHE_MAX_SIZE, ttl=envs.MODEL_EVALUATION_CACHE_TTL
 )
 
 # To reduce the likelihood of hitting the Hugging Face API rate limit (600 RPM)
