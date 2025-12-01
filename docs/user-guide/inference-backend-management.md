@@ -35,9 +35,6 @@ The screenshot below shows the Backends page:
 
 ![backend-list](../assets/backends/backend-list.png)
 
-<<<<<<< HEAD
-## List Versions of Inference Backend
-On the Inference Backend page, click anywhere on the backend card (except the action buttons) to open a modal where you can browse all built-in and custom-added versions.
 
 ## Flexible Testing Deployment
 Use this mode to quickly verify or tweak the image and startup command without editing the backend definition.
@@ -46,7 +43,6 @@ Use this mode to quickly verify or tweak the image and startup command without e
 2. In the Basic tab, open the "Backend" dropdown and select "Custom" under the "Built-in" section.
 3. Two fields appear: `image_name` and `run_command`. These override the backend configuration for this deployment only.
 4. Review the remaining required settings and submit the deployment.
-=======
 ## Create Backend
 
 1. Navigate to the `Inference Backend Management` page.
@@ -55,13 +51,12 @@ Use this mode to quickly verify or tweak the image and startup command without e
 4. Newly created backends automatically append the suffix **-custom**.
 5. Every backend must contain at least one version.
 
-![two-add-modes](../assets/backends/add-backend.png)
 
 ### Form Mode
 
 1. Fill the backend `Name` and add at least one `Version`.
 
-![form-mode](../assets/backends/add-backend-01.png)
+![form-mode](../assets/backends/add-backend-form.png)
 
 **Add Versions**
 
@@ -70,7 +65,7 @@ Use this mode to quickly verify or tweak the image and startup command without e
 3. When multiple versions exist, you may designate one as the **default version**.
 4. Click the `Save` button.
 
-![add-version](../assets/backends/add-backend-versions.png)
+![add-version](../assets/backends/add-backend-version.png)
 
 ### Yaml Mode
 
@@ -80,7 +75,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 2. The backend name must be endwith **-custom**.
 2. Click the `Save` button.
 
-![yaml-mode](../assets/backends/yaml-mode.png)
+![yaml-mode](../assets/backends/add-backend-yaml.png)
 
 ## Update Custom Backend
 
@@ -90,8 +85,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 3. Click the `Edit` button in the dropdown.
 4. Update the editable attributes in **Form Mode** or **YAML Mode**.
 5. Click the `Save` button.
-
-![edit-custom](../assets/backends/edit-custom-backend.png)
+![edit-custom](../assets/backends/edit-custom-form.png)
 
 ## Update Built-in Backend
 
@@ -107,7 +101,6 @@ Click the `Yaml Mode` tab at the top of the modal.
 5. Click the `Save` button.
 
 ![edit-builtin-backend](../assets/backends/edit-builtin-backend.png)
-![edit-builtin-form](../assets/backends/edit-buitin-form.png)
 
 ## Delete Backend
 
@@ -138,4 +131,3 @@ Click the `Yaml Mode` tab at the top of the modal.
 
 ![backend](../assets/backends/use-custom-backend.png)
 ![backend-versions](../assets/backends/use-custom-backend-version.png)
->>>>>>> 8857df4b (docs: update inference backend management)
