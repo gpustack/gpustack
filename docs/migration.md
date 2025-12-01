@@ -4,7 +4,7 @@
 
       Since v2.0.0, GPUStack supports Linux only. For other OS, move the data directory to a Linux system and run the migration.
 
-## Embedded Database Migration (SQLite → PostgreSQL)
+## Embedded Database Migration (SQLite → Embedded PostgreSQL)
 
 In v0.7 and earlier, GPUStack used an embedded SQLite database by default to store management data. Starting from v2.0.0, GPUStack dropped SQLite support and now uses an embedded PostgreSQL database by default for improved performance and scalability.
 
