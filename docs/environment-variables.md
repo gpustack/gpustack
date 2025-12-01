@@ -55,8 +55,6 @@ These environment variables are typically used for third-party service integrati
 | Variable                               | Description                                              | Default         |
 |----------------------------------------|----------------------------------------------------------|-----------------|
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS` | Higress external authentication timeout in milliseconds. | `3000`          |
-| `GPUSTACK_GATEWAY_DIR`                 | Gateway directory path.                                  | (auto-detected) |
-| `GPUSTACK_HIGRESS_PLUGIN_DIR`          | Higress plugin directory path.                           | (auto-detected) |
 
 ### Worker and Model Configuration
 
