@@ -1,5 +1,7 @@
 # Worker Maintenance Mode
 
+**Maintenance Mode** is a state where a worker stops accepting new deployment tasks, allowing safe updates or troubleshooting. Existing running instances are not affected and continue to operate normally.
+
 ## Enter Maintenance Mode
 
 1. Navigate to the `Workers` page.

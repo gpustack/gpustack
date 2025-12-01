@@ -26,7 +26,7 @@ Version Configs parameter description:
 | Execution Command               | Version-specific startup command. If omitted, the Default Execution Command is used | No       |
 
 
-## Backend List
+## Inference Backend List
 
 You can browse and manage inference backends on the `Inference Backend Management` page.
 The list supports filtering by backend name.
@@ -43,7 +43,7 @@ Use this mode to quickly verify or tweak the image and startup command without e
 2. In the Basic tab, open the "Backend" dropdown and select "Custom" under the "Built-in" section.
 3. Two fields appear: `image_name` and `run_command`. These override the backend configuration for this deployment only.
 4. Review the remaining required settings and submit the deployment.
-## Create Backend
+## Create Inference Backend
 
 1. Navigate to the `Inference Backend Management` page.
 2. Click `Add Backend`.
@@ -77,7 +77,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 
 ![yaml-mode](../assets/backends/add-backend-yaml.png)
 
-## Update Custom Backend
+## Update Custom Inference Backend
 
 1. Navigate to the `Inference Backend Management` page.
 2. Find the backend you want to edit.
@@ -87,7 +87,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 5. Click the `Save` button.
 ![edit-custom](../assets/backends/edit-custom-form.png)
 
-## Update Built-in Backend
+## Update Built-in Inference Backend
 
 1. Navigate to the `Inference Backend Management` page.
 2. Find the backend you want to edit.
@@ -102,7 +102,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 
 ![edit-builtin-backend](../assets/backends/edit-builtin-backend.png)
 
-## Delete Backend
+## Delete Inference Backend
 
 1. Navigate to the `Inference Backend Management` page.
 2. Find the backend you want to delete.(Built-in backends cannot be deleted.)
