@@ -14,7 +14,6 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 import requests
 from gpustack.utils import validators
-from gpustack import envs
 from gpustack.schemas.workers import (
     CPUInfo,
     FileSystemInfo,
@@ -292,7 +291,7 @@ class Config(BaseSettings):
         os.makedirs(self.log_dir, exist_ok=True)
         # prepare gateway dirs
         os.makedirs(
-            envs.GATEWAY_DIR or self.higress_base_dir(),
+            os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),
             exist_ok=True,
         )
         # ensure higress data dir exists
