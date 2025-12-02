@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import shlex
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -883,9 +884,13 @@ $@
         e.g.
             self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
         """
-        return [
-            p for param in (self._model.backend_parameters or []) for p in param.split()
-        ]
+        result = []
+        for param in self._model.backend_parameters or []:
+            if "=" in param:
+                result.append(param)
+                continue
+            result.extend(shlex.split(param))
+        return result
 
     def _transform_workload_plan(
         self, workload: WorkloadPlan
