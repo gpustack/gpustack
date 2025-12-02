@@ -6,7 +6,11 @@ from jwt.algorithms import RSAAlgorithm
 from gpustack.config.config import Config
 from typing import Annotated, Dict, Optional
 from fastapi import APIRouter, Form, Request, Response
-from gpustack.api.exceptions import InvalidException, UnauthorizedException
+from gpustack.api.exceptions import (
+    InvalidException,
+    UnauthorizedException,
+    BadRequestException,
+)
 from gpustack.schemas.users import UpdatePassword
 from gpustack.schemas.users import User, AuthProviderEnum
 from gpustack.security import (
@@ -323,6 +327,10 @@ async def oidc_callback(request: Request, session: SessionDep):
             token_endpoint = config.openid_configuration["token_endpoint"]
             token_res = await client.request("POST", token_endpoint, data=data)
             res_data = json.loads(token_res.text)
+            if token_res.status_code != 200:
+                raise BadRequestException(
+                    message=f"Failed to get token, {res_data['error_description']}"
+                )
 
             # Get user data from token or userinfo endpoint
             user_data = await get_oidc_user_data(client, res_data, config)
