@@ -64,3 +64,38 @@ async def test_apply_registry_override(
     if container_registry:
         backend._config = types.SimpleNamespace(system_default_container_registry=None)
         assert backend._apply_registry_override(image_name) == image_name
+
+
+@pytest.mark.parametrize(
+    "backend_parameters, expected",
+    [
+        (
+            ["--ctx-size 1024"],
+            ["--ctx-size", "1024"],
+        ),
+        (
+            ["--served-model-name foo"],
+            ["--served-model-name", "foo"],
+        ),
+        (
+            ['--served-model-name "foo bar"'],
+            ["--served-model-name", "foo bar"],
+        ),
+        (
+            ['--arg1', '--arg2 "val with spaces"'],
+            ['--arg1', '--arg2', 'val with spaces'],
+        ),
+        (
+            ['--arg1 "val with spaces"', '--arg2="val with spaces"'],
+            ['--arg1', 'val with spaces', '--arg2="val with spaces"'],
+        ),
+        (
+            None,
+            [],
+        ),
+    ],
+)
+def test_flatten_backend_param(backend_parameters, expected):
+    backend = CustomServer.__new__(CustomServer)
+    backend._model = types.SimpleNamespace(backend_parameters=backend_parameters)
+    assert backend._flatten_backend_param() == expected
