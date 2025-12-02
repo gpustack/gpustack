@@ -129,15 +129,29 @@ def get_free_port(port_range: str, unavailable_ports: Optional[set[int]] = None)
         port = random.randint(start, end)
         if port in unavailable_ports:
             continue
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("", port))
-                return port
-            except OSError:
-                unavailable_ports.add(port)
-                if len(unavailable_ports) == end - start + 1:
-                    raise Exception("No free port available in the port range.")
-                continue
+        if is_port_available(port):
+            return port
+        else:
+            unavailable_ports.add(port)
+            if len(unavailable_ports) == end - start + 1:
+                raise Exception("No free port available in the port range.")
+            continue
+
+
+def is_port_available(port: int) -> bool:
+    """
+    Test if a port is available.
+
+    Returns:
+        True if the port is available, False otherwise.
+    """
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("", port))
+            return True
+        except OSError:
+            return False
 
 
 async def is_url_reachable(

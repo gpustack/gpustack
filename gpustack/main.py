@@ -8,6 +8,7 @@ from gpustack.cmd.images import setup_images_cmd
 from gpustack.cmd.reset_admin_password import setup_reset_admin_password_cmd
 from gpustack.cmd.version import setup_version_cmd
 from gpustack.cmd.reload_config import setup_reload_config_cmd
+from gpustack.cmd.prerun import setup_prerun_cmd
 
 
 def main():
@@ -31,6 +32,7 @@ def main():
     setup_reset_admin_password_cmd(subparsers)
     setup_migrate_cmd(subparsers)
     setup_images_cmd(subparsers)
+    setup_prerun_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
