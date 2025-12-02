@@ -1,16 +1,12 @@
 #!/command/with-contenv /bin/bash
 # shellcheck shell=bash
-# shellcheck disable=SC1091,SC1090
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
 source "$GPUSTACK_GATEWAY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
-# The pilot port is configured in mesh config, default to 15010
-readinessCheck "Higress Pilot" 15010
-
 set -e
-exec 2>&1
 
-exec /usr/local/bin/supercronic /var/lib/istio/cron.txt
+readinessCheck "Higress APIServer" "$APISERVER_PORT" 2

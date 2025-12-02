@@ -1,0 +1,17 @@
+#!/command/with-contenv bash
+
+exitcode="$1"
+
+echo "[ERROR] apiserver exited with code $exitcode, shutting down all services..." >&2
+
+if [ "$exitcode" -ne 0 ]; then
+    echo "[INFO] apiserver exit code is non-zero, the latest logs are..." >&2
+    SCRIPT_ROOT=/etc/s6-overlay/scripts
+    source "$SCRIPT_ROOT/base.sh"
+    source "$GPUSTACK_GATEWAY_CONFIG"
+    source "$SCRIPT_ROOT/default-variables.sh"
+    tail -n 50 "${LOG_DIR}/apiserver/current" >&2
+fi
+
+s6-svscanctl -t /run/service
+exit 1

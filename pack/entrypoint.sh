@@ -22,4 +22,6 @@ fi
 # remove generated gateway config to force regeneration
 rm -rf "${GPUSTACK_GATEWAY_CONFIG}"
 
+export S6_STAGE2_HOOK="/etc/s6-overlay/scripts/gpustack-prerun.sh"
+
 exec /init

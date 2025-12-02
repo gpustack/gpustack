@@ -5,7 +5,6 @@
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
-waitForConfig "Higress Config" "$GPUSTACK_GATEWAY_CONFIG"
 source "$GPUSTACK_GATEWAY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
@@ -39,4 +38,13 @@ for MESH_CONFIG_FILE in $MESH_CONFIG_FILES; do
     yq -r ".data.$MESH_CONFIG_FILE" "$HIGRESS_CONFIG_FILE" > "$MESH_CONFIG_DIR/$MESH_CONFIG_FILE"
 done
 
-exec /usr/local/bin/apiserver --bind-address 127.0.0.1 --secure-port "${APISERVER_PORT}" --storage file --file-root-dir "${APISERVER_DATA_DIR}" --cert-dir /tmp
+echo "[INFO] Starting Higress APIServer."
+exec s6-notifyoncheck \
+    -d -w 5000 -n 10 -s 3000 \
+    -- \
+    /usr/local/bin/apiserver \
+    --bind-address 127.0.0.1 \
+    --secure-port "${APISERVER_PORT}" \
+    --storage file \
+    --file-root-dir "${APISERVER_DATA_DIR}" \
+    --cert-dir /tmp

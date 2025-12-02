@@ -4,7 +4,6 @@
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
-waitForConfig "Higress Config" "$GPUSTACK_GATEWAY_CONFIG"
 source "$GPUSTACK_GATEWAY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
@@ -21,11 +20,6 @@ export ISTIO_META_CLUSTER_ID="Kubernetes"
 export ISTIO_META_HTTP10="1"
 export INSTANCE_NAME="higress-gateway"
 export PROXY_XDS_DEBUG_VIA_AGENT="false"
-
-# The pilot port is configured in mesh config, default to 15010
-readinessCheck "Higress Pilot" 15010
-
-readinessCheck "GPUStack API" "${GPUSTACK_API_PORT}"
 
 set -e
 

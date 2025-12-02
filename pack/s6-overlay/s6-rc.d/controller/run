@@ -12,19 +12,19 @@ export ENABLE_LEADER_ELECTION="false"
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
-waitForConfig "Higress Config" "$GPUSTACK_GATEWAY_CONFIG"
 source "$GPUSTACK_GATEWAY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
 echo "GATEWAY_HTTP_PORT=$GATEWAY_HTTP_PORT"
 echo "GATEWAY_HTTPS_PORT=$GATEWAY_HTTPS_PORT"
 
-readinessCheck "Higress API Server" "${APISERVER_PORT}"
-
 set -e
 
 exec 2>&1
-exec /usr/local/bin/higress \
+exec s6-notifyoncheck \
+    -d -w 5000 -n 10 -s 3000 \
+    -- \
+    /usr/local/bin/higress \
     serve \
     --kubeconfig="${EMBEDDED_KUBECONFIG_PATH}" \
     --gatewaySelectorKey=higress \

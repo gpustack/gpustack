@@ -4,7 +4,6 @@
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
-waitForConfig "Higress Config" "$GPUSTACK_GATEWAY_CONFIG"
 source "$GPUSTACK_GATEWAY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
@@ -121,9 +120,6 @@ EOF
     cd -
 }
 
-# higress controller port is configured in configmap higress-config
-readinessCheck "Higress Controller" 15051
-
 set -e
 
 exec 2>&1
@@ -131,7 +127,10 @@ exec 2>&1
 initCerts
 
 export PILOT_FILTER_GATEWAY_CLUSTER_CONFIG="true"
-exec /usr/local/bin/pilot-discovery \
+exec s6-notifyoncheck \
+    -d -w 5000 -n 10 -s 3000 \
+    -- \
+    /usr/local/bin/pilot-discovery \
     discovery \
     --kubeconfig="${EMBEDDED_KUBECONFIG_PATH}" \
     --grpcAddr= \
