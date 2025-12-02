@@ -32,6 +32,10 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
             key, value = param.split('=', 1)
             if key.lstrip('-') in param_names:
                 return value
+        elif ' ' in param:
+            key, value = param.split(' ', 1)
+            if key.lstrip('-') in param_names:
+                return value
         else:
             if param.lstrip('-') in param_names:
                 if i + 1 < len(parameters):
