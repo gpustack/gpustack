@@ -26,12 +26,12 @@ Version Configs parameter description:
 | Execution Command               | Version-specific startup command. If omitted, the Default Execution Command is used | No       |
 
 
-## Inference Backend List
+## Inference Backends List
 
-You can browse and manage inference backends on the `Inference Backend Management` page.
-The list supports filtering by backend name.
+You can browse and manage inference backends on the `Inference Backends` page.
+The list supports filtering by inference backend name.
 
-The screenshot below shows the Backends page:
+The screenshot below shows the `Inference Backends` page:
 
 ![backend-list](../assets/backends/backend-list.png)
 
@@ -43,18 +43,19 @@ Use this mode to quickly verify or tweak the image and startup command without e
 2. In the Basic tab, open the "Backend" dropdown and select "Custom" under the "Built-in" section.
 3. Two fields appear: `image_name` and `run_command`. These override the backend configuration for this deployment only.
 4. Review the remaining required settings and submit the deployment.
+
 ## Create Inference Backend
 
-1. Navigate to the `Inference Backend Management` page.
+1. Navigate to the `Inference Backends` page.
 2. Click `Add Backend`.
 3. Choose between **Form Mode** and **YAML Mode**.
-4. Newly created backends automatically append the suffix **-custom**.
-5. Every backend must contain at least one version.
+4. Newly created inference backend automatically append the suffix **-custom**.
+5. Every inference backend must contain at least one version.
 
 
 ### Form Mode
 
-1. Fill the backend `Name` and add at least one `Version`.
+1. Fill the inference backend `Name` and add at least one `Version`.
 
 ![form-mode](../assets/backends/add-backend-form.png)
 
@@ -72,15 +73,15 @@ Use this mode to quickly verify or tweak the image and startup command without e
 Click the `Yaml Mode` tab at the top of the modal.
 
 1. Fill in the `backend_name` and `version_configs` fields. default_version is optional.
-2. The backend name must be endwith **-custom**.
+2. The inference backend name must be endwith **-custom**.
 2. Click the `Save` button.
 
 ![yaml-mode](../assets/backends/add-backend-yaml.png)
 
 ## Update Custom Inference Backend
 
-1. Navigate to the `Inference Backend Management` page.
-2. Find the backend you want to edit.
+1. Navigate to the `Inference Backends` page.
+2. Find the inference backend you want to edit.
 3. Hover over the card's dropdown button.
 3. Click the `Edit` button in the dropdown.
 4. Update the editable attributes in **Form Mode** or **YAML Mode**.
@@ -89,14 +90,14 @@ Click the `Yaml Mode` tab at the top of the modal.
 
 ## Update Built-in Inference Backend
 
-1. Navigate to the `Inference Backend Management` page.
-2. Find the backend you want to edit.
+1. Navigate to the `Inference Backends` page.
+2. Find the inference backend you want to edit.
 3. Hover over the card's dropdown button.
 3. Click the `Edit` button in the dropdown.
 4. Update the editable attributes in **Form Mode** or **YAML Mode**:
 
-    - For built-in backends, adding versions is optional.
-    - However, built-in backends cannot set a default version.
+    - For built-in inference backends, adding versions is optional.
+    - However, built-in inference backends cannot set a default version.
 
 5. Click the `Save` button.
 
@@ -104,18 +105,18 @@ Click the `Yaml Mode` tab at the top of the modal.
 
 ## Delete Inference Backend
 
-1. Navigate to the `Inference Backend Management` page.
-2. Find the backend you want to delete.(Built-in backends cannot be deleted.)
+1. Navigate to the `Inference Backends` page.
+2. Find the inference backend you want to delete.(Built-in inference backends cannot be deleted.)
 3. Hover over the card’s dropdown button.
 3. Click the `Delete` button in the dropdown.
 4. Confirm the deletion.
 
 ## View Versions
 
-1. Navigate to the `Inference Backend Management` page.
-2. Click the backend card you want to inspect.
+1. Navigate to the `Inference Backends` page.
+2. Click the inference backend card you want to inspect.
 3. Filter versions by framework if needed.
-4. For built-in backends, both built-in and custom-added versions will be displayed.
+4. For built-in inference backends, both built-in and custom-added versions will be displayed.
 
 ![backend-versions](../assets/backends/backend-versions.png)
 
@@ -126,7 +127,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 3. Search the model you want to deploy.
 4. In the Backend dropdown, you will see two groups:
     - **Built-in**
-    - **User-defined** (your custom backends)
+    - **User-defined** (your custom inference backends)
 5. Select a backend version if needed. The version list includes both built-in and custom versions.
 
 ![backend](../assets/backends/use-custom-backend.png)
