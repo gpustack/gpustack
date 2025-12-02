@@ -118,6 +118,7 @@ They are only usable within workers. Please set the environment variables in the
 | -------- | ----------- | ------- |
 | `GPUSTACK_RUNTIME_DETECT` | Detector to use. Options: Auto, AMD, ASCEND, CAMBRICON, HYGON, ILUVATAR, METAX, MTHREADS, NVIDIA. | `Auto` |
 | `GPUSTACK_RUNTIME_DETECT_NO_PCI_CHECK` | Enable no PCI check during detection. Useful for WSL environments. | (empty) |
+| `GPUSTACK_RUNTIME_DETECT_NO_TOOLKIT_CALL` | Enable only using management libraries calls during detection. Device detection typically involves calling platform-side management libraries and platform-side toolkit to retrieve extra information. For example, during NVIDIA detection, the NVML and CUDA are called, with CUDA used to retrieve GPU cores. However, if certain toolchains are not correctly installed in the environment, such as the Nvidia Fabric Manager being missing, calling the CUDA can cause blocking. Enabling this parameter can prevent blocking events. | (empty) |
 | `GPUSTACK_RUNTIME_DETECT_BACKEND_MAP_RESOURCE_KEY` | Backend mapping to resource keys. | The default values named by each vendor |
 | `GPUSTACK_RUNTIME_DETECT_PHYSICAL_INDEX_PRIORITY` | Use physical index priority at detecting devices. | `1` |
 
@@ -142,7 +143,7 @@ They are only usable within workers. Please set the environment variables in the
 | `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID` | Use UUIDs for the given runtime visible devices environment variables. | (empty)                                        |
 | `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT` | Enable value alignment for the given backend visible devices environment variables. | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
 
-### Docker Variables
+#### Docker Variables
 
 | Variable | Description | Default |
 | -------- | ----------- | ------- |
@@ -152,7 +153,7 @@ They are only usable within workers. Please set the environment variables in the
 | `GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR` | Directory for storing ephemeral files for Docker. | `~/.cache/gpustack-runtime` |
 | `GPUSTACK_RUNTIME_DOCKER_MUTE_ORIGINAL_HEALTHCHECK` | Mute the original healthcheck of the container. | `1` |
 
-### Kubernetes Variables
+#### Kubernetes Variables
 
 | Variable | Description | Default |
 | -------- | ----------- | ------- |
