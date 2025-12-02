@@ -3,7 +3,16 @@
 function readinessCheck() {
     # $1=name
     # $2=port
+    # $3=timeout
+    timeout="${3:-0}"
     while true; do
+        if [ "$timeout" -gt 0 ]; then
+            timeout=$((timeout - 1))
+            if [ "$timeout" -eq 0 ]; then
+                echo "[ERROR] Timeout while waiting for $1 to be ready."
+                exit 1
+            fi
+        fi
         echo "Checking the readiness of $1..."
         if nc -z 127.0.0.1 "$2"; then
             break
@@ -43,12 +52,12 @@ function waitForConfig() {
     done
 }
 
-function isPortInUse() {
-    local port="$1"
-    ss -tuln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" 
-}
-
 GPUSTACK_GATEWAY_DIR="${GPUSTACK_GATEWAY_DIR:-/var/lib/gpustack/higress}"
 createDir "$GPUSTACK_GATEWAY_DIR"
 # shellcheck disable=SC2034
 GPUSTACK_GATEWAY_CONFIG="${GPUSTACK_GATEWAY_DIR}/.env"
+
+GPUSTACK_POSTGRES_DIR="${GPUSTACK_POSTGRES_DIR:-/var/lib/gpustack/postgres}"
+createDir "$GPUSTACK_POSTGRES_DIR"
+# shellcheck disable=SC2034
+GPUSTACK_POSTGRES_CONFIG="${GPUSTACK_POSTGRES_DIR}/.env"

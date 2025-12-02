@@ -9,7 +9,6 @@ SERVICE_NAME=${SERVICE_NAME%-logger}
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
-waitForConfig "Higress Config" "$GPUSTACK_GATEWAY_CONFIG" "true"
 source "$GPUSTACK_GATEWAY_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
