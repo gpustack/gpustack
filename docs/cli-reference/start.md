@@ -40,7 +40,7 @@ gpustack start [OPTIONS]
 ### Server Options
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                             |
-| ----------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|-------------------------------------|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--database-port` value             | `5432`                                 | Port of the embedded PostgresSQL database.                                                                                                                                              |
 | `--metrics-port` value              | `10161`                                | Port to expose server metrics.                                                                                                                                                          |
 | `--disable-metrics`                 | `False`                                | Disable server metrics.                                                                                                                                                                 |
@@ -62,6 +62,8 @@ gpustack start [OPTIONS]
 | `--oidc-client-id` value            | (empty)                                | OpenID Connect client ID.                                                                                                                                                               |
 | `--oidc-client-secret` value        | (empty)                                | OpenID Connect client secret.                                                                                                                                                           |
 | `--oidc-redirect-uri` value         | (empty)                                | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                                            |
+| `--oidc-skip-userinfo`              | `False`                                | Skip requesting the OIDC userinfo_endpoint and instead attempt to parse it directly from the header.                                                                                    |
+| `--oidc-use-userinfo`               | (empty)                                | [Deprecated] Use the UserInfo endpoint to fetch user details after authentication.                                                                                                      |
 | `--saml-idp-server-url` value       | (empty)                                | SAML Identity Provider server URL.                                                                                                                                                      |
 | `--saml-idp-entity-id` value        | (empty)                                | SAML Identity Provider entity ID.                                                                                                                                                       |
 | `--saml-idp-x509-cert` value        | (empty)                                | SAML Identity Provider X.509 certificate.                                                                                                                                               |
@@ -75,7 +77,6 @@ gpustack start [OPTIONS]
 | `--external-auth-avatar-url` value  | (empty)                                | Mapping of external authentication user information to user's avatar URL.                                                                                                               |
 | `--server-external-url` value       | (empty)                                | The external server URL for worker registration. This option is required when provisioning workers via cloud providers, ensuring that workers can connect to the server correctly.      |
 | `--saml-sp-attribute-prefix` value  | (empty)                                | SAML Service Provider attribute prefix, used for fetching attributes specified by --external-auth-\*.                                                                                   |
-| `--oidc-use-userinfo`               | `False`                                | Use the UserInfo endpoint to fetch user details after authentication.                                                                                                                   |
 
 ### Worker Options
 

@@ -423,9 +423,15 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("OIDC_REDIRECT_URI"),
     )
     group.add_argument(
+        "--oidc-skip-userinfo",
+        action=OptionalBoolAction,
+        help="Skip using the UserInfo endpoint and retrieve user details from the ID token.",
+        default=get_gpustack_env_bool("OIDC_SKIP_USERINFO"),
+    )
+    group.add_argument(
         "--oidc-use-userinfo",
         action=OptionalBoolAction,
-        help="Use the UserInfo endpoint to fetch user details after authentication.",
+        help="[Deprecated] Use the UserInfo endpoint to fetch user details after authentication.",
         default=get_gpustack_env_bool("OIDC_USE_USERINFO"),
     )
     # SAML settings
@@ -617,6 +623,7 @@ def set_server_options(args, config_data: dict):
         "oidc_client_id",
         "oidc_client_secret",
         "oidc_redirect_uri",
+        "oidc_skip_userinfo",
         "oidc_use_userinfo",
         "saml_idp_server_url",
         "saml_idp_entity_id",
