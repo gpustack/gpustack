@@ -254,7 +254,7 @@ class SGLangServer(InferenceServer):
         arguments.extend(hicache_arguments)
 
         # Add user-defined backend parameters
-        self._flatten_backend_param()
+        arguments.extend(self._flatten_backend_param())
 
         # Add platform-specific parameters
         if is_ascend(self._get_selected_gpu_devices()):
