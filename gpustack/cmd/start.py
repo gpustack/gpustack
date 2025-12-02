@@ -41,6 +41,10 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Run GPUStack server or worker.",
         description="Run GPUStack server or worker.",
     )
+    start_cmd_options(parser_server)
+
+
+def start_cmd_options(parser_server: argparse.ArgumentParser):
     group = parser_server.add_argument_group("Common settings")
     group.add_argument(
         "--advertise-address",

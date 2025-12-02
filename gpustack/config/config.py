@@ -230,7 +230,6 @@ class Config(BaseSettings):
         self.prepare_jwt_secret_key()
 
         # server options
-        self.init_database_url()
         self.init_auth()
 
         if self.system_reserved is None:
@@ -240,7 +239,7 @@ class Config(BaseSettings):
             self.service_discovery_name = "server" if self._is_server() else "worker"
 
         self.make_dirs()
-        self.prepare_gateway_config()
+        self.detect_gateway_mode()
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901
@@ -272,6 +271,9 @@ class Config(BaseSettings):
 
         if self.oidc_use_userinfo is not None:
             self.oidc_skip_userinfo = not self.oidc_use_userinfo
+
+        if self.database_url is not None:
+            self.check_database_url()
 
         return self
 
@@ -545,9 +547,15 @@ class Config(BaseSettings):
 
         return gpu_devices
 
-    def init_database_url(self):
+    def get_database_url(self) -> str:
+        if self.database_url is not None:
+            return self.database_url
+        return (
+            f"postgresql://root@127.0.0.1:{self.database_port}/gpustack?sslmode=disable"
+        )
+
+    def check_database_url(self):
         if self.database_url is None:
-            self.database_url = f"postgresql://root@127.0.0.1:{self.database_port}/gpustack?sslmode=disable"
             return
 
         if not self.database_url.startswith(
@@ -577,7 +585,7 @@ class Config(BaseSettings):
         return os.path.abspath(data_dir)
 
     class Config:
-        env_prefix = "GPU_STACK_"
+        env_prefix = "GPUSTACK_"
         protected_namespaces = ('settings_',)
 
     def prepare_jwt_secret_key(self):
@@ -609,11 +617,13 @@ class Config(BaseSettings):
         prefix = f"{registry}/" if registry else ""
         return f"{prefix}{self.image_repo}:{version}"
 
+    def postgres_base_dir(self) -> str:
+        return os.path.join(self.data_dir, "postgres")
+
     def higress_base_dir(self) -> str:
         return os.path.join(self.data_dir, "higress")
 
-    def prepare_gateway_config(self):
-        config_path = os.path.join(self.higress_base_dir(), ".env")
+    def detect_gateway_mode(self):
         higress_embedded_kubeconfig = os.path.join(
             self.higress_base_dir(), "kubeconfig"
         )
@@ -636,41 +646,6 @@ class Config(BaseSettings):
             and not platform.is_supported_higress(self.gateway_kubeconfig)
         ):
             raise Exception("The k8s cluster for gpustack does not support Higress.")
-        if self.gateway_mode == GatewayModeEnum.embedded:
-            with open(config_path, "w") as f:
-                f.write(f"DATA_DIR={self.data_dir}\n")
-                f.write(f"LOG_DIR={self.log_dir}\n")
-                f.write(f"GATEWAY_HTTP_PORT={self.get_gateway_port()}\n")
-                f.write(f"GATEWAY_HTTPS_PORT={self.tls_port}\n")
-                f.write(f"GATEWAY_CONCURRENCY={self.gateway_concurrency}\n")
-                f.write(f"GPUSTACK_API_PORT={self.get_api_port()}\n")
-                f.write(f"EMBEDDED_KUBECONFIG_PATH={higress_embedded_kubeconfig}\n")
-            with open(higress_embedded_kubeconfig, "w") as f:
-                f.write(
-                    f"""apiVersion: v1
-kind: Config
-clusters:
-  - name: higress
-    cluster:
-      server: https://localhost:{os.getenv('APISERVER_PORT', '18443')}
-      insecure-skip-tls-verify: true
-users:
-  - name: higress-admin
-    user: {{}}
-contexts:
-  - name: higress
-    context:
-      cluster: higress
-      user: higress-admin
-current-context: higress
-"""
-                )
-        else:
-            # disabled gateway will clean up the embedded kubeconfig and config file
-            for file in [higress_embedded_kubeconfig, config_path]:
-                if os.path.exists(file):
-                    os.remove(file)
-        # loading kubeconfig will be done in initializing gateway
 
     class ServerRole(Enum):
         SERVER = "server"
