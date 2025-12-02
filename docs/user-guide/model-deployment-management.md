@@ -200,8 +200,13 @@ The model category helps you organize and filter models. By default, GPUStack au
 
 ### Backend Parameters
 
-Input the parameters for the backend you want to customize when running the model. The parameter should be in the format `--parameter=value`, `--bool-parameter` or as separate fields for `--parameter` and `value`.
-For example, use `--max-model-length=8192` for vLLM.
+Input the parameters for the backend you want to customize when running the model. Supported parameter formats:
+
+| Method           | Example                                            | Remarks                                                                     |
+|------------------|----------------------------------------------------|-----------------------------------------------------------------------------|
+| Equal Sign Split | `--hf-overrides={"architectures": ["NewModel"]}`   | -                                                                           |
+| Space Split      | `--hf-overrides '{"architectures": ["NewModel"]}'` | Supports `shell-like` style splitting (e.g., for values containing spaces). |
+| Separate Fields  | `--max-model-length`, `8192`                       | Input parameter name and value as two separate items.                       |
 
 For full list of supported parameters, please refer to the [Inference Backends](built-in-inference-backends.md) section.
 

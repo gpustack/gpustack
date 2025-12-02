@@ -90,6 +90,17 @@ async def test_apply_registry_override(
             ['--arg1', 'val with spaces', '--arg2="val with spaces"'],
         ),
         (
+            [
+                """--hf-overrides '{"architectures": ["NewModel"]}'""",
+                """--hf-overrides={"architectures": ["NewModel"]}""",
+            ],
+            [
+                '--hf-overrides',
+                '{"architectures": ["NewModel"]}',
+                """--hf-overrides={"architectures": ["NewModel"]}""",
+            ],
+        ),
+        (
             None,
             [],
         ),
