@@ -32,7 +32,13 @@ sudo nvidia-smi
 
 ### Container Running Environment
 
-It is recommended to use [Docker](https://docs.docker.com/engine/install/) with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit):
+It is recommended to use [Docker](https://docs.docker.com/engine/install/) with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+!!! note
+
+    After installing Docker and the NVIDIA Container Toolkit, make sure to run `sudo nvidia-ctk runtime configure --runtime=docker` and restart Docker `sudo systemctl restart docker`.
+
+You can verify the installation and configuration by the following script:
 
 ```bash
 sudo docker info 2>/dev/null | grep -q "nvidia" \
