@@ -184,8 +184,14 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     group.add_argument(
         "--disable-worker",
         action=OptionalBoolAction,
-        help="Disable embedded worker.",
+        help="(DEPRECATED) Disable embedded worker. New installations will not have embedded worker by default. Use '--enable-worker' to enable embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled based on presence of worker-related files in the data directory.",
         default=get_gpustack_env_bool("DISABLE_WORKER"),
+    )
+    group.add_argument(
+        "--enable-worker",
+        action=OptionalBoolAction,
+        help="Enable embedded worker. Valid for GPUStack sever only.",
+        default=get_gpustack_env_bool("ENABLE_WORKER"),
     )
     group.add_argument(
         "--disable-metrics",
@@ -520,7 +526,7 @@ def run(args: argparse.Namespace):
 def run_server(cfg: Config):
     sub_processes = []
 
-    if not cfg.disable_worker:
+    if cfg.server_role() == Config.ServerRole.BOTH:
         worker = Worker(cfg)
         worker_process = multiprocessing.Process(target=worker.start)
         sub_processes = [worker_process]
@@ -606,6 +612,7 @@ def set_server_options(args, config_data: dict):
         "disable_metrics",
         "database_url",
         "disable_worker",
+        "enable_worker",
         "bootstrap_password",
         "ssl_keyfile",
         "ssl_certfile",
