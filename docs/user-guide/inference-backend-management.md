@@ -73,7 +73,7 @@ Use this mode to quickly verify or tweak the image and startup command without e
 Click the `Yaml Mode` tab at the top of the modal.
 
 1. Fill in the `backend_name` and `version_configs` fields. default_version is optional.
-2. The inference backend name must be endwith **-custom**.
+2. The inference backend name must be end with **-custom**.
 2. Click the `Save` button.
 
 ![yaml-mode](../assets/backends/add-backend-yaml.png)
@@ -116,7 +116,7 @@ Click the `Yaml Mode` tab at the top of the modal.
 1. Navigate to the `Inference Backends` page.
 2. Click the inference backend card you want to inspect.
 3. Filter versions by framework if needed.
-4. For built-in inference backends, both built-in and custom-added versions will be displayed.
+4. For built-in inference backends, both built-in and custom versions will be displayed.
 
 ![backend-versions](../assets/backends/backend-versions.png)
 
