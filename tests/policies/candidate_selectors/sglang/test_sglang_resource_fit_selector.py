@@ -26,6 +26,7 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_6_a100_80gx2,
     linux_nvidia_7_a100_80gx2,
     linux_nvidia_2_4080_16gx2,
+    linux_nvidia_26_H200_141gx8,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -127,6 +128,36 @@ def expected_candidate(
                     "host4080",
                     [0, 1],
                     {0: 15454332518, 1: 15454332518},
+                )
+            ],
+            0,
+        ),
+        # Auto schedule for DeepSeekV32 model
+        (
+            "auto_select_deepseekv32_model",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="deepseek-ai/DeepSeek-V3.2",
+                backend_version="0.11.0",
+            ),
+            [linux_nvidia_26_H200_141gx8()],
+            [
+                expected_candidate(
+                    26,
+                    "host26-h200",
+                    [0, 1, 2, 3, 4, 5, 6, 7],
+                    {
+                        0: 136360009728,
+                        1: 136360009728,
+                        2: 136360009728,
+                        3: 136360009728,
+                        4: 136360009728,
+                        5: 136360009728,
+                        6: 136360009728,
+                        7: 136360009728,
+                    },
                 )
             ],
             0,

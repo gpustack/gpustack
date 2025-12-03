@@ -1,5 +1,6 @@
 import json
 import logging
+import gzip
 import os
 import tempfile
 from typing import Dict, List, Optional
@@ -281,7 +282,19 @@ def read_repo_file_content(
             hffs = HfFileSystem(token=token)
             repo_path = f"{model.huggingface_repo_id}/{file_path}"
             with hffs.open(repo_path, "rb") as f:
-                return f.read()
+                content = f.read()
+                if (
+                    content
+                    and content.startswith(b"\x1f\x8b")
+                    and not file_path.endswith(".gz")
+                ):
+                    try:
+                        content = gzip.decompress(content)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to decompress gzip content for {file_path}: {e}"
+                        )
+                return content
 
         elif model.source == SourceEnum.MODEL_SCOPE:
             _cfg = get_global_config()

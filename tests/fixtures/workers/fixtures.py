@@ -275,6 +275,10 @@ def linux_nvidia_25_H100_80gx8(reserved=False):
     return load_from_file("linux_nvidia_25_H100_80gx8.json", reserved=reserved)
 
 
+def linux_nvidia_26_H200_141gx8(reserved=False):
+    return load_from_file("linux_nvidia_26_H200_141gx8.json", reserved=reserved)
+
+
 def linux_rocm_1_7800_16gx1(reserved=True):
     return load_from_file("linux_rocm_1_7800_16gx1.json", reserved=reserved)
 

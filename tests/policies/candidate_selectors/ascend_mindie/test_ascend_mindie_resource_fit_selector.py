@@ -19,6 +19,22 @@ from tests.fixtures.workers.fixtures import (
 from tests.utils.scheduler import compare_candidates
 
 
+def expected_candidate(
+    worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
+):
+    candidate = {
+        "worker_id": worker_id,
+        "worker_name": worker_name,
+        "gpu_indexes": gpu_indexes,
+        "is_unified_memory": False,
+        "vram": vram,
+        "subordinate_workers": subworkers or [],
+    }
+    if ram is not None:
+        candidate["ram"] = ram
+    return candidate
+
+
 @pytest.mark.parametrize(
     "m, expected",
     [
@@ -1835,3 +1851,107 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
     ):
         await resource_fit_selector.select_candidates(workers)
         assert resource_fit_selector.get_messages() == expect_msg
+
+
+@pytest.mark.parametrize(
+    "case_name, m, workers, expected_candidates",
+    [
+        # Auto schedule for DeepSeekV32 model
+        (
+            "auto_select_deepseekv32_model",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="deepseek-ai/DeepSeek-V3.2",
+                backend_version="0.11.0",
+            ),
+            [linux_ascend_1_910b_64gx8(), linux_ascend_2_910b_64gx8()],
+            [
+                expected_candidate(
+                    1,
+                    "ascend_0",
+                    [0, 1, 2, 3, 4, 5, 6, 7],
+                    {
+                        0: 54975581388,
+                        1: 54975581388,
+                        2: 54975581388,
+                        3: 54975581388,
+                        4: 54975581388,
+                        5: 54975581388,
+                        6: 54975581388,
+                        7: 54975581388,
+                    },
+                    ram=536870912,
+                    subworkers=[
+                        ModelInstanceSubordinateWorker(
+                            worker_id=2,
+                            worker_ip="192.168.50.2",
+                            total_gpus=8,
+                            gpu_indexes=[0, 1, 2, 3, 4, 5, 6, 7],
+                            gpu_addresses=[
+                                '29.17.48.42',
+                                '29.17.57.33',
+                                '29.17.51.79',
+                                '29.17.48.42',
+                                '29.17.45.217',
+                                '29.17.67.78',
+                                '29.17.114.33',
+                                '29.17.105.72',
+                            ],
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                vram={
+                                    0: 54975581388,
+                                    1: 54975581388,
+                                    2: 54975581388,
+                                    3: 54975581388,
+                                    4: 54975581388,
+                                    5: 54975581388,
+                                    6: 54975581388,
+                                    7: 54975581388,
+                                },
+                                ram=536870912,
+                            ),
+                        )
+                    ],
+                )
+            ],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates(config, case_name, m, workers, expected_candidates):
+    model_instances = [
+        ModelInstance(
+            id=worker.id * 10 + gpu.index,
+            worker_id=worker.id,
+            gpu_indexes=[gpu.index],
+            computed_resource_claim=ComputedResourceClaim(
+                vram={gpu.index: gpu.memory.allocated}
+            ),
+        )
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+        if gpu.memory.allocated
+    ]
+
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+
+    with (
+        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=model_instances,
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+    ):
+        actual = await resource_fit_selector.select_candidates(workers)
+        compare_candidates(actual, expected_candidates)
