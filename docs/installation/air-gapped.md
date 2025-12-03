@@ -83,3 +83,18 @@ For example, to install with NVIDIA and start the GPUStack server **with the bui
 ```
 
 If your accelerator is not NVIDIA, adjust the startup command accordingly.
+
+### Pulling Inference Backend Images from a Secure Registry
+
+If your internal container registry requires authentication,  
+set the following environment variables when starting the GPUStack worker to allow it to pull the runner image.
+
+```diff
+ sudo docker run -d --name gpustack \
+     ...
++    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME=<your_internal_registry_username> \
++    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD=<your_internal_registry_password> \
+     <your_internal_registry>/gpustack/gpustack \
+     --system-default-container-registry <your_internal_registry>
+
+```
