@@ -267,7 +267,7 @@ class Config(BaseSettings):
             self.check_port_range(self.service_port_range)
 
         if self.ray_port_range:
-            self.check_port_range(self.ray_port_range, diff=1000)
+            self.check_port_range(self.ray_port_range, diff=20)
 
         if self.oidc_use_userinfo is not None:
             self.oidc_skip_userinfo = not self.oidc_use_userinfo
