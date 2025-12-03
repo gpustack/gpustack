@@ -618,7 +618,7 @@ class Config(BaseSettings):
         return f"{prefix}{self.image_repo}:{version}"
 
     def postgres_base_dir(self) -> str:
-        return os.path.join(self.data_dir, "postgres")
+        return os.path.join(self.data_dir, "postgresql")
 
     def higress_base_dir(self) -> str:
         return os.path.join(self.data_dir, "higress")
