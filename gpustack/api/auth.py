@@ -257,6 +257,7 @@ async def worker_auth(
 ):
     if not bearer_token:
         raise UnauthorizedException(message="Invalid authentication credentials")
-
-    if bearer_token.credentials != request.app.state.token:
+    token = request.app.state.token
+    registration_token = request.app.state.config.token
+    if bearer_token.credentials not in [token, registration_token]:
         raise UnauthorizedException(message="Invalid authentication credentials")

@@ -624,11 +624,10 @@ class Config(BaseSettings):
         return os.path.join(self.data_dir, "higress")
 
     def detect_gateway_mode(self):
-        higress_embedded_kubeconfig = os.path.join(
-            self.higress_base_dir(), "kubeconfig"
-        )
-
         if self.gateway_mode == GatewayModeEnum.auto:
+            if self.server_role() == self.ServerRole.WORKER:
+                self.gateway_mode = GatewayModeEnum.disabled
+                return
             is_embedded = self.gateway_kubeconfig is None
             in_cluster = platform.is_inside_kubernetes()
             if in_cluster and platform.is_supported_higress():
@@ -638,9 +637,18 @@ class Config(BaseSettings):
                 self.gateway_mode = GatewayModeEnum.embedded
             else:
                 self.gateway_mode = GatewayModeEnum.external
+
+        if (
+            self.server_role() == self.ServerRole.WORKER
+            and self.gateway_mode == GatewayModeEnum.embedded
+        ):
+            raise Exception("Cannot run embedded gateway when running as worker.")
+
         if self.gateway_mode == GatewayModeEnum.embedded:
             # path to embed kubeconfig
-            self.gateway_kubeconfig = higress_embedded_kubeconfig
+            self.gateway_kubeconfig = os.path.join(
+                self.higress_base_dir(), "kubeconfig"
+            )
         if (
             self.gateway_mode == GatewayModeEnum.external
             and not platform.is_supported_higress(self.gateway_kubeconfig)
