@@ -31,7 +31,13 @@ sudo amd-smi static
 
 ### Container Running Environment
 
-It is recommended to use [Docker](https://docs.docker.com/engine/install/) with the [AMD Container Runtime](https://instinct.docs.amd.com/projects/container-toolkit/en/latest/container-runtime/overview.html):
+It is recommended to use [Docker](https://docs.docker.com/engine/install/) with the [AMD Container Runtime](https://instinct.docs.amd.com/projects/container-toolkit/en/latest/container-runtime/overview.html).
+
+!!! note
+
+    After installing Docker and the AMD Container Toolkit, make sure to run `sudo amd-ctk runtime configure --runtime=docker` and restart Docker `sudo systemctl restart docker`.
+
+You can verify the installation and configuration by the following script:
 
 ```bash
 sudo docker info 2>/dev/null | grep -q "amd" \
