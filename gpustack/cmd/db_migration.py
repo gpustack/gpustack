@@ -20,6 +20,8 @@ from gpustack.cmd.start import get_gpustack_env
 from gpustack import envs
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler(sys.stdout))
 
 revision = "d19176de3b74"  # 0.7.1
 
