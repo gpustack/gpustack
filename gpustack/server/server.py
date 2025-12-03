@@ -8,6 +8,7 @@ from typing import List
 import uvicorn
 import logging
 import secrets
+import tenacity
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
@@ -105,11 +106,6 @@ class Server:
                 allow_methods=self._config.allow_methods,
                 allow_headers=self._config.allow_headers,
             )
-        ssl_keyfile = None
-        ssl_certfile = None
-        if self._config.gateway_mode == GatewayModeEnum.disabled:
-            ssl_keyfile = self._config.ssl_keyfile
-            ssl_certfile = self._config.ssl_certfile
 
         serving_host = (
             "127.0.0.1"
@@ -123,8 +119,6 @@ class Server:
             port=self._config.get_api_port(),
             access_log=False,
             log_level="error",
-            ssl_certfile=ssl_certfile,
-            ssl_keyfile=ssl_keyfile,
         )
 
         setup_logging()
@@ -133,10 +127,12 @@ class Server:
         if self._config.gateway_mode == GatewayModeEnum.embedded:
             logger.debug(serving_api_message)
             logger.info(
-                f"Serving GPUStack on 0.0.0.0:{self._config.get_gateway_port()}."
+                f"GPUStack Server will serve on 0.0.0.0:{self._config.get_gateway_port()}."
             )
             if self._config.get_tls_secret_name() is not None:
-                logger.info(f"TLS Serving GPUStack on {self._config.tls_port}.")
+                logger.info(
+                    f"GPUStack Server will serve TLS on 0.0.0.0:{self._config.tls_port}."
+                )
         else:
             logger.info(serving_api_message)
 
@@ -248,8 +244,12 @@ class Server:
             return
         collector = GatewayMetricsCollector(cfg=self._config)
 
-        self._create_async_task(collector.start())
-        logger.debug("Gateway metrics collector started.")
+        async def _start_collector_after_port_ready():
+            await self._wait_for_gateway_ready()
+            await collector.start()
+            logger.debug("Gateway metrics collector started.")
+
+        self._create_async_task(_start_collector_after_port_ready())
 
     def _start_update_checker(self):
         if self._config.disable_update_check:
@@ -281,6 +281,35 @@ class Server:
         if len(self._sub_processes) == 0:
             return
         self._create_async_task(start_process_after_api_ready())
+
+    async def _wait_for_gateway_ready(self):
+        if self._config.gateway_mode != GatewayModeEnum.embedded:
+            return
+        # http port is always started
+        ports = [self._config.port]
+        if self._config.get_tls_secret_name() is not None:
+            ports.append(self._config.tls_port)
+        logger.info(f"Waiting for ports {ports} of GPUStack to be ready...")
+        # wait for gateway ready for about 60s
+        await self._check_ports_ready(*ports)
+        logger.info("GPUStack Server is ready.")
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(30),
+        wait=tenacity.wait_fixed(2),
+        reraise=True,
+        before_sleep=lambda retry_state: logger.debug(
+            f"Waiting for ports {retry_state.args[1]} to be healthy (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
+        ),
+    )
+    async def _check_ports_ready(self, *ports: int):
+        for port in ports:
+            try:
+                _, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                raise RuntimeError(f"Port {port} is not healthy or not listening")
 
     def _start_metrics_exporter(self):
         if self._config.disable_metrics:
