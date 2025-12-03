@@ -381,7 +381,7 @@ class InferenceServer(ABC):
         if gpu_indexes and self._worker.status.gpu_devices:
             if gpu_index_types:
                 for i, d in enumerate(self._worker.status.gpu_devices):
-                    if d.index not in gpu_index_types:
+                    if d.index not in gpu_indexes:
                         continue
                     if d.type not in gpu_index_types[d.index]:
                         continue
