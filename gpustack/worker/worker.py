@@ -12,6 +12,7 @@ import setproctitle
 import tenacity
 import uvicorn
 from urllib.parse import urlparse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from gpustack.api import exceptions
 from gpustack.config.config import Config, GatewayModeEnum
@@ -50,6 +51,7 @@ class Worker:
     _register_clientset: ClientSet
     _status_collector: WorkerStatusCollector
     _worker_manager: WorkerManager
+    _serve_manager: ServeManager
     _config: Config
     _worker_ip: str = None
     _worker_ifname: Optional[str] = None
@@ -123,6 +125,12 @@ class Worker:
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
             cache=self._runtime_metrics_cache,
+        )
+
+        self._serve_manager = ServeManager(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
+            cfg=self._config,
         )
 
     def _get_worker_name(self):
@@ -232,20 +240,17 @@ class Worker:
             self._config.system_default_container_registry
         )
 
-        serve_manager = ServeManager(
-            worker_id=self._worker_id,
-            clientset=self._clientset,
-            cfg=self._config,
-            inference_backend_manager=inference_backend_manager,
-        )
+        self._serve_manager._inference_backend_manager = inference_backend_manager
         run_periodically_in_thread(
-            serve_manager.sync_model_instances_state,
+            self._serve_manager.sync_model_instances_state,
             envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
         )
-        run_periodically_in_thread(serve_manager.cleanup_orphan_workloads, 120, 15)
+        run_periodically_in_thread(
+            self._serve_manager.cleanup_orphan_workloads, 120, 15
+        )
 
-        self._create_async_task(serve_manager.watch_model_instances_event())
-        self._create_async_task(serve_manager.watch_model_instances())
+        self._create_async_task(self._serve_manager.watch_model_instances_event())
+        self._create_async_task(self._serve_manager.watch_model_instances())
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
@@ -288,7 +293,11 @@ class Worker:
         app.state.config = self._config
         app.state.token = read_worker_token(self._config.data_dir)
         app.state.worker_ip_getter = self.worker_ip
-
+        app.state.model_by_instance_id = self._serve_manager._model_cache_by_instance
+        app.state.model_instance_by_instance_id = (
+            self._serve_manager._model_instance_by_instance_id
+        )
+        app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)
         app.include_router(logs.router)

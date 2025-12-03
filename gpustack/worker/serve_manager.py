@@ -6,7 +6,7 @@ import multiprocessing
 import requests
 import setproctitle
 import os
-from typing import Dict, Optional, Set, List
+from typing import Dict, Optional, Set, List, Callable
 import logging
 
 from gpustack_runtime.deployer import (
@@ -62,7 +62,10 @@ _SERVER_CLASS_MAPPING = {
 
 
 class ServeManager:
-    _worker_id: int
+    @property
+    def _worker_id(self) -> int:
+        return self._worker_id_getter()
+
     """
     The ID of current worker.
     """
@@ -74,7 +77,11 @@ class ServeManager:
     """
     The directory to store logs of serving model instances(in subprocess).
     """
-    _clientset: ClientSet
+
+    @property
+    def _clientset(self) -> ClientSet:
+        return self._clientset_getter()
+
     """
     The clientset to access the API server.
     """
@@ -103,19 +110,21 @@ class ServeManager:
     The cache of models by model instance ID.
     Used to avoid redundant API calls to get model information.
     """
+    _model_instance_by_instance_id: Dict[int, ModelInstance] = {}
+
+    _clientset_getter: Callable[[], ClientSet]
+    _worker_id_getter: Callable[[], int]
 
     def __init__(
         self,
-        worker_id: int,
-        clientset: ClientSet,
+        worker_id_getter: Callable[[], int],
+        clientset_getter: Callable[[], ClientSet],
         cfg: Config,
-        inference_backend_manager: InferenceBackendManager,
     ):
-        self._worker_id = worker_id
+        self._worker_id_getter = worker_id_getter
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
-        self._clientset = clientset
-        self._inference_backend_manager = inference_backend_manager
+        self._clientset_getter = clientset_getter
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -442,6 +451,7 @@ class ServeManager:
         is_main_worker = mi.worker_id == self._worker_id
 
         if is_main_worker:
+            self._model_instance_by_instance_id[mi.id] = mi
             # Return if all subordinate workers aren't running.
             if (
                 mi.distributed_servers
@@ -753,6 +763,7 @@ class ServeManager:
         self._assigned_ports.pop(mi.id, None)
         self._error_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
+        self._model_instance_by_instance_id.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
