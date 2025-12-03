@@ -730,6 +730,11 @@ class Config(BaseSettings):
     def static_worker_ip(self) -> Optional[str]:
         return self.worker_ip or self.advertise_address or None
 
+    def reload_token(self):
+        token = read_registration_token(self.data_dir)
+        if token:
+            self.token = token
+
 
 def get_openid_configuration(issuer: str) -> dict:
     """Fetch OpenID configuration from the issuer."""
