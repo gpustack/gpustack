@@ -149,8 +149,8 @@ class Worker:
         return worker_name
 
     @tenacity.retry(
-        stop=tenacity.stop_after_attempt(5),
-        wait=tenacity.wait_fixed(2),
+        stop=tenacity.stop_after_attempt(10),
+        wait=tenacity.wait_fixed(3),
         reraise=True,
         before_sleep=lambda retry_state: logger.debug(
             f"Retrying to get worker ID (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
