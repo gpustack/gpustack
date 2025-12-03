@@ -215,6 +215,9 @@ class Worker:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
 
+        # Send heartbeat to the server every 30 seconds.
+        run_periodically_in_thread(self._heartbeat, 30)
+
         # Report the worker node status to the server every 30 seconds.
         run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
 
@@ -346,3 +349,21 @@ class Worker:
             params={"worker_id": str(self._worker_id)}
         ).items:
             self._clientset.model_instances.delete(instance.id)
+
+    def _heartbeat(self):
+        """
+        Send heartbeat to the server to indicate the worker is alive.
+        """
+        if self._worker_id is None:
+            logger.debug("Worker ID is not set, skipping heartbeat.")
+            return
+        try:
+            resp = self._clientset.http_client.get_httpx_client().post(
+                "/worker-heartbeat", json={}
+            )
+            if resp.status_code != 204:
+                logger.error(
+                    f"Failed to send heartbeat to server, status code: {resp.status_code}"
+                )
+        except Exception as e:
+            logger.error(f"Failed to send heartbeat to server: {e}")

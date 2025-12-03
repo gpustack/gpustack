@@ -105,6 +105,12 @@ worker_client_router.add_api_route(
     methods=["POST"],
     include_in_schema=False,
 )
+worker_client_router.add_api_route(
+    path="/worker-heartbeat",
+    endpoint=workers.heartbeat,
+    methods=["POST"],
+    include_in_schema=False,
+)
 worker_client_router.include_router(
     inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
