@@ -318,7 +318,7 @@ async def create_worker_status(
 ):
     if user.worker is None:
         raise ForbiddenException(message="Failed to find related worker")
-    # query a session bond worker
+    # query a session bound worker
     worker: Worker = await Worker.one_by_id(session, user.worker.id)
     if not worker or worker.deleted_at is not None:
         raise NotFoundException(message="Worker not found")
@@ -339,6 +339,25 @@ async def create_worker_status(
         return Response(status_code=204)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update worker: {e}")
+
+
+async def heartbeat(user: CurrentUserDep, session: SessionDep):
+    if user.worker is None:
+        raise ForbiddenException(message="Failed to find related worker")
+    # query a session bound worker
+    worker: Worker = await Worker.one_by_id(session, user.worker.id)
+    if not worker or worker.deleted_at is not None:
+        raise NotFoundException(message="Worker not found")
+
+    worker.heartbeat_time = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0
+    )
+    try:
+        await worker.update(session=session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update worker: {e}")
+
+    return Response(status_code=204)
 
 
 @router.get("/{id}/privatekey")
