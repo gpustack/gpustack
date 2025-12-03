@@ -1,24 +1,24 @@
 #!/command/with-contenv /bin/bash
-# shellcheck disable=SC1008
+# shellcheck disable=SC1008,SC1090,SC1091
 # ================================
 # GPUStack migration oneshot service
 # ================================
 
-STATE_MIGRATION_DONE_FILE="/var/lib/gpustack/run/state_migration_done"
-FLAG_EMBEDDED_DATABASE_PORT_FILE="/var/lib/gpustack/run/flag_embedded_database_port"
-EMBEDDED_DATABASE_PORT="5432"
-if [ -f "$FLAG_EMBEDDED_DATABASE_PORT_FILE" ]; then
-    EMBEDDED_DATABASE_PORT=$(cat "$FLAG_EMBEDDED_DATABASE_PORT_FILE")
-fi
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
+source "$GPUSTACK_POSTGRES_CONFIG"
+source "$SCRIPT_ROOT/default-variables.sh"
 
-if [ -n "${GPUSTACK_MIGRATION_DATA_DIR}" ]; then
+
+if [ "${GPUSTACK_DATA_MIGRATION}" = "true" ]; then
     if [ -f "$STATE_MIGRATION_DONE_FILE" ]; then
         echo "[INFO] Migration already completed previously. Skipping."
         exit 0
     fi
 
-    echo "[INFO] Using GPUSTACK_MIGRATION_DATA_DIR: ${GPUSTACK_MIGRATION_DATA_DIR}."
-    if gpustack migrate --migration-data-dir "${GPUSTACK_MIGRATION_DATA_DIR}" \
+    echo "[INFO] Using GPUSTACK_MIGRATION_DATA_DIR: ${DATA_DIR}."
+    if gpustack migrate --migration-data-dir "${DATA_DIR}" \
         --database-url "postgresql://root@localhost:${EMBEDDED_DATABASE_PORT}/gpustack"; then
         touch "$STATE_MIGRATION_DONE_FILE"
         echo "[INFO] Migration completed successfully."
