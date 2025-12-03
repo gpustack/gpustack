@@ -388,7 +388,7 @@ RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
 
 EOF
 # Initialize configurations
-COPY pack/higress-configs/ /
+COPY pack/rootfs/ /
 ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/opt/data/plugins
 ## END Install Higress standalone components
 
@@ -500,8 +500,6 @@ RUN --mount=type=cache,target=/root/.cache \
         && rm -rf /tmp/* \
         && rm -rf /workspace/gpustack/dist
 EOF
-## Copy s6-overlay service scripts.
-COPY pack/s6-overlay /etc/s6-overlay
 
 ## Entrypoint
 

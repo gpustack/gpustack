@@ -19,7 +19,7 @@ fi
 mkdir -p "$APISERVER_DATA_DIR"
 
 # prepare default data
-cp -rn /opt/data/defaultConfig/* "${APISERVER_DATA_DIR}/"
+cp -rn /etc/gpustack/data/defaultConfig/* "${APISERVER_DATA_DIR}/"
 
 # prepare mesh config
 MESH_CONFIG_DIR='/etc/istio/config'
