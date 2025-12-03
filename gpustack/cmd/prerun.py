@@ -7,7 +7,7 @@ from gpustack.config.config import (
     Config,
     GatewayModeEnum,
 )
-from gpustack.envs import MIGRATION_DATA_DIR
+from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
 from gpustack.logging import setup_logging
 from gpustack.cmd.start import (
     OptionalBoolAction,
@@ -86,9 +86,7 @@ def run(args: argparse.Namespace):
 
 def check_for_data_dir(cfg: Config):
     if cfg.data_dir != Config.get_data_dir():
-        raise Exception(
-            f"Custom data directory '{cfg.data_dir}' is not supported in container environment."
-        )
+        raise Exception("--data-dir is not supported in container environment.")
 
 
 def ports_for_services(cfg: Config) -> Dict[int, str]:
@@ -167,6 +165,11 @@ def prepare_postgres_config(cfg: Config):
         f.write(f"DATA_DIR={cfg.data_dir}\n")
         f.write(f"LOG_DIR={cfg.log_dir}\n")
         f.write(f"EMBEDDED_DATABASE_PORT={cfg.database_port}\n")
+        f.write(f"STATE_MIGRATION_DONE_FILE={get_migration_done_file(cfg)}\n")
+
+
+def get_migration_done_file(cfg: Config) -> str:
+    return os.path.join(cfg.data_dir, "run/state_migration_done")
 
 
 def prepare_gateway_config(cfg: Config):
@@ -237,12 +240,14 @@ def determine_dependency_services(cfg: Config) -> List[str]:
         dependencies.extend(postgres_services.dep_services)
 
     # migration
-    should_migrate = MIGRATION_DATA_DIR is not None
+    should_migrate = MIGRATION_DATA_DIR is not None or DATA_MIGRATION
+    if MIGRATION_DATA_DIR is not None:
+        logger.warning(
+            f"The environment variable GPUSTACK_MIGRATION_DATA_DIR is deprecated. The migration target dir will be set to {cfg.data_dir} instead."
+        )
     # even if the migration_done file path is hardcoded, we still need to join with data_dir
     # in the container environment, data_dir is always /var/lib/gpustack
-    migration_done = os.path.exists(
-        os.path.join(cfg.data_dir, "run/state_migration_done")
-    )
+    migration_done = os.path.exists(get_migration_done_file(cfg))
     # The postgres startup script use the hardcode path /var/lib/gpustack/postgres/data,
     # But for the accommodation of custom data dir, we need to check the actual data dir
     postgres_data_exists = os.path.exists(
