@@ -129,6 +129,8 @@ They are only usable within workers. Please set the environment variables in the
 | `GPUSTACK_RUNTIME_DEPLOY` | Deployer to use. Options: Auto, Docker, Kubernetes. | `Auto`                                         |
 | `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY` | Default container registry for deployer to pull images from. | (empty)                                        |
 | `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL` | Enable detailing the API call error during deployment. | `1`                                            |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME` | Username for the default container registry. | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD` | Password for the default container registry. | (empty)                                         |
 | `GPUSTACK_RUNTIME_DEPLOY_ASYNC` | Enable asynchronous deployment. | `1`                                            |
 | `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS` | The number of threads in the threadpool. | (empty)                                        |
 | `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT` | Enable mirrored deployment mode. | `0`                                            |
