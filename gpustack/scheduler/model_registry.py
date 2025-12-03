@@ -279,7 +279,7 @@ def detect_model_type(architectures: List[str]) -> CategoryEnum:
     Returns:
         The detected model category.
     """
-    for architecture in architectures:
+    for architecture in architectures or []:
         if architecture in _EMBEDDING_MODELS:
             return CategoryEnum.EMBEDDING
         if architecture in _CROSS_ENCODER_MODELS:
@@ -299,7 +299,7 @@ def is_multimodal_model(architectures: List[str]) -> bool:
     Returns:
         True if the model is multimodal, False otherwise.
     """
-    for architecture in architectures:
+    for architecture in architectures or []:
         if architecture in _MULTIMODAL_MODELS:
             return True
     return False
