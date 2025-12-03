@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import logging
 from typing import List, Dict, Optional
@@ -80,6 +81,7 @@ def run(args: argparse.Namespace):
         logger.info("Pre-run checks and setup completed successfully.")
     except Exception as e:
         logger.fatal(f"Failed to pre-check the configuration: {e}")
+        sys.exit(1)
 
 
 def check_for_data_dir(cfg: Config):
