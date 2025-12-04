@@ -184,13 +184,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     group.add_argument(
         "--disable-worker",
         action=OptionalBoolAction,
-        help="(DEPRECATED) Disable embedded worker. New installations will not have embedded worker by default. Use '--enable-worker' to enable embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled based on presence of worker-related files in the data directory.",
+        help="(DEPRECATED) Disable the embedded worker for the GPUStack server. New installations will not have the embedded worker by default. Use '--enable-worker' to enable the embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled by default for legacy installations prior to v2.0.1.",
         default=get_gpustack_env_bool("DISABLE_WORKER"),
     )
     group.add_argument(
         "--enable-worker",
         action=OptionalBoolAction,
-        help="Enable embedded worker. Valid for GPUStack sever only.",
+        help="Enable the embedded worker for the GPUStack server.",
         default=get_gpustack_env_bool("ENABLE_WORKER"),
     )
     group.add_argument(
