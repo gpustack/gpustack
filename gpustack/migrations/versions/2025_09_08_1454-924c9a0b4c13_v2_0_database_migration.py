@@ -89,9 +89,10 @@ def upgrade() -> None:
     )
     op.create_index('idx_clusters_deleted_at_created_at', 'clusters', ['deleted_at', 'created_at'])
 
-    gpustack_config = gpustack.config.config.get_global_config()
-    enable_worker = gpustack_config.enable_worker if gpustack_config else False
-    if enable_worker:
+    row = op.get_bind().execute(sa.text("select count(*) from workers;")).fetchone()
+    worker_count = row[0] if row is not None else 0
+    should_create_cluster = worker_count > 0
+    if should_create_cluster:
         # create default cluster when embedded worker is enabled
         # state == 3 means PROVISIONED and READY
         op.execute(f"""
@@ -185,7 +186,7 @@ def upgrade() -> None:
         batch_op.alter_column('cluster_id', existing_type=sa.Integer(), nullable=False)
 
 
-    if enable_worker:
+    if should_create_cluster:
         # create default cluster system user legacy worker user when embedded worker is enabled
         op.execute(f"""
             INSERT INTO users (username, is_admin, require_password_change, hashed_password, is_system, role, cluster_id, created_at, updated_at)
