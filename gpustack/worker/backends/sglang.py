@@ -57,7 +57,12 @@ class SGLangServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
 
-        is_distributed, is_distributed_leader, _ = self._get_distributed_metadata()
+        (
+            is_distributed,
+            is_distributed_leader,
+            is_distributed_follower,
+            distributed_follower_index,
+        ) = self._get_distributed_metadata()
 
         # Setup environment variables
         env = self._get_configured_env(is_distributed)
@@ -75,6 +80,8 @@ class SGLangServer(InferenceServer):
             command_script=command_script,
             command_args=command_args,
             env=env,
+            is_distributed_follower=is_distributed_follower,
+            distributed_follower_index=distributed_follower_index,
         )
 
     def _start_diffusion(self):
@@ -101,9 +108,13 @@ class SGLangServer(InferenceServer):
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
+        is_distributed_follower: bool = False,
+        distributed_follower_index: Optional[int] = None,
     ):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
+        if is_distributed_follower:
+            self._workload_name += f"-f{distributed_follower_index}"
 
         # Get resources configuration
         resources = self._get_configured_resources()

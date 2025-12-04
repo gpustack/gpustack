@@ -55,9 +55,12 @@ class VLLMServer(InferenceServer):
         logger.info(f"Starting vLLM model instance: {self._model_instance.name}")
 
         # Prepare distributed information.
-        is_distributed, is_distributed_leader, is_distributed_follower = (
-            self._get_distributed_metadata()
-        )
+        (
+            is_distributed,
+            is_distributed_leader,
+            is_distributed_follower,
+            distributed_follower_index,
+        ) = self._get_distributed_metadata()
 
         env = self._get_configured_env(
             is_distributed=is_distributed,
@@ -76,6 +79,7 @@ class VLLMServer(InferenceServer):
             env=env,
             is_distributed_leader=is_distributed_leader,
             is_distributed_follower=is_distributed_follower,
+            distributed_follower_index=distributed_follower_index,
         )
 
     def _create_workload(
@@ -85,9 +89,12 @@ class VLLMServer(InferenceServer):
         env: Dict[str, str],
         is_distributed_leader: bool,
         is_distributed_follower: bool,
+        distributed_follower_index: Optional[int],
     ):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
+        if is_distributed_follower:
+            self._workload_name += f"-f{distributed_follower_index}"
 
         image = self._get_configured_image()
         if not image:
