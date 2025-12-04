@@ -20,4 +20,7 @@ mkdir -p "$SERVICE_LOG_DIR"
 chown 65534:65534 "$SERVICE_LOG_DIR"
 chmod 755 "$SERVICE_LOG_DIR"
 
+# clean leftover lock file
+rm -rf "${SERVICE_LOG_DIR}/lock"
+
 exec logutil-service "${SERVICE_LOG_DIR}"
