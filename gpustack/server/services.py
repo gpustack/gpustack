@@ -396,18 +396,16 @@ class ModelFileService:
         self.session = session
 
     async def get_by_resolved_path(self, path: str) -> List[ModelFile]:
-        condition = ModelFile.resolved_paths.contains([path])
-
         results = await ModelFile.all_by_fields(
             self.session,
-            extra_conditions=[condition],
         )
-        if results is None:
-            return None
-
+        filtered_results = []
         for result in results:
             self.session.expunge(result)
-        return results
+            if path in result.resolved_paths:
+                filtered_results.append(result)
+
+        return filtered_results
 
     async def get_by_source_index(self, source_index: str) -> List[ModelFile]:
         results = await ModelFile.all_by_field(
