@@ -269,8 +269,11 @@ def determine_dependency_services(cfg: Config) -> List[str]:
             dependencies.extend(postgres_services.dep_services)
 
         # migration
-        should_migrate = MIGRATION_DATA_DIR is not None or DATA_MIGRATION
-        if MIGRATION_DATA_DIR is not None:
+        old_db_file = os.path.join(cfg.data_dir, "database.db")
+        should_migrate = (
+            MIGRATION_DATA_DIR is not None or DATA_MIGRATION
+        ) and os.path.exists(old_db_file)
+        if should_migrate and MIGRATION_DATA_DIR is not None:
             logger.warning(
                 f"The environment variable GPUSTACK_MIGRATION_DATA_DIR is deprecated. The migration target dir will be set to {cfg.data_dir} instead."
             )
@@ -303,7 +306,7 @@ def prepare_s6_overlay(
         s6_base_path = "/etc/s6-overlay/s6-rc.d"
 
     # ensure dirs exist
-    gpustack_dependencies_path = os.path.join(s6_base_path, "gpustack/dependencies")
+    gpustack_dependencies_path = os.path.join(s6_base_path, "gpustack/dependencies.d")
     os.makedirs(gpustack_dependencies_path, exist_ok=True)
     cleanup_s6_services(gpustack_dependencies_path, *all_dependent_services())
 
