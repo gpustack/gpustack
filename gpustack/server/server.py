@@ -3,7 +3,7 @@ from multiprocessing import Process
 import os
 import re
 import aiohttp
-from typing import List
+from typing import List, Optional
 
 import uvicorn
 import logging
@@ -366,15 +366,23 @@ class Server:
             )
             await User.create(session, user)
 
+    async def _default_cluster_user(self, session: AsyncSession) -> Optional[User]:
+        return await User.first_by_field(
+            session=session, field="username", value=default_cluster_user_name
+        )
+
     async def _migrate_legacy_token(self, session: AsyncSession):
-        """
-        Migrate legacy tokens to the new format.
-        This is a placeholder for future migration logic.
-        """
         if not self._config.token or self._config.token.startswith(API_KEY_PREFIX):
             return
         # this should be created from sql migration script.
-        default_cluster = await Cluster.one_by_id(session=session, id=1)
+        cluster_user = await self._default_cluster_user(session)
+        if cluster_user is None or cluster_user.cluster is None:
+            logger.debug(
+                "Default cluster user not exist, skipping legacy token migration."
+            )
+            return
+
+        default_cluster = cluster_user.cluster
         if not default_cluster:
             logger.debug(
                 "Default cluster does not exist, skipping legacy token migration."
@@ -484,11 +492,11 @@ class Server:
                 raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
-        cluster_user = await User.first_by_field(
-            session=session, field="username", value=default_cluster_user_name
-        )
-        if not cluster_user or not cluster_user.cluster:
-            logger.info("Cluster doesn't exist, skipping writing registration token.")
+        cluster_user = await self._default_cluster_user(session)
+        if cluster_user is None or cluster_user.cluster is None:
+            logger.debug(
+                "Default cluster user not exist, skipping registration token generation."
+            )
             return
         token = cluster_user.cluster.registration_token
         if token == "":
@@ -539,9 +547,7 @@ class Server:
     async def _init_default_cluster(self, session: AsyncSession):
         if self._config.server_role() != Config.ServerRole.BOTH:
             return
-        default_cluster_user = await User.first_by_field(
-            session=session, field="username", value=default_cluster_user_name
-        )
+        default_cluster_user = await self._default_cluster_user(session)
         if default_cluster_user:
             return
         logger.info(
