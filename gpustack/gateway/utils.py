@@ -311,7 +311,6 @@ def generate_model_ingress(
                 secret_name=tls_secret_name,
             )
         ]
-        metadata.annotations["higress.io/ssl-redirect"] = 'true'
     ingress = k8s_client.V1Ingress(
         api_version="networking.k8s.io/v1",
         kind="Ingress",
