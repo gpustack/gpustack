@@ -3,7 +3,7 @@ from multiprocessing import Process
 import os
 import re
 import aiohttp
-from typing import List, Optional
+from typing import Optional
 
 import uvicorn
 import logging
@@ -54,12 +54,11 @@ default_cluster_user_name = f"{system_name_prefix}-1"
 
 
 class Server:
-    def __init__(self, config: Config, sub_processes: List[Process] = None):
-        if sub_processes is None:
-            sub_processes = []
+    def __init__(self, config: Config, worker_process: Process):
         self._config: Config = config
-        self._sub_processes = sub_processes
+        self._sub_processes = []
         self._async_tasks = []
+        self._worker_process = worker_process
 
     @property
     def all_processes(self):
@@ -81,6 +80,9 @@ class Server:
         await self._prepare_data()
 
         init_model_catalog(self._config.model_catalog_file)
+        # it's safe to determine server_role after migration
+        if self._config.server_role() == Config.ServerRole.BOTH:
+            self._sub_processes.append(self._worker_process)
 
         self._start_sub_processes()
         self._start_scheduler()

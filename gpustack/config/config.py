@@ -223,7 +223,7 @@ class Config(BaseSettings):
                     pass
 
         if (
-            not self._is_server()
+            self._is_worker()
             and self.token is None
             and read_worker_token(self.data_dir) is None
         ):
@@ -238,7 +238,7 @@ class Config(BaseSettings):
             self.system_reserved = {"ram": 2, "vram": 1}
 
         if self.service_discovery_name is None:
-            self.service_discovery_name = "server" if self._is_server() else "worker"
+            self.service_discovery_name = "worker" if self._is_worker() else "server"
 
         self.make_dirs()
         self.detect_gateway_mode()
@@ -606,8 +606,8 @@ class Config(BaseSettings):
 
         self.jwt_secret_key = key
 
-    def _is_server(self):
-        return self.server_url is None
+    def _is_worker(self):
+        return self.server_url is not None
 
     def get_image_name(self, override: Optional[str] = None) -> str:
         if self.image_name_override:
@@ -663,7 +663,7 @@ class Config(BaseSettings):
         BOTH = "both"
 
     def server_role(self) -> ServerRole:
-        if not self._is_server():
+        if self._is_worker():
             return self.ServerRole.WORKER
         elif self._is_both_role():
             return self.ServerRole.BOTH
@@ -682,7 +682,7 @@ class Config(BaseSettings):
         Returns:
             bool: True if running in both server and worker mode, False otherwise.
         """
-        if not self._is_server():
+        if self._is_worker():
             return False
         elif self.enable_worker:
             return True
