@@ -663,65 +663,40 @@ class Config(BaseSettings):
         BOTH = "both"
 
     def server_role(self) -> ServerRole:
-        if self._is_server() and self.enable_worker:
-            return self.ServerRole.BOTH
-        elif self._is_legacy_both_role():
-            return self.ServerRole.BOTH
-        elif self._is_server():
-            return self.ServerRole.SERVER
-        else:
+        if not self._is_server():
             return self.ServerRole.WORKER
+        elif self._is_both_role():
+            return self.ServerRole.BOTH
+        else:
+            return self.ServerRole.SERVER
 
-    def _is_legacy_both_role(self) -> bool:
+    def _is_both_role(self) -> bool:
         """
-        Determine if the server is running in both server and worker mode based on legacy configuration.
-        In legacy configuration, GPUStack server defaults to run the embedded worker unless disabled.
-        Now, we introduce `enable_worker` to explicitly control the embedded worker.
-
-        case 1: GPUStack server runs both server and worker mode (legacy behavior)
-            - server_url is None (indicating server mode)
-            - disable_worker is None (not explicitly disabled)
-            - worker_name file exists in data_dir (indicating worker configuration present)
-            returns True
-
-        case 2: GPUStack server runs only server mode
-            - server_url is None (indicating server mode)
-            - disable_worker is True (explicitly disabled)
-            - worker_name file may or may not exist
-            returns False
-
-        case 3: GPUStack runs in server mode only (post v2 default)
-            - server_url is None (indicating server mode)
-            - disable_worker is None (not explicitly disabled)
-            - worker_name file does not exist
-            returns False
-
-        case 4: GPUStack runs both server and worker mode (post v2 explicit)
-            - server_url is None (indicating server mode)
-            - disable_worker is None (not explicitly disabled)
-            - enable_worker is True (explicitly enabled)
-            - worker_name file exists in data_dir (indicating worker configuration present)
-            returns False (should be handled by non-legacy logic)
-
-        case 5: GPUStack runs post v2 with enable_worker, then upgrade and remove enable_worker
-            - server_url is None (indicating server mode)
-            - disable_worker is None (not explicitly disabled)
-            - enable_worker is False (default behavior)
-            - worker_name file exists in data_dir (indicating worker configuration present)
-            returns True (This can be counter-intuitive, but should be a corner case for backward compatibility)
+        Determine if the server is running in both server and worker mode. If the
+        `enable_worker` flag is set to True, the server is running in both modes. If the
+        `disable_worker` flag is set to True, the server is running in server-only mode.
+        If neither flag is set, the presence of a `bootstrap_version` file in the data
+        directory is checked. If the file does not exist, it indicates that the server was
+        installed using a version that defaults to running in both modes.
 
         Returns:
-            bool: True if running in both server and worker mode based on legacy configuration, False otherwise.
+            bool: True if running in both server and worker mode, False otherwise.
         """
-        worker_name_path = os.path.join(self.data_dir, "worker_name")
-        if (
-            self._is_server()
-            and self.disable_worker is None
-            and os.path.exists(worker_name_path)
-        ):
+        if not self._is_server():
+            return False
+        elif self.enable_worker:
             return True
+        elif self.disable_worker:
+            return False
 
-        return False
+        # As of v2.0.1, a `bootstrap_version` file is created in data_dir.
+        # If the file exists, it indicates that the server was installed
+        # using a version that defaults to running server-only mode.
+        bootstrap_version_path = os.path.join(self.data_dir, "bootstrap_version")
+        if os.path.exists(bootstrap_version_path):
+            return False
+
+        return True
 
     def set_async_k8s_config(self, config):
         if getattr(self, '_k8s_async_config', None) is not None:
