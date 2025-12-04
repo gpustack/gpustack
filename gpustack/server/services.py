@@ -3,9 +3,9 @@ import logging
 import functools
 from typing import Any, Callable, Dict, List, Optional, Union, Set, Tuple
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel, bindparam, cast
+from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.dialects.postgresql import JSONB
+
 
 from gpustack.api.exceptions import InternalServerErrorException
 from gpustack.schemas.api_keys import ApiKey
@@ -396,9 +396,7 @@ class ModelFileService:
         self.session = session
 
     async def get_by_resolved_path(self, path: str) -> List[ModelFile]:
-        condition = cast(ModelFile.resolved_paths, JSONB).op('?')(
-            bindparam("resolved_path", path)
-        )
+        condition = ModelFile.resolved_paths.contains([path])
 
         results = await ModelFile.all_by_fields(
             self.session,
