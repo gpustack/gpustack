@@ -160,6 +160,7 @@ def _run_schema_upgrade(db_url: str, revision: str = "head"):
     pkg_path = spec.submodule_search_locations[0]
     alembic_cfg = AlembicConfig()
     alembic_cfg.set_main_option("script_location", os.path.join(pkg_path, "migrations"))
+    alembic_cfg.set_main_option("called_by_db_migration", "true")
 
     db_url_escaped = db_url.replace("%", "%%")
     alembic_cfg.set_main_option("sqlalchemy.url", db_url_escaped)

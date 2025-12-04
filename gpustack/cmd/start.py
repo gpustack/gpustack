@@ -524,14 +524,11 @@ def run(args: argparse.Namespace):
 
 
 def run_server(cfg: Config):
-    sub_processes = []
+    worker = Worker(cfg)
 
-    if cfg.server_role() == Config.ServerRole.BOTH:
-        worker = Worker(cfg)
-        worker_process = multiprocessing.Process(target=worker.start)
-        sub_processes = [worker_process]
-
-    server = Server(config=cfg, sub_processes=sub_processes)
+    server = Server(
+        config=cfg, worker_process=multiprocessing.Process(target=worker.start)
+    )
 
     try:
         asyncio.run(server.start())

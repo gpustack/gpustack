@@ -8,7 +8,7 @@ Create Date: 2024-07-24 11:13:29.124449
 from typing import Sequence, Union
 from pathlib import Path
 
-from alembic import op
+from alembic import op, context
 import sqlalchemy as sa
 import sqlmodel
 import gpustack
@@ -134,7 +134,8 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name='fk_model_usages_user_id_users'),
     sa.PrimaryKeyConstraint('id')
     )
-    write_bootstrap_version()
+    if context.get_context().config.get_main_option("called_by_db_migration") != "true":
+        write_bootstrap_version()
     # ### end Alembic commands ###
 
 
