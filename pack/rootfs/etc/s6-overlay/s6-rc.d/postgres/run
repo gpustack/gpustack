@@ -11,9 +11,9 @@ source "$SCRIPT_ROOT/base.sh"
 source "$GPUSTACK_POSTGRES_CONFIG"
 source "$SCRIPT_ROOT/default-variables.sh"
 
-PGDATA="${GPUSTACK_POSTGRES_DIR}/data"
+PGDATA="${POSTGRES_DATA_DIR}"
 PGLOG="${LOG_DIR}/postgresql"
-PASS_FILE="${GPUSTACK_POSTGRES_DIR}/postgres_root_pass"
+PASS_FILE="${DATA_DIR}/postgres_root_pass"
 
 # Ensure data directory
 if [ ! -d "$PGDATA" ]; then
