@@ -178,7 +178,6 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             ingress_class_name='higress',
             rules=[
                 k8s_client.V1IngressRule(
-                    host=hostname,
                     http=k8s_client.V1HTTPIngressRuleValue(
                         paths=[
                             k8s_client.V1HTTPIngressPath(
@@ -201,7 +200,6 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
                 secret_name=tls_secret_name,
             )
         ]
-        expected_ingress.metadata.annotations["higress.io/ssl-redirect"] = 'true'
     if not ingress:
         await network_v1_client.create_namespaced_ingress(
             namespace=gateway_namespace, body=expected_ingress
