@@ -129,8 +129,10 @@ spec:
               value: {{ config.server_url }}
             - name: GPUSTACK_PORT
               value: '8080'
-            - name: GPUSTACK_GATEWAY_MODE
-              value: 'embedded'
+            - name: GPUSTACK_WORKER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: GPUSTACK_RUNTIME_DEPLOY
               value: "Kubernetes"
             - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
