@@ -91,5 +91,5 @@ def is_supported_higress(kubeconfig: Optional[str] = None) -> bool:
     except ApiException as e:
         if e.status == 404:
             return False
-        logger.error(f"Error checking for Higress IngressClass: {e}")
+        logger.debug(f"Error checking for Higress IngressClass: {e}")
         return False

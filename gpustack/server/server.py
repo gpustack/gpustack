@@ -12,10 +12,10 @@ import tenacity
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
-from gpustack.schemas.users import User, UserRole
+from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
-from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.models import Model
 from gpustack.security import (
     JWTManager,
@@ -50,6 +50,7 @@ from gpustack.exporter.exporter import MetricExporter
 from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
 
 logger = logging.getLogger(__name__)
+default_cluster_user_name = f"{system_name_prefix}-1"
 
 
 class Server:
@@ -327,6 +328,7 @@ class Server:
     async def _init_data(self, session: AsyncSession):
         init_data_funcs = [
             self._init_user,
+            self._init_default_cluster,
             self._migrate_legacy_token,
             self._migrate_legacy_workers,
             self._ensure_registration_token,
@@ -371,6 +373,7 @@ class Server:
         """
         if not self._config.token or self._config.token.startswith(API_KEY_PREFIX):
             return
+        # this should be created from sql migration script.
         default_cluster = await Cluster.one_by_id(session=session, id=1)
         if not default_cluster:
             logger.debug(
@@ -482,7 +485,7 @@ class Server:
 
     async def _ensure_registration_token(self, session: AsyncSession):
         cluster_user = await User.first_by_field(
-            session=session, field="username", value="system/cluster-1"
+            session=session, field="username", value=default_cluster_user_name
         )
         if not cluster_user or not cluster_user.cluster:
             logger.info("Cluster doesn't exist, skipping writing registration token.")
@@ -532,3 +535,41 @@ class Server:
             existing_model_ids=model_ids,
             config=k8s_config,
         )
+
+    async def _init_default_cluster(self, session: AsyncSession):
+        if self._config.server_role() != Config.ServerRole.BOTH:
+            return
+        default_cluster_user = await User.first_by_field(
+            session=session, field="username", value=default_cluster_user_name
+        )
+        if default_cluster_user:
+            return
+        logger.info(
+            "Creating default cluster due to running in Server and Worker mode."
+        )
+        hashed_suffix = secrets.token_hex(6)
+        default_cluster = Cluster(
+            name="Default Cluster",
+            description="The default cluster for GPUStack",
+            provider=ClusterProvider.Docker,
+            state=ClusterStateEnum.READY,
+            hashed_suffix=hashed_suffix,
+            registration_token="",
+        )
+        default_cluster = await Cluster.create(
+            session, default_cluster, auto_commit=False
+        )
+
+        default_cluster_user = User(
+            username=default_cluster_user_name,
+            is_system=True,
+            is_admin=False,
+            require_password_change=False,
+            role=UserRole.Cluster,
+            hashed_password="",
+            cluster=default_cluster,
+        )
+        await User.create(session, default_cluster_user, auto_commit=False)
+
+        await session.commit()
+        logger.debug("Default cluster created.")
