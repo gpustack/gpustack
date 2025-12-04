@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import logging
+from shutil import move
 from typing import List, Dict, Optional
 from gpustack.config.config import (
     Config,
@@ -10,7 +11,6 @@ from gpustack.config.config import (
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
 from gpustack.logging import setup_logging
 from gpustack.cmd.start import (
-    OptionalBoolAction,
     start_cmd_options,
     parse_args,
 )
@@ -41,12 +41,6 @@ def setup_prerun_cmd(subparsers: argparse._SubParsersAction):
         help=argparse.SUPPRESS,
         default=get_gpustack_env("S6_BASE_PATH"),
     )
-    parser_server.add_argument(
-        "--skip-data-dir-check",
-        action=OptionalBoolAction,
-        help=argparse.SUPPRESS,
-        default=False,
-    )
     start_cmd_options(parser_server)
 
     parser_server.set_defaults(func=run)
@@ -60,10 +54,9 @@ def run(args: argparse.Namespace):
             "Starting pre-run checks and setup s6-overlay configuration for GPUStack..."
         )
         s6_base_path = args.s6_base_path or "/etc/s6-overlay/s6-rc.d"
-        if args.skip_data_dir_check is False:
-            check_for_data_dir(cfg)
-
         enabled_services = determine_enabled_services(cfg)
+        # migrate hardcode postgres data dir if needed for determining dependency services
+        migrate_hardcode_postgres_data_and_password(cfg, enabled_services)
         dependency_services = determine_dependency_services(cfg)
         if len(dependency_services) == 0 and len(enabled_services) == 0:
             logger.info("No extra s6 services for gpustack to enable.")
@@ -82,11 +75,6 @@ def run(args: argparse.Namespace):
     except Exception as e:
         logger.fatal(f"Failed to pre-check the configuration: {e}")
         sys.exit(1)
-
-
-def check_for_data_dir(cfg: Config):
-    if cfg.data_dir != Config.get_data_dir():
-        raise Exception("--data-dir is not supported in container environment.")
 
 
 def ports_for_services(cfg: Config) -> Dict[int, str]:
@@ -153,19 +141,54 @@ def create_s6_services(base_path: str, *services: str):
             pass
 
 
+def migrate_hardcode_postgres_data_and_password(
+    cfg: Config, enabled_services: List[str]
+):
+    if "postgres" not in enabled_services:
+        return
+    # following paths are hardcoded in the postgres s6 service scripts in v2.0.0.
+    # in post 2.0.0 versions, we support custom data dir via cfg.data_dir.
+    # here we migrate the data from hardcoded paths to the new paths if needed.
+    pair = {
+        "/var/lib/gpustack/postgres/data": os.path.join(
+            cfg.postgres_base_dir(), "data"
+        ),
+        "/var/lib/gpustack/postgres_root_pass": os.path.join(
+            cfg.data_dir, "postgres_root_pass"
+        ),
+        "/var/lib/gpustack/run/migration_done": get_migration_done_file(cfg),
+    }
+    for hardcode_path, target_path in pair.items():
+        if hardcode_path == target_path or not os.path.exists(hardcode_path):
+            continue
+        if os.path.exists(target_path):
+            logger.warning(
+                f"Both hardcoded postgres file/dir {hardcode_path} and postgres file/dir with data_dir {target_path} exist. Only {target_path} will be used."
+            )
+            continue
+        logger.info(
+            f"Migrating hardcoded postgres file/dir {hardcode_path} to {target_path}"
+        )
+        os.makedirs(cfg.postgres_base_dir(), exist_ok=True)
+        move(hardcode_path, target_path)
+
+
 def prepare_postgres_config(cfg: Config):
     # prepare postgres dirs
-    os.makedirs(
-        os.getenv("GPUSTACK_POSTGRES_DIR", cfg.postgres_base_dir()),
-        exist_ok=True,
+    # same reason as gateway_shared_config_dir
+    postgres_shared_config_dir = os.getenv(
+        "GPUSTACK_POSTGRES_DIR", cfg.postgres_base_dir()
     )
+    os.makedirs(postgres_shared_config_dir, exist_ok=True)
+    os.makedirs(cfg.postgres_base_dir(), exist_ok=True)
 
-    config_path = os.path.join(cfg.postgres_base_dir(), ".env")
+    config_path = os.path.join(postgres_shared_config_dir, ".env")
     with open(config_path, "w") as f:
         f.write(f"DATA_DIR={cfg.data_dir}\n")
         f.write(f"LOG_DIR={cfg.log_dir}\n")
         f.write(f"EMBEDDED_DATABASE_PORT={cfg.database_port}\n")
         f.write(f"STATE_MIGRATION_DONE_FILE={get_migration_done_file(cfg)}\n")
+        f.write(f"POSTGRES_DATA_DIR={os.path.join(cfg.postgres_base_dir(), 'data')}\n")
 
 
 def get_migration_done_file(cfg: Config) -> str:
@@ -174,13 +197,17 @@ def get_migration_done_file(cfg: Config) -> str:
 
 def prepare_gateway_config(cfg: Config):
     # prepare gateway dirs
-    os.makedirs(
-        os.getenv("GPUSTACK_GATEWAY_DIR", cfg.higress_base_dir()),
-        exist_ok=True,
+    # In most cases gateway_shared_config_dir is equal to higress_base_dir.
+    # If user customized cfg.data_dir, we need to ensure both dirs exist.
+    # gateway_shared_config_dir is to store the environment variables for gateway services
+    gateway_shared_config_dir = os.getenv(
+        "GPUSTACK_GATEWAY_DIR", cfg.higress_base_dir()
     )
-    # ensure higress data dir exists
+    os.makedirs(gateway_shared_config_dir, exist_ok=True)
+    # cfg.higress_base_dir is to store gateway configurations like kubeconfig and apiserver data
     os.makedirs(cfg.higress_base_dir(), exist_ok=True)
-    config_path = os.path.join(cfg.higress_base_dir(), ".env")
+
+    config_path = os.path.join(gateway_shared_config_dir, ".env")
     higress_embedded_kubeconfig = os.path.join(cfg.higress_base_dir(), "kubeconfig")
 
     if cfg.gateway_mode == GatewayModeEnum.embedded:
@@ -232,29 +259,33 @@ def determine_enabled_services(cfg: Config) -> List[str]:
 
 def determine_dependency_services(cfg: Config) -> List[str]:
     dependencies = []
-    # embedded database
-    if cfg.database_url is None and cfg.server_role() in [
+
+    if cfg.server_role() in [
         Config.ServerRole.SERVER,
         Config.ServerRole.BOTH,
     ]:
-        dependencies.extend(postgres_services.dep_services)
+        # embedded database
+        if cfg.database_url is None:
+            dependencies.extend(postgres_services.dep_services)
 
-    # migration
-    should_migrate = MIGRATION_DATA_DIR is not None or DATA_MIGRATION
-    if MIGRATION_DATA_DIR is not None:
-        logger.warning(
-            f"The environment variable GPUSTACK_MIGRATION_DATA_DIR is deprecated. The migration target dir will be set to {cfg.data_dir} instead."
+        # migration
+        should_migrate = MIGRATION_DATA_DIR is not None or DATA_MIGRATION
+        if MIGRATION_DATA_DIR is not None:
+            logger.warning(
+                f"The environment variable GPUSTACK_MIGRATION_DATA_DIR is deprecated. The migration target dir will be set to {cfg.data_dir} instead."
+            )
+        # This is the hardcooded migration done file path
+        migration_done = os.path.exists(get_migration_done_file(cfg))
+        postgres_data_exists = os.path.exists(
+            os.path.join(cfg.data_dir, "postgres", "data")
         )
-    # even if the migration_done file path is hardcoded, we still need to join with data_dir
-    # in the container environment, data_dir is always /var/lib/gpustack
-    migration_done = os.path.exists(get_migration_done_file(cfg))
-    # The postgres startup script use the hardcode path /var/lib/gpustack/postgres/data,
-    # But for the accommodation of custom data dir, we need to check the actual data dir
-    postgres_data_exists = os.path.exists(
-        os.path.join(cfg.data_dir, "postgres", "data")
-    )
-    if should_migrate and not migration_done and not postgres_data_exists:
-        dependencies.extend(migration_services.dep_services)
+        if (
+            cfg.database_url is None
+            and should_migrate
+            and not migration_done
+            and not postgres_data_exists
+        ):
+            dependencies.extend(migration_services.dep_services)
 
     # gateway services
     if cfg.gateway_mode == GatewayModeEnum.embedded:

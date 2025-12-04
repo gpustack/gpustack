@@ -146,13 +146,18 @@ def is_port_available(port: int) -> bool:
         True if the port is available, False otherwise.
     """
 
+    # Then, try to connect (if someone is listening, connect will succeed)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("", port))
-            return True
-        except OSError:
-            return False
+            s.settimeout(0.5)
+            result = s.connect_ex(("127.0.0.1", port))
+            if result == 0:
+                # Someone is listening, port is not available
+                return False
+        except Exception:
+            pass
+
+    return True
 
 
 async def is_url_reachable(
