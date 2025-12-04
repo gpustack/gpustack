@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from gpustack.schemas.models import Model
 
 
+system_name_prefix = "system/cluster"
+
+
 class UserRole(Enum):
     Worker = "Worker"
     Cluster = "Cluster"

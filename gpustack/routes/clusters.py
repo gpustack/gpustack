@@ -24,7 +24,7 @@ from gpustack.schemas.clusters import (
     WorkerPool,
     CloudOptions,
 )
-from gpustack.schemas.users import User, UserRole
+from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
@@ -32,7 +32,6 @@ from gpustack.config.config import get_global_config
 from gpustack.config import registration
 
 router = APIRouter()
-system_name_prefix = "system/cluster"
 
 
 def get_server_url(request: Request) -> str:
