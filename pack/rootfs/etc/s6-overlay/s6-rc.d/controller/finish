@@ -1,6 +1,8 @@
 #!/command/with-contenv bash
 
-echo "[ERROR] controller exited with code $1, shutting down all services..." >&2
+EXIT_CODE="$1"
+
+echo "[INFO] controller exited with code $EXIT_CODE, shutting down all services..." >&2
 
 s6-svscanctl -t /run/service
-exit 1
+exit "$EXIT_CODE"
