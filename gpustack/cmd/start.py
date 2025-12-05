@@ -441,6 +441,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("OIDC_REDIRECT_URI"),
     )
     group.add_argument(
+        "--oidc-post-logout-redirect-key",
+        type=str,
+        help="Custom key name for post-logout redirection used by the IdP (e.g., `returnTo` or `post_logout_redirect_uri` for Auth0).",
+        default=get_gpustack_env("OIDC_POST_LOGOUT_REDIRECT_KEY"),
+    )
+    group.add_argument(
         "--oidc-skip-userinfo",
         action=OptionalBoolAction,
         help="Skip using the UserInfo endpoint and retrieve user details from the ID token.",
@@ -639,6 +645,7 @@ def set_server_options(args, config_data: dict):
         "oidc_client_id",
         "oidc_client_secret",
         "oidc_redirect_uri",
+        "oidc_post_logout_redirect_key",
         "oidc_skip_userinfo",
         "oidc_use_userinfo",
         "saml_idp_server_url",
