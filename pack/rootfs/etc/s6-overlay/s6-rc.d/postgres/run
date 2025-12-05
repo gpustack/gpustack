@@ -17,6 +17,7 @@ PASS_FILE="${DATA_DIR}/postgres_root_pass"
 
 # Ensure data directory
 if [ ! -d "$PGDATA" ]; then
+	echo "[INFO] Creating Postgres data directory at $PGDATA."
 	mkdir -p "$PGDATA" \
 		&& chown -R postgres:postgres "$PGDATA" \
 		&& chmod 0700 "$PGDATA"
@@ -24,6 +25,7 @@ fi
 
 # Ensure log directory
 if [ ! -d "$PGLOG" ]; then
+	echo "[INFO] Creating Postgres log directory at $PGLOG."
 	mkdir -p "$PGLOG" \
 		&& chown -R postgres:postgres "$PGLOG" \
 		&& chmod 0755 "$PGLOG"
@@ -49,6 +51,7 @@ fi
 # reconfigure Postgres port
 PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf
 gosu postgres sed -i "s/^port[[:space:]]*=[[:space:]]*[0-9]\+/port = $EMBEDDED_DATABASE_PORT/" "$PGCONFIG_FILE"
+gosu postgres sed -i "s|^#log_directory = 'log'|log_directory = '$PGLOG'|" "$PGCONFIG_FILE"
 
 # Initialize database
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
