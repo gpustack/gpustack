@@ -41,6 +41,10 @@ DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower()
     "true",
     "1",
 ]
+WORKER_GPU_DETECTION_TIMEOUT = int(
+    os.getenv("GPUSTACK_WORKER_GPU_DETECTION_TIMEOUT", 300)
+)  # 5 minutes in seconds
+WORKER_GPU_CACHE_TTL = int(os.getenv("GPUSTACK_WORKER_GPU_CACHE_TTL", 30))  # 30 seconds
 
 # Model evaluation cache configuration
 MODEL_EVALUATION_CACHE_MAX_SIZE = int(
