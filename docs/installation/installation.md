@@ -43,7 +43,7 @@ sudo docker exec -it gpustack \
 
 ## Add GPU Clusters and Worker Nodes
 
-Please follow the UI instructions on the `Clusters` page to add GPU clusters and worker nodes.
+Please follow the UI instructions on the `Clusters` and `Workers` pages to add GPU clusters and worker nodes.
 
 ## Custom Configuration
 

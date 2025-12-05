@@ -82,7 +82,7 @@ All components can be deployed together via Docker Compose for easy management.
 
 ### Deploying alongside GPUStack Server
 
-You can deploy GPUStack together with the observability stack using the provided `docker-compose.yaml` for a one-step setup. For details, refer to the [Installation via Docker Compose](../installation/docker-compose.md).
+You can deploy GPUStack together with the observability stack using the provided `docker-compose.yaml` for a one-step setup. For details, refer to the [Installation via Docker Compose](../installation/installation.md#installation-via-docker-compose).
 
 ### Deploying Separately
 
@@ -100,7 +100,8 @@ If you started GPUStack using `docker run` (not Compose), you can deploy the obs
         image: prom/prometheus
         container_name: gpustack-prometheus
         restart: unless-stopped
-        network_mode: host
+        ports:
+        - "9090:9090"
         command:
         - "--config.file=/etc/prometheus/prometheus.yml"
         - "--web.enable-remote-write-receiver"
@@ -112,7 +113,8 @@ If you started GPUStack using `docker run` (not Compose), you can deploy the obs
         image: grafana/grafana
         container_name: gpustack-grafana
         restart: unless-stopped
-        network_mode: host
+        ports:
+        - "3000:3000"
         environment:
         - GF_SERVER_HTTP_PORT=3000
         - GF_SECURITY_ADMIN_USER=admin
