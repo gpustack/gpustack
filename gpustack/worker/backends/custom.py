@@ -1,7 +1,8 @@
 import logging
 import os
-from typing import Dict, Optional, List
+from typing import Dict, List
 
+from gpustack.schemas.models import ModelInstanceDeploymentMetadata
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -36,8 +37,6 @@ class CustomServer(InferenceServer):
         The backend will automatically call get_command_path(command_name) to resolve the path.
     """
 
-    _workload_name: Optional[str] = None
-
     def start(self):
         try:
             self._start()
@@ -45,7 +44,11 @@ class CustomServer(InferenceServer):
             self._handle_error(e)
 
     def _start(self):
-        logger.info(f"Starting Custom model instance: {self._model_instance.name}")
+        logger.info(
+            f"Starting custom backend model instance: {self._model_instance.name}"
+        )
+
+        deployment_metadata = self._get_deployment_metadata()
 
         env = self._get_configured_env()
 
@@ -64,18 +67,17 @@ class CustomServer(InferenceServer):
         command_args.extend(self._flatten_backend_param())
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
             command_args=command_args,
             env=env,
         )
 
     def _create_workload(
         self,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
         command_args: List[str],
         env: Dict[str, str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image()
         if not image:
             raise ValueError("Failed to get Custom backend image")
@@ -107,7 +109,9 @@ class CustomServer(InferenceServer):
             ports=ports,
         )
 
-        logger.info(f"Creating container workload: {self._workload_name}")
+        logger.info(
+            f"Creating custom backend container workload: {deployment_metadata.name}"
+        )
         logger.info(
             f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
@@ -117,11 +121,13 @@ class CustomServer(InferenceServer):
         )
 
         workload_plan = WorkloadPlan(
-            name=self._workload_name,
+            name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(f"Created container workload {self._workload_name}")
+        logger.info(
+            f"Created custom backend container workload: {deployment_metadata.name}"
+        )

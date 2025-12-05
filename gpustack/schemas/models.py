@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import hashlib
@@ -369,6 +370,35 @@ class DistributedServers(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+@dataclass
+class ModelInstanceDeploymentMetadata:
+    """
+    Metadata for model instance deployment.
+    """
+
+    name: str
+    """
+    Name for model instance deployment.
+    """
+    distributed: bool = False
+    """
+    Whether the model instance is deployed in distributed mode.
+    """
+    distributed_leader: bool = False
+    """
+    Whether the model instance is the leader in distributed mode.
+    """
+    distributed_follower: bool = False
+    """
+    Whether the model instance is a follower in distributed mode.
+    """
+    distributed_follower_index: Optional[int] = None
+    """
+    Index of the follower in distributed mode.
+    It is None for leader or non-distributed mode.
+    """
+
+
 class ModelInstanceBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     worker_id: Optional[int] = None
@@ -411,6 +441,54 @@ class ModelInstanceBase(SQLModel, ModelSource):
     model_config = ConfigDict(protected_namespaces=())
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+
+    def get_deployment_metadata(
+        self,
+        worker_id: int,
+    ) -> ModelInstanceDeploymentMetadata:
+        """
+        Get the deployment metadata for the model instance.
+
+        Args:
+            worker_id:
+                The workload ID of the model instance.
+
+        Returns:
+            The deployment metadata.
+
+        Raises:
+            RuntimeError:
+                If the distributed follower index cannot be determined.
+        """
+
+        dservers = self.distributed_servers
+        subworkers = (
+            dservers.subordinate_workers
+            if dservers and dservers.subordinate_workers
+            else []
+        )
+
+        name = self.name
+        distributed = bool(subworkers)
+        distributed_leader = distributed and self.worker_id == worker_id
+        distributed_follower = distributed and not distributed_leader
+        distributed_follower_index = None
+        if distributed_follower:
+            for idx, subworker in enumerate(subworkers):
+                if subworker.worker_id == worker_id:
+                    distributed_follower_index = idx
+                    break
+            if distributed_follower_index is None:
+                raise RuntimeError("Failed to determine distributed follower index")
+            name += f"-f{distributed_follower_index}"
+
+        return ModelInstanceDeploymentMetadata(
+            name=name,
+            distributed=distributed,
+            distributed_leader=distributed_leader,
+            distributed_follower=distributed_follower,
+            distributed_follower_index=distributed_follower_index,
+        )
 
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):

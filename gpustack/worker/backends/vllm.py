@@ -20,6 +20,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
+    ModelInstanceDeploymentMetadata,
 )
 from gpustack.utils import network
 from gpustack.utils.command import find_parameter
@@ -43,8 +44,6 @@ class VLLMServer(InferenceServer):
     providing better isolation, resource management, and deployment consistency.
     """
 
-    _workload_name: Optional[str] = None
-
     def start(self):  # noqa: C901
         try:
             self._start()
@@ -55,40 +54,33 @@ class VLLMServer(InferenceServer):
         logger.info(f"Starting vLLM model instance: {self._model_instance.name}")
 
         # Prepare distributed information.
-        is_distributed, is_distributed_leader, is_distributed_follower = (
-            self._get_distributed_metadata()
-        )
+        deployment_metadata = self._get_deployment_metadata()
 
         env = self._get_configured_env(
-            is_distributed=is_distributed,
+            is_distributed=deployment_metadata.distributed,
         )
 
         command_script = self._get_serving_command_script(env)
 
         command_args = self._build_command_args(
             port=self._get_serving_port(),
-            is_distributed=is_distributed,
+            is_distributed=deployment_metadata.distributed,
         )
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
             command_script=command_script,
             command_args=command_args,
             env=env,
-            is_distributed_leader=is_distributed_leader,
-            is_distributed_follower=is_distributed_follower,
         )
 
     def _create_workload(
         self,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
-        is_distributed_leader: bool,
-        is_distributed_follower: bool,
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image()
         if not image:
             raise ValueError("Failed to get vLLM backend image")
@@ -122,7 +114,7 @@ class VLLMServer(InferenceServer):
         )
 
         # Adjust run container for distributed follower.
-        if is_distributed_follower:
+        if deployment_metadata.distributed_follower:
             ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=False,
             )
@@ -132,7 +124,7 @@ class VLLMServer(InferenceServer):
 
         # Create sidecar container for distributed leader.
         sidecar_container = None
-        if is_distributed_leader:
+        if deployment_metadata.distributed_leader:
             run_container.mounts.append(
                 ContainerMount(
                     path="/tmp",
@@ -159,7 +151,7 @@ class VLLMServer(InferenceServer):
                 ports=ray_ports,
             )
 
-        logger.info(f"Creating vLLM container workload: {self._workload_name}")
+        logger.info(f"Creating vLLM container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
@@ -169,7 +161,7 @@ class VLLMServer(InferenceServer):
         )
 
         workload_plan = WorkloadPlan(
-            name=self._workload_name,
+            name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=(
@@ -180,7 +172,7 @@ class VLLMServer(InferenceServer):
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(f"Created vLLM container workload {self._workload_name}")
+        logger.info(f"Created vLLM container workload: {deployment_metadata.name}")
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """
