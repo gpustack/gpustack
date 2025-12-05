@@ -67,7 +67,7 @@ class WorkerManager:
         if self._status_client is None:
             return
         try:
-            workerStatus = self._collector.collect(self._clientset)
+            workerStatus = self._collector.timed_collect(self._clientset)
         except Exception as e:
             logger.error(f"Failed to collect status for worker: {e}")
             return

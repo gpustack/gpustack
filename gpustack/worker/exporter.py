@@ -154,7 +154,7 @@ class MetricExporter(Collector):
         worker_name = self._worker_name
         worker_label_values = [worker_id, worker_name, worker_ip]
         try:
-            worker = self._collector.collect(clientset=self._clientset_getter())
+            worker = self._collector.timed_collect(clientset=self._clientset_getter())
             status = worker.status
             if status is None:
                 logger.error("Empty worker node status from collector.")
