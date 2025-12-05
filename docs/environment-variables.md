@@ -59,15 +59,16 @@ These environment variables are typically used for third-party service integrati
 
 ### Worker and Model Configuration
 
-| Variable                                               | Description                                             | Default |
-| ------------------------------------------------------ | ------------------------------------------------------- | ------- |
-| `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.               | `150`   |
-| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds. | `300`   |
-| `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.      | `300`   |
-| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.        | `3`     |
-| `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                 | `1000`  |
-| `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.               | `3600`  |
-| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                   | `false` |
+| Variable                                               | Description                                                                         | Default |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------- | ------- |
+| `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.                                           | `150`   |
+| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds.                             | `300`   |
+| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`   | Add debug log for slow worker status collection if it exceeds this time in seconds. | `180`   |
+| `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.                                  | `300`   |
+| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.                                    | `3`     |
+| `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                                             | `1000`  |
+| `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.                                           | `3600`  |
+| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                                               | `false` |
 
 ### Model Deployment Configuration
 
