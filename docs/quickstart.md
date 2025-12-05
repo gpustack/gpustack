@@ -1,24 +1,17 @@
 # Quickstart
 
-Use one of the following guides to quickly get started with GPUStack.
-
-- [Using Self-Hosted GPUs](#using-self-hosted-gpus)
-- [Using DigitalOcean GPUs](#using-digitalocean-gpus)
-
-## Using Self-Hosted GPUs
-
-This guide will help you set up GPUStack using your own self-hosted GPU servers.
+This guide will walk you through running GPUStack on your own self-hosted GPU servers. To use [cloud GPUs](./tutorials/adding-gpucluster-using-digitalocean.md), or integrating with an  [existing Kubernetes cluster](./tutorials/adding-gpucluster-using-kubernetes.md), see the relevant tutorials.
 
 !!! info "Prerequisites"
 
     1. A node with at least one NVIDIA GPU. For other GPU types, please check the guidelines in the GPUStack UI when adding a worker, or refer to the [Installation documentation](./installation/requirements.md) for more details.
     2. Ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on the worker node.
-    3. **(Optional)** A CPU node for hosting the GPUStack server. [Docker](https://docs.docker.com/engine/install/) is required for running GPUStack server. Docker Desktop (Windows and macOS) is also supported. If you do not have a separate CPU node, you can also install the GPUStack server on the same GPU node as the worker node.
+    3. **(Optional)** A CPU node for hosting the GPUStack server. The GPUStack server does not require a GPU and can run on a CPU-only machine. [Docker](https://docs.docker.com/engine/install/) must be installed. Docker Desktop (for Windows and macOS) is also supported. If no dedicated CPU node is available, the GPUStack server can be installed on the same machine as a GPU worker node.
     4. Only Linux is supported for GPUStack worker nodes. If you use Windows, consider using WSL2 and avoid using Docker Desktop. macOS is not supported for GPUStack worker nodes.
 
-### Install GPUStack Server
+## Install GPUStack
 
-GPUStack server does not require a GPU and can run on a CPU-only machine. Follow the steps below to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/).
+Run the following command to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/):
 
 ```bash
 sudo docker run -d --name gpustack \
@@ -55,7 +48,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
 
-### Set Up a GPU Cluster Using Docker
+## Set Up a GPU Cluster
 
 1. On the GPUStack UI, navigate to the `Clusters` page.
 
@@ -84,66 +77,6 @@ sudo docker run -d --name gpustack-worker \
 4. Execute the command on the worker node to connect it to the GPUStack server.
 
 5. After the worker node connects successfully, it will appear on the `Workers` page in the GPUStack UI.
-
-Now you have set up a self-hosted GPU cluster. You can proceed to deploy models as described in the [Deploy a Model](#deploy-a-model) section below.
-
-## Using DigitalOcean GPUs
-
-This guide will help you set up GPUStack using [DigitalOcean](https://www.digitalocean.com/) GPU droplets.
-
-!!! info "Prerequisites"
-
-    1. Ensure you have a DigitalOcean account with sufficient credits to create GPU droplets. [Create a DigitalOcean API token](https://cloud.digitalocean.com/account/api/tokens) with read and write permissions.
-    2. Your server URL must be accessible from the DigitalOcean droplet. For example, you can run the GPUStack server on a DigitalOcean droplet to get started quickly. If you run the GPUStack server on your local machine, consider using a tunneling service like [ngrok](https://ngrok.com/) to expose your server to the internet.
-
-### Install GPUStack Server
-
-GPUStack server does not require a GPU and can run on a CPU-only machine. Follow the steps below to install and start the GPUStack server using [Docker](https://docs.docker.com/engine/install/).
-
-```bash
-# Replace `http://your_server_external_url` with your actual server URL, which should be accessible from the DigitalOcean droplet.
-# For example, http://server_droplet_public_ip or https://your_id.ngrok-free.app
-sudo docker run -d --name gpustack \
-    --restart unless-stopped \
-    -p 80:80 \
-    -e GPUSTACK_SERVER_EXTERNAL_URL=http://your_server_external_url \
-    --volume gpustack-data:/var/lib/gpustack \
-    gpustack/gpustack
-```
-
-Check the GPUStack startup logs:
-
-```bash
-sudo docker logs -f gpustack
-```
-
-After GPUStack starts, run the following command to get the default admin password:
-
-```bash
-sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
-```
-
-Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
-
-### Set Up a DigitalOcean GPU Cluster
-
-1. On the GPUStack UI, navigate to the `Cloud Credentials` page.
-
-2. Click the `Add Cloud Credential` button and select `DigitalOcean` as the cloud provider.
-
-3. Fill in the `Name` and `Access Token` fields, then click the `Save` button.
-
-4. Navigate to the `Clusters` page and click the `Add Cluster` button.
-
-5. Select `DigitalOcean` as the cluster provider.
-
-6. Fill in the `Name` field, select the DigitalOcean cloud credential you created earlier, then select the `Region` for the new cluster. Click the `Next` button to configure the worker pool.
-
-8. Select the `Instance Type` as `NVIDIA H100 1X`, or any other GPU instance type available in your selected region. For other fields, you can keep the default values or adjust them according to your needs. Click the `Save` button to create the cluster.
-
-9. GPUStack will start creating the GPU droplet on DigitalOcean. You can monitor the status on the `Workers` page. Once the droplet is created and connected successfully, it will appear as `Ready` on the `Workers` page.
-
-Now you have set up a DigitalOcean GPU cluster. You can proceed to deploy models as described in the [Deploy a Model](#deploy-a-model) section below.
 
 ## Deploy a Model
 
