@@ -214,9 +214,13 @@ docker run -d --name gpustack \
     -e HTTP_PROXY="http://proxy-server:port" \
     -e HTTPS_PROXY="http://proxy-server:port" \
     -e ALL_PROXY="socks5://proxy-server:port" \
-    -e NO_PROXY="localhost,127.0.0.1,192.168.1.50,my-internal-domain.com" \
+    -e NO_PROXY="localhost,127.0.0.1,192.168.1.1,my-internal-domain.com" \
     ...
 ```
+
+!!! warning
+
+    Replace 192.168.1.1 and my-internal-domain.com with your actual values.
 
 !!! note
 
