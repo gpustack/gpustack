@@ -218,7 +218,7 @@ docker run -d --name gpustack \
     ...
 ```
 
-!!! warning
+!!! note
 
     Replace 192.168.1.1 and my-internal-domain.com with your actual values.
 
