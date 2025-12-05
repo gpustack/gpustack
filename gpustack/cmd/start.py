@@ -402,10 +402,10 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
     )
     group.add_argument(
-        "--external-auth-default-active",
+        "--external-auth-default-inactive",
         action=OptionalBoolAction,
-        help="Set newly created externally authenticated users active by default.",
-        default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_ACTIVE"),
+        help="Set newly created externally authenticated users inactive by default.",
+        default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
     )
     # OIDC settings
     group.add_argument(
@@ -626,7 +626,7 @@ def set_server_options(args, config_data: dict):
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",
-        "external_auth_default_active",
+        "external_auth_default_inactive",
         "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",
