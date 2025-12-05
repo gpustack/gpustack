@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Optional, List, Dict
 
+from gpustack.schemas.models import ModelInstanceDeploymentMetadata
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
 
@@ -19,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 class VoxBoxServer(InferenceServer):
-    _workload_name: Optional[str] = None
-
     def start(self):
         try:
             self._start()
@@ -28,7 +27,9 @@ class VoxBoxServer(InferenceServer):
             self._handle_error(e)
 
     def _start(self):
-        logger.info(f"Starting Vox-Box model instance: {self._model_instance.name}")
+        logger.info(f"Starting VoxBox model instance: {self._model_instance.name}")
+
+        deployment_metadata = self._get_deployment_metadata()
 
         env = self._get_configured_env()
 
@@ -39,6 +40,7 @@ class VoxBoxServer(InferenceServer):
         )
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -46,13 +48,11 @@ class VoxBoxServer(InferenceServer):
 
     def _create_workload(
         self,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image()
         if not image:
             raise ValueError("Failed to get VoxBox backend image")
@@ -88,7 +88,7 @@ class VoxBoxServer(InferenceServer):
             ports=ports,
         )
 
-        logger.info(f"Creating Vox-Box container workload: {self._workload_name}")
+        logger.info(f"Creating VoxBox container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
@@ -98,14 +98,14 @@ class VoxBoxServer(InferenceServer):
         )
 
         workload_plan = WorkloadPlan(
-            name=self._workload_name,
+            name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(f"Created Vox-Box container workload {self._workload_name}")
+        logger.info(f"Created VoxBox container workload: {deployment_metadata.name}")
 
     def _build_command_args(self, port: int) -> List[str]:
         arguments = [

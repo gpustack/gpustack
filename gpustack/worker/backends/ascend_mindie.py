@@ -19,6 +19,7 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.envs import to_bool
 
+from gpustack.schemas.models import ModelInstanceDeploymentMetadata
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 
@@ -990,8 +991,6 @@ class AscendMindIEServer(InferenceServer):
     the final service in a Docker container instead of a subprocess.
     """
 
-    _workload_name: Optional[str] = None
-
     def start(self):
         try:
             self._start()
@@ -1009,9 +1008,7 @@ class AscendMindIEServer(InferenceServer):
             if dservers and dservers.subordinate_workers
             else []
         )
-        is_distributed, is_distributed_leader, is_distributed_follower = (
-            self._get_distributed_metadata()
-        )
+        deployment_metadata = self._get_deployment_metadata()
 
         # Root path is defined by in Dockerfile ENV
         # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
@@ -1096,7 +1093,7 @@ class AscendMindIEServer(InferenceServer):
         env.pop("WORLD_SIZE", "")
         env.pop("RANKTABLEFILE", "")
         env.pop("RANK_TABLE_FILE", "")
-        if not is_distributed:
+        if not deployment_metadata.distributed:
             env.pop("MIES_CONTAINER_IP", "")
             env.pop("HOST_IP", "")
 
@@ -1121,18 +1118,15 @@ class AscendMindIEServer(InferenceServer):
         ]
         model_config["worldSize"] = len(self._model_instance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
-        if is_distributed:
+        if deployment_metadata.distributed:
             # Add distributed config if in distributed mode.
             backend_config["multiNodesInferEnabled"] = True
             # During distributed setup,
             # we must get more than one port here,
             # so we use ports[1] for distributed initialization.
             backend_config["multiNodesInferPort"] = self._model_instance.ports[1]
-        if is_distributed_follower:
-            subworker = next(
-                (sw for sw in subworkers if sw.worker_id == self._worker.id),
-                None,
-            )
+        if deployment_metadata.distributed_follower:
+            subworker = subworkers[deployment_metadata.distributed_follower_index]
             # Override device config if is a subordinate worker.
             backend_config["npuDeviceIds"] = [
                 # Use logic(count) device indexes as NPU device IDs,
@@ -1166,7 +1160,7 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
         local_world_size = len(self._model_instance.gpu_indexes)
         world_size = local_world_size
-        if is_distributed:
+        if deployment_metadata.distributed:
             world_size = local_world_size * (len(subworkers) + 1)
         params = AscendMindIEParameters(
             local_world_size=local_world_size,
@@ -1385,7 +1379,7 @@ class AscendMindIEServer(InferenceServer):
         # Generate rank table file if needed,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html,
         #     https://www.hiascend.com/forum/thread-0237183374051498211-1-1.html
-        if is_distributed:
+        if deployment_metadata.distributed:
             server_count = f"{len(subworkers) + 1}"
             server_list = [
                 {
@@ -1502,7 +1496,7 @@ class AscendMindIEServer(InferenceServer):
         )
 
         self._create_workload(
-            is_distributed=is_distributed,
+            deployment_metadata=deployment_metadata,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -1512,21 +1506,20 @@ class AscendMindIEServer(InferenceServer):
 
     def _create_workload(
         self,
-        is_distributed: bool,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
         config_files: List[ContainerFile],
         working_dir: Optional[str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image(backend="cann")
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
-        resources = self._get_configured_resources(mount_all_devices=is_distributed)
+        resources = self._get_configured_resources(
+            mount_all_devices=deployment_metadata.distributed,
+        )
 
         mounts = self._get_configured_mounts()
 
@@ -1556,7 +1549,9 @@ class AscendMindIEServer(InferenceServer):
             ports=ports,
         )
 
-        logger.info(f"Creating Ascend MindIE container workload: {self._workload_name}")
+        logger.info(
+            f"Creating Ascend MindIE container workload: {deployment_metadata.name}"
+        )
         logger.info(
             f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
@@ -1566,7 +1561,7 @@ class AscendMindIEServer(InferenceServer):
         )
 
         workload_plan = WorkloadPlan(
-            name=self._workload_name,
+            name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
@@ -1574,7 +1569,9 @@ class AscendMindIEServer(InferenceServer):
 
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(f"Created Ascend MindIE container workload {self._workload_name}")
+        logger.info(
+            f"Created Ascend MindIE container workload: {deployment_metadata.name}"
+        )
 
     @staticmethod
     def _get_serving_command_script(env: dict[str, str]) -> Optional[str]:

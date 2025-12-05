@@ -21,6 +21,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
     CategoryEnum,
+    ModelInstanceDeploymentMetadata,
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
@@ -41,7 +42,6 @@ class SGLangServer(InferenceServer):
     providing better isolation, resource management, and deployment consistency.
     """
 
-    _workload_name: Optional[str] = None
     is_diffusion = False
 
     def start(self):  # noqa: C901
@@ -57,21 +57,24 @@ class SGLangServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
 
-        is_distributed, is_distributed_leader, _ = self._get_distributed_metadata()
+        deployment_metadata = self._get_deployment_metadata()
 
         # Setup environment variables
-        env = self._get_configured_env(is_distributed)
+        env = self._get_configured_env(
+            is_distributed=deployment_metadata.distributed,
+        )
 
         command_script = self._get_serving_command_script(env)
 
         # Build SGLang command arguments
         command_args = self._build_command_args(
             port=self._get_serving_port(),
-            is_distributed=is_distributed,
-            is_distributed_leader=is_distributed_leader,
+            is_distributed=deployment_metadata.distributed,
+            is_distributed_leader=deployment_metadata.distributed_leader,
         )
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -82,8 +85,12 @@ class SGLangServer(InferenceServer):
             f"Starting SGLang Diffusion model instance: {self._model_instance.name}"
         )
 
+        deployment_metadata = self._get_deployment_metadata()
+
         # Setup environment variables
-        env = self._get_configured_env(False)
+        env = self._get_configured_env(
+            is_distributed=False,
+        )
 
         command_script = self._get_serving_command_script(env)
 
@@ -91,6 +98,7 @@ class SGLangServer(InferenceServer):
         command_args = self._build_diffusion_args(port=self._get_serving_port())
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -98,13 +106,11 @@ class SGLangServer(InferenceServer):
 
     def _create_workload(
         self,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         # Get resources configuration
         resources = self._get_configured_resources()
 
@@ -150,13 +156,13 @@ class SGLangServer(InferenceServer):
         )
 
         workload_plan = WorkloadPlan(
-            name=self._workload_name,
+            name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
 
-        logger.info(f"Creating SGLang container workload: {self._workload_name}")
+        logger.info(f"Creating SGLang container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
             f"arguments: [{' '.join(command_args)}], "
@@ -166,9 +172,7 @@ class SGLangServer(InferenceServer):
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(
-            f"SGLang container workload {self._workload_name} created successfully"
-        )
+        logger.info(f"Created SGLang container workload: {deployment_metadata.name}")
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """

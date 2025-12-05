@@ -38,6 +38,7 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
     ModelUpdate,
+    ModelInstanceDeploymentMetadata,
 )
 from gpustack.schemas.workers import GPUDevicesInfo
 from gpustack.server.bus import Event
@@ -194,30 +195,18 @@ class InferenceServer(ABC):
 
         raise error
 
-    def _get_distributed_metadata(self) -> tuple[bool, bool, bool]:
+    def _get_deployment_metadata(self) -> ModelInstanceDeploymentMetadata:
         """
-        Return distributed deployment status and role flags.
+        Get the deployment metadata for the model instance.
 
         Returns:
-            A tuple indicating (
-                is_distributed,
-                is_distributed_leader,
-                is_distributed_follower
-            ).
+            The deployment metadata.
+
+        Raises:
+            RuntimeError:
+                If the distributed follower index cannot be determined.
         """
-        model_instance = self._model_instance
-        dservers = model_instance.distributed_servers
-        subworkers = (
-            dservers.subordinate_workers
-            if dservers and dservers.subordinate_workers
-            else []
-        )
-        is_distributed = bool(subworkers)
-        is_distributed_leader = (
-            is_distributed and model_instance.worker_id == self._worker.id
-        )
-        is_distributed_follower = is_distributed and not is_distributed_leader
-        return is_distributed, is_distributed_leader, is_distributed_follower
+        return self._model_instance.get_deployment_metadata(self._worker.id)
 
     def _get_pretrained_config(self) -> Optional[Dict]:
         """
