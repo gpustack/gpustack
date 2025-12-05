@@ -74,17 +74,10 @@ nav:
   - Home:
       - Overview: overview.md
       - Quickstart: quickstart.md
-      - Installation:
+      - Installation: 
           - Requirements: installation/requirements.md
-          - NVIDIA: installation/nvidia/installation.md
-          - AMD: installation/amd/installation.md
-          - Ascend: installation/ascend/installation.md
-          - Hygon: installation/hygon/installation.md
-          - MThreads: installation/mthreads/installation.md
-          - Iluvatar: installation/iluvatar/installation.md
-          - Cambricon: installation/cambricon/installation.md
+          - Installation: installation/installation.md
           - Air-Gapped Installation: installation/air-gapped.md
-          - Installation via Docker Compose: installation/docker-compose.md
           - Uninstallation: installation/uninstallation.md
       - Upgrade: upgrade.md
       - Migration: migration.md

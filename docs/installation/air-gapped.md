@@ -1,6 +1,6 @@
 # Air-Gapped Installation
 
-You can install GPUStack in an air-gapped environment, which means setting up GPUStack offline without internet access.
+GPUStack can be installed in an air-gapped (offline) environment with no internet access.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ See the [Installation Requirements](../installation/requirements.md) for details
 
 ### Container Running Environment
 
-It is recommended to use [Docker](https://docs.docker.com/engine/install/).
+[Docker](https://docs.docker.com/engine/install/) must be installed.
 
 If your system supports a container toolkit, install and configure it as needed (e.g., NVIDIA Container Toolkit, AMD ROCm Container Toolkit, etc.).
 
@@ -66,23 +66,16 @@ The displayed image list includes all supported accelerators, inference backends
 
 After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment.
 
-For example, to install with NVIDIA and start the GPUStack server **with the built-in worker**, run:
-
 ```diff
  sudo docker run -d --name gpustack \
      --restart unless-stopped \
-     --privileged \
-     --network host \
-     --volume /var/run/docker.sock:/var/run/docker.sock \
+     -p 80:80 \
      --volume gpustack-data:/var/lib/gpustack \
-     --runtime nvidia \
 -    gpustack/gpustack
 +    <your_internal_registry>/gpustack/gpustack \
 +    --system-default-container-registry <your_internal_registry>
 
 ```
-
-If your accelerator is not NVIDIA, adjust the startup command accordingly.
 
 ### Pulling Inference Backend Images from a Secure Registry
 

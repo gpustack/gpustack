@@ -29,17 +29,14 @@ Before you begin, make sure the following requirements are met:
 
 ## Step 1: Install GPUStack Server
 
-According to the [NVIDIA Installation](../installation/nvidia/installation.md), you can use the following command to start the GPUStack server **with the built-in worker**:
+According to the [Installation](../installation/installation.md), you can use the following command to start the GPUStack server:
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
     --volume /path/to/your/model:/path/to/your/model \
-    --runtime nvidia \
     gpustack/gpustack
 
 ```
