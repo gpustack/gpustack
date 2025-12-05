@@ -25,6 +25,7 @@ from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
+from urllib.parse import urlencode
 
 router = APIRouter()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
@@ -429,8 +430,30 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    response.delete_cookie(key=SESSION_COOKIE_NAME)
+async def logout(request: Request):
+    config: Config = request.app.state.server_config
+    oidc_redirect_url = None
+    if (
+        config.external_auth_type == AuthProviderEnum.OIDC
+        and config.openid_configuration
+    ):
+        end_session_endpoint = config.openid_configuration.get("end_session_endpoint")
+        if end_session_endpoint:
+            redirect_uri = str(config.server_external_url or request.base_url)
+            params = {
+                "client_id": config.oidc_client_id,
+                "post_logout_redirect_uri": redirect_uri,
+            }
+            if config.oidc_post_logout_redirect_key:
+                params[config.oidc_post_logout_redirect_key] = redirect_uri
+            query = urlencode({k: v for k, v in params.items() if v})
+            oidc_redirect_url = (
+                end_session_endpoint if not query else f"{end_session_endpoint}?{query}"
+            )
+    content = json.dumps({"logout_url": oidc_redirect_url})
+    resp = Response(content=content, media_type="application/json")
+    resp.delete_cookie(key=SESSION_COOKIE_NAME)
+    return resp
 
 
 @router.post("/update-password")

@@ -159,6 +159,9 @@ class Config(BaseSettings):
     oidc_client_id: Optional[str] = None  # oidc client id
     oidc_client_secret: Optional[str] = None  # oidc client secret
     oidc_redirect_uri: Optional[str] = None  # oidc redirect uri
+    oidc_post_logout_redirect_key: Optional[str] = (
+        None  # custom post-logout redirection key for compatibility with different IdPs.
+    )
     oidc_issuer: Optional[str] = None  # oidc issuer
     oidc_skip_userinfo: bool = False  # skip to request the oidc user_info endpoint
     oidc_use_userinfo: Optional[bool] = (
