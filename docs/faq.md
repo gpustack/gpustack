@@ -198,13 +198,48 @@ This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` paramet
 
 ### How do I use GPUStack behind a proxy?
 
-Pass environment variables when running GPUStack:
+We recommend passing standard proxy environment variables when running GPUStack.
+
+!!! warning "**Important Note on `NO_PROXY`:**"
+
+    Many underlying libraries (such as `aiohttp` and older versions of `curl`) **do not support CIDR notation** (e.g., `192.168.0.0/16`) in `NO_PROXY`. You must explicitly list domain suffixes or specific IP addresses.
+
+#### Option 1: Full Proxy Configuration (Recommended for general usage)
+
+This ensures all external traffic goes through the proxy while local traffic remains direct.
 
 ```bash
-sudo docker run run -d --name gpustack \
-    -e HTTP_PROXY="http://username:password@proxy-server:port" \
-    -e HTTPS_PROXY="http://username:password@proxy-server:port" \
-    -e ALL_PROXY="socks5://username:password@proxy-server:port" \
-    -e NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8" \
+docker run -d --name gpustack \
+    -p 80:80 \
+    -e HTTP_PROXY="http://proxy-server:port" \
+    -e HTTPS_PROXY="http://proxy-server:port" \
+    -e ALL_PROXY="socks5://proxy-server:port" \
+    -e NO_PROXY="localhost,127.0.0.1,192.168.1.50,my-internal-domain.com" \
     ...
 ```
+
+!!! note
+
+    If your proxy requires authentication, use the format `http://username:password@proxy-server:port`. Be aware that special characters in passwords may need URL encoding.
+
+#### Option 2: Model Downloading Only
+
+If your primary goal is to accelerate model downloads (e.g., from Hugging Face) and you want to minimize interference with other services, you can set only the `HTTPS_PROXY`.
+
+```bash
+docker run -d --name gpustack \
+    -e HTTPS_PROXY="http://proxy-server:port" \
+    ...
+```
+
+#### Troubleshooting `NO_PROXY`
+
+If you encounter connection errors to local services or workers, ensure you have added their **exact IP addresses** or **hostnames** to `NO_PROXY`.
+
+!!! warning "**Incorrect (Not supported by all tools):**"
+
+    `NO_PROXY="192.168.0.0/16,10.0.0.0/8"`
+
+!!! note "**Correct:**"
+
+    `NO_PROXY="localhost,127.0.0.1,192.168.1.10,10.0.5.2"`
