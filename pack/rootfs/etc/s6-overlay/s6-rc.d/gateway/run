@@ -43,6 +43,8 @@ if [ -n "$LITE_METRICS" ]; then
 fi
 # end copied
 
+readinessCheck "GPUStack API server" "$GPUSTACK_API_PORT" 60
+
 cd /
 
 exec /usr/local/bin/pilot-agent proxy router \
