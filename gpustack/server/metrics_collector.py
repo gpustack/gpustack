@@ -140,7 +140,7 @@ class GatewayMetricsCollector:
     _disabled_collection: bool = False
     _client: aiohttp_client
     _embedded_gateway_metrics_url: str = (
-        f"http://localhost:{gateway_metrics_port}/stats/prometheus"
+        f"http://127.0.0.1:{gateway_metrics_port}/stats/prometheus"
     )
     cached_dict: Dict[str, ModelUsageMetrics] = {}
 
