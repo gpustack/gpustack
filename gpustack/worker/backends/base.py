@@ -194,18 +194,16 @@ class InferenceServer(ABC):
 
         raise error
 
-    def _get_distributed_metadata(self) -> Tuple[bool, bool, bool, Optional[int]]:
+    def _get_distributed_metadata(self) -> tuple[bool, bool, bool]:
         """
         Return distributed deployment status and role flags.
 
         Returns:
-            A tuple indicating: `is_distributed`, `is_distributed_leader`, `is_distributed_follower`, and `distributed_follower_index`.
-            If `is_distributed_follower` is False, `distributed_follower_index` will be None.
-
-        Raises:
-            RuntimeError:
-                If the model instance is a distributed follower but its index cannot be determined.
-
+            A tuple indicating (
+                is_distributed,
+                is_distributed_leader,
+                is_distributed_follower
+            ).
         """
         model_instance = self._model_instance
         dservers = model_instance.distributed_servers
@@ -214,28 +212,12 @@ class InferenceServer(ABC):
             if dservers and dservers.subordinate_workers
             else []
         )
-
         is_distributed = bool(subworkers)
         is_distributed_leader = (
             is_distributed and model_instance.worker_id == self._worker.id
         )
         is_distributed_follower = is_distributed and not is_distributed_leader
-
-        distributed_follower_index = None
-        if is_distributed_follower:
-            for idx, w in enumerate(subworkers):
-                if w.worker_id == self._worker.id:
-                    distributed_follower_index = idx
-                    break
-            if distributed_follower_index is None:
-                raise RuntimeError("Failed to determine distributed follower index.")
-
-        return (
-            is_distributed,
-            is_distributed_leader,
-            is_distributed_follower,
-            distributed_follower_index,
-        )
+        return is_distributed, is_distributed_leader, is_distributed_follower
 
     def _get_pretrained_config(self) -> Optional[Dict]:
         """
