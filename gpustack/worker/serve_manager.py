@@ -355,17 +355,10 @@ class ServeManager:
         model_instances_page = self._clientset.model_instances.list()
         if model_instances_page.items:
             for model_instance in model_instances_page.items:
-                if model_instance.worker_id == self._worker_id:
-                    current_instance_names.add(model_instance.name)
-
-                if (
-                    model_instance.distributed_servers
-                    and model_instance.distributed_servers.subordinate_workers
-                ):
-                    for sw in model_instance.distributed_servers.subordinate_workers:
-                        if sw.worker_id == self._worker_id:
-                            current_instance_names.add(model_instance.name)
-                            break
+                deployment_metadata = model_instance.get_deployment_metadata(
+                    self._worker_id
+                )
+                current_instance_names.add(deployment_metadata.name)
 
         workloads = list_workloads()
         for w in workloads:
@@ -756,7 +749,8 @@ class ServeManager:
             terminate_process_tree(self._provisioning_processes[mi.id].pid)
 
         # Delete workload.
-        delete_workload(mi.name)
+        deployment_metadata = mi.get_deployment_metadata(self._worker_id)
+        delete_workload(deployment_metadata.name)
 
         # Cleanup internal states.
         self._provisioning_processes.pop(mi.id, None)
