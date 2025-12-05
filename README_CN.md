@@ -183,7 +183,11 @@ curl http://your_gpustack_server_url/v1/chat/completions \
 
 ## 加入社区
 
-如有任何问题或建议，欢迎加入我们的 [社区](https://discord.gg/VXYJzuaqwD) 寻求支持。
+扫码加入社区群：
+
+<p align="left">
+    <img alt="Wechat-group" src="./docs/assets/wechat-group-qrcode.jpg" width="300px"/>
+</p>
 
 ## 许可证
 
