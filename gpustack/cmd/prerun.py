@@ -226,7 +226,7 @@ kind: Config
 clusters:
   - name: higress
     cluster:
-      server: https://localhost:{os.getenv('APISERVER_PORT', '18443')}
+      server: https://127.0.0.1:{os.getenv('APISERVER_PORT', '18443')}
       insecure-skip-tls-verify: true
 users:
   - name: higress-admin

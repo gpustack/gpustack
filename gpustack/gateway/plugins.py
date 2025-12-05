@@ -92,7 +92,7 @@ def get_plugin_url_prefix(cfg: Optional[Config] = None):
     address: Optional[str] = None
     if cfg is not None and plugin_dir is not None and os.path.isdir(plugin_dir):
         if cfg.gateway_mode == GatewayModeEnum.embedded:
-            address = "localhost"
+            address = "127.0.0.1"
         elif cfg.gateway_mode == GatewayModeEnum.incluster:
             address = get_first_non_loopback_ip()
         elif cfg.gateway_mode == GatewayModeEnum.external:
