@@ -1009,12 +1009,9 @@ class AscendMindIEServer(InferenceServer):
             if dservers and dservers.subordinate_workers
             else []
         )
-        (
-            is_distributed,
-            is_distributed_leader,
-            is_distributed_follower,
-            distributed_follower_index,
-        ) = self._get_distributed_metadata()
+        is_distributed, is_distributed_leader, is_distributed_follower = (
+            self._get_distributed_metadata()
+        )
 
         # Root path is defined by in Dockerfile ENV
         # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
@@ -1132,7 +1129,10 @@ class AscendMindIEServer(InferenceServer):
             # so we use ports[1] for distributed initialization.
             backend_config["multiNodesInferPort"] = self._model_instance.ports[1]
         if is_distributed_follower:
-            subworker = subworkers[distributed_follower_index]
+            subworker = next(
+                (sw for sw in subworkers if sw.worker_id == self._worker.id),
+                None,
+            )
             # Override device config if is a subordinate worker.
             backend_config["npuDeviceIds"] = [
                 # Use logic(count) device indexes as NPU device IDs,
@@ -1502,31 +1502,25 @@ class AscendMindIEServer(InferenceServer):
         )
 
         self._create_workload(
+            is_distributed=is_distributed,
             command_script=command_script,
             command_args=command_args,
             env=env,
             config_files=config_files,
             working_dir=str(install_path.joinpath("bin")),
-            is_distributed=is_distributed,
-            is_distributed_follower=is_distributed_follower,
-            distributed_follower_index=distributed_follower_index,
         )
 
     def _create_workload(
         self,
+        is_distributed: bool,
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
         config_files: List[ContainerFile],
         working_dir: Optional[str],
-        is_distributed: bool,
-        is_distributed_follower: bool,
-        distributed_follower_index: Optional[int],
     ):
         # Store workload name for management operations
         self._workload_name = self._model_instance.name
-        if is_distributed_follower:
-            self._workload_name += f"-f{distributed_follower_index}"
 
         image = self._get_configured_image(backend="cann")
         if not image:
