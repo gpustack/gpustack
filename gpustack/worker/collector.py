@@ -6,6 +6,7 @@ from gpustack.client.generated_clientset import ClientSet
 from gpustack.detectors.base import GPUDetectExepction
 from gpustack.detectors.custom.custom import Custom
 from gpustack.detectors.detector_factory import DetectorFactory
+from gpustack.envs import WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS
 from gpustack.policies.base import Allocated
 from gpustack.schemas.models import ComputedResourceClaim
 from gpustack.schemas.workers import (
@@ -16,6 +17,7 @@ from gpustack.schemas.workers import (
     GPUDevicesInfo,
     SystemInfo,
 )
+from gpustack.utils.profiling import time_decorator
 from gpustack.utils.uuid import get_system_uuid, get_machine_id, get_legacy_uuid
 
 
@@ -90,6 +92,10 @@ class WorkerStatusCollector:
             self._detector_factory = DetectorFactory()
 
     """A class for collecting worker status information."""
+
+    @time_decorator(log_slow_seconds=WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS)
+    def timed_collect(self, clientset: ClientSet = None, initial: bool = False):
+        return self.collect(clientset=clientset, initial=initial)
 
     def collect(
         self, clientset: ClientSet = None, initial: bool = False

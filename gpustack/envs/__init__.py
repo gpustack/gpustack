@@ -41,6 +41,10 @@ DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower()
     "true",
     "1",
 ]
+# Add debug logs for slow worker status collection, default to 3 minutes
+WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS = float(
+    os.getenv("GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS", 180)
+)
 
 # Model evaluation cache configuration
 MODEL_EVALUATION_CACHE_MAX_SIZE = int(
