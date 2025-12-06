@@ -2,17 +2,15 @@
 
 !!! note
 
-      Since v2.0.0, GPUStack supports Linux only. For other OS, move the data directory to a Linux system and run the migration.
+    Since v2.0.0, GPUStack Worker officially supports only Linux. If you are using Windows or macOS, please move your data directory to a Linux system to perform the migration.
 
-## Embedded Database Migration (SQLite → Embedded PostgreSQL)
+    On Windows and macOS, GPUStack Server (without the embedded worker) can still be run using Docker Desktop.
 
-In v0.7 and earlier, GPUStack used an embedded SQLite database by default to store management data. Starting from v2.0.0, GPUStack dropped SQLite support and now uses an embedded PostgreSQL database by default for improved performance and scalability.
-
-If you previously deployed GPUStack with the embedded SQLite database, follow the steps below to migrate your data to the new PostgreSQL-based format.
+## Before Migration
 
 !!! warning
 
-      **Backup First:** Before starting the migration, it’s strongly recommended to back up your database.
+      **Backup First:** Before starting the server migration, it’s strongly recommended to back up your database.
 
       For default installations on v0.7 or earlier, stop the GPUStack server and create a backup of data dir located inside the container at:
 
@@ -20,107 +18,15 @@ If you previously deployed GPUStack with the embedded SQLite database, follow th
       /var/lib/gpustack
       ```
 
-### Migration Steps
+Please go through to the [Installation Requirements](./installation/requirements.md) before starting the migration.
 
-#### Identify Your Legacy Data Directory
+If you used GPUStack **without Docker** in versions prior to v0.7.1(for example, via pip install or an installation script), please install Docker by following the Docker Engine [Installation Guide](https://docs.docker.com/engine/install/) before proceeding with the migration.
 
-Locate the data directory used by your previous GPUStack installation. The default path is:
+If you used GPU acceleration for inference in GPUStack prior to v0.7.1, please check whether you need to install the corresponding accelerator runtime’s Container Toolkit or Container Runtime after installing Docker. You can follow the steps in the **Installation Requirements** to check and install them.
 
-```
-/var/lib/gpustack
-```
+## Migration Steps
 
-For other installation methods, refer to this [link](faq.md/#where-are-gpustacks-data-stored) to locate the data directory.
-
-In the following steps, this path is referenced as `${your-data-dir}`.
-
-#### Migrate Using Docker
-
-- **Server Migration (NVIDIA GPUs)**
-
-    If you are using NVIDIA GPUs, run the following Docker command to start the migration. Replace `${your-data-dir}` with your legacy data directory containing the original SQLite database and related files.
-
-    By mounting `${your-data-dir}` to `/var/lib/gpustack` and setting the environment variable `GPUSTACK_MIGRATION_DATA_DIR`, GPUStack to automatically migrate the SQLite data to the new embedded PostgreSQL database during startup.
-
-    ```diff
-    sudo docker run -d --name gpustack-server \
-        --restart=unless-stopped \
-        --privileged \
-        --network=host \
-        --volume /var/run/docker.sock:/var/run/docker.sock \
-    +   --env GPUSTACK_MIGRATION_DATA_DIR=/var/lib/gpustack \
-    +   --volume ${your-data-dir}:/var/lib/gpustack \
-        --runtime nvidia \
-        gpustack/gpustack
-    ```
-
-    This command will launch the GPUStack server in Docker, preserving and migrating your existing data.
-
-- **Worker Migration (NVIDIA GPUs)**
-
-    For worker nodes, replace `${your-data-dir}` with the legacy worker data directory path. Use the following command:
-
-    ```diff
-    sudo docker run -d --name gpustack-worker \
-        --restart=unless-stopped \
-        --privileged \
-        --network=host \
-        --volume /var/run/docker.sock:/var/run/docker.sock \
-    +   --volume ${your-data-dir}:/var/lib/gpustack \
-        --runtime nvidia \
-        gpustack/gpustack \
-        --server-url ${server-url} \
-        --token ${token}
-    ```
-
-    This will launch the GPUStack worker using your existing data and connect it to the specified server.
-
-- **Other GPU Architectures**
-
-    For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process remains the same. To migrate on these platforms:
-
-    1. Get the installation commands, please refer to the commands in the [Installation Documentation](installation/requirements.md).
-
-    2. Mount the legacy data directory to `/var/lib/gpustack`.
-
-    3. (Server Only) Add the environment variable `GPUSTACK_MIGRATION_DATA_DIR` as shown in the NVIDIA examples, only the server needs to add this environment variable.
-
-    The Server and Worker migration commands can be used directly after applying these changes.
-
-#### Recreating Model Instances
-
-After the upgrade is complete, existing Model Instances may remain stuck in the `Starting` state. If this happens, recreating the Model Instance will allow the model to run normally.
-
-#### Migration from llama-box
-If you were using llama-box as the inference backend in previous versions, please note that llama-box is no longer supported as of v2.0.0. Use llama.cpp via the custom inference backend instead.
-
-1. Configure llama.cpp on Inference Backend page. For llama.cpp configuration, refer to this [document](./tutorials/using-custom-backends.md/#deploy-gguf-models-with-llamacpp).
-2. Go to the Deployment page, modify the model originally launched with llama-box, change the backend to llama.cpp
-3. Recreate the model instance after saving.
-
-!!! Note
-
-    Distributed inference across multiple workers is currently not supported with custom inference backends.
-
-## External Database Migration
-
-GPUStack supports using an external database to store the management data. If you previously deployed GPUStack with an external database, follow the steps below to migrate your data.
-
-!!! warning
-
-      **Backup Required.** Before proceeding, back up the following:
-
-      - The data directory used by your previous GPUStack installation, typically located at:
-
-        ```
-        /var/lib/gpustack
-        ```
-
-      - Your external database, using the backup procedure recommended by your database system.
-
-### Migration Steps
-
-#### Identify Your Legacy Data Directory
+### Identify Your Legacy Data Directory
 
 Locate the data directory used by your previous GPUStack installation. The default path is:
 
@@ -128,65 +34,115 @@ Locate the data directory used by your previous GPUStack installation. The defau
 /var/lib/gpustack
 ```
 
-For other installation methods, refer to this [link](faq.md/#where-are-gpustacks-data-stored) to locate the data directory.
+For other installation methods, refer to this [link](faq.md/#where-are-gpustacks-data-stored) to locate the data directory. In the following steps, this path is referenced as `${your-data-dir}`.
 
-In the following steps, this path is referenced as `${your-data-dir}`.
+Due to architectural changes in v2.0.0, new components such as `postgres` and `s6-supervisor` may read from and write to files in `${your-data-dir}` using non-root users. Make sure that `${your-data-dir}` is accessible to all required users. You can use the following script to adjust permissions, but please be aware of the security risks and understand exactly what the script does before running it.
 
-#### Migrate Using Docker
+```bash
+dir="${your-data-dir}"
+chmod a+rx "${dir}/log" || true
+chmod a+rx $dir
+while [ "$dir" != "/" ]; do
+  chmod a+x "$dir"
+  dir=$(dirname "$dir")
+done
+```
 
-- **Server Migration (NVIDIA GPUs)**
+### Migrate Server Using Docker
 
-    Keep the `--database-url` flag, `GPUSTACK_DATABASE_URL` environment variable, or `database_url` in your configuration file exactly as before. It must continue pointing to your existing external database.
+Since v2.0.0, you no longer need to specify the GPU computing platform or version (such as `-cpu`, `-cuda12.8`, or `-rocm`) for the server or worker images. Simply use the latest image: gpustack/gpustack:latest.
 
-    If you are using NVIDIA GPUs, run the following Docker command to start the migration. Replace `${your-data-dir}` with your legacy data directory. By mounting `${your-data-dir}` to `/var/lib/gpustack`.
+#### Embedded Database Migration (SQLite → PostgreSQL)
 
-    ```diff
-    sudo docker run -d --name gpustack-server \
-        --restart=unless-stopped \
-        --privileged \
-        --network=host \
-        --volume /var/run/docker.sock:/var/run/docker.sock \
-    +   --volume ${your-data-dir}:/var/lib/gpustack \
-        --runtime nvidia \
-        gpustack/gpustack \
-    +     --database-url ${your-database-url}
-    ```
+In v0.7 and earlier, GPUStack used an embedded SQLite database by default to store management data. Starting from v2.0.0, GPUStack dropped SQLite support and now uses an embedded PostgreSQL database by default for improved performance and scalability.
 
-- **Worker Migration (NVIDIA GPUs)**
+Start the GPUStack with the `GPUSTACK_DATA_MIGRATION=true` to enable the embedded database migration. Replace `${your-data-dir}` with your legacy data directory containing the original SQLite database and related files:
 
-    For worker nodes, replace `${your-data-dir}` with the legacy worker data directory path. Use the following command:
+```bash
+sudo docker run -d --name gpustack \
+  --restart=unless-stopped \
+  --privileged \
+  --network=host \
+  --env GPUSTACK_DATA_MIGRATION=true \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --volume ${your-data-dir}:/var/lib/gpustack \
+  --runtime nvidia \
+  gpustack/gpustack:latest
+```
 
-    ```diff
-    sudo docker run -d --name gpustack-worker \
-        --restart=unless-stopped \
-        --privileged \
-        --network=host \
-        --volume /var/run/docker.sock:/var/run/docker.sock \
-    +   --volume ${your-data-dir}:/var/lib/gpustack \
-        --runtime nvidia \
-        gpustack/gpustack \
-        --server-url ${server-url} \
-        --token ${token}
-    ```
+If you are getting the error from docker `docker: Error response from daemon: unknown or invalid runtime name: nvidia`, please check [Accelerator Runtime Requirements](./installation/requirements.md#accelerator-runtime-requirements) first and following the document [Other GPU Architectures](#other-gpu-architectures) to change the `--runtime nvidia` argument with your runtime.
 
-- **Other GPU Architectures**
+Also customizing the `--data-dir`, `GPUSTACK_DATA_DIR` is also supported in database migration by following command changes:
 
-    For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process remains the same. To migrate on these platforms:
+```diff
+...
+-  --volume ${your-data-dir}:/var/lib/gpustack
++  --volume ${your-data-dir}:${your-data-dir}
+...
++   gpustack/gpustack:latest \
++   --data-dir :${your-data-dir}
+```
 
-    1. Get the installation commands, please refer to the commands in the [Installation Documentation](installation/requirements.md).
+#### External Database Migration
 
-    2. Mount the legacy data directory to `/var/lib/gpustack`.
+GPUStack supports using an external database to store the management data. If you previously deployed GPUStack with an external database, start the server will following command:
 
-    3. (Server Only) Continue use gpustack start flag `--database-url` or `GPUSTACK_DATABASE_URL` environment variable or config file with `database_url` as before.
+```bash
+sudo docker run -d --name gpustack-server \
+  --restart=unless-stopped \
+  --privileged \
+  --network=host \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --volume ${your-data-dir}:/var/lib/gpustack \
+  --runtime nvidia \
+  gpustack/gpustack \
+  --database-url ${your-database-url}
+```
 
-#### Recreating Model Instances
+### Migrate Workers Using Docker
+
+For worker nodes, replace `${your-data-dir}` with the legacy worker data directory path. Use the following command:
+
+```bash
+sudo docker run -d --name gpustack-worker \
+  --restart=unless-stopped \
+  --privileged \
+  --network=host \
+  --volume ${your-data-dir}:/var/lib/gpustack \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --runtime nvidia \
+  gpustack/gpustack \
+  --server-url ${server-url} \
+  --token ${token}
+```
+
+Please make sure both `--volume /var/run/docker.sock:/var/run/docker.sock` and `--runtime nvidia` are added to the docker command. Those are not required for previous version. For different accelerator runtime, Refer to [Other GPU Architectures](#other-gpu-architectures) to use different option from `--runtime nvidia`.
+
+This will launch the GPUStack worker using your existing data and connect it to the specified server.
+
+### Other GPU Architectures
+
+For architectures other than NVIDIA (e.g., AMD, Ascend), the migration process remains the same. Please confirm your GPU architecture is supported in document [Accelerator Runtime Requirements](./installation/requirements.md#accelerator-runtime-requirements).
+
+For example, running server and worker in host with AMD GPU, modify the docker run command with:
+
+```diff
+  sudo docker run -d --name gpustack \
+  ...
+- --runtime amd \
++ --runtime amd \
+  ...
+```
+
+### Recreating Model Instances
 
 After the upgrade is complete, existing Model Instances may remain stuck in the `Starting` state. If this happens, recreating the Model Instance will allow the model to run normally.
 
-#### Migration from llama-box
+### Migration from llama-box
+
 If you were using llama-box as the inference backend in previous versions, please note that llama-box is no longer supported as of v2.0.0. Use llama.cpp via the custom inference backend instead.
 
-1. Configure llama.cpp on Inference Backend page. For llama.cpp configuration, refer to this [document](./tutorials/using-custom-backends.md/#deploy-gguf-models-with-llamacpp).
+1. Create a `llama.cpp` custom backend on Inference Backend page. For llama.cpp configuration, refer to this [document](./tutorials/using-custom-backends.md#deploy-gguf-models-with-llamacpp).
 2. Go to the Deployment page, modify the model originally launched with llama-box, change the backend to llama.cpp
 3. Recreate the model instance after saving.
 
