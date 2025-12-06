@@ -767,14 +767,10 @@ $@
 
         backend_versioned_runners = runners[0].versions
 
-        try:
-            # Try to update backend version for server model.
-            service_version = (
-                backend_versioned_runners[0].variants[0].services[0].versions[0].version
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to update model service version {service_version}: {e}"
+        # Try to update backend version for server model.
+        if backend_versioned_runners and len(backend_versioned_runners) > 0:
+            service_version = _get_service_version_from_versioned_runner(
+                backend_versioned_runners[0]
             )
 
         # Return directly if there is only one versioned backend.
@@ -791,6 +787,9 @@ $@
                     compare_versions(backend_versioned_runner.version, backend_version)
                     <= 0
                 ):
+                    service_version = _get_service_version_from_versioned_runner(
+                        backend_versioned_runner
+                    )
                     return get_docker_image(backend_versioned_runner), service_version
 
         # Return the last(oldest) backend version of selected runner
@@ -798,6 +797,9 @@ $@
         #
         # NB(thxCode): Not using the latest backend version is to keep backend version idempotence
         #              when the gpustack-runner adds new backend version.
+        service_version = _get_service_version_from_versioned_runner(
+            backend_versioned_runners[-1]
+        )
         return get_docker_image(backend_versioned_runners[-1]), service_version
 
     def _update_model_backend_service_version(
@@ -900,6 +902,27 @@ $@
             **workload.__dict__,
         )
         return docker_workload
+
+
+def _get_service_version_from_versioned_runner(
+    backend_versioned_runner: BackendVersionedRunner,
+) -> Optional[str]:
+    """
+    Get the service version from the backend versioned runner.
+
+    Args:
+        backend_versioned_runner:
+            The backend versioned runner.
+    Returns:
+        The service version string, or None if not found.
+    """
+    try:
+        return backend_versioned_runner.variants[0].services[0].versions[0].version
+    except Exception as e:
+        logger.error(
+            f"Failed to get service version from backend versioned runner: {e}"
+        )
+        return None
 
 
 def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
