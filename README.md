@@ -73,38 +73,41 @@ GPUStack provides a powerful framework for deploying AI models. Its core feature
 - **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
 - **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.
 
-## Installation
+## Quick Start
 
-> GPUStack now supports Linux only.
+### Prerequisites
 
-If you are using NVIDIA GPUs, ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed. Then start the GPUStack with the following command:
+1. A node with at least one NVIDIA GPU. For other GPU types, please check the guidelines in the GPUStack UI when adding a worker, or refer to the [Installation documentation](https://docs.gpustack.ai/latest/installation/requirements/) for more details.
+2. Ensure the NVIDIA driver, [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on the worker node.
+3. (Optional) A CPU node for hosting the GPUStack server. The GPUStack server does not require a GPU and can run on a CPU-only machine. [Docker](https://docs.docker.com/engine/install/) must be installed. Docker Desktop (for Windows and macOS) is also supported. If no dedicated CPU node is available, the GPUStack server can be installed on the same machine as a GPU worker node.
+4. Only Linux is supported for GPUStack worker nodes. If you use Windows, consider using WSL2 and avoid using Docker Desktop. macOS is not supported for GPUStack worker nodes.
+
+### Install GPUStack
+
+Run the following command to install and start the GPUStack server using Docker:
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
-    --runtime nvidia \
     gpustack/gpustack
 ```
+
+<details>
+<summary>Alternative: Use Quay Container Registry Mirror</summary>
 
 If you cannot pull images from `Docker Hub` or the download is very slow, you can use our `Quay.io` mirror by pointing your registry to `quay.io`:
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
-    --runtime nvidia \
     quay.io/gpustack/gpustack \
     --system-default-container-registry quay.io
 ```
-
-For more details on the installation or other GPU hardware platforms, please refer to the [Installation Requirements](https://docs.gpustack.ai/latest/installation/requirements/).
+</details>
 
 Check the GPUStack startup logs:
 
@@ -120,7 +123,37 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
 
-## Deploy a Model
+### Set Up a GPU Cluster
+
+1. On the GPUStack UI, navigate to the `Clusters` page.
+
+2. Click the `Add Cluster` button.
+
+3. Select `Docker` as the cluster provider.
+
+4. Fill in the `Name` and `Description` fields for the new cluster, then click the `Save` button.
+
+5. Follow the UI guidelines to configure the new worker node. You will need to run a Docker command on the worker node to connect it to the GPUStack server. The command will look similar to the following:
+
+    ```bash
+    sudo docker run -d --name gpustack-worker \
+          --restart=unless-stopped \
+          --privileged \
+          --network=host \
+          --volume /var/run/docker.sock:/var/run/docker.sock \
+          --volume gpustack-data:/var/lib/gpustack \
+          --runtime nvidia \
+          gpustack/gpustack \
+          --server-url http://your_gpustack_server_url \
+          --token your_worker_token \
+          --advertise-address 192.168.1.2
+    ```
+
+6. Execute the command on the worker node to connect it to the GPUStack server.
+
+7. After the worker node connects successfully, it will appear on the `Workers` page in the GPUStack UI.
+
+### Deploy a Model
 
 1. Navigate to the `Catalog` page in the GPUStack UI.
 
@@ -138,7 +171,7 @@ Open your browser and navigate to `http://your_host_ip` to access the GPUStack U
 
 ![quick chat](docs/assets/quick-start/quick-chat.png)
 
-## Use the model via API
+### Use the model via API
 
 1. Hover over the user avatar and navigate to the `API Keys` page, then click the `New API Key` button.
 

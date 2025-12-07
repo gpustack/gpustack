@@ -73,38 +73,41 @@ GPUStack 为部署 AI 模型提供了一个强大的框架。其核心功能包�
 - **性能优化配置。** 提供预调优模式，用于低延迟或高吞吐量。GPUStack 支持扩展的 KV 缓存系统，如 LMCache 和 HiCache，以减少 TTFT。它还包括对推测性解码方法（如 EAGLE3、MTP 和 N-grams）的内置支持。
 - **企业级运维能力。** 支持自动故障恢复、负载均衡、监控、认证和访问控制。
 
-## 安装
+## 快速入门
 
-> GPUStack 目前仅支持 Linux。
+### 前提条件
 
-如果您使用 NVIDIA GPU，请确保已安装 NVIDIA 驱动程序、[Docker](https://docs.docker.com/engine/install/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。然后使用以下命令启动 GPUStack：
+1.  一个至少配备一块 NVIDIA GPU 的节点。对于其他类型的 GPU，请在 GPUStack UI 中添加 worker 时查看指南，或参阅[安装文档](https://docs.gpustack.ai/latest/installation/requirements/)获取更多详细信息。
+2.  确保 worker 节点上已安装 NVIDIA 驱动程序、[Docker](https://docs.docker.com/engine/install/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。
+3.  （可选）一个用于托管 GPUStack server 的 CPU 节点。GPUStack server 不需要 GPU，可以在仅有 CPU 的机器上运行。必须安装 [Docker](https://docs.docker.com/engine/install/)。同时支持 Docker Desktop（适用于 Windows 和 macOS）。如果没有专用的 CPU 节点，可以将 GPUStack server 安装在 GPU worker 节点所在的同一台机器上。
+4.  GPUStack worker 节点仅支持 Linux。如果你使用 Windows，可考虑使用 WSL2 并避免使用 Docker Desktop。macOS 不支持作为 GPUStack worker 节点。
+
+### 安装 GPUStack
+
+运行以下命令，使用 Docker 安装并启动 GPUStack server：
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
-    --runtime nvidia \
     gpustack/gpustack
 ```
 
-如果您无法从 `Docker Hub` 拉取镜像或下载速度很慢，可以使用我们的 `Quay.io` 镜像，将仓库指向 `quay.io`：
+<details>
+<summary>备选方案：使用 Quay 容器仓库镜像</summary>
+
+如果你无法从 `Docker Hub` 拉取镜像或下载速度很慢，可以通过指向 `quay.io` 来使用我们的镜像：
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
-    --runtime nvidia \
     quay.io/gpustack/gpustack \
     --system-default-container-registry quay.io
 ```
-
-有关安装或其他 GPU 硬件平台的更多详细信息，请参阅 [安装要求](https://docs.gpustack.ai/latest/installation/requirements/)。
+</details>
 
 检查 GPUStack 启动日志：
 
@@ -118,9 +121,32 @@ GPUStack 启动后，运行以下命令获取默认管理员密码：
 sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
-打开浏览器并访问 `http://您的服务器IP` 以进入 GPUStack 用户界面。使用默认用户名 `admin` 和上面获取的密码登录。
+打开浏览器，访问 `http://你的主机IP` 以进入 GPUStack UI。使用默认用户名 `admin` 和上面获取的密码登录。
 
-## 部署模型
+### 设置 GPU 集群
+
+1.  在 GPUStack UI 中，导航到 `集群` 页面。
+2.  点击 `添加集群` 按钮。
+3.  选择 `Docker` 作为集群提供商。
+4.  填写新集群的 `名称` 和 `描述` 字段，然后点击 `保存` 按钮。
+5.  按照界面指南配置新的 worker 节点。你需要在 worker 节点上运行一个 Docker 命令以将其连接到 GPUStack server。命令将类似于以下内容：
+    ```bash
+    sudo docker run -d --name gpustack-worker \
+          --restart=unless-stopped \
+          --privileged \
+          --network=host \
+          --volume /var/run/docker.sock:/var/run/docker.sock \
+          --volume gpustack-data:/var/lib/gpustack \
+          --runtime nvidia \
+          gpustack/gpustack \
+          --server-url http://你的_gpustack_server_url \
+          --token 你的_worker_token \
+          --advertise-address 192.168.1.2
+    ```
+6.  在 worker 节点上执行该命令以连接到 GPUStack server。
+7.  worker 节点成功连接后，它将出现在 GPUStack UI 的 `Workers` 页面中。
+
+### 部署模型
 
 1.  在 GPUStack 用户界面中导航到 `Catalog` 页面。
 2.  从可用模型列表中选择 `Qwen3 0.6B` 模型。
@@ -136,7 +162,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 ![快速聊天](docs/assets/quick-start/quick-chat.png)
 
-## 通过 API 使用模型
+### 通过 API 使用模型
 
 1.  将鼠标悬停在用户头像上，导航到 `API Keys` 页面，然后点击 `New API Key` 按钮。
 2.  填写 `Name` 并点击 `Save` 按钮。

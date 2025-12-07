@@ -73,54 +73,80 @@ GPUStackは、AIモデルをデプロイするための強力なフレームワ�
 - **パフォーマンス最適化設定:** 低レイテンシまたは高スループット向けの事前調整済みモードを提供します。GPUStackは、LMCacheやHiCacheなどの拡張KVキャッシュシステムをサポートし、TTFTを削減します。また、EAGLE3、MTP、N-gramなどの投機的デコード手法の組み込みサポートも含まれます。
 - **エンタープライズグレードの運用:** 自動化された障害回復、負荷分散、監視、認証、およびアクセス制御のサポートを提供します。
 
-## インストール
+## クイックスタート
 
-> GPUStackは現在Linuxのみをサポートしています。
+### 前提条件
 
-NVIDIA GPUを使用している場合は、NVIDIAドライバ、[Docker](https://docs.docker.com/engine/install/)、および[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)がインストールされていることを確認してください。その後、以下のコマンドでGPUStackを起動します：
+1.  少なくとも1つの NVIDIA GPU を搭載したノード。他の GPU タイプについては、GPUStack UI で worker を追加する際のガイドラインを参照するか、詳細については[インストールドキュメント](https://docs.gpustack.ai/latest/installation/requirements/)を参照してください。
+2.  worker ノードに NVIDIA ドライバー、[Docker](https://docs.docker.com/engine/install/)、[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) がインストールされていることを確認してください。
+3.  （オプション）GPUStack server をホストするための CPU ノード。GPUStack server は GPU を必要とせず、CPU のみのマシンで実行できます。[Docker](https://docs.docker.com/engine/install/) がインストールされている必要があります。Docker Desktop（Windows および macOS 用）もサポートされています。専用の CPU ノードがない場合は、GPU worker ノードと同じマシンに GPUStack server をインストールできます。
+4.  GPUStack worker ノードは Linux のみをサポートしています。Windows を使用する場合は、WSL2 の使用を検討し、Docker Desktop の使用は避けてください。macOS は GPUStack worker ノードとしてサポートされていません。
+
+### GPUStack のインストール
+
+以下のコマンドを実行して、Docker を使用して GPUStack server をインストールし起動します：
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
-    --runtime nvidia \
     gpustack/gpustack
 ```
 
-`Docker Hub`からイメージをプルできない場合、またはダウンロードが非常に遅い場合は、レジストリを`quay.io`に向けることで私たちの`Quay.io`ミラーを使用できます：
+<details>
+<summary>代替案：Quay コンテナレジストリミラーの使用</summary>
+
+`Docker Hub` からイメージをプルできない場合やダウンロードが非常に遅い場合は、`quay.io` を指定することで当社のミラーを使用できます：
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
     --volume gpustack-data:/var/lib/gpustack \
-    --runtime nvidia \
     quay.io/gpustack/gpustack \
     --system-default-container-registry quay.io
 ```
+</details>
 
-インストールの詳細や他のGPUハードウェアプラットフォームについては、[インストール要件](https://docs.gpustack.ai/latest/installation/requirements/)を参照してください。
-
-GPUStackの起動ログを確認します：
+GPUStack の起動ログを確認します：
 
 ```bash
 sudo docker logs -f gpustack
 ```
 
-GPUStack起動後、以下のコマンドを実行してデフォルトの管理者パスワードを取得します：
+GPUStack が起動したら、以下のコマンドを実行してデフォルトの管理者パスワードを取得します：
 
 ```bash
 sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 ```
 
-ブラウザを開き、`http://your_host_ip`に移動してGPUStack UIにアクセスします。デフォルトのユーザー名`admin`と上記で取得したパスワードを使用してログインします。
+ブラウザを開き、`http://あなたのホストIP` にアクセスして GPUStack UI にアクセスします。デフォルトのユーザー名 `admin` と上記で取得したパスワードを使用してログインします。
 
-## モデルのデプロイ
+### GPU クラスターのセットアップ
+
+1.  GPUStack UI で、`Clusters` ページに移動します。
+2.  `Add Cluster` ボタンをクリックします。
+3.  クラスタープロバイダーとして `Docker` を選択します。
+4.  新しいクラスターの `Name` と `Description` フィールドに入力し、`Save` ボタンをクリックします。
+5.  UI のガイドラインに従って新しい worker ノードを設定します。worker ノードを GPUStack server に接続するには、worker ノードで Docker コマンドを実行する必要があります。コマンドは以下のようになります：
+    ```bash
+    sudo docker run -d --name gpustack-worker \
+          --restart=unless-stopped \
+          --privileged \
+          --network=host \
+          --volume /var/run/docker.sock:/var/run/docker.sock \
+          --volume gpustack-data:/var/lib/gpustack \
+          --runtime nvidia \
+          gpustack/gpustack \
+          --server-url http://your_gpustack_server_url \
+          --token your_worker_token \
+          --advertise-address 192.168.1.2
+    ```
+6.  worker ノードでこのコマンドを実行して GPUStack server に接続します。
+7.  worker ノードが正常に接続されると、GPUStack UI の `Workers` ページに表示されます。
+
+### モデルのデプロイ
 
 1. GPUStack UIの`Catalog`ページに移動します。
 
@@ -138,7 +164,7 @@ sudo docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 ![クイックチャット](docs/assets/quick-start/quick-chat.png)
 
-## API経由でモデルを使用
+### API経由でモデルを使用
 
 1. ユーザーアバターにカーソルを合わせて`API Keys`ページに移動し、`New API Key`ボタンをクリックします。
 
