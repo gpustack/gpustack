@@ -149,3 +149,17 @@ If you were using llama-box as the inference backend in previous versions, pleas
 !!! Note
 
     Distributed inference across multiple workers is currently not supported with custom inference backends.
+
+### Migration from Custom Backend Versions
+
+If you were using a custom backend version in GPUStack versions prior to v2.0.0, please note that those versions relied on Python virtual environments, which are **no longer supported** as of v2.0.0. All inference backends now run in containerized environments.
+
+To continue using your models, you’ll need to **recreate them** using one of the following approaches:
+
+**Option 1 - Use a Built-in Backend Version:**
+
+GPUStack v2.0.0+ provides multiple pre-configured versions of built-in inference backends. Recreate your model deployment and select the built-in backend version that best matches your model’s requirements.
+
+**Option 2 - Add a Custom Version to a Built-in Backend:**
+
+If none of the built-in versions meet your needs, you can extend a built-in inference backend by adding a custom version. For detailed instructions, refer to this guide: [Add a Custom Version to the Built-in vLLM Inference Backend](../user-guide/inference-backend-management/#example-add-a-custom-version-to-the-built-in-vllm-inference-backend).
