@@ -1,8 +1,10 @@
 #!/command/with-contenv bash
 
-EXIT_CODE="$1"
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
 
-echo "[INFO] apiserver exited with code $EXIT_CODE, shutting down all services..." >&2
+EXIT_CODE="$1"
+EXIT_SIGNAL="$2"
 
 if [ "$EXIT_CODE" -ne 0 ]; then
     echo "[INFO] apiserver exit code is non-zero, the latest logs are..." >&2
@@ -13,5 +15,4 @@ if [ "$EXIT_CODE" -ne 0 ]; then
     tail -n 50 "${LOG_DIR}/apiserver/current" >&2
 fi
 
-s6-svscanctl -t /run/service
-exit "$EXIT_CODE"
+handleServiceExit "apiserver" "$EXIT_CODE" "$EXIT_SIGNAL"

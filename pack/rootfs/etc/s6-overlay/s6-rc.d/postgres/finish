@@ -1,7 +1,7 @@
 #!/command/with-contenv bash
 
 EXIT_CODE="$1"
-echo "[INFO] PostgreSQL exited with code $EXIT_CODE, shutting down all services..." >&2
+EXIT_SIGNAL="$2"
 
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
@@ -26,5 +26,4 @@ if [ -f "$PGDATA/postmaster.pid" ]; then
     gosu postgres pg_ctl -D "$PGDATA" -m immediate stop
 fi
 
-s6-svscanctl -t /run/service
-exit "$EXIT_CODE"
+handleServiceExit "postgres" "$EXIT_CODE" "$EXIT_SIGNAL"

@@ -52,6 +52,51 @@ function waitForConfig() {
     done
 }
 
+function handleServiceExit() {
+  local service_name="$1"
+  local exit_code_service="$2"
+  local exit_code_signal="$3"
+
+  local exit_code_file="/run/s6-linux-init-container-results/exitcode"
+  local exit_code_container=0
+
+  [[ -f "${exit_code_file}" ]] && exit_code_container=$(<"${exit_code_file}")
+
+  echo "[INFO] Service '${service_name}' exited (code: ${exit_code_service}, signal: ${exit_code_signal})"
+
+  # Case 1: Exit by signal
+  if [[ "${exit_code_service}" -eq 256 ]]; then
+    # If SIGTERM, stop the container
+    if [[ "${exit_code_signal}" -eq 15 ]]; then
+      echo 0 > "${exit_code_file}"
+    fi
+
+    # Write translated signal code if the container exit code isn't already set
+    if [[ "${exit_code_container}" -eq 0 ]]; then
+      echo $((128 + exit_code_signal)) > "${exit_code_file}"
+    fi
+
+    echo "[INFO] Service '${service_name}' exited by signal, shutting down container..."
+    exec /run/s6/basedir/bin/halt
+  
+  # Case 2: non-zero exit → fatal → shutdown container
+  elif [[ "${exit_code_service}" -ne 0 ]]; then
+
+    # Update container exit code if not already set
+    if [[ "${exit_code_container}" -eq 0 ]]; then
+      echo "${exit_code_service}" > "${exit_code_file}"
+    fi
+
+    echo "[INFO] Service '${service_name}' exited with non-zero code, shutting down container..."
+    exec /run/s6/basedir/bin/halt
+  fi
+
+  # Case 3: zero exit → exit normally
+  echo "[INFO] Service '${service_name}' exited normally."
+  exec /run/s6/basedir/bin/halt
+}
+
+
 export GPUSTACK_GATEWAY_DIR="${GPUSTACK_GATEWAY_DIR:-/var/lib/gpustack/higress}"
 createDir "$GPUSTACK_GATEWAY_DIR"
 # shellcheck disable=SC2034
