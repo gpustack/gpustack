@@ -355,8 +355,8 @@ model_sets:
     # Other GPUs
     - mode: throughput
       quantization: FP8
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen3-235B-A22B-Instruct-2507-FP8
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-235B-A22B-Instruct-2507-FP8
       backend: vLLM
       backend_parameters:
         - --tool-call-parser=hermes
@@ -399,8 +399,8 @@ model_sets:
     # Other GPUs
     - mode: throughput
       quantization: FP8
-      source: huggingface
-      huggingface_repo_id: Qwen/Qwen3-235B-A22B-Thinking-2507-FP8
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-235B-A22B-Thinking-2507-FP8
       backend: vLLM
       backend_parameters:
         - --reasoning-parser=deepseek_r1
@@ -438,8 +438,8 @@ model_sets:
       gpu_filters:
         vendor: nvidia
         compute_capability: ">=9.0" # Hopper or later
-      source: huggingface
-      huggingface_repo_id: ZhipuAI/GLM-4.6-FP8
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.6-FP8
       backend: SGLang
       backend_parameters:
         - --tool-call-parser=glm
@@ -450,8 +450,8 @@ model_sets:
       gpu_filters:
         vendor: nvidia
         compute_capability: "<9.0" # Before Hopper
-      source: huggingface
-      huggingface_repo_id: ZhipuAI/GLM-4.6-FP8
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.6-FP8
       backend: vLLM
       backend_parameters:
         - --reasoning-parser=glm45
