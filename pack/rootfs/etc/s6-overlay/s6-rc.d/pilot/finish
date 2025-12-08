@@ -1,8 +1,8 @@
 #!/command/with-contenv bash
 
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+
 EXIT_CODE="$1"
-
-echo "[INFO] pilot exited with code $EXIT_CODE, shutting down all services..." >&2
-
-s6-svscanctl -t /run/service
-exit "$EXIT_CODE"
+EXIT_SIGNAL="$2"
+handleServiceExit "pilot" "$EXIT_CODE" "$EXIT_SIGNAL"
