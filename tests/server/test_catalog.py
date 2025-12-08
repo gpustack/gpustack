@@ -26,8 +26,9 @@ def test_model_catalog():
         assert model_set_id is not None
         assert len(model_specs) > 0
         for model_spec in model_specs:
-            if model_spec.source != SourceEnum.HUGGING_FACE:
-                continue
+            assert (
+                model_spec.source == SourceEnum.HUGGING_FACE
+            ), f"Expected huggingface source but got: {model_spec.source}"
 
             if (
                 model_name_filter is not None
@@ -70,8 +71,9 @@ def test_model_catalog_modelscope():
         assert model_set_id is not None
         assert len(model_specs) > 0
         for model_spec in model_specs:
-            if model_spec.source != SourceEnum.MODEL_SCOPE:
-                continue
+            assert (
+                model_spec.source == SourceEnum.MODEL_SCOPE
+            ), f"Expected modelscope source but got: {model_spec.source}"
 
             if (
                 model_name_filter is not None
