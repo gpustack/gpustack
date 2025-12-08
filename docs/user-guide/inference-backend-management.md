@@ -33,12 +33,27 @@ Version Configs parameter description:
 3. The backend name cannot be modified after creation. Custom backend names must end with "-custom" (pre-filled in the form).
 4. Click "Save" to submit.
 
-
 ## Edit Inference Backend or Add Custom Version
 1. On the Inference Backend page, locate the target backend. From the card's top-right dropdown menu, choose "Edit".
 2. Modify backend properties (the name cannot be changed), or add a new version.
 3. For built-in backends, custom versions must end with "-custom" (pre-filled in the form).
 4. Click "Save" to submit.
+
+### Example: Add a Custom Version to the Built-in vLLM Inference Backend
+1. On the Inference Backend page, locate the vLLM inference backend. From the card's top-right dropdown menu, choose "Edit".
+2. In the Version Configs section, click "Add Version".
+3. Fill in the fields as follows:
+
+    - Version: `0.12.0`
+    - Image Name: `vllm/vllm-openai:v0.12.0`
+    - Framework: `cuda`
+    - Execution Command: `{{model_path}} --host {{worker_ip}} --port {{port}} --served-model-name {{model_name}}`
+
+4. Click "Save" to submit.
+
+!!! note
+
+    vLLM has changed the entrypoint of its Docker image since v0.11.1. Therefore, when adding a custom version for vLLM v0.11.1 or later, you must specify the `Execution Command` field; otherwise, the model will fail to start.
 
 ## Delete Custom Inference Backend
 1. On the Inference Backend page, locate the target backend and select "Delete" from the card's top-right dropdown menu.
