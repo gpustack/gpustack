@@ -81,20 +81,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._set_gpu_count(world_size, strategies)
         self._set_gpu_memory_utilization()
 
-        # Validate attention heads divisibility
-        tp_size = find_int_parameter(
-            model.backend_parameters, ["tensor-parallel-size", "tp"]
-        )
-        if (
-            tp_size
-            and self._num_attention_heads
-            and self._num_attention_heads % tp_size != 0
-        ):
-            raise ValueError(
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by tensor parallel size "
-                f"({tp_size})."
-            )
+        self._check_gpu_cnt_divisibility()
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -604,7 +591,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             gpu_sum += 1
             vram_sum += vram_claim[gpu.index]
 
-            if self._num_attention_heads and self._num_attention_heads % gpu_sum != 0:
+            try:
+                self._check_gpu_cnt_divisibility(gpu_sum)
+            except ValueError:
                 continue
 
             if self._gpu_count and gpu_sum >= self._gpu_count:
@@ -629,18 +618,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 )
             ]
         event_msg_list = []
-        if (
-            self._num_attention_heads
-            and self._largest_multi_gpu_utilization_satisfied_count != 0
-            and self._num_attention_heads
-            % self._largest_multi_gpu_utilization_satisfied_count
-            != 0
-        ):
-            event_msg_list.append(
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by gpu count "
-                f"({self._largest_multi_gpu_utilization_satisfied_count})."
+        try:
+            self._check_gpu_cnt_divisibility(
+                self._largest_multi_gpu_utilization_satisfied_count
             )
+        except ValueError as e:
+            event_msg_list.append(str(e))
         event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM."
         if self._gpu_memory_utilization != 0:
             event_msg = (
@@ -696,20 +679,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         worker_count = 0
         device_count_per_worker = 0
 
-        tp_size = find_int_parameter(
-            self._model.backend_parameters, ["tensor-parallel-size", "tp"]
-        )
         # Loop through worker groups with the same number of GPUs.
         for gpu_count, worker_group in workers_by_gpu_count_dict.items():
             if len(worker_group) < 2:
                 continue
 
-            if (
-                self._num_attention_heads
-                and self._num_attention_heads % (tp_size or gpu_count) != 0
-            ):
-                # Skip this group if attention heads cannot be divided by TP size or GPU count.
-                # In TP is not specified, GPU count per worker is considered as tensor parallel size.
+            try:
+                self._check_gpu_cnt_divisibility()
+            except ValueError:
                 continue
 
             selected_workers: List[Worker] = []

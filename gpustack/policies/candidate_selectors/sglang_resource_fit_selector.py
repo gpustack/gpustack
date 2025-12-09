@@ -131,13 +131,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         tp_size = find_int_parameter(
             model.backend_parameters, ["tp-size", "tensor-parallel-size"]
         )
-        num_attention_heads = self._model_params.num_attention_heads
-        if tp_size and num_attention_heads and num_attention_heads % tp_size != 0:
-            raise ValueError(
-                f"Total number of attention heads ({num_attention_heads})"
-                " must be divisible by tp-size "
-                f"({tp_size})."
-            )
+        self._check_gpu_cnt_divisibility(tp_size)
 
         pp_size = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
@@ -495,10 +489,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 gpu_sum += 1
                 vram_sum += vram_claim[gpu.index]
 
-                if (
-                    self._num_attention_heads
-                    and self._num_attention_heads % gpu_sum != 0
-                ):
+                try:
+                    self._check_gpu_cnt_divisibility(gpu_sum)
+                except ValueError:
                     continue
 
                 if self._gpu_count and gpu_sum >= self._gpu_count:
@@ -523,18 +516,13 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     )
                 ]
         event_msg_list = []
-        if (
-            self._num_attention_heads
-            and self._largest_multi_gpu_utilization_satisfied_count != 0
-            and self._num_attention_heads
-            % self._largest_multi_gpu_utilization_satisfied_count
-            != 0
-        ):
-            event_msg_list.append(
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by gpu count "
-                f"({self._largest_multi_gpu_utilization_satisfied_count})."
+        try:
+            self._check_gpu_cnt_divisibility(
+                self._largest_multi_gpu_utilization_satisfied_count
             )
+        except ValueError as e:
+            event_msg_list.append(str(e))
+
         if len(event_msg_list) == 0:
             event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
             if self._mem_fraction_static != 0:
@@ -660,10 +648,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     for gpu in worker.status.gpu_devices
                 )
 
-                if (
-                    self._num_attention_heads
-                    and self._num_attention_heads % gpu_sum == 0
-                ) and (vram_sum >= self._vram_claim):
+                try:
+                    self._check_gpu_cnt_divisibility(gpu_sum)
+                except ValueError:
+                    continue
+
+                if vram_sum >= self._vram_claim:
                     return [
                         _create_candidate(
                             self._model,
