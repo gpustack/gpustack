@@ -17,6 +17,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.utils.command import find_int_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
     get_pretrained_config,
@@ -73,6 +74,7 @@ class ModelParameters:
     derived_max_seq_len: int = 0
     num_hidden_layers: int = 0
     hidden_size: Optional[int] = None
+    vocab_size: Optional[int] = None
     num_attention_heads: Optional[int] = None
     num_key_value_heads: int = 1
     n_group: Optional[int] = None
@@ -883,3 +885,35 @@ class ScheduleCandidatesSelector(ABC):
                 return False
 
         return True
+
+    def _check_gpu_cnt_divisibility(self, selected_gpu_cnt: Optional[int] = None):
+        """
+        Check whether vLLM's constraint on parameter divisibility is satisfied.
+        1. num_attention_heads
+        2. vocab_size
+        """
+        if not selected_gpu_cnt:
+            selected_gpu_cnt = find_int_parameter(
+                self._model.backend_parameters, ["tensor-parallel-size", "tp"]
+            )
+        if not selected_gpu_cnt:
+            return
+        if (
+            self._num_attention_heads
+            and self._num_attention_heads % selected_gpu_cnt != 0
+        ):
+            raise ValueError(
+                f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by gpu count "
+                f"({selected_gpu_cnt})."
+            )
+
+        if (
+            self._model_params.vocab_size
+            and self._model_params.vocab_size % selected_gpu_cnt != 0
+        ):
+            raise ValueError(
+                f"Vocabulary size ({self._model_params.vocab_size})"
+                " must be divisible by gpu count "
+                f"({selected_gpu_cnt})."
+            )
