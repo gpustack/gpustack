@@ -164,16 +164,16 @@ GPUStack supports dynamic customization of metrics mapping through its configura
 
 - **Get Current Metrics Config**
 
-  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config`
+  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config`
   - Returns the current metrics mapping configuration in JSON format.
 
 - **Update Metrics Config**
 
-  - POST `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config`
+  - POST `http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config`
   - Accepts a JSON payload to update the metrics mapping configuration. Changes take effect immediately for all workers.
 
 - **Get Default Metrics Config**
-  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/default-config`
+  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/default-config`
   - Returns the default metrics mapping configuration in JSON format, useful for reference or resetting.
 
 ### Example Usage
@@ -181,13 +181,13 @@ GPUStack supports dynamic customization of metrics mapping through its configura
 **Get current config:**
 
 ```bash
-curl http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config
+curl http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config
 ```
 
 **Update config:**
 
 ```bash
-curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config \
+curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config \
      -H "Content-Type: application/json" \
      -d @custom_metrics_config.json
 ```
@@ -197,7 +197,7 @@ _(where `custom_metrics_config.json` is your new config file)_
 **Get default config:**
 
 ```bash
-curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/default-config
+curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/default-config
 ```
 
 > **Note**: The configuration should be provided in valid JSON format.
