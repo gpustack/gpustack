@@ -178,7 +178,7 @@ async def get_user_from_jwt_token(
         payload = jwt_manager.decode_jwt_token(access_token)
         username = payload.get("sub")
     except Exception:
-        logger.error("Failed to decode JWT token")
+        logger.debug("Failed to decode JWT token")
         return None
 
     if username is None:
