@@ -17,6 +17,7 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
+from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
@@ -242,6 +243,10 @@ class SGLangServer(InferenceServer):
         )
         arguments.extend(metrics_arguments)
 
+        # Add multimodal argument if needed
+        if is_multimodal_model(self._get_model_architecture()):
+            arguments.append("--enable-multimodal")
+
         # Add speculative config arguments if needed
         speculative_config_arguments = self._get_speculative_arguments()
         arguments.extend(speculative_config_arguments)
@@ -269,6 +274,13 @@ class SGLangServer(InferenceServer):
                     "ascend",
                 ]
             )
+            if is_multimodal_model(self._get_model_architecture()):
+                arguments.extend(
+                    [
+                        "--mm-attention-backend",
+                        "ascend_attn",
+                    ]
+                )
 
         # Set host and port
         arguments.extend(
