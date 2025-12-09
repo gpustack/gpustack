@@ -248,6 +248,22 @@ class InferenceServer(ABC):
 
         return default
 
+    def _get_model_architecture(self) -> List[str]:
+        """
+        Get model architecture from model config.
+
+        Returns:
+            A list of model architecture strings.
+        """
+        try:
+            pretrained_config = self._get_pretrained_config()
+            if pretrained_config and "architectures" in pretrained_config:
+                return pretrained_config["architectures"]
+        except Exception as e:
+            logger.error(f"Failed to derive model architecture: {e}")
+
+        return []
+
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """
         Get the environment variables for the model instance.
