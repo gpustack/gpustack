@@ -61,7 +61,9 @@ class InferenceBackendBase(SQLModel):
     default_backend_param: Optional[List[str]] = SQLField(
         sa_column=Column(JSON), default=[]
     )
-    default_run_command: Optional[str] = SQLField(default="")
+    default_run_command: Optional[str] = SQLField(
+        sa_column=Column(Text, nullable=True), default=""
+    )
     is_built_in: bool = SQLField(default=False)
     description: Optional[str] = SQLField(
         default=None, sa_column=Column(Text, nullable=True)

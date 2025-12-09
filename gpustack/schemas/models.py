@@ -203,7 +203,7 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend_version: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
     image_name: Optional[str] = None
-    run_command: Optional[str] = None
+    run_command: Optional[str] = Field(sa_type=Text, default=None)
 
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
