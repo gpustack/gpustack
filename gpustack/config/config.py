@@ -235,7 +235,7 @@ class Config(BaseSettings):
         self.init_auth()
 
         if self.system_reserved is None:
-            self.system_reserved = {"ram": 2, "vram": 1}
+            self.system_reserved = {"ram": 0, "vram": 0}
 
         if self.service_discovery_name is None:
             self.service_discovery_name = "worker" if self._is_worker() else "server"
