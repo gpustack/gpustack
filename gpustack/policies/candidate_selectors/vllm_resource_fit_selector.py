@@ -107,6 +107,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             model.backend_parameters, ["pipeline-parallel-size", "pp"]
         )
         dp = find_int_parameter(model.backend_parameters, ["data-parallel-size", "dp"])
+        dpl = find_int_parameter(
+            model.backend_parameters, ["--data-parallel-size-local", "dpl"]
+        )
 
         if tp or pp or dp:
             world_size = 1
@@ -120,6 +123,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if dp:
                 strategies.append("dp")
                 world_size *= dp
+                if dpl:
+                    # NB(thxCode): Indicate how many DP groups(each group owns `-dp` number devices) are there in one worker.
+                    world_size *= dpl
 
             return world_size, strategies
 
