@@ -219,6 +219,21 @@ class WorkerStateEnum(str, Enum):
         ]
 
 
+class ModelInstanceProxyModeEnum(str, Enum):
+    """
+    ModelInstanceProxyModeEnum 的 Docstring
+
+    Enum for Model Instance Proxy Mode
+    WORKER - Proxy through the worker
+    DIRECT - Direct access to the model instance
+    DELEGATED - Preserved for proxying through cluster gateway (not implemented yet)
+    """
+
+    WORKER = "worker"
+    DIRECT = "direct"
+    DELEGATED = "delegated"
+
+
 class SystemInfo(BaseModel):
     cpu: Optional[CPUInfo] = Field(sa_column=Column(JSON), default=None)
     memory: Optional[MemoryInfo] = Field(sa_column=Column(JSON), default=None)
@@ -281,6 +296,10 @@ class WorkerStatusStored(BaseModel):
     machine_id: Optional[str] = Field(
         default=None
     )  # The machine ID of the worker, used for identifying the worker in the cluster
+
+    proxy_model: Optional[ModelInstanceProxyModeEnum] = Field(
+        default=ModelInstanceProxyModeEnum.WORKER,
+    )
 
 
 class WorkerStatusPublic(WorkerStatusStored):

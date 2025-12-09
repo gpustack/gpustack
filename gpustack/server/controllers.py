@@ -30,6 +30,7 @@ from gpustack.schemas.workers import (
     Worker,
     WorkerStateEnum,
     WorkerStatus,
+    ModelInstanceProxyModeEnum,
 )
 from gpustack.schemas.clusters import (
     Cluster,
@@ -41,7 +42,10 @@ from gpustack.schemas.clusters import (
     SSHKeyOptions,
 )
 
-from gpustack.schemas.users import User
+from gpustack.schemas.users import (
+    User,
+    is_default_cluster_user,
+)
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.catalog import get_catalog_draft_models
 from gpustack.server.db import get_engine
@@ -77,7 +81,6 @@ class ModelController:
         self._config = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
         self._k8s_config = cfg.get_async_k8s_config()
-        self.instance_ip = cfg.get_advertise_address()
 
         pass
 
@@ -114,7 +117,6 @@ class ModelController:
                     event,
                     self._config,
                     model,
-                    self.instance_ip,
                     self._networking_api,
                 )
         except Exception as e:
@@ -125,6 +127,8 @@ class ModelInstanceController:
     def __init__(self, cfg: Config):
         self._engine = get_engine()
         self._config = cfg
+        self._k8s_config = cfg.get_async_k8s_config()
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -132,6 +136,9 @@ class ModelInstanceController:
         """
         Start the controller.
         """
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
         async for event in ModelInstance.subscribe(self._engine):
             if event.type == EventType.HEARTBEAT:
@@ -159,6 +166,13 @@ class ModelInstanceController:
 
                 await model.refresh(session)
                 await sync_ready_replicas(session, model)
+                await mcp_handler.ensure_model_instance_mcp_bridge(
+                    event_type=event.type,
+                    model_instance=model_instance,
+                    networking_higress_api=self._higress_network_api,
+                    namespace=self._config.get_gateway_namespace(),
+                    cluster_id=model.cluster_id,
+                )
 
         except Exception as e:
             logger.error(
@@ -562,18 +576,17 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
 
 
 async def get_cluster_registry(
-    session: AsyncSession, server_ip: str, cluster_id: int
+    session: AsyncSession, cluster_id: int
 ) -> Optional[McpBridgeRegistry]:
-    worker: Worker = await Worker.one_by_field(session, "ip", server_ip)
-    model_cluster: Cluster = await Cluster.one_by_id(session, cluster_id)
-    is_default_cluster = False
-    if worker is not None and worker.cluster_id == model_cluster.id:
-        is_default_cluster = True
-    if not is_default_cluster:
-        cluster_registry = mcp_handler.cluster_registry(model_cluster)
-        if cluster_registry is not None:
-            return {100: cluster_registry}
-    return None
+    cluster_user = await User.one_by_field(
+        session=session, field="cluster_id", value=cluster_id
+    )
+    if is_default_cluster_user(cluster_user):
+        return None
+    cluster_registry = mcp_handler.cluster_registry(cluster_user.cluster)
+    if cluster_registry is None:
+        return None
+    return {100: cluster_registry}
 
 
 async def sync_gateway(
@@ -581,11 +594,10 @@ async def sync_gateway(
     event: Event,
     cfg: Config,
     model: Model,
-    instance_ip: str,
     networking_api: k8s_client.NetworkingV1Api,
 ):
     if event.type != EventType.DELETED:
-        destinations = await calculate_destinations(session, instance_ip, model)
+        destinations = await calculate_destinations(session, model)
     else:
         destinations = []
     await mcp_handler.ensure_model_ingress(
@@ -603,14 +615,13 @@ async def sync_gateway(
 
 async def calculate_destinations(
     session: AsyncSession,
-    server_ip: str,
     model: Model,
 ) -> List[Tuple[int, McpBridgeRegistry]]:
     """
     return persentage dict for each registry
     """
     # find out is handling default cluster's model
-    cluster_registry = await get_cluster_registry(session, server_ip, model.cluster_id)
+    cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
         return cluster_registry
 
@@ -636,7 +647,10 @@ async def calculate_destinations(
     registry_list: List[Tuple[int, McpBridgeRegistry]] = []
     for worker in instances_related_workers:
         instances = instances_by_worker_id.get(worker.id, [])
-        if worker.ip != server_ip:
+        if (
+            worker.proxy_model is None
+            or worker.proxy_model == ModelInstanceProxyModeEnum.WORKER
+        ):
             registry = mcp_handler.worker_registry(worker)
             if registry is not None:
                 registry_list.append((len(instances), registry))
