@@ -310,6 +310,9 @@ class ActiveRecordMixin:
             for obj in attr.value:
                 if obj in dirty_objs:
                     rtn.append(obj)
+            for obj in attr.history.deleted:
+                if obj in dirty_objs:
+                    rtn.append(obj)
         return rtn
 
     @classmethod
