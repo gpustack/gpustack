@@ -3,7 +3,6 @@ from multiprocessing import Process
 import os
 import re
 import aiohttp
-from typing import Optional
 
 import uvicorn
 import logging
@@ -12,7 +11,12 @@ import tenacity
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
-from gpustack.schemas.users import User, UserRole, system_name_prefix
+from gpustack.schemas.users import (
+    User,
+    UserRole,
+    get_default_cluster_user,
+    default_cluster_user_name,
+)
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
@@ -50,7 +54,6 @@ from gpustack.exporter.exporter import MetricExporter
 from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
 
 logger = logging.getLogger(__name__)
-default_cluster_user_name = f"{system_name_prefix}-1"
 
 
 class Server:
@@ -368,16 +371,11 @@ class Server:
             )
             await User.create(session, user)
 
-    async def _default_cluster_user(self, session: AsyncSession) -> Optional[User]:
-        return await User.first_by_field(
-            session=session, field="username", value=default_cluster_user_name
-        )
-
     async def _migrate_legacy_token(self, session: AsyncSession):
         if not self._config.token or self._config.token.startswith(API_KEY_PREFIX):
             return
         # this should be created from sql migration script.
-        cluster_user = await self._default_cluster_user(session)
+        cluster_user = await get_default_cluster_user(session)
         if cluster_user is None or cluster_user.cluster is None:
             logger.debug(
                 "Default cluster user not exist, skipping legacy token migration."
@@ -426,6 +424,7 @@ class Server:
             raise e
 
     async def _migrate_legacy_workers(self, session: AsyncSession):
+        # Use hardcode cluster 1 to make sure the cluster is created in migration step
         default_cluster = await Cluster.one_by_id(session=session, id=1)
         if not default_cluster:
             logger.debug(
@@ -494,7 +493,7 @@ class Server:
                 raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
-        cluster_user = await self._default_cluster_user(session)
+        cluster_user = await get_default_cluster_user(session)
         if cluster_user is None or cluster_user.cluster is None:
             logger.debug(
                 "Default cluster user not exist, skipping registration token generation."
@@ -549,7 +548,7 @@ class Server:
     async def _init_default_cluster(self, session: AsyncSession):
         if self._config.server_role() != Config.ServerRole.BOTH:
             return
-        default_cluster_user = await self._default_cluster_user(session)
+        default_cluster_user = await get_default_cluster_user(session)
         if default_cluster_user:
             return
         logger.info(

@@ -356,6 +356,14 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help="Enable downloading model files using Hugging Face Xet.",
     )
     group.add_argument(
+        "--proxy-mode",
+        type=str,
+        help="Proxy mode for server accessing model instances: "
+        "direct (server connects directly) or worker (via worker proxy). "
+        "Default value is direct for embedded worker, and worker for standalone worker.",
+    )
+
+    group.add_argument(
         "--enable-cors",
         action=OptionalBoolAction,
         help="Enable Cross-Origin Resource Sharing (CORS) on the server.",
@@ -666,6 +674,7 @@ def set_worker_options(args, config_data: dict):
         "tools_download_base_url",
         "enable_hf_transfer",
         "enable_hf_xet",
+        "proxy_mode",
     ]
 
     for option in options:

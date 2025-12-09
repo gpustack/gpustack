@@ -27,6 +27,7 @@ from gpustack.schemas.workers import (
     UptimeInfo,
     GPUDevicesInfo,
     GPUNetworkInfo,
+    ModelInstanceProxyModeEnum,
 )
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack import __version__
@@ -193,6 +194,7 @@ class Config(BaseSettings):
     tools_download_base_url: Optional[str] = None
     enable_hf_transfer: bool = False
     enable_hf_xet: bool = False
+    proxy_mode: Optional[ModelInstanceProxyModeEnum] = None
 
     def __init__(self, **values):
         super().__init__(**values)
@@ -242,6 +244,13 @@ class Config(BaseSettings):
 
         self.make_dirs()
         self.detect_gateway_mode()
+
+        # default to worker proxy mode if running as worker
+        if self.proxy_mode is None:
+            if self._is_worker():
+                self.proxy_mode = ModelInstanceProxyModeEnum.WORKER
+            else:
+                self.proxy_mode = ModelInstanceProxyModeEnum.DIRECT
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901

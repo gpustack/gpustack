@@ -2,6 +2,7 @@ from datetime import datetime
 import re
 from enum import Enum
 from sqlalchemy import Enum as SQLEnum, Text
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from typing import List, Optional, TYPE_CHECKING
 from pydantic import field_validator
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 
 system_name_prefix = "system/cluster"
+default_cluster_user_name = f"{system_name_prefix}-1"
 
 
 class UserRole(Enum):
@@ -158,3 +160,17 @@ class UserPublic(UserBase):
 
 
 UsersPublic = PaginatedList[UserPublic]
+
+
+def is_default_cluster_user(cluster_user: User) -> bool:
+    return (
+        cluster_user.is_system
+        and cluster_user.cluster_id is not None
+        and cluster_user.username == default_cluster_user_name
+    )
+
+
+async def get_default_cluster_user(session: AsyncSession) -> Optional[User]:
+    return await User.one_by_field(
+        session=session, field="username", value=default_cluster_user_name
+    )

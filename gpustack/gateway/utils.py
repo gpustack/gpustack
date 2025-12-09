@@ -21,7 +21,7 @@ from gpustack.schemas.models import (
     ModelPublic,
 )
 from gpustack.server.bus import EventType
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, ModelInstanceProxyModeEnum
 from gpustack.schemas.clusters import Cluster
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException
@@ -147,7 +147,12 @@ def model_instance_registry(
 
 
 def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
-    if worker.ip is None or worker.ip == "" or worker.port is None:
+    if (
+        worker.ip is None
+        or worker.ip == ""
+        or worker.port is None
+        or worker.proxy_model != ModelInstanceProxyModeEnum.WORKER
+    ):
         return None
     return McpBridgeRegistry(
         domain=f"{worker.ip}:{worker.port}",
@@ -600,3 +605,28 @@ async def cleanup_orphaned_model_ingresses(
                         continue
     except Exception as e:
         print(f"Error cleaning up orphaned model ingresses: {e}")
+
+
+async def ensure_model_instance_mcp_bridge(
+    event_type: EventType,
+    model_instance: Union[ModelInstance, ModelInstancePublic],
+    networking_higress_api: NetworkingHigressIoV1Api,
+    namespace: str,
+    cluster_id: int,
+) -> List[McpBridgeRegistry]:
+    desired_registry: List[McpBridgeRegistry] = []
+    to_delete_prefix: Optional[str] = None
+    if event_type == EventType.DELETED:
+        to_delete_prefix = model_instance_prefix(model_instance)
+    else:
+        registry = model_instance_registry(model_instance)
+        if registry is not None:
+            desired_registry.append(registry)
+    await ensure_mcp_bridge(
+        client=networking_higress_api,
+        namespace=namespace,
+        mcp_bridge_name=cluster_mcp_bridge_name(cluster_id),
+        desired_registries=desired_registry,
+        to_delete_prefix=to_delete_prefix,
+    )
+    return desired_registry
