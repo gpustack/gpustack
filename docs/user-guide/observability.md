@@ -90,47 +90,26 @@ If you started GPUStack using `docker run` (not Compose), you can deploy the obs
 
 #### Steps
 
-1. **Docker Compose Configuration**
+1. **Get Docker Compose Directory**
 
-    Compose file location: [docker-compose.observability.yaml (GitHub)](https://github.com/gpustack/gpustack/blob/main/docker-compose/docker-compose.observability.yaml)
+    Compose file directory: [docker-compose(GitHub)](https://github.com/gpustack/gpustack/tree/main/docker-compose)
 
-    ```yaml
-    services:
-    prometheus:
-        image: prom/prometheus
-        container_name: gpustack-prometheus
-        restart: unless-stopped
-        ports:
-        - "9090:9090"
-        command:
-        - "--config.file=/etc/prometheus/prometheus.yml"
-        - "--web.enable-remote-write-receiver"
-        volumes:
-        - ./prometheus:/etc/prometheus
-        - prom_data:/prometheus
-
-    grafana:
-        image: grafana/grafana
-        container_name: gpustack-grafana
-        restart: unless-stopped
-        ports:
-        - "3000:3000"
-        environment:
-        - GF_SERVER_HTTP_PORT=3000
-        - GF_SECURITY_ADMIN_USER=admin
-        - GF_SECURITY_ADMIN_PASSWORD=grafana
-        - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
-        volumes:
-        - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
-        - ./grafana/grafana_dashboards:/etc/dashboards:ro
-
-    volumes:
-    prom_data: {}
+    ```bash
+    LATEST_TAG=$(
+        curl -s "https://api.github.com/repos/gpustack/gpustack/releases" \
+        | grep '"tag_name"' \
+        | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' \
+        | grep -Ev 'rc|beta|alpha|preview' \
+        | head -1
+    )
+    echo "Latest stable release: $LATEST_TAG"
+    git clone -b "$LATEST_TAG" https://github.com/gpustack/gpustack.git
+    cd gpustack/docker-compose
     ```
 
 2. **Edit the Prometheus configuration file `prometheus.yml`**.
 
-    Configure Prometheus to scrape metrics from GPUStack by editing the `prometheus.yml`, file location: [prometheus.yaml (GitHub)](https://github.com/gpustack/gpustack/blob/main/docker-compose/prometheus/prometheus.yml)
+    Edit `prometheus/prometheus.yml` to replace `<gpustack_server_host>` with the actual hostname or IP address of your GPUStack server.
 
     ```yaml
     scrape_configs:
@@ -143,6 +122,12 @@ If you started GPUStack using `docker run` (not Compose), you can deploy the obs
         scrape_interval: 10s
         static_configs:
         - targets: ["<gpustack_server_host>:10161"]
+    ```
+
+3. **Start the observability stack**
+
+    ```bash
+    sudo docker-compose -f docker-compose.observability.yaml up -d
     ```
 
 ### Accessing Metrics
