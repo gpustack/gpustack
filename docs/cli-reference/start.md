@@ -38,9 +38,9 @@ gpustack start [OPTIONS]
 
 | <div style="width:180px">Flag</div> | <div style="width:100px">Default</div> | Description                                                                                                                                                                                                                                                                                                                                   |
 | ----------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--port` value                      | 80                                     | Port to bind the server to.                                                                                                                                                                                                                                                                                                                   |
-| `--tls-port` value                  | 443                                    | Port to bind the TLS server to.                                                                                                                                                                                                                                                                                                               |
-| `--api-port` value                  | `8080`                                 | Port to bind the GPUStack API server to.                                                                                                                                                                                                                                                                                                      |
+| `--port` value                      | `80`                                   | Port to bind the server to.                                                                                                                                                                                                                                                                                                                   |
+| `--tls-port` value                  | `443`                                  | Port to bind the TLS server to.                                                                                                                                                                                                                                                                                                               |
+| `--api-port` value                  | `30080`                                | Port to bind the GPUStack API server to.                                                                                                                                                                                                                                                                                                      |
 | `--database-port` value             | `5432`                                 | Port of the embedded PostgresSQL database.                                                                                                                                                                                                                                                                                                    |
 | `--metrics-port` value              | `10161`                                | Port to expose server metrics.                                                                                                                                                                                                                                                                                                                |
 | `--disable-metrics`                 | `False`                                | Disable server metrics.                                                                                                                                                                                                                                                                                                                       |
@@ -113,8 +113,6 @@ You can configure start options using a YAML-format config file when starting GP
 
 ```yaml
 # Common Options
-port: 80
-tls_port: 443
 advertise_address: exposed_server_or_worker_ip
 debug: false
 data_dir: /path/to/data_dir
@@ -123,7 +121,9 @@ token: your_token
 huggingface_token: your_huggingface_token
 
 # Server Options
-api_port: 8080
+port: 80
+tls_port: 443
+api_port: 30080
 metrics_port: 10161
 enable_worker: false
 bootstrap_password: your_admin_password
@@ -173,4 +173,5 @@ system_reserved:
 tools_download_base_url: https://mirror.your_company.com
 enable_hf_transfer: false
 enable_hf_xet: false
+proxy_mode: worker
 ```

@@ -52,7 +52,7 @@ class Config(BaseSettings):
     Attributes:
         port: Port to bind the server to. Default is 80.
         tls_port: Port to bind the TLS server to. Default is 443.
-        api_port: Port to bind the gpustack API server to. Default is 8080.
+        api_port: Port to bind the gpustack API server to. Default is 30080.
         advertise_address: The address to expose for external access. Auto-detected by default.
         debug: Enable debug mode.
         data_dir: Directory to store data. Default is OS specific.
@@ -112,7 +112,7 @@ class Config(BaseSettings):
     port: Optional[int] = 80
     tls_port: Optional[int] = 443
     # The api_port is used in gpustack server/worker serving API requests.
-    api_port: Optional[int] = 8080
+    api_port: Optional[int] = 30080
     advertise_address: Optional[str] = None
     debug: bool = False
     data_dir: Optional[str] = None

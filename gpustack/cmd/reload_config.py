@@ -166,7 +166,7 @@ def apply_runtime_updates(
     args: argparse.Namespace,
 ):
     api_key = getattr(args, "api_key", None)
-    server_port = getattr(args, "server_port") or 8080
+    server_port = getattr(args, "server_port") or 30080
     worker_port = getattr(args, "worker_port") or 10150
     urls = [
         f"http://127.0.0.1:{server_port}/debug/config",
@@ -190,7 +190,7 @@ def list_runtime_values(
     worker_port: int | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
-    s_port = server_port or 8080
+    s_port = server_port or 30080
     w_port = worker_port or 10150
     endpoints = {
         "server": f"http://127.0.0.1:{s_port}/debug/config",

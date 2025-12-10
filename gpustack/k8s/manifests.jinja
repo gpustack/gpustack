@@ -90,9 +90,6 @@ spec:
   selector:
     app: gpustack-worker
   ports:
-    - name: gateway
-      port: 8080
-      targetPort: 8080
     - name: api
       port: 10150
       targetPort: 10150
@@ -127,8 +124,6 @@ spec:
                   name: registration-token
             - name: GPUSTACK_SERVER_URL
               value: {{ config.server_url }}
-            - name: GPUSTACK_PORT
-              value: '8080'
             - name: GPUSTACK_WORKER_NAME
               valueFrom:
                 fieldRef:
@@ -172,9 +167,6 @@ spec:
             - name: gpustack-ascend-toolkit
               mountPath: /usr/local/Ascend/ascend-toolkit
           ports:
-            - name: gateway
-              containerPort: 8080
-              protocol: TCP
             - name: api
               containerPort: 10150
               protocol: TCP
