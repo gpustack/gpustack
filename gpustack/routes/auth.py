@@ -19,7 +19,11 @@ from gpustack.security import (
     verify_hashed_secret,
 )
 from gpustack import envs
-from gpustack.api.auth import SESSION_COOKIE_NAME, authenticate_user
+from gpustack.api.auth import (
+    SESSION_COOKIE_NAME,
+    OIDC_ID_TOKEN_COOKIE_NAME,
+    authenticate_user,
+)
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
@@ -400,6 +404,18 @@ async def oidc_callback(request: Request, session: SessionDep):
         max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
         expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
     )
+    try:
+        id_token = res_data.get("id_token")
+        if id_token:
+            response.set_cookie(
+                key=OIDC_ID_TOKEN_COOKIE_NAME,
+                value=id_token,
+                httponly=True,
+                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to set id_token cookie: {str(e)}")
     return response
 
 
@@ -443,6 +459,7 @@ async def logout(request: Request):
             params = {
                 "client_id": config.oidc_client_id,
                 "post_logout_redirect_uri": redirect_uri,
+                "id_token_hint": request.cookies.get(OIDC_ID_TOKEN_COOKIE_NAME),
             }
             if config.oidc_post_logout_redirect_key:
                 params[config.oidc_post_logout_redirect_key] = redirect_uri
@@ -453,6 +470,7 @@ async def logout(request: Request):
     content = json.dumps({"logout_url": oidc_redirect_url})
     resp = Response(content=content, media_type="application/json")
     resp.delete_cookie(key=SESSION_COOKIE_NAME)
+    resp.delete_cookie(key=OIDC_ID_TOKEN_COOKIE_NAME)
     return resp
 
 
