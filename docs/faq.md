@@ -198,13 +198,21 @@ This is a limitation of vLLM. You can adjust the `--limit-mm-per-prompt` paramet
 
 ### How do I use GPUStack behind a proxy?
 
-Pass environment variables when running GPUStack:
+We recommend passing standard proxy environment variables when running GPUStack.
+
+!!! warning "**Important Note on `NO_PROXY`:**"
+
+    Some libraries don't support CIDR in the NO_PROXY environment variable. Instead, you should explicitly specify domain suffixes or individual IP addresses.
+
+The following case demonstrates how to configure GPUStack to forward all requests to the target proxy, except for requests to addresses specified in the NO_PROXY environment variable.
 
 ```bash
-sudo docker run run -d --name gpustack \
-    -e HTTP_PROXY="http://username:password@proxy-server:port" \
-    -e HTTPS_PROXY="http://username:password@proxy-server:port" \
-    -e ALL_PROXY="socks5://username:password@proxy-server:port" \
-    -e NO_PROXY="localhost,127.0.0.1,192.168.0.0/24,172.16.0.0/16,10.0.0.0/8" \
+docker run -d --name gpustack \
+    -e HTTPS_PROXY="http://proxy-server:port" \
     ...
 ```
+
+!!! note
+
+    - Replace the IP address/proxy address accordingly.
+    - If your proxy requires authentication, use the format `http://username:password@proxy-server:port`. Be aware that special characters in passwords may need URL encoding.
