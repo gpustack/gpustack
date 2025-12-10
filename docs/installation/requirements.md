@@ -45,10 +45,11 @@ sudo docker info 2>/dev/null | grep -q "nvidia" \
 ```
 
 #### Supported Inference Backends
-  - [x] [vLLM](https://github.com/vllm-project/vllm)
-  - [x] [SGLang](https://github.com/sgl-project/sglang)
-  - [x] [VoxBox](https://github.com/gpustack/vox-box)
-  - [x] Custom
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] [VoxBox](https://github.com/gpustack/vox-box)
+- [x] Custom
 
 ### AMD GPU
 
@@ -69,8 +70,9 @@ sudo docker info 2>/dev/null | grep -q "amd" \
 ```
 
 #### Supported Inference Backends
-  - [x] [vLLM](https://github.com/vllm-project/vllm)
-  - [x] Custom
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] Custom
 
 ### Ascend NPU
 
@@ -91,15 +93,17 @@ sudo docker info 2>/dev/null | grep -q "ascend" \
 ```
 
 #### Supported Devices
-  - [x] Ascend NPU 910C series
-  - [x] Ascend NPU 910B series (910B1 ~ 910B4)
-  - [x] Ascend NPU 310P3
+
+- [x] Ascend NPU 910C series
+- [x] Ascend NPU 910B series (910B1 ~ 910B4)
+- [x] Ascend NPU 310P3
 
 #### Supported Inference Backends
-  - [x] [vLLM](https://github.com/vllm-project/vllm)
-  - [x] [SGLang](https://github.com/sgl-project/sglang)
-  - [x] [MindIE](https://www.hiascend.com/document/detail/zh/mindie/21RC2/index/index.html)
-  - [x] Custom
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] [MindIE](https://www.hiascend.com/document/detail/zh/mindie/21RC2/index/index.html)
+- [x] Custom
 
 ### Hygon DCU
 
@@ -115,11 +119,13 @@ sudo hy-smi
 ```
 
 #### Supported Devices
-  - [x] Hygon DCUs (K100_AI (Verified), Z100/Z100L/K100(Not Verified))
+
+- [x] Hygon DCUs (K100_AI (Verified), Z100/Z100L/K100(Not Verified))
 
 #### Supported Inference Backends
-  - [x] [vLLM](https://github.com/vllm-project/vllm)
-  - [x] Custom
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] Custom
 
 ### MThreads GPU
 
@@ -140,7 +146,8 @@ sudo docker info 2>/dev/null | grep -q "mthreads" \
 ```
 
 #### Supported Inference Backends
-  - [x] Custom
+
+- [x] Custom
 
 ### Iluvatar GPU
 
@@ -161,8 +168,9 @@ sudo docker info 2>/dev/null | grep -q "iluvatar" \
 ```
 
 #### Supported Inference Backends
-  - [x] [vLLM](https://github.com/vllm-project/vllm)
-  - [x] Custom
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] Custom
 
 ### MetaX GPU
 
@@ -178,7 +186,8 @@ sudo mx-smi
 ```
 
 #### Supported Inference Backends
-  - [x] Custom
+
+- [x] Custom
 
 ### Cambricon MLU
 
@@ -194,7 +203,8 @@ sudo cnmon
 ```
 
 #### Supported Inference Backends
-  - [x] Custom
+
+- [x] Custom
 
 ## Networking Requirements
 
@@ -219,17 +229,16 @@ GPUStack uses these ports for communication:
 | TCP 80    | Default port for GPUStack UI and API endpoints               |
 | TCP 443   | Default port for GPUStack UI and API endpoints (TLS enabled) |
 | TCP 10161 | Default port for server metrics endpoint                     |
-| TCP 8080  | Default port for GPUStack server internal API                |
+| TCP 30080 | Default port for GPUStack server internal API                |
 | TCP 5432  | Default port for embedded Postgres Database                  |
 
 #### Worker Ports
 
-| Port            | Description                                   |
-| --------------- | --------------------------------------------- |
-| TCP 10150       | Default port for GPUStack worker              |
-| TCP 10151       | Default port for worker metrics endpoint      |
-| TCP 8080        | Default port for GPUStack worker internal API |
-| TCP 40000-40063 | Port range for inference services             |
+| Port            | Description                                                    |
+| --------------- | -------------------------------------------------------------- |
+| TCP 10150       | Default port for GPUStack worker                               |
+| TCP 10151       | Default port for worker metrics endpoint                       |
+| TCP 40000-40063 | Port range for inference services                              |
 | TCP 41000-41999 | Port range for Ray services(vLLM distributed deployment using) |
 
 ##### Distributed vLLM with Ray Ports
