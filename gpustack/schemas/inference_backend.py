@@ -152,12 +152,18 @@ class InferenceBackendBase(SQLModel):
 
     def get_image_name(self, version: Optional[str] = None) -> (str, str):
         if self.backend_name == BackendEnum.CUSTOM.value:
-            return ""
+            return "", ""
         try:
             version_config, version = self.get_version_config(version)
         except KeyError:
             return "", ""
-        return version_config.image_name, version
+        if (
+            version_config
+            and version_config.built_in_frameworks is None
+            and version_config.image_name
+        ):
+            return version_config.image_name, version
+        return "", ""
 
 
 class InferenceBackend(InferenceBackendBase, BaseModelMixin, table=True):
