@@ -31,6 +31,13 @@ def upgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.add_column(sa.Column('proxy_model', model_instance_proxy_mode, nullable=True))
 
+    with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.alter_column('run_command', type_=sa.Text(), existing_type=sa.String(length=255), nullable=True)
+
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.alter_column('default_run_command', type_=sa.Text(), existing_type=sa.String(length=255), nullable=True)
+
+
 
 def downgrade() -> None:
     model_instance_proxy_mode = sa.Enum(
@@ -42,3 +49,9 @@ def downgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.drop_column('proxy_model')
     model_instance_proxy_mode.drop(op.get_bind(), checkfirst=True)
+
+    with op.batch_alter_table('models', schema=None) as batch_op:
+        batch_op.alter_column('run_command', type_=sa.String(length=255), existing_type=sa.Text(), nullable=True)
+
+    with op.batch_alter_table('inference_backends', schema=None) as batch_op:
+        batch_op.alter_column('default_run_command', type_=sa.String(length=255), existing_type=sa.Text(), nullable=True)
