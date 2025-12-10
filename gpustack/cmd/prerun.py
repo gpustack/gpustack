@@ -108,11 +108,12 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
 
 def check_ports_availability(cfg: Config, *services: str):
     # Implement port availability checks here
+    all_services = list(services) + [gpustack_service_name]
     ports = ports_for_services(cfg)
     ports_to_check = {
         port: service
         for port, service in ports.items()
-        if not services or service in services
+        if not all_services or service in all_services
     }
     should_fail = False
     for port, service in ports_to_check.items():
