@@ -52,6 +52,10 @@ from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
 from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
+from gpustack.envs import (
+    GATEWAY_PORT_CHECK_INTERVAL,
+    GATEWAY_PORT_CHECK_RETRY_COUNT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,8 +305,8 @@ class Server:
         logger.info("GPUStack Server is ready.")
 
     @tenacity.retry(
-        stop=tenacity.stop_after_attempt(30),
-        wait=tenacity.wait_fixed(2),
+        stop=tenacity.stop_after_attempt(GATEWAY_PORT_CHECK_RETRY_COUNT),
+        wait=tenacity.wait_fixed(GATEWAY_PORT_CHECK_INTERVAL),
         reraise=True,
         before_sleep=lambda retry_state: logger.debug(
             f"Waiting for ports {retry_state.args[1]} to be healthy (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
