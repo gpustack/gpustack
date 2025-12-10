@@ -3,6 +3,7 @@ from typing import Optional, Set, Annotated
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi import APIRouter, Request, Response, Depends
 from gpustack.api.exceptions import (
+    NotFoundException,
     ForbiddenException,
     UnauthorizedException,
     BadRequestException,
@@ -29,7 +30,7 @@ model_name_missing_exception = BadRequestException(
     is_openai_exception=True,
 )
 
-model_not_found_exception = ForbiddenException(
+model_not_found_exception = NotFoundException(
     message="Model not found",
     is_openai_exception=True,
 )
