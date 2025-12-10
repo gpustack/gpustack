@@ -139,7 +139,6 @@ def get_runner_versions_and_configs(
                     f"{backend_runner.backend}" for backend_runner in version.backends
                 ]
                 version_configs.root[version.version] = VersionConfig(
-                    image_name=backend_name,
                     built_in_frameworks=backend_list,
                 )
                 if default_version is None:
