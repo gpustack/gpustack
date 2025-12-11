@@ -131,7 +131,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         tp_size = find_int_parameter(
             model.backend_parameters, ["tp-size", "tensor-parallel-size"]
         )
-        self._check_gpu_cnt_divisibility(tp_size)
+        self._check_tp_size_divisibility(tp_size)
 
         pp_size = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
@@ -490,7 +490,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 vram_sum += vram_claim[gpu.index]
 
                 try:
-                    self._check_gpu_cnt_divisibility(gpu_sum)
+                    self._check_tp_size_divisibility(gpu_sum)
                 except ValueError:
                     continue
 
@@ -517,7 +517,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 ]
         event_msg_list = []
         try:
-            self._check_gpu_cnt_divisibility(
+            self._check_tp_size_divisibility(
                 self._largest_multi_gpu_utilization_satisfied_count
             )
         except ValueError as e:
@@ -649,7 +649,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 )
 
                 try:
-                    self._check_gpu_cnt_divisibility(gpu_sum)
+                    self._check_tp_size_divisibility(gpu_count)
                 except ValueError:
                     continue
 

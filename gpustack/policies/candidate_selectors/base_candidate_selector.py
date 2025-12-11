@@ -885,7 +885,7 @@ class ScheduleCandidatesSelector(ABC):
 
         return True
 
-    def _check_gpu_cnt_divisibility(
+    def _check_tp_size_divisibility(
         self,
         tp_size: int,
     ):
@@ -893,6 +893,13 @@ class ScheduleCandidatesSelector(ABC):
         Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
         2. vocab_size
+
+        Notes on `tp_size` (tensor parallel size) usage in auto scheduling:
+        - Single-worker multi-GPU: `tp_size` is the number of GPUs currently selected
+          in the traversal (i.e., `gpu_sum`). The scheduler grows the candidate set
+          incrementally and validates divisibility at each step.
+        - Multi-worker multi-GPU: selected workers are constrained to have the same
+          number of GPUs, so `tp_size` equals the per-worker GPU count (i.e., `gpu_count`)
         """
         if not tp_size:
             return
