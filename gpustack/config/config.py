@@ -159,9 +159,6 @@ class Config(BaseSettings):
     oidc_client_id: Optional[str] = None  # oidc client id
     oidc_client_secret: Optional[str] = None  # oidc client secret
     oidc_redirect_uri: Optional[str] = None  # oidc redirect uri
-    oidc_post_logout_redirect_key: Optional[str] = (
-        None  # custom post-logout redirection key for compatibility with different IdPs.
-    )
     oidc_issuer: Optional[str] = None  # oidc issuer
     oidc_skip_userinfo: bool = False  # skip to request the oidc user_info endpoint
     oidc_use_userinfo: Optional[bool] = (
@@ -175,9 +172,14 @@ class Config(BaseSettings):
     saml_sp_attribute_prefix: Optional[str] = None  # saml sp attribute prefix
     saml_idp_entity_id: Optional[str] = None  # saml idp_entityId
     saml_idp_server_url: Optional[str] = None  # saml idp_server_url
+    saml_idp_logout_url: Optional[str] = None
+    saml_sp_slo_url: Optional[str] = None
     saml_idp_x509_cert: Optional[str] = ''  # saml idp_x509_cert
     saml_security: Optional[str] = '{}'  # saml security
     server_external_url: Optional[str] = None
+    post_logout_redirect_key: Optional[str] = (
+        None  # custom post-logout redirection key for compatibility with different IdPs.
+    )
 
     # Worker options
     token: Optional[str] = None
