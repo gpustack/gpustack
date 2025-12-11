@@ -24,6 +24,10 @@ sudo docker run -d --name gpustack \
     gpustack/gpustack
 ```
 
+!!! note
+
+    GPUStack v2 uses a single unified container image for all GPU device types.
+
 ## Startup
 
 Check the GPUStack container logs:
