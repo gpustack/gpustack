@@ -18,6 +18,7 @@ The following CLI flags are available for OIDC configuration:
 | `--external-auth-full-name` (Optional)        | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used. |
 | `--external-auth-avatar-url` (Optional)       | Mapping of OIDC user information to user's avatar URL. By default, the `picture` claim is used if available.                                                         |
 | `--external-auth-default-inactive` (Optional) | Prevents new SSO users from being activated by default.                                                                                                              |
+| `--post-logout-redirect-key` (Optional)       | Generic parameter name for post-logout redirection across different IdPs (e.g., Auth0 `returnTo`). Applied to both OIDC and SAML.                                     |
 
 You can also set these options via environment variables instead of CLI flags:
 
@@ -31,6 +32,7 @@ GPUSTACK_EXTERNAL_AUTH_NAME="email"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
 GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE="true"
+GPUSTACK_POST_LOGOUT_REDIRECT_KEY="returnTo"  # e.g., for Auth0
 ```
 
 ### Example: Integrate with Auth0 OIDC
@@ -46,6 +48,8 @@ To configure GPUStack with Auth0 as the OIDC provider:
 ![auth0-app](../assets/sso/auth0-app.png)
 
 3. Add `<your-server-url>/auth/oidc/callback` in the Allowed Callback URLs. Adapt the URL to match your server's URL.
+
+4. In Allowed Logout URLs, add `<your-server-url>/` (or your desired post-logout URL).
 
 ![auth0-callback](../assets/sso/auth0-callback.png)
 
@@ -81,6 +85,8 @@ The following CLI flags are available for SAML configuration:
 | `--saml-sp-acs-url`                           | SAML Service Provider Assertion Consumer Service URL. It should be set to `<gpustack-server-url>/auth/saml/callback`.                                                                                                                                          |
 | `--saml-sp-x509-cert`                         | SAML Service Provider X.509 certificate.                                                                                                                                                                                                                       |
 | `--saml-sp-private-key`                       | SAML Service Provider private key.                                                                                                                                                                                                                             |
+| `--saml-idp-logout-url` (Optional)            | SAML Identity Provider Single Logout endpoint URL.                                                                                                                                                                                                             |
+| `--saml-sp-slo-url` (Optional)                | SAML Service Provider Single Logout Service callback URL (e.g., `<server-url>/auth/saml/logout/callback`).                                                                                                              |
 | `--saml-sp-attribute-prefix` (Optional)       | SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-\*. e.g., 'http://schemas.auth0.com/'.                                                                                                 |
 | `--saml-security` (Optional)                  | SAML security settings in JSON format.                                                                                                                                                                                                                         |
 | `--external-auth-name` (Optional)             | Mapping of SAML user information to username. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.                            |
@@ -105,6 +111,9 @@ GPUSTACK_EXTERNAL_AUTH_NAME="emailaddress"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
 GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE="true"
+GPUSTACK_SAML_IDP_LOGOUT_URL="https://idp.example.com/saml/slo"  # if IdP supports SLO
+GPUSTACK_SAML_SP_SLO_URL="{your-server-url}/auth/saml/logout/callback"
+GPUSTACK_POST_LOGOUT_REDIRECT_KEY="returnTo"  # optional, adds a post-logout parameter for compatible IdPs
 ```
 
 ### Example: Integrate with Auth0 SAML
@@ -159,5 +168,12 @@ sudo docker run -d --name gpustack \
     -e GPUSTACK_SAML_SP_X509_CERT="$SP_CERT" \
     -e GPUSTACK_SAML_SP_PRIVATE_KEY="$SP_PRIVATE_KEY" \
     -e GPUSTACK_SAML_SP_ATTRIBUTE_PREFIX="$SP_ATTRIBUTE_PREFIX" \
+    -e GPUSTACK_SAML_IDP_LOGOUT_URL="<idp-slo-url-if-available>" \
+    -e GPUSTACK_SAML_SP_SLO_URL="<your-gpustack-server-url>/auth/saml/logout/callback" \
+    -e GPUSTACK_POST_LOGOUT_REDIRECT_KEY="returnTo" \
     gpustack/gpustack
 ```
+
+!!! note
+
+    Not all IdPs provide standard SAML Single Logout (SLO). Auth0 SAML connections commonly do not expose `singleLogoutService`. If unavailable, GPUStack will still clear local sessions on logout; for full browser sign-out with Auth0, consider using its OIDC `v2/logout` with `client_id` and `returnTo` allowed.
