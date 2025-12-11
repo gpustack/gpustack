@@ -30,7 +30,7 @@ def upgrade() -> None:
     )
     model_instance_proxy_mode.create(op.get_bind(), checkfirst=True)
     with op.batch_alter_table('workers', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('proxy_model', model_instance_proxy_mode, nullable=True))
+        batch_op.add_column(sa.Column('proxy_mode', model_instance_proxy_mode, nullable=True))
 
     op.execute(model_user_after_drop_view_stmt)
 
@@ -50,7 +50,7 @@ def downgrade() -> None:
         name='modelinstanceproxymodeenum',
     )
     with op.batch_alter_table('workers', schema=None) as batch_op:
-        batch_op.drop_column('proxy_model')
+        batch_op.drop_column('proxy_mode')
     model_instance_proxy_mode.drop(op.get_bind(), checkfirst=True)
 
     op.execute(model_user_after_drop_view_stmt)

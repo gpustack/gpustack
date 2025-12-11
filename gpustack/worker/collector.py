@@ -137,7 +137,7 @@ class WorkerStatusCollector:
             status=status,
             worker_uuid=self._system_uuid,
             machine_id=self._machine_id,
-            proxy_model=self._cfg.proxy_mode,
+            proxy_mode=self._cfg.proxy_mode,
         )
 
     def _inject_unified_memory(self, status: WorkerStatus):
