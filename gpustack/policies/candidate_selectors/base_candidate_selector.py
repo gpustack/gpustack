@@ -14,7 +14,6 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.utils.command import find_int_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
     get_hf_text_config,
@@ -860,34 +859,30 @@ class ScheduleCandidatesSelector(ABC):
 
         return True
 
-    def _check_gpu_cnt_divisibility(self, selected_gpu_cnt: Optional[int] = None):
+    def _check_gpu_cnt_divisibility(
+        self,
+        tp_size: int,
+    ):
         """
-        Check whether vLLM's constraint on parameter divisibility is satisfied.
+        Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
         2. vocab_size
         """
-        if not selected_gpu_cnt:
-            selected_gpu_cnt = find_int_parameter(
-                self._model.backend_parameters, ["tensor-parallel-size", "tp"]
-            )
-        if not selected_gpu_cnt:
+        if not tp_size:
             return
-        if (
-            self._num_attention_heads
-            and self._num_attention_heads % selected_gpu_cnt != 0
-        ):
+        if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
             raise ValueError(
                 f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by gpu count "
-                f"({selected_gpu_cnt})."
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
             )
 
         if (
             self._model_params.vocab_size
-            and self._model_params.vocab_size % selected_gpu_cnt != 0
+            and self._model_params.vocab_size % tp_size != 0
         ):
             raise ValueError(
                 f"Vocabulary size ({self._model_params.vocab_size})"
-                " must be divisible by gpu count "
-                f"({selected_gpu_cnt})."
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
             )
