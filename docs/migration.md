@@ -162,4 +162,4 @@ GPUStack v2.0.0+ provides multiple pre-configured versions of built-in inference
 
 **Option 2 - Add a Custom Version to a Built-in Backend:**
 
-If none of the built-in versions meet your needs, you can extend a built-in inference backend by adding a custom version. For detailed instructions, refer to this guide: [Add a Custom Version to the Built-in vLLM Inference Backend](../user-guide/inference-backend-management/#example-add-a-custom-version-to-the-built-in-vllm-inference-backend).
+If none of the built-in versions meet your needs, you can extend a built-in inference backend by adding a custom version. For detailed instructions, refer to this guide: [Add a Custom Version to the Built-in vLLM Inference Backend](user-guide/inference-backend-management.md#example-add-a-custom-version-to-the-built-in-vllm-inference-backend).
