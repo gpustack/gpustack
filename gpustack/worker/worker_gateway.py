@@ -44,15 +44,19 @@ class WorkerGatewayController:
         self._cache_synced = False
         self._disabled_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
+    def _disable_controller(self) -> bool:
+        return (
+            self._disabled_gateway
+            or self._config.server_role() != Config.ServerRole.WORKER
+            or self._config.proxy_mode != ModelInstanceProxyModeEnum.WORKER
+        )
+
     async def wait_for_cache_sync(self):
         while not self._cache_synced:
             await asyncio.sleep(1)
 
     async def sync_model_cache(self):
-        if (
-            self._disabled_gateway
-            or self._config.proxy_mode != ModelInstanceProxyModeEnum.WORKER
-        ):
+        if self._disable_controller():
             return
 
         async def set_cache(event: Event):
@@ -152,10 +156,7 @@ class WorkerGatewayController:
                 )
 
     async def start_model_instance_controller(self):
-        if (
-            self._disabled_gateway
-            or self._config.proxy_mode != ModelInstanceProxyModeEnum.WORKER
-        ):
+        if self._disable_controller():
             return
         await self._prerun()
         # Implementation of start method

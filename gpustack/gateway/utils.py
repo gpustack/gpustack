@@ -151,7 +151,7 @@ def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
         worker.ip is None
         or worker.ip == ""
         or worker.port is None
-        or worker.proxy_model != ModelInstanceProxyModeEnum.WORKER
+        or worker.proxy_mode != ModelInstanceProxyModeEnum.WORKER
     ):
         return None
     return McpBridgeRegistry(

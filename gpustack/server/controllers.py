@@ -648,8 +648,8 @@ async def calculate_destinations(
     for worker in instances_related_workers:
         instances = instances_by_worker_id.get(worker.id, [])
         if (
-            worker.proxy_model is None
-            or worker.proxy_model == ModelInstanceProxyModeEnum.WORKER
+            worker.proxy_mode is None
+            or worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER
         ):
             registry = mcp_handler.worker_registry(worker)
             if registry is not None:
@@ -777,7 +777,14 @@ class WorkerController:
         state_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
             "state", None
         )
-        should_notify = state_changed is not None or event.type == EventType.DELETED
+        proxy_mode_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
+            "proxy_mode", None
+        )
+        should_notify = (
+            state_changed is not None
+            or proxy_mode_changed is not None
+            or event.type == EventType.DELETED
+        )
         if not should_notify:
             return
         async with AsyncSession(self._engine) as session:
@@ -1486,10 +1493,7 @@ class ClusterController:
         workers = [
             worker
             for worker in workers
-            if worker.deleted_at is None
-            and worker.ip != ""
-            and worker.ip != self._cfg.get_advertise_address()
-            and worker.port is not None
+            if worker.deleted_at is None and worker.ip != "" and worker.port is not None
         ]
         worker_registry_list = [
             mcp_handler.worker_registry(worker)

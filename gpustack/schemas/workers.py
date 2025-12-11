@@ -297,7 +297,7 @@ class WorkerStatusStored(BaseModel):
         default=None
     )  # The machine ID of the worker, used for identifying the worker in the cluster
 
-    proxy_model: Optional[ModelInstanceProxyModeEnum] = Field(
+    proxy_mode: Optional[ModelInstanceProxyModeEnum] = Field(
         default=ModelInstanceProxyModeEnum.WORKER,
     )
 
