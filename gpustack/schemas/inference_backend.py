@@ -151,12 +151,25 @@ class InferenceBackendBase(SQLModel):
         return command
 
     def get_image_name(self, version: Optional[str] = None) -> (str, str):
+        """
+        Resolve a user-configured container image for the specified backend version.
+
+        Args:
+            version: Desired backend version; falls back to `default_version` when None.
+
+        Returns:
+            A tuple of (image_name, version). Empty strings indicate no user-configured image.
+        """
+        # CUSTOM backend does not resolve here; image/command come from the model configuration
         if self.backend_name == BackendEnum.CUSTOM.value:
             return "", ""
         try:
+            # Resolve concrete version and fetch its configuration
             version_config, version = self.get_version_config(version)
         except KeyError:
+            # Version not found or cannot be resolved
             return "", ""
+        # Only return image for custom version configs (no built-in frameworks) with explicit image
         if (
             version_config
             and version_config.built_in_frameworks is None
