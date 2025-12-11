@@ -39,6 +39,16 @@ theme:
 plugins:
   - glightbox
   - search
+  - redirects:
+      redirect_maps:
+        'installation/nvidia/installation.md': 'installation/requirements.md'
+        'installation/amd/installation.md': 'installation/requirements.md'
+        'installation/ascend/installation.md': 'installation/requirements.md'
+        'installation/hygon/installation.md': 'installation/requirements.md'
+        'installation/mthreads/installation.md': 'installation/requirements.md'
+        'installation/iluvatar/installation.md': 'installation/requirements.md'
+        'installation/cambricon/installation.md': 'installation/requirements.md'
+        'installation/metax/installation.md': 'installation/requirements.md'
 extra:
   generator: false
   version:
