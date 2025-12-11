@@ -204,9 +204,16 @@ class InferenceServer(ABC):
 
         Raises:
             RuntimeError:
-                If the distributed follower index cannot be determined.
+                If the model instance is not handling by the current worker.
         """
-        return self._model_instance.get_deployment_metadata(self._worker.id)
+        deployment_metadata = self._model_instance.get_deployment_metadata(
+            self._worker.id
+        )
+        if not deployment_metadata:
+            raise RuntimeError(
+                "Failed to get deployment metadata: model instance is not handling by the current worker"
+            )
+        return deployment_metadata
 
     def _get_pretrained_config(self) -> Optional[Dict]:
         """

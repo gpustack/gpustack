@@ -445,20 +445,17 @@ class ModelInstanceBase(SQLModel, ModelSource):
     def get_deployment_metadata(
         self,
         worker_id: int,
-    ) -> ModelInstanceDeploymentMetadata:
+    ) -> Optional[ModelInstanceDeploymentMetadata]:
         """
         Get the deployment metadata for the model instance.
 
         Args:
             worker_id:
-                The workload ID of the model instance.
+                The ID of the worker to get the deployment metadata for.
 
         Returns:
-            The deployment metadata.
-
-        Raises:
-            RuntimeError:
-                If the distributed follower index cannot be determined.
+            The deployment metadata,
+            or None if the model instance is not handling by the given `worker_id` worker.
         """
 
         dservers = self.distributed_servers
@@ -478,9 +475,14 @@ class ModelInstanceBase(SQLModel, ModelSource):
                 if subworker.worker_id == worker_id:
                     distributed_follower_index = idx
                     break
-            if distributed_follower_index is None:
-                raise RuntimeError("Failed to determine distributed follower index")
-            name += f"-f{distributed_follower_index}"
+            if distributed_follower_index is not None:
+                # Mutate the name to include the follower index,
+                # so that each follower has a unique name.
+                name += f"-f{distributed_follower_index}"
+
+        if self.worker_id != worker_id and distributed_follower_index is None:
+            # This model instance is not handling by the given worker.
+            return None
 
         return ModelInstanceDeploymentMetadata(
             name=name,
