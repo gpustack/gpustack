@@ -356,9 +356,10 @@ class ServeManager:
         if model_instances_page.items:
             for model_instance in model_instances_page.items:
                 deployment_metadata = model_instance.get_deployment_metadata(
-                    self._worker_id
+                    self._worker_id,
                 )
-                current_instance_names.add(deployment_metadata.name)
+                if deployment_metadata:
+                    current_instance_names.add(deployment_metadata.name)
 
         workloads = list_workloads()
         for w in workloads:
@@ -750,7 +751,8 @@ class ServeManager:
 
         # Delete workload.
         deployment_metadata = mi.get_deployment_metadata(self._worker_id)
-        delete_workload(deployment_metadata.name)
+        if deployment_metadata:
+            delete_workload(deployment_metadata.name)
 
         # Cleanup internal states.
         self._provisioning_processes.pop(mi.id, None)
