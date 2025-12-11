@@ -81,7 +81,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._set_gpu_count(world_size, strategies)
         self._set_gpu_memory_utilization()
 
-        self._check_gpu_cnt_divisibility()
+        tp = find_int_parameter(
+            self._model.backend_parameters, ["tensor-parallel-size", "tp"]
+        )
+        self._check_gpu_cnt_divisibility(tp)
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -679,7 +682,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             try:
-                self._check_gpu_cnt_divisibility()
+                self._check_gpu_cnt_divisibility(gpu_count)
             except ValueError:
                 continue
 
