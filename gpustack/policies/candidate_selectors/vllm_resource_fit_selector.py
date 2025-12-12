@@ -81,15 +81,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._set_gpu_count(world_size, strategies)
         self._set_gpu_memory_utilization()
 
-        tp = find_int_parameter(
-            self._model.backend_parameters, ["tensor-parallel-size", "tp"]
-        )
-        try:
-            self._check_tp_size_divisibility(tp)
-        except ValueError as e:
-            raise ValueError(
-                str(e) + " Consider adjusting your tensor-parallel-size value."
-            )
+        self._validate_arguments()
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -771,6 +763,17 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         )
 
         return []
+
+    def _validate_arguments(self):
+        tp = find_int_parameter(
+            self._model.backend_parameters, ["tensor-parallel-size", "tp"]
+        )
+        try:
+            self._check_tp_size_divisibility(tp)
+        except ValueError as e:
+            raise ValueError(
+                str(e) + " Consider adjusting your tensor-parallel-size value."
+            )
 
 
 def _create_candidate(
