@@ -441,10 +441,10 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("OIDC_REDIRECT_URI"),
     )
     group.add_argument(
-        "--post-logout-redirect-key",
+        "--external-auth-post-logout-redirect-key",
         type=str,
         help="Generic key for post-logout redirection across IdPs.",
-        default=get_gpustack_env("POST_LOGOUT_REDIRECT_KEY"),
+        default=get_gpustack_env("EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY"),
     )
     group.add_argument(
         "--oidc-skip-userinfo",
@@ -657,7 +657,7 @@ def set_server_options(args, config_data: dict):
         "oidc_client_id",
         "oidc_client_secret",
         "oidc_redirect_uri",
-        "post_logout_redirect_key",
+        "external_auth_post_logout_redirect_key",
         "oidc_skip_userinfo",
         "oidc_use_userinfo",
         "saml_idp_server_url",

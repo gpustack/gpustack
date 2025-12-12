@@ -177,9 +177,8 @@ class Config(BaseSettings):
     saml_idp_x509_cert: Optional[str] = ''  # saml idp_x509_cert
     saml_security: Optional[str] = '{}'  # saml security
     server_external_url: Optional[str] = None
-    post_logout_redirect_key: Optional[str] = (
-        None  # custom post-logout redirection key for compatibility with different IdPs.
-    )
+    # custom post-logout redirection key for compatibility with different IdPs.
+    external_auth_post_logout_redirect_key: Optional[str] = None
 
     # Worker options
     token: Optional[str] = None
