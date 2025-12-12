@@ -70,15 +70,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._set_gpu_count(world_size, strategies)
         self._validate_arguments()
 
-        if model.categories == CategoryEnum.LLM:
-            tp = find_int_parameter(
-                self._model.backend_parameters, ["tensor-parallel-size", "tp"]
-            )
-            try:
-                self._check_tp_size_divisibility(tp)
-            except ValueError as e:
-                raise ValueError(str(e) + " Consider adjusting your tp-size value.")
-
     @staticmethod
     def get_world_size_from_backend_parameters(
         model: Model,
@@ -140,8 +131,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         tp_size = find_int_parameter(
             model.backend_parameters, ["tp-size", "tensor-parallel-size"]
         )
-        self._check_tp_size_divisibility(tp_size)
-
         pp_size = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
         )
@@ -185,6 +174,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         if speculative_algorithm is not None and enable_mixed_chunk:
             raise ValueError("enable_mixed_chunk is required for speculative decoding")
+
+        try:
+            self._check_tp_size_divisibility(tp_size)
+        except ValueError as e:
+            raise ValueError(str(e) + " Consider adjusting your tp-size value.")
 
     def _cal_effective_vram(self) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
