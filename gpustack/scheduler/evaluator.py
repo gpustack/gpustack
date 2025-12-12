@@ -331,7 +331,11 @@ async def evaluate_model_metadata(
             await scheduler.evaluate_pretrained_config(model)
 
         set_default_worker_selector(model)
-    except ValueError as e:
+    except Exception as e:
+        if model.env and model.env.get("GPUSTACK_MODEL_EVALUATION_SKIP"):
+            logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
+            return True, []
+
         return False, [str(e)]
 
     return True, []
