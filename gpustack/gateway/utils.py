@@ -21,7 +21,8 @@ from gpustack.schemas.models import (
     ModelPublic,
 )
 from gpustack.server.bus import EventType
-from gpustack.schemas.workers import Worker, ModelInstanceProxyModeEnum
+from gpustack.schemas.config import ModelInstanceProxyModeEnum
+from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException

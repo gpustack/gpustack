@@ -7,10 +7,11 @@ from gpustack.schemas.models import (
     ModelInstancePublic,
     ModelPublic,
 )
-from gpustack.schemas.workers import (
+from gpustack.schemas.config import (
+    GatewayModeEnum,
     ModelInstanceProxyModeEnum,
 )
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
 from gpustack.client import ClientSet
 from gpustack.server.bus import Event, EventType
 from gpustack.gateway.client.networking_higress_io_v1_api import (

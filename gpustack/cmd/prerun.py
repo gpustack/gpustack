@@ -4,10 +4,8 @@ import argparse
 import logging
 from shutil import move
 from typing import List, Dict, Optional
-from gpustack.config.config import (
-    Config,
-    GatewayModeEnum,
-)
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
 from gpustack.logging import setup_logging
 from gpustack.cmd.start import (

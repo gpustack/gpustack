@@ -12,7 +12,8 @@ from kubernetes_asyncio.config.incluster_config import (
     SERVICE_CERT_FILENAME,
 )
 from kubernetes_asyncio.client.rest import ApiException
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack import envs
 from gpustack.gateway import client as gw_client
 from gpustack.gateway.client import (

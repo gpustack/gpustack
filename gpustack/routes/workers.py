@@ -273,6 +273,7 @@ async def create_worker(
         await session.refresh(worker)
         worker_dump = worker.model_dump()
         worker_dump["token"] = worker.token
+        worker_dump["worker_config"] = cluster.worker_config
 
         return WorkerRegistrationPublic.model_validate(worker_dump)
     except Exception as e:

@@ -8,7 +8,10 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import (
+    Config,
+    get_cluster_image_name,
+)
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
@@ -26,11 +29,14 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_backend,
 )
+from gpustack.schemas.config import (
+    GatewayModeEnum,
+    ModelInstanceProxyModeEnum,
+)
 from gpustack.schemas.workers import (
     Worker,
     WorkerStateEnum,
     WorkerStatus,
-    ModelInstanceProxyModeEnum,
 )
 from gpustack.schemas.clusters import (
     Cluster,
@@ -1234,7 +1240,7 @@ class WorkerProvisioningController:
         user_data = await client.construct_user_data(
             server_url=cfg.server_external_url,
             token=worker.cluster.registration_token,
-            image_name=cfg.get_image_name(),
+            image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)

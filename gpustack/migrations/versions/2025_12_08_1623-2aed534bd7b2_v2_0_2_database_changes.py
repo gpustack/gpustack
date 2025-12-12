@@ -12,6 +12,7 @@ import sqlalchemy as sa
 import sqlmodel
 import gpustack
 from gpustack.schemas.stmt import model_user_after_drop_view_stmt
+from gpustack.schemas.common import SQLAlchemyJSON
 
 
 # revision identifiers, used by Alembic.
@@ -31,6 +32,10 @@ def upgrade() -> None:
     model_instance_proxy_mode.create(op.get_bind(), checkfirst=True)
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.add_column(sa.Column('proxy_mode', model_instance_proxy_mode, nullable=True))
+
+    with op.batch_alter_table('clusters', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('server_url', sa.String(length=2048), nullable=True))
+        batch_op.add_column(sa.Column('worker_config',  SQLAlchemyJSON(), nullable=True))
 
     op.execute(model_user_after_drop_view_stmt)
 
@@ -52,6 +57,10 @@ def downgrade() -> None:
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.drop_column('proxy_mode')
     model_instance_proxy_mode.drop(op.get_bind(), checkfirst=True)
+
+    with op.batch_alter_table('clusters', schema=None) as batch_op:
+        batch_op.drop_column('server_url')
+        batch_op.drop_column('worker_config')
 
     op.execute(model_user_after_drop_view_stmt)
 

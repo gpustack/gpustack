@@ -2,7 +2,8 @@ import uuid
 from datetime import datetime, timezone
 import logging
 from fastapi import Depends, Request
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import get_session
 from typing import Annotated, Optional, Tuple
 from fastapi.security import (

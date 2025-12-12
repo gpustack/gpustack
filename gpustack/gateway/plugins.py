@@ -2,7 +2,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional, List
 from fastapi import FastAPI
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.utils.network import get_first_non_loopback_ip
 from fastapi.staticfiles import StaticFiles
 
