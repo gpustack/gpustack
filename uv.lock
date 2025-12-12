@@ -1996,7 +1996,7 @@ requires-dist = [
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.21.post1" },
+    { name = "gpustack-runner", specifier = ">=0.1.22" },
     { name = "gpustack-runtime", specifier = "==0.1.35.post4" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -2070,16 +2070,16 @@ dev = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.21.post1"
+version = "0.1.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/ee/d95bba9c83b83f423c8af3077d4bcc08d177d1306ab23f56aa7604752c22/gpustack_runner-0.1.21.post1.tar.gz", hash = "sha256:450a79c32d28135fdb2244b6891b796ab6b1125da22134f4c75175d1bafc39e7", size = 109877, upload-time = "2025-11-27T03:12:43.556Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/36/1045ae5b5ddd1f0f6f1f9ab010ef31d0b308febd065d9f5c83d1c4a96d76/gpustack_runner-0.1.22.tar.gz", hash = "sha256:ae7f0e51b3c591eebef35c7754ee6e96f11786a17d6672a75500145b10e1593d", size = 112613, upload-time = "2025-12-12T14:46:52.908Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/e4/d9972eebc46a02cabb0cb58f9e204e95ab3df50ea3990186d49e1f74dcc2/gpustack_runner-0.1.21.post1-py3-none-any.whl", hash = "sha256:611f412daabd36123df3c522b3090a16b405a142e3ee4f041e69077cc589766f", size = 23260, upload-time = "2025-11-27T03:12:42.375Z" },
+    { url = "https://files.pythonhosted.org/packages/05/b9/9b3f108aa070514207c830063b9aecf01bb91ef9157dd797b533458ae44e/gpustack_runner-0.1.22-py3-none-any.whl", hash = "sha256:f000a9ad32699248b3482b28d567083c7217475c2f5ff65c7cf7a7f30407ab8f", size = 23705, upload-time = "2025-12-12T14:46:51.611Z" },
 ]
 
 [[package]]
