@@ -84,7 +84,12 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         tp = find_int_parameter(
             self._model.backend_parameters, ["tensor-parallel-size", "tp"]
         )
-        self._check_tp_size_divisibility(tp)
+        try:
+            self._check_tp_size_divisibility(tp)
+        except ValueError as e:
+            raise ValueError(
+                str(e) + " Consider adjusting your tensor-parallel-size value."
+            )
 
     @staticmethod
     def get_world_size_from_backend_parameters(
