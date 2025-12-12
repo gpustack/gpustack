@@ -481,8 +481,8 @@ async def logout(request: Request):
                 "post_logout_redirect_uri": redirect_uri,
                 "id_token_hint": request.cookies.get(OIDC_ID_TOKEN_COOKIE_NAME),
             }
-            if config.post_logout_redirect_key:
-                params[config.post_logout_redirect_key] = redirect_uri
+            if config.external_auth_post_logout_redirect_key:
+                params[config.external_auth_post_logout_redirect_key] = redirect_uri
             query = urlencode({k: v for k, v in params.items() if v})
             external_logout_url = (
                 end_session_endpoint if not query else f"{end_session_endpoint}?{query}"
@@ -492,8 +492,8 @@ async def logout(request: Request):
             auth = await init_saml_auth(request)
             redirect_uri = str(config.server_external_url or request.base_url)
             params = {}
-            if config.post_logout_redirect_key:
-                params[config.post_logout_redirect_key] = redirect_uri
+            if config.external_auth_post_logout_redirect_key:
+                params[config.external_auth_post_logout_redirect_key] = redirect_uri
             external_logout_url = auth.logout(return_to=redirect_uri)
             query = urlencode({k: v for k, v in params.items() if v})
             if query:
