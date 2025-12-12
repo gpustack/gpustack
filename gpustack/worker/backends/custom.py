@@ -1,5 +1,6 @@
 import logging
 import os
+import shlex
 from typing import Dict, List
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
@@ -62,7 +63,7 @@ class CustomServer(InferenceServer):
             command=self._model.run_command,
         )
         if command:
-            command_args.extend(command.split())
+            command_args.extend(shlex.split(command))
 
         command_args.extend(self._flatten_backend_param())
 

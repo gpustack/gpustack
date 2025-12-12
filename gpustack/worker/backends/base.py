@@ -646,7 +646,7 @@ $@
                 command=version_config.run_command,
             )
             if command:
-                return command.split()
+                return shlex.split(command)
 
         # Return original default_args by default
         return default_args
