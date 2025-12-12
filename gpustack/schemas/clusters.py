@@ -1,5 +1,6 @@
 import secrets
 from datetime import datetime
+from urllib.parse import urlparse
 from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, computed_field, field_validator
@@ -19,6 +20,7 @@ from sqlalchemy.orm.state import InstanceState
 from sqlalchemy.orm.attributes import NO_VALUE
 from typing import TYPE_CHECKING
 
+from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import PaginatedList, pydantic_column_type
 
@@ -221,6 +223,26 @@ class ClusterUpdate(SQLModel):
     name: str
     description: Optional[str] = None
     gateway_endpoint: Optional[str] = None
+    server_url: Optional[str] = None
+    worker_config: Optional[PredefinedConfigNoDefaults] = Field(
+        default=None,
+        sa_column=Column(
+            pydantic_column_type(
+                PredefinedConfigNoDefaults,
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    )
+
+    @field_validator("server_url")
+    def validate_server_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            parsed = urlparse(v)
+            if not parsed.scheme or not parsed.netloc:
+                raise ValueError("Invalid server_url format")
+        return v
 
 
 class ClusterCreateBase(ClusterUpdate):
@@ -339,6 +361,7 @@ class ClusterPublic(ClusterBase, PublicFields):
     ready_workers: int = Field(default=0)
     gpus: int = Field(default=0)
     models: int = Field(default=0)
+    worker_config: Optional[PredefinedConfigNoDefaults] = Field(default=None)
 
 
 ClustersPublic = PaginatedList[ClusterPublic]

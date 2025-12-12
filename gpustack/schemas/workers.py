@@ -21,6 +21,10 @@ from sqlalchemy.orm import declarative_base
 
 from gpustack.utils.network import is_offline
 from .clusters import ClusterProvider, Cluster, WorkerPool
+from gpustack.schemas.config import (
+    PredefinedConfigNoDefaults,
+    ModelInstanceProxyModeEnum,
+)
 
 Base = declarative_base()
 
@@ -217,21 +221,6 @@ class WorkerStateEnum(str, Enum):
             WorkerStateEnum.DELETING,
             WorkerStateEnum.ERROR,
         ]
-
-
-class ModelInstanceProxyModeEnum(str, Enum):
-    """
-    ModelInstanceProxyModeEnum 的 Docstring
-
-    Enum for Model Instance Proxy Mode
-    WORKER - Proxy through the worker
-    DIRECT - Direct access to the model instance
-    DELEGATED - Preserved for proxying through cluster gateway (not implemented yet)
-    """
-
-    WORKER = "worker"
-    DIRECT = "direct"
-    DELEGATED = "delegated"
 
 
 class SystemInfo(BaseModel):
@@ -463,6 +452,7 @@ class WorkerPublic(
 
 class WorkerRegistrationPublic(WorkerPublic):
     token: str
+    worker_config: Optional["PredefinedConfigNoDefaults"] = None
 
 
 WorkersPublic = PaginatedList[WorkerPublic]

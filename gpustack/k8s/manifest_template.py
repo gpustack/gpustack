@@ -1,15 +1,17 @@
 import jinja2
 import base64
+from typing import Optional
 from dataclasses import dataclass
 from gpustack.utils.compat_importlib import pkg_resources
 
 
 @dataclass
 class TemplateConfig:
-    cluster_suffix: str
     token: str
     server_url: str
     image: str
+    namespace: Optional[str] = None
+    cluster_suffix: Optional[str] = None
 
     def render(self) -> str:
         def b64encode(value):
@@ -22,3 +24,9 @@ class TemplateConfig:
         env.filters["b64encode"] = b64encode
         template = env.from_string(template_data)
         return template.render(config=self)
+
+    def __post_init__(self):
+        if self.namespace is None and self.cluster_suffix is not None:
+            self.namespace = f"gpustack-system-{self.cluster_suffix}"
+        elif self.namespace is None:
+            self.namespace = "gpustack-system"

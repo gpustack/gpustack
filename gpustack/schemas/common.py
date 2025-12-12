@@ -54,7 +54,12 @@ class UTCDateTime(sa.TypeDecorator):
         return value
 
 
-def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
+def pydantic_column_type(
+    pydantic_type: Type[T],
+    exclude_defaults: bool = False,
+    exclude_none: bool = False,
+    exclude_unset: bool = False,
+):  # noqa: C901
     class PydanticJSONType(TypeDecorator, Generic[T]):
         impl = JSON()
 
@@ -72,11 +77,23 @@ def pydantic_column_type(pydantic_type: Type[T]):  # noqa: C901
             def process(value: T):
                 if value is not None:
                     value_to_dump = self._prepare_value_for_dump(value)
-                    value = jsonable_encoder(value_to_dump)
+                    value = jsonable_encoder(
+                        value_to_dump,
+                        exclude_defaults=exclude_defaults,
+                        exclude_none=exclude_none,
+                        exclude_unset=exclude_unset,
+                    )
                 return (
                     impl_processor(value)
                     if impl_processor
-                    else dumps(jsonable_encoder(value_to_dump))
+                    else dumps(
+                        jsonable_encoder(
+                            value_to_dump,
+                            exclude_defaults=exclude_defaults,
+                            exclude_none=exclude_none,
+                            exclude_unset=exclude_unset,
+                        )
+                    )
                 )
 
             return process

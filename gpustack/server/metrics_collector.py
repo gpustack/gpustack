@@ -3,7 +3,8 @@ import asyncio
 import copy
 from datetime import date
 from aiohttp import ClientSession as aiohttp_client, ClientTimeout
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from typing import Optional, Dict, List
 from dataclasses import dataclass
 from prometheus_client.parser import text_string_to_metric_families

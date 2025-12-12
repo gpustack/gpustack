@@ -561,7 +561,8 @@ def run_server(cfg: Config):
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     except Exception as e:
-        logger.error(f"Error running server: {e}")
+        logger.exception(f"Error running server: {e}")
+        # logger.error(f"Error running server: {e}")
     finally:
         logger.info("Server has shut down.")
 

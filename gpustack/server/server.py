@@ -28,7 +28,8 @@ from gpustack.security import (
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
 from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (

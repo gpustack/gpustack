@@ -27,26 +27,39 @@ from gpustack.schemas.workers import (
     UptimeInfo,
     GPUDevicesInfo,
     GPUNetworkInfo,
-    ModelInstanceProxyModeEnum,
 )
 from gpustack.schemas.users import AuthProviderEnum
+from gpustack.schemas.config import (
+    ModelInstanceProxyModeEnum,
+    PredefinedConfig,
+    PredefinedConfigNoDefaults,
+    GatewayModeEnum,
+)
 from gpustack import __version__
-from gpustack.config.registration import read_registration_token, read_worker_token
+from gpustack.config.registration import (
+    read_registration_token,
+    read_worker_token,
+    determine_default_registry,
+)
 from gpustack.utils.network import get_first_non_loopback_ip
 from gpustack.utils import platform
 
 _config = None
 
 
-class GatewayModeEnum(str, Enum):
-    auto = "auto"
-    embedded = "embedded"
-    incluster = "incluster"
-    external = "external"
-    disabled = "disabled"
+class WorkerConfig(PredefinedConfig):
+    # common config which should be dynamic or not configurable
+    data_dir: Optional[str] = None
+    advertise_address: Optional[str] = None
+    # Worker options which are different for each worker
+    token: Optional[str] = None
+    server_url: Optional[str] = None
+    worker_ip: Optional[str] = None
+    worker_ifname: Optional[str] = None
+    worker_name: Optional[str] = None
 
 
-class Config(BaseSettings):
+class Config(WorkerConfig, BaseSettings):
     """A class used to define GPUStack configuration.
 
     Attributes:
@@ -107,29 +120,14 @@ class Config(BaseSettings):
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
     """
 
-    # Common options
+    # Server options
+    # Deprecated, as we using docker image to run the server, host is not used.
+    host: Optional[str] = None
     # The port and tls_port are used in gateway configuration.
     port: Optional[int] = 80
     tls_port: Optional[int] = 443
     # The api_port is used in gpustack server/worker serving API requests.
     api_port: Optional[int] = 30080
-    advertise_address: Optional[str] = None
-    debug: bool = False
-    data_dir: Optional[str] = None
-    cache_dir: Optional[str] = None
-    huggingface_token: Optional[str] = None
-    system_default_container_registry: Optional[str] = None
-    image_name_override: Optional[str] = None
-    image_repo: str = "gpustack/gpustack"
-    gateway_mode: GatewayModeEnum = GatewayModeEnum.auto
-    gateway_kubeconfig: Optional[str] = None
-    gateway_concurrency: int = 16
-    service_discovery_name: Optional[str] = None
-    namespace: Optional[str] = None
-
-    # Server options
-    # Deprecated, as we using docker image to run the server, host is not used.
-    host: Optional[str] = None
     database_port: Optional[int] = 5432
     database_url: Optional[str] = None
     disable_worker: Optional[bool] = None  # Deprecated
@@ -180,28 +178,17 @@ class Config(BaseSettings):
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
 
-    # Worker options
-    token: Optional[str] = None
-    server_url: Optional[str] = None
-    worker_ip: Optional[str] = None
-    worker_ifname: Optional[str] = None
-    worker_name: Optional[str] = None
-    disable_worker_metrics: bool = False
-    worker_port: int = 10150
-    worker_metrics_port: int = 10151
-    service_port_range: Optional[str] = "40000-40063"
-    ray_port_range: Optional[str] = "41000-41999"
-    log_dir: Optional[str] = None
-    resources: Optional[dict] = None
-    bin_dir: Optional[str] = None
-    pipx_path: Optional[str] = None
-    tools_download_base_url: Optional[str] = None
-    enable_hf_transfer: bool = False
-    enable_hf_xet: bool = False
-    proxy_mode: Optional[ModelInstanceProxyModeEnum] = None
+    _set_worker_fields = {}
 
     def __init__(self, **values):
         super().__init__(**values)
+        self._set_worker_fields = self.model_dump(
+            exclude_defaults=True,
+            exclude_unset=True,
+            exclude_none=True,
+            include=self.__pydantic_fields_set__
+            & set(PredefinedConfig.model_fields.keys()),
+        )
 
         def prepare_dir(dir_path: Optional[str], default: str) -> str:
             return default if dir_path is None else os.path.abspath(dir_path)
@@ -785,6 +772,36 @@ class Config(BaseSettings):
         token = read_registration_token(self.data_dir)
         if token:
             self.token = token
+
+    def reload_worker_config(self, worker_config: Optional[PredefinedConfigNoDefaults]):
+        if worker_config is None:
+            return
+        updated = {
+            **worker_config.model_dump(exclude_none=True),
+            **self._set_worker_fields,
+        }
+        for key, value in updated.items():
+            if key in self.__class__.model_fields:
+                setattr(self, key, value)
+        self.check_all()
+
+
+def get_cluster_image_name(worker_config: Optional[PredefinedConfigNoDefaults]) -> str:
+    cfg = get_global_config()
+    if worker_config is None:
+        return cfg.get_image_name(
+            determine_default_registry(cfg.system_default_container_registry)
+        )
+    combined_config = Config.model_validate(
+        {
+            **cfg.model_dump(),
+            **(worker_config.model_dump(exclude_none=True) if worker_config else {}),
+        }
+    )
+    container_registry = determine_default_registry(
+        combined_config.system_default_container_registry,
+    )
+    return combined_config.get_image_name(container_registry)
 
 
 def get_openid_configuration(issuer: str) -> dict:

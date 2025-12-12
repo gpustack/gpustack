@@ -2,14 +2,14 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: gpustack-system-{{ config.cluster_suffix }}
+  name: {{ config.namespace }}
 ---
 # Secret
 apiVersion: v1
 kind: Secret
 metadata:
   name: registration-token
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
 type: Opaque
 data:
   token: {{ config.token | b64encode }}
@@ -33,7 +33,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: gpustack-worker
-    namespace: gpustack-system-{{ config.cluster_suffix }}
+    namespace: {{ config.namespace }}
 roleRef:
   kind: ClusterRole
   name: ingressclass-viewer
@@ -58,18 +58,18 @@ rules:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
   name: gpustack-worker
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
   name: pod-cm-creator
 subjects:
 - kind: ServiceAccount
   name: gpustack-worker
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
 roleRef:
   kind: ClusterRole
   name: pod-cm-creator
@@ -80,7 +80,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: worker
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "10151"
@@ -104,7 +104,7 @@ metadata:
   labels:
     app: gpustack-worker
   name: gpustack-worker
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
 spec:
   revisionHistoryLimit: 10
   selector:

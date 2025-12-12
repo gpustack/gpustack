@@ -5,6 +5,7 @@ import os
 import logging
 import socket
 from typing import Optional
+import json
 
 import aiohttp
 from fastapi import FastAPI
@@ -15,7 +16,14 @@ from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from gpustack.api import exceptions
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import (
+    Config,
+    WorkerConfig,
+)
+from gpustack.schemas.config import (
+    GatewayModeEnum,
+    PredefinedConfigNoDefaults,
+)
 from gpustack import envs
 from gpustack.routes import debug, probes
 from gpustack.routes.worker import logs, proxy
@@ -48,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
+    _default_config: PredefinedConfigNoDefaults
     _clientset: ClientSet
     _register_clientset: ClientSet
     _status_collector: WorkerStatusCollector
@@ -158,7 +167,9 @@ class Worker:
         ),
     )
     def _register(self):
-        self._clientset = self._worker_manager.register_with_server()
+        self._clientset, self._default_config = (
+            self._worker_manager.register_with_server()
+        )
         # Worker ID is available after the worker registration.
         worker_list = self._clientset.workers.list(
             params={"me": 'true'},
@@ -197,6 +208,25 @@ class Worker:
         finally:
             logger.info("Worker has shut down.")
 
+    def log_worker_config(self):
+        fields = {
+            k: v
+            for k, v in self._config.model_dump(
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+                exclude={'token'},
+            ).items()
+            if k in WorkerConfig.model_fields
+        }
+        hf_token = fields.get("huggingface_token", None)
+        if hf_token is not None:
+            fields["huggingface_token"] = "*" * len(hf_token)
+        logger.info(
+            "Worker starting with config: %s",
+            json.dumps(fields, indent=2, ensure_ascii=False),
+        )
+
     async def start_async(self):
         """
         Start the worker.
@@ -207,6 +237,8 @@ class Worker:
         add_signal_handlers_in_loop()
 
         self._register()
+        self._config.reload_worker_config(self._default_config)
+        self.log_worker_config()
         if self._exporter_enabled:
             # Start the runtime metrics cacher.
             _runtime_metrics_aggregator = RuntimeMetricsAggregator(

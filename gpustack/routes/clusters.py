@@ -1,4 +1,5 @@
 import secrets
+from typing import Optional
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
@@ -28,14 +29,15 @@ from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
-from gpustack.config.config import get_global_config
-from gpustack.config import registration
+from gpustack.config.config import get_global_config, get_cluster_image_name
 
 router = APIRouter()
 
 
-def get_server_url(request: Request) -> str:
+def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
     """Construct the server URL based on request headers or fallback to default."""
+    if cluster_override:
+        return cluster_override.strip("/")
     url = get_global_config().server_external_url
     if not url:
         url = f"{request.url.scheme}://{request.url.hostname}"
@@ -44,7 +46,7 @@ def get_server_url(request: Request) -> str:
     return url
 
 
-@router.get("", response_model=ClustersPublic)
+@router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
     engine: EngineDep,
     session: SessionDep,
@@ -75,7 +77,7 @@ async def get_clusters(
     )
 
 
-@router.get("/{id}", response_model=ClusterPublic)
+@router.get("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
 async def get_cluster(session: SessionDep, id: int):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
@@ -83,7 +85,7 @@ async def get_cluster(session: SessionDep, id: int):
     return cluster
 
 
-@router.post("", response_model=ClusterPublic)
+@router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
 async def create_cluster(session: SessionDep, input: ClusterCreate):
     existing = await Cluster.one_by_fields(
         session,
@@ -98,6 +100,7 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
         raise InvalidException(
             message=f"credential_id is required for provider {input.provider}"
         )
+
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
     target_state = ClusterStateEnum.PROVISIONING
@@ -155,7 +158,7 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
         raise InternalServerErrorException(message=f"Failed to create cluster: {e}")
 
 
-@router.put("/{id}", response_model=ClusterPublic)
+@router.put("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
 async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
@@ -219,17 +222,11 @@ async def get_registration_token(request: Request, session: SessionDep, id: int)
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
-    url = get_server_url(request)
-    cfg = get_global_config()
-    container_registry = registration.determine_default_registry(
-        cfg.system_default_container_registry
-    )
-
     return ClusterRegistrationTokenPublic(
         token=cluster.registration_token,
-        server_url=url,
-        image=get_global_config().get_image_name(
-            container_registry
+        server_url=get_server_url(request, cluster.server_url),
+        image=get_cluster_image_name(
+            cluster.worker_config
         ),  # Default image, can be customized
     )
 
@@ -243,12 +240,12 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         raise InvalidException(
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
-    url = get_server_url(request)
     config = TemplateConfig(
         cluster_suffix=cluster.hashed_suffix,
         token=cluster.registration_token,
-        image=get_global_config().get_image_name(),
-        server_url=url,
+        image=get_cluster_image_name(cluster.worker_config),
+        server_url=get_server_url(request, cluster.server_url),
+        namespace=getattr(cluster.worker_config, "namespace", None),
     )
     yaml_content = config.render()
     return Response(

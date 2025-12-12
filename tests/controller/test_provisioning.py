@@ -44,7 +44,7 @@ async def test_provisioning_flow(monkeypatch):
     credential = CloudCredential(id=1, token="dummy")
     cfg = MagicMock()
     cfg.server_external_url = "http://dummy-server"
-    cfg.get_image_name = lambda: "dummy-image"
+    cfg.get_image_name = lambda x: "dummy-image"
     monkeypatch.setattr("gpustack.config.config.get_global_config", lambda: cfg)
     mock_sshkey = MagicMock()
     mock_sshkey.id = "ssh-key-id"
