@@ -266,6 +266,10 @@ class Worker:
         self._create_async_task(controller.sync_model_cache())
         self._create_async_task(controller.start_model_instance_controller())
 
+        # wait for a while to let other tasks start
+        await asyncio.sleep(0.5)
+        logger.info("GPUStack worker startup completed.")
+
         await asyncio.gather(*self._async_tasks)
 
     async def _serve_apis(self):
