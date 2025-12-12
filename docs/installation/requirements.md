@@ -72,6 +72,7 @@ sudo docker info 2>/dev/null | grep -q "amd" \
 #### Supported Inference Backends
 
 - [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang) (requires gfx9 series GPUs)
 - [x] Custom
 
 ### Ascend NPU
