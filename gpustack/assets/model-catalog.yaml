@@ -541,6 +541,31 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - --max-model-len=32768
+- name: DeepSeek-OCR
+  description: DeepSeek-OCR is an advanced optical character recognition (OCR) model developed by DeepSeek AI. It is designed to accurately extract text from images and scanned documents.
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  size: 3
+  categories:
+    - llm
+  licenses:
+    - mit
+  release_date: "2025-10-20"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      gpu_filters:
+        vendor: 
+          - nvidia
+          - amd
+      source: huggingface
+      huggingface_repo_id: deepseek-ai/DeepSeek-OCR
+      backend: vLLM
+      backend_version: 0.11.2
+      backend_parameters:
+        - --logits_processors=vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
+        - --no-enable-prefix-caching
+        - --mm-processor-cache-gb=0
 # Embedding models
 - name: Qwen3 Embedding 0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
