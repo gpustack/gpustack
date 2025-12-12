@@ -21,7 +21,7 @@ from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
-from gpustack.schemas.models import Model, SourceEnum, get_mmproj_filename
+from gpustack.schemas.models import CategoryEnum, Model, SourceEnum, get_mmproj_filename
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 
 logger = logging.getLogger(__name__)
@@ -438,6 +438,50 @@ def get_pretrained_config(model: Model, **kwargs):
 
     else:
         raise ValueError(f"Unsupported model source: {model.source}")
+
+    return pretrained_config
+
+
+def get_pretrained_config_with_fallback(model: Model, **kwargs):
+    pretrained_config = None
+    try:
+        pretrained_config = get_pretrained_config(model, **kwargs)
+    except Exception as e:
+        logger.debug(
+            "Fallback to load config.json after AutoConfig.from_pretrained failed"
+        )
+
+        if model.backend_version is not None or isinstance(e, ImportError):
+            # Fallback:
+            # AutoConfig.from_pretrained performs strict architecture validation and may fail in several cases, like:
+            #   1. Models using custom or backend-specific architectures not recognized by the current Transformers version.
+            #   2. Newly released models whose architectures are not yet supported in older AutoConfig implementations.
+            #   3. Import-time failures caused by missing or conflicting dependencies
+            #      (e.g., LlamaFlashAttention2 import errors — see: https://github.com/deepseek-ai/DeepSeek-OCR/issues/7).
+            # In all such cases, fallback to loading config.json directly to avoid blocking model startup.
+            try:
+                # try to read config.json and ensure num_attention_heads not None.
+                config_content = read_repo_file_content(
+                    model,
+                    "config.json",
+                    token=get_global_config().huggingface_token,
+                )
+                if config_content:
+                    try:
+                        try:
+                            content = (config_content or b"").decode("utf-8")
+                        except Exception:
+                            content = (config_content or b"").decode()
+                        config_dict = json.loads(content)
+                        pretrained_config = PretrainedConfig.from_dict(config_dict)
+                    except Exception as ce:
+                        logger.warning(f"read_repo_file_content failed: {ce}")
+            except Exception as ce:
+                logger.warning(f"Fallback to load config.json failed: {ce}")
+
+        if pretrained_config is None and CategoryEnum.LLM in model.categories:
+            # For LLM models: empty config is unacceptable → raise original error
+            raise e
 
     return pretrained_config
 

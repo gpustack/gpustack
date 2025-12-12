@@ -58,7 +58,10 @@ from gpustack.scheduler.calculator import (
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import parse_gpu_ids_by_worker
-from gpustack.utils.hub import get_pretrained_config, has_diffusers_model_index
+from gpustack.utils.hub import (
+    get_pretrained_config_with_fallback,
+    has_diffusers_model_index,
+)
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.task import run_in_thread
 from sqlalchemy.orm.attributes import flag_modified
@@ -539,7 +542,9 @@ async def evaluate_diffusion_model(model: Model):
     # SGLang now supports Diffusers (image) models.
     # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
     # classify as IMAGE directly.
-    if model.backend != BackendEnum.SGLANG or model.categories:
+    if model.backend != BackendEnum.SGLANG or (
+        model.categories and CategoryEnum.IMAGE not in model.categories
+    ):
         return False
 
     hf_token = get_global_config().huggingface_token
@@ -573,7 +578,7 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     if not architectures:
         try:
             pretrained_config = await run_in_thread(
-                get_pretrained_config, timeout=30, model=model
+                get_pretrained_config_with_fallback, timeout=30, model=model
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.

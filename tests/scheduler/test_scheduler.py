@@ -110,6 +110,41 @@ from gpustack.schemas.models import CategoryEnum, BackendEnum
             None,
             ["LLM"],
         ),
+        (
+            # Checkpoint:
+            # The model could run with vllm backend but get import error while get pretrained config.
+            # This should pass without errors.
+            "pass_import_error_in_pretrained_config",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="deepseek-ai/DeepSeek-OCR",
+                backend=BackendEnum.VLLM,
+                backend_parameters=["--trust-remote-code"],
+            ),
+            None,
+            None,
+            ["LLM"],
+        ),
+        (
+            # Checkpoint:
+            # Image model.
+            # This should pass without errors.
+            "pass_image_model",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Tongyi-MAI/Z-Image-Turbo",
+                backend=BackendEnum.SGLANG,
+                backend_parameters=[],
+                categories=[CategoryEnum.IMAGE],
+            ),
+            None,
+            None,
+            ["IMAGE"],
+        ),
     ],
 )
 @pytest.mark.asyncio
