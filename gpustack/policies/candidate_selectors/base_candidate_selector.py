@@ -1,28 +1,24 @@
-import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 import enum
 import logging
 from sqlalchemy.ext.asyncio import AsyncEngine
-from transformers import PretrainedConfig
 from typing import Dict, List, Optional, Tuple
 from gpustack.config import Config
-from gpustack.config.config import get_global_config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
     BackendEnum,
+    CategoryEnum,
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
-    CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
-    get_pretrained_config,
     get_hf_text_config,
     get_max_model_len,
-    read_repo_file_content,
+    get_pretrained_config_with_fallback,
 )
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
@@ -94,37 +90,15 @@ class ModelParameters:
         Parse the model's (hyper)parameters from the model.
         """
 
-        pretrained_config = PretrainedConfig()
         try:
-            pretrained_config = get_pretrained_config(model, trust_remote_code=True)
-        except ValueError as e:
-            # In the AutoConfig.from_pretrained method, the architecture field in config undergoes validation.
-            # For custom backend versions, exceptions caused by unrecognized architectures should be allowed
-            # to prevent startup failures of valid new models with properly customized versions.
-            if model.backend_version:
-                # try to read config.json and ensure num_attention_heads not None.
-                config_content = read_repo_file_content(
-                    model,
-                    "config.json",
-                    token=get_global_config().huggingface_token,
-                )
-                if config_content:
-                    try:
-                        try:
-                            content = (config_content or b"").decode("utf-8")
-                        except Exception:
-                            content = (config_content or b"").decode()
-                        config_dict = json.loads(content)
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                    except Exception as ce:
-                        logger.warning(f"read_repo_file_content failed: {ce}")
-            elif CategoryEnum.LLM not in model.categories:
-                pass
-            else:
-                raise e
+            pretrained_config = get_pretrained_config_with_fallback(
+                model, trust_remote_code=True
+            )
+        except Exception as e:
+            raise e
 
         pretrained_config = get_hf_text_config(pretrained_config)
-        if pretrained_config is None:
+        if pretrained_config is None and CategoryEnum.LLM in model.categories:
             # Exclude empty dict cases, as they indicate the locally-sourced model is not local to the server node.
             raise ValueError(f"Failed to get model {model.name} pretrained config")
 
