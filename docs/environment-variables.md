@@ -107,68 +107,27 @@ They are only usable within workers. Please set the environment variables in the
 
 ### Global Variables
 
-| Variable                         | Description                         | Default |
-| -------------------------------- | ----------------------------------- | ------- |
-| `GPUSTACK_RUNTIME_LOG_LEVEL`     | Log level.                          | `INFO`  |
-| `GPUSTACK_RUNTIME_LOG_TO_FILE`   | Log to file path instead of stdout. | (empty) |
-| `GPUSTACK_RUNTIME_LOG_WARNING`   | Enable logging warnings.            | `0`     |
-| `GPUSTACK_RUNTIME_LOG_EXCEPTION` | Enable logging exceptions.          | `1`     |
+| Variable                         | Description                | Default |
+|----------------------------------|----------------------------|---------|
+| `GPUSTACK_RUNTIME_LOG_LEVEL`     | Log level.                 | `INFO`  |
+| `GPUSTACK_RUNTIME_LOG_WARNING`   | Enable logging warnings.   | `0`     |
+| `GPUSTACK_RUNTIME_LOG_EXCEPTION` | Enable logging exceptions. | `1`     |
 
 ### Detector Variables
 
 | Variable                                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Default                                 |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
 | `GPUSTACK_RUNTIME_DETECT`                          | Detector to use. Options: Auto, AMD, ASCEND, CAMBRICON, HYGON, ILUVATAR, METAX, MTHREADS, NVIDIA.                                                                                                                                                                                                                                                                                                                                                                                                                                          | `Auto`                                  |
 | `GPUSTACK_RUNTIME_DETECT_NO_PCI_CHECK`             | Enable no PCI check during detection. Useful for WSL environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | (empty)                                 |
-| `GPUSTACK_RUNTIME_DETECT_NO_TOOLKIT_CALL`          | Enable only using management libraries calls during detection. Device detection typically involves calling platform-side management libraries and platform-side toolkit to retrieve extra information. For example, during NVIDIA detection, the NVML and CUDA are called, with CUDA used to retrieve GPU cores. However, if certain toolchains are not correctly installed in the environment, such as the Nvidia Fabric Manager being missing, calling the CUDA can cause blocking. Enabling this parameter can prevent blocking events. | (empty)                                 |
+| `GPUSTACK_RUNTIME_DETECT_NO_TOOLKIT_CALL`          | Enable only using management libraries calls during detection. Device detection typically involves calling platform-side management libraries and platform-side toolkit to retrieve extra information. For example, during NVIDIA detection, the NVML and CUDA are called, with CUDA used to retrieve GPU cores. However, if certain toolchains are not correctly installed in the environment, such as the Nvidia Fabric Manager being missing, calling the CUDA can cause blocking. Enabling this parameter can prevent blocking events. | `0`                                     |
 | `GPUSTACK_RUNTIME_DETECT_BACKEND_MAP_RESOURCE_KEY` | Backend mapping to resource keys.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | The default values named by each vendor |
 | `GPUSTACK_RUNTIME_DETECT_PHYSICAL_INDEX_PRIORITY`  | Use physical index priority at detecting devices.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `1`                                     |
 
-### Deployer Variables
+#### ROCm Detector Specific Variables
 
-| Variable                                                           | Description                                                                                               | Default                                         |
-|--------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|-------------------------------------------------|
-| `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                                       | `Auto`                                          |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY`                         | Default container registry for deployer to pull images from.                                              | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                                                    | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME`                | Username for the default container registry.                                                              | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD`                | Password for the default container registry.                                                              | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                    | Enable asynchronous deployment.                                                                           | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS`                            | The number of threads in the threadpool.                                                                  | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT`                      | Enable mirrored deployment mode.                                                                          | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                                                 | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                                          | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                                           | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE`                     | Correct the gpustack-runner image by rendering it with the host's detection.                              | `0`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).                                   | `IfNotPresent`                                  |
-| `GPUSTACK_RUNTIME_DEPLOY_LABEL_PREFIX`                             | Label prefix for the deployer.                                                                            | `runtime.gpustack.ai`                           |
-| `GPUSTACK_RUNTIME_DEPLOY_AUTOMAP_RESOURCE_KEY`                     | The resource key to use for automatic mapping of container backend visible devices environment variables. | `gpustack.ai/devices`                           |
-| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                                          | The default values named by each vendor         |
-| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_BACKEND_VISIBLE_DEVICES` | Manual mapping of backend visible devices environment variables.                                          | The default values named by each vendor         |
-| `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID`       | Use UUIDs for the given runtime visible devices environment variables.                                    | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT`  | Enable value alignment for the given backend visible devices environment variables.                       | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
+!!! note
 
-#### Docker Variables
-
-| Variable                                              | Description                                                            | Default                     |
-| ----------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------- |
-| `GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS` | Filter labels for selecting the mirrored deployer container in Docker. | (empty)                     |
-| `GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE`                 | Docker image used for the pause container.                             | `gpustack/runtime:pause`    |
-| `GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE`     | Docker image used for unhealthy restart container.                     | `gpustack/runtime:health`   |
-| `GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR`         | Directory for storing ephemeral files for Docker.                      | `~/.cache/gpustack-runtime` |
-| `GPUSTACK_RUNTIME_DOCKER_MUTE_ORIGINAL_HEALTHCHECK`   | Mute the original healthcheck of the container.                        | `1`                         |
-
-#### Kubernetes Variables
-
-| Variable                                    | Description                                                                       | Default         |
-| ------------------------------------------- | --------------------------------------------------------------------------------- | --------------- |
-| `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME`     | Name of the Kubernetes Node to deploy workloads to.                               | (empty)         |
-| `GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE`     | Namespace of the Kubernetes to deploy workloads to.                               | `default`       |
-| `GPUSTACK_RUNTIME_KUBERNETES_DOMAIN_SUFFIX` | Domain suffix for Kubernetes services.                                            | `cluster.local` |
-| `GPUSTACK_RUNTIME_KUBERNETES_SERVICE_TYPE`  | Service type for Kubernetes services. Options: ClusterIP, NodePort, LoadBalancer. | `ClusterIP`     |
-| `GPUSTACK_RUNTIME_KUBERNETES_QUORUM_READ`   | Whether to use quorum read for Kubernetes services.                               | `0`             |
-
-### ROCm Detector Variables
+    Also applicable to ROCm-based backends, like Hygon.
 
 | Variable             | Description             | Default     |
 | -------------------- | ----------------------- | ----------- |
@@ -176,3 +135,40 @@ They are only usable within workers. Please set the environment variables in the
 | `ROCM_HOME`          | ROCm home directory.    | (empty)     |
 | `ROCM_PATH`          | ROCm path.              | `/opt/rocm` |
 | `ROCM_CORE_LIB_PATH` | ROCm core library path. | (empty)     |
+
+### Deployer Variables
+
+| Variable                                                           | Description                                                                                               | Default                                         |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                                       | `Auto`                                          |
+| `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                                                    | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME`                | Username for the default container registry.                                                              | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD`                | Password for the default container registry.                                                              | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                    | Enable asynchronous deployment.                                                                           | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS`                            | The number of threads in the threadpool.                                                                  | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                                                 | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                                          | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                                           | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).                                   | `IfNotPresent`                                  |
+| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                                          | The default values named by each vendor         |
+| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_BACKEND_VISIBLE_DEVICES` | Manual mapping of backend visible devices environment variables.                                          | The default values named by each vendor         |
+| `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID`       | Use UUIDs for the given runtime visible devices environment variables.                                    | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT`  | Enable value alignment for the given backend visible devices environment variables.                       | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
+
+#### Docker Deployer Specific Variables
+
+| Variable                                          | Description                                        | Default                                     |
+|---------------------------------------------------|----------------------------------------------------|---------------------------------------------|
+| `GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE`             | Docker image used for the pause container.         | `gpustack/runtime:pause`                    |
+| `GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE` | Docker image used for unhealthy restart container. | `gpustack/runtime:health`                   |
+| `GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR`     | Directory for storing ephemeral files for Docker.  | `/var/lib/gpustack/.cache/gpustack-runtime` |
+
+#### Kubernetes Deployer Specific Variables
+
+| Variable                                    | Description                                                                       | Default         |
+|---------------------------------------------|-----------------------------------------------------------------------------------|-----------------|
+| `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME`     | Name of the Kubernetes Node to deploy workloads to.                               | (empty)         |
+| `GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE`     | Namespace of the Kubernetes to deploy workloads to.                               | `default`       |
+| `GPUSTACK_RUNTIME_KUBERNETES_DOMAIN_SUFFIX` | Domain suffix for Kubernetes services.                                            | `cluster.local` |
+| `GPUSTACK_RUNTIME_KUBERNETES_SERVICE_TYPE`  | Service type for Kubernetes services. Options: ClusterIP, NodePort, LoadBalancer. | `ClusterIP`     |
+| `GPUSTACK_RUNTIME_KUBERNETES_QUORUM_READ`   | Whether to use quorum read for Kubernetes services.                               | `0`             |
