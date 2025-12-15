@@ -168,7 +168,7 @@ api_router.include_router(
 api_router.include_router(
     debug.router,
     dependencies=[Depends(get_admin_user)],
-    prefix="/debug",
+    prefix=versioned_prefix,
     include_in_schema=False,
 )
 api_router.include_router(

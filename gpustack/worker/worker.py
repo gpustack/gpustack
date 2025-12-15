@@ -42,6 +42,7 @@ from gpustack.config.registration import read_worker_token
 from gpustack.config import registration
 from gpustack.worker.worker_gateway import WorkerGatewayController
 from gpustack.gateway.plugins import register as register_gateway_plugins
+from gpustack.client.generated_http_client import default_versioned_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +303,7 @@ class Worker:
             self._serve_manager._model_instance_by_instance_id
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
-        app.include_router(debug.router, prefix="/debug")
+        app.include_router(debug.router, prefix=default_versioned_prefix)
         app.include_router(probes.router)
         app.include_router(logs.router)
         app.include_router(proxy.router)
