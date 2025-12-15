@@ -2,7 +2,7 @@ import secrets
 import datetime
 import base64
 from typing import Optional
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -11,9 +11,14 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ForbiddenException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
+from gpustack.server.deps import (
+    SessionDep,
+    EngineDep,
+    CurrentUserDep,
+)
 from gpustack.schemas.workers import (
     WorkerCreate,
+    WorkerListParams,
     WorkerPublic,
     WorkerUpdate,
     WorkersPublic,
@@ -45,7 +50,7 @@ async def get_workers(
     user: CurrentUserDep,
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: WorkerListParams = Depends(),
     name: str = None,
     search: str = None,
     uuid: str = None,
@@ -73,12 +78,25 @@ async def get_workers(
         # me query overrides all other filters
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
+
+    order_by = params.order_by
+    if order_by:
+        new_order_by = []
+        for field, direction in order_by:
+            # maps gpus (gpu count) to the internal representation for JSON array length
+            if field == "gpus":
+                new_order_by.append(("status.gpu_devices[]", direction))
+            else:
+                new_order_by.append((field, direction))
+        order_by = new_order_by
+
     worker_list = await Worker.paginated_by_query(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        order_by=order_by,
     )
     if not user.worker:
         return worker_list

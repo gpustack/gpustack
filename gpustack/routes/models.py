@@ -1,6 +1,6 @@
 import math
 from typing import List, Optional, Union
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
@@ -20,6 +20,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
     BackendEnum,
+    ModelListParams,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
@@ -53,7 +54,7 @@ router = APIRouter()
 async def get_models(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ModelListParams = Depends(),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
@@ -71,7 +72,7 @@ async def get_models(
 async def _get_models(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ModelListParams,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
@@ -105,6 +106,20 @@ async def _get_models(
         conditions = build_category_conditions(session, target_class, categories)
         extra_conditions.append(or_(*conditions))
 
+    order_by = params.order_by
+    if order_by:
+        # When sorting by "source", add additional sorting fields for deterministic ordering
+        new_order_by = []
+        for field, direction in order_by:
+            new_order_by.append((field, direction))
+            if field == "source":
+                new_order_by.append(("huggingface_repo_id", direction))
+                new_order_by.append(("huggingface_filename", direction))
+                new_order_by.append(("model_scope_model_id", direction))
+                new_order_by.append(("model_scope_file_path", direction))
+                new_order_by.append(("local_path", direction))
+        order_by = new_order_by
+
     return await target_class.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
@@ -112,6 +127,7 @@ async def _get_models(
         page=params.page,
         per_page=params.perPage,
         fields=fields,
+        order_by=order_by,
     )
 
 
@@ -486,7 +502,7 @@ async def get_my_models(
     user: CurrentUserDep,
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ModelListParams = Depends(),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,

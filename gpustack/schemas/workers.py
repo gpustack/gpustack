@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional, Any
+from typing import ClassVar, Dict, Optional, Any
 from pydantic import ConfigDict, BaseModel
 from sqlmodel import (
     Field,
@@ -15,7 +15,12 @@ from sqlmodel import (
 from sqlalchemy import String
 from gpustack import envs
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList, UTCDateTime, pydantic_column_type
+from gpustack.schemas.common import (
+    ListParams,
+    PaginatedList,
+    UTCDateTime,
+    pydantic_column_type,
+)
 from typing import List
 from sqlalchemy.orm import declarative_base
 
@@ -436,6 +441,19 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
         if super().__eq__(other) and isinstance(other, Worker):
             return self.id == other.id
         return False
+
+
+class WorkerListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "state",
+        "ip",
+        "status.cpu.utilization_rate",
+        "status.memory.utilization_rate",
+        "gpus",  # gpu count, the same naming pattern as in Clusters
+        "created_at",
+        "updated_at",
+    ]
 
 
 class WorkerPublic(

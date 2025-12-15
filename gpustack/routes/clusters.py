@@ -1,6 +1,6 @@
 import secrets
 from typing import Optional
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -10,8 +10,9 @@ from gpustack.api.exceptions import (
     InvalidException,
     ForbiddenException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import SessionDep, EngineDep
 from gpustack.schemas.clusters import (
+    ClusterListParams,
     ClusterUpdate,
     ClusterCreate,
     ClusterPublic,
@@ -50,7 +51,7 @@ def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
 async def get_clusters(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ClusterListParams = Depends(),
     name: str = None,
     search: str = None,
 ):
@@ -74,6 +75,7 @@ async def get_clusters(
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        order_by=params.order_by,
     )
 
 
