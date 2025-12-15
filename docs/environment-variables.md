@@ -44,9 +44,9 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Network Configuration
 
-| Variable                         | Description                      | Default | Applies to       |
-| -------------------------------- | -------------------------------- | ------- | ---------------- |
-| `GPUSTACK_PROXY_TIMEOUT_SECONDS` | Proxy timeout in seconds.        | `1800`  | Server           |
+| Variable                         | Description                      | Default | Applies to      |
+| -------------------------------- | -------------------------------- | ------- | --------------- |
+| `GPUSTACK_PROXY_TIMEOUT_SECONDS` | Proxy timeout in seconds.        | `1800`  | Server          |
 | `GPUSTACK_TCP_CONNECTOR_LIMIT`   | HTTP client TCP connector limit. | `1000`  | Server & Worker |
 
 ### Authentication & Security
@@ -58,23 +58,23 @@ The **Applies to** column indicates where the environment variable should be set
 ### Gateway Configuration
 
 | Variable                                  | Description                                                                         | Default | Applies to |
-| ----------------------------------------- | ----------------------------------------------------------------------------------- | ------- | ------ |
-| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `3000`  | Server |
-| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`    | The interval in seconds of GPUStack Server checking embedded gateway listening port | `2`     | Server |
-| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT` | The retry count of GPUStack Server checking embedded gateway listening port         | `300`   | Server |
+| ----------------------------------------- | ----------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `3000`  | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`    | The interval in seconds of GPUStack Server checking embedded gateway listening port | `2`     | Server     |
+| `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT` | The retry count of GPUStack Server checking embedded gateway listening port         | `300`   | Server     |
 
 ### Worker and Model Configuration
 
 | Variable                                               | Description                                                                         | Default | Applies to |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.                                           | `150`   | Server     |
-| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds.                             | `300`   | Worker    |
-| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`   | Add debug log for slow worker status collection if it exceeds this time in seconds. | `180`   | Worker    |
 | `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.                                  | `300`   | Server     |
-| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.                                    | `3`     | Worker    |
 | `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                                             | `1000`  | Server     |
 | `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.                                           | `3600`  | Server     |
-| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                                               | `false` | Worker    |
+| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds.                             | `300`   | Worker     |
+| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`   | Add debug log for slow worker status collection if it exceeds this time in seconds. | `180`   | Worker     |
+| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.                                    | `3`     | Worker     |
+| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                                               | `false` | Worker     |
 
 ### Model Deployment Configuration
 
