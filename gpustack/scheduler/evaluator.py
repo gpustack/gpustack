@@ -304,8 +304,8 @@ async def evaluate_model_metadata(
         ):
             # The local path model is not accessible from the server.
             return False, [
-                "The model file path you specified does not exist on the server. "
-                "It's recommended to place the model file at the same path on both the server and the worker. This helps GPUStack make better decisions."
+                "The model file path you specified does not exist on the GPUStack server. "
+                "It's recommended to place the model file at the same path on both the GPUStack server and GPUStack workers. This helps GPUStack make better decisions."
             ]
 
         if model.source in [
