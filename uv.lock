@@ -1997,7 +1997,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.22" },
-    { name = "gpustack-runtime", specifier = "==0.1.35.post4" },
+    { name = "gpustack-runtime", specifier = "==0.1.36" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2084,7 +2084,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.35.post4"
+version = "0.1.36"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2094,9 +2094,9 @@ dependencies = [
     { name = "nvidia-ml-py" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/14/1a/28a0d95930c24dde0aded05c8ca2b730bd874ddc6b2394952da3c1b2275b/gpustack_runtime-0.1.35.post4.tar.gz", hash = "sha256:ad6ce8c51a39e02afbed898815ebbd8ec64eebd4b159074f5e936943e8eea5e5", size = 200936, upload-time = "2025-12-05T05:48:54.59Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/9b/baf5c87bed3f9b1c790697811e874cbb05f855ca305cc39fd7e9ab4c4f87/gpustack_runtime-0.1.36.tar.gz", hash = "sha256:aab1c3c79e7c26ddae5b63f22fec9a202e08954804fd789ebc2dc7090cd9ac4d", size = 200894, upload-time = "2025-12-15T02:46:00.138Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/e9/5c6260152d12bc010e78702edc2708d19e5a867211e2ef829ae566437bf0/gpustack_runtime-0.1.35.post4-py3-none-any.whl", hash = "sha256:7f0061ee5ae8cdb9562a7926d846e652a2b1369aa55a5e3d0f08ae628cc2df0a", size = 173373, upload-time = "2025-12-05T05:48:53.108Z" },
+    { url = "https://files.pythonhosted.org/packages/64/43/b169bda3d56090f69df84abd3cb867a5c25245592bd42626eda0f18835b1/gpustack_runtime-0.1.36-py3-none-any.whl", hash = "sha256:9da08faefd0fea861b1410b2623a6a64e32f33ceeaef28151f02b4fbae8efaef", size = 173400, upload-time = "2025-12-15T02:45:58.664Z" },
 ]
 
 [[package]]

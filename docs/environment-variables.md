@@ -127,7 +127,7 @@ They are only usable within workers. Please set the environment variables in the
 ### Deployer Variables
 
 | Variable                                                           | Description                                                                                               | Default                                         |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|-------------------------------------------------|
 | `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                                       | `Auto`                                          |
 | `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY`                         | Default container registry for deployer to pull images from.                                              | (empty)                                         |
 | `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                                                    | `1`                                             |
@@ -139,7 +139,8 @@ They are only usable within workers. Please set the environment variables in the
 | `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                                                 | (empty)                                         |
 | `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                                          | (empty)                                         |
 | `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                                           | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE`                     | Correct the gpustack-runner image by rendering it with the host's detection.                              | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE`                     | Correct the gpustack-runner image by rendering it with the host's detection.                              | `0`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).                                   | `IfNotPresent`                                  |
 | `GPUSTACK_RUNTIME_DEPLOY_LABEL_PREFIX`                             | Label prefix for the deployer.                                                                            | `runtime.gpustack.ai`                           |
 | `GPUSTACK_RUNTIME_DEPLOY_AUTOMAP_RESOURCE_KEY`                     | The resource key to use for automatic mapping of container backend visible devices environment variables. | `gpustack.ai/devices`                           |
 | `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                                          | The default values named by each vendor         |
