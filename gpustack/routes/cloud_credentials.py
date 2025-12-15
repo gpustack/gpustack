@@ -1,6 +1,6 @@
 from urllib.parse import urljoin
 from functools import partial
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -8,9 +8,10 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import SessionDep, EngineDep
 from gpustack.schemas.clusters import (
     CloudCredentialCreate,
+    CloudCredentialListParams,
     CloudCredentialPublic,
     CloudCredentialsPublic,
     CloudCredentialUpdate,
@@ -27,7 +28,7 @@ router = APIRouter()
 async def list(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: CloudCredentialListParams = Depends(),
     name: str = None,
     search: str = None,
 ):
@@ -51,6 +52,7 @@ async def list(
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        order_by=params.order_by,
     )
 
 

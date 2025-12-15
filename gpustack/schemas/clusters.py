@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime
 from urllib.parse import urlparse
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import ClassVar, Optional, Dict, Any, List
 from pydantic import BaseModel, computed_field, field_validator
 from sqlmodel import (
     Field,
@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList, pydantic_column_type
+from gpustack.schemas.common import ListParams, PaginatedList, pydantic_column_type
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model, ModelInstance
@@ -206,6 +206,15 @@ class CloudCredential(CloudCredentialCreate, BaseModelMixin, table=True):
         return False
 
 
+class CloudCredentialListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "provider",
+        "created_at",
+        "updated_at",
+    ]
+
+
 class CloudCredentialPublic(CloudCredentialBase, PublicFields):
     pass
 
@@ -354,6 +363,16 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         self._ready_workers = ready_workers
         self._gpus = gpus
         self._models = models
+
+
+class ClusterListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "provider",
+        "state",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class ClusterPublic(ClusterBase, PublicFields):

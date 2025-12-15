@@ -3,12 +3,13 @@ from datetime import datetime
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel, Text
 
 from gpustack.schemas.common import (
+    ListParams,
     PaginatedList,
     UTCDateTime,
     pydantic_column_type,
@@ -257,6 +258,18 @@ class Model(ModelBase, BaseModelMixin, table=True):
         back_populates="cluster_models",
         sa_relationship_kwargs={"lazy": "noload"},
     )
+
+
+class ModelListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "source",
+        "cluster_id",
+        "replicas",
+        "ready_replicas",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class ModelCreate(ModelBase):

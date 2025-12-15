@@ -4,7 +4,7 @@ from enum import Enum
 from sqlalchemy import Enum as SQLEnum, Text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import ClassVar, List, Optional, TYPE_CHECKING
 from pydantic import field_validator
 from sqlmodel import (
     Field,
@@ -14,6 +14,8 @@ from sqlmodel import (
     Integer,
     ForeignKey,
 )
+
+from gpustack.schemas.common import ListParams
 from .common import PaginatedList
 from ..mixins import BaseModelMixin
 from .clusters import Cluster
@@ -151,6 +153,18 @@ class User(UserBase, BaseModelMixin, table=True):
 
 class UserActivationUpdate(SQLModel):
     is_active: bool
+
+
+class UserListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "username",
+        "is_admin",
+        "full_name",
+        "source",
+        "is_active",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class UserPublic(UserBase):
