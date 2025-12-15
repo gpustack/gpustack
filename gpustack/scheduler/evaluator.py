@@ -332,7 +332,7 @@ async def evaluate_model_metadata(
 
         set_default_worker_selector(model)
     except Exception as e:
-        if model.env and model.env.get("GPUSTACK_MODEL_EVALUATION_SKIP"):
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
             return True, []
 

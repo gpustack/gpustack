@@ -482,7 +482,7 @@ def get_pretrained_config_with_fallback(model: Model, **kwargs):
         if (
             pretrained_config is None
             and CategoryEnum.LLM in model.categories
-            and (not model.env or not model.env.get("GPUSTACK_MODEL_EVALUATION_SKIP"))
+            and (not model.env or not model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"))
         ):
             # For LLM models: empty config is unacceptable → raise original error
             raise e
