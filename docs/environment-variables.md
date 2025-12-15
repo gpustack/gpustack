@@ -86,6 +86,12 @@ The **Applies to** column indicates where the environment variable should be set
 | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED` | Disable the automatic serving command script execution. When set to `1` or `true`, the script that handles package installation and other setup tasks will not run.                            | `0`     | Model      |
 | `PYPI_PACKAGES_INSTALL`                          | Additional PyPI packages to install in the model serving environment. Multiple packages should be space-separated. The script will use `uv pip install` if available, otherwise `pip install`. | (empty) | Model      |
+| `GPUSTACK_MODEL_RAM_CLAIM`                       | User-declared RAM requirement (in Byte) for the model, used by the scheduler for capacity planning.                                                                                            | (empty) | Model      |
+| `GPUSTACK_MODEL_VRAM_CLAIM`                      | User-declared VRAM requirement (in Byte) for the model, used by the scheduler for capacity planning.                                                                                           | (empty) | Model      |
+| `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`        | Apply Qwen3 reranker templates to the request body. See instructions in https://huggingface.co/Qwen/Qwen3-Reranker-0.6B.                                                                       | (empty) | Model      |
+| `GPUSTACK_MODEL_EVALUATION_SKIP`                 | Skips the model evaluation or validation step during deployment.                                                                                                                               | (empty) | Model      |
+| `GPUSTACK_DISABLE_METRICS`                       | Disables metric expose and collection for the model.                                                                                                                                           | (empty) | Model      |
+| `GPUSTACK_MODEL_HEALTH_CHECK_PATH`               | Specifies the HTTP health check path exposed by the model.                                                                                                                                     | (empty) | Model      |
 
 #### Usage Example
 
