@@ -197,7 +197,7 @@ async def test_evaluate_pretrained_config(
                 huggingface_repo_id="google-t5/t5-base",
                 backend=BackendEnum.VLLM,
                 backend_parameters=[],
-                env={"GPUSTACK_MODEL_EVALUATION_SKIP": "1"},
+                env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
             ),
             True,
             [],
