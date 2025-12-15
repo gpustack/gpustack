@@ -27,6 +27,7 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_7_a100_80gx2,
     linux_nvidia_2_4080_16gx2,
     linux_nvidia_26_H200_141gx8,
+    linux_ascend_1_910b_64gx8,
 )
 from tests.utils.scheduler import compare_candidates
 
@@ -75,7 +76,7 @@ def expected_candidate(
                     3,
                     "host4080",
                     [0, 1],
-                    {0: 15454332518, 1: 15454332518},
+                    {0: 13136182640, 1: 13136182640},
                 )
             ],
             0,
@@ -101,7 +102,7 @@ def expected_candidate(
                     3,
                     "host4080",
                     [0, 1],
-                    {0: 15454332518, 1: 15454332518},
+                    {0: 13256383004, 1: 13256383004},
                 )
             ],
             0,
@@ -127,7 +128,7 @@ def expected_candidate(
                     3,
                     "host4080",
                     [0, 1],
-                    {0: 15454332518, 1: 15454332518},
+                    {0: 13136182640, 1: 13136182640},
                 )
             ],
             0,
@@ -149,16 +150,91 @@ def expected_candidate(
                     "host26-h200",
                     [0, 1, 2, 3, 4, 5, 6, 7],
                     {
-                        0: 136360009728,
-                        1: 136360009728,
-                        2: 136360009728,
-                        3: 136360009728,
-                        4: 136360009728,
-                        5: 136360009728,
-                        6: 136360009728,
-                        7: 136360009728,
+                        0: 137420587581,
+                        1: 137420587581,
+                        2: 137420587581,
+                        3: 137420587581,
+                        4: 137420587581,
+                        5: 137420587581,
+                        6: 137420587581,
+                        7: 137420587581,
                     },
                 )
+            ],
+            0,
+        ),
+        (
+            "auto_select_multimodal_4_gpus_1_worker_tp4",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen2-VL-7B-Instruct",
+                backend_parameters=["--tp-size=4"],
+            ),
+            [
+                linux_nvidia_4_4080_16gx4(),
+            ],
+            [
+                expected_candidate(
+                    5,
+                    "host-4-4080",
+                    [0, 1, 2, 3],
+                    {0: 9770572447, 1: 9770572447, 2: 9770572447, 3: 9770572447},
+                )
+            ],
+            0,
+        ),
+        (
+            "auto_select_multimodal_4_gpus_per_replica_1_worker",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen2-VL-7B-Instruct",
+                gpu_selector=GPUSelector(
+                    gpus_per_replica=4,
+                    gpu_ids=[
+                        "host-4-4080:cuda:0",
+                        "host-4-4080:cuda:1",
+                        "host-4-4080:cuda:2",
+                        "host-4-4080:cuda:3",
+                    ],
+                ),
+            ),
+            [
+                linux_nvidia_4_4080_16gx4(),
+            ],
+            [
+                expected_candidate(
+                    5,
+                    "host-4-4080",
+                    [0, 1, 2, 3],
+                    {0: 9770572447, 1: 9770572447, 2: 9770572447, 3: 9770572447},
+                )
+            ],
+            0,
+        ),
+        (
+            "auto_select_multimodal_1_gpus_1_worker_npu",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="Qwen/Qwen2-VL-7B-Instruct",
+                backend_parameters=[],
+            ),
+            [
+                linux_ascend_1_910b_64gx8(),
+            ],
+            [
+                expected_candidate(
+                    1,
+                    "ascend_0",
+                    [i],
+                    {i: 41506563948},
+                )
+                for i in range(8)
             ],
             0,
         ),
@@ -263,7 +339,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 23413653504,
+                    0: 21904773611,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -273,7 +349,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
-                            vram={0: 23181498777},
+                            vram={0: 21687579967},
                         ),
                     )
                 ],
@@ -347,9 +423,9 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                 "gpu_indexes": [0, 1, 2],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 15454332518,
-                    1: 15454332518,
-                    2: 15454332518,
+                    0: 12586695262,
+                    1: 12586695262,
+                    2: 12586695262,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -358,7 +434,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                         total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 23413653504},
+                            vram={0: 19069120020},
                         ),
                     )
                 ],
@@ -435,8 +511,8 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                 "gpu_indexes": [0, 1],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 77309411328,
-                    1: 77309411328,
+                    0: 71124658421,
+                    1: 71124658421,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -445,7 +521,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                         total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 77309411328},
+                            vram={0: 71124658421},
                         ),
                     ),
                     ModelInstanceSubordinateWorker(
@@ -454,7 +530,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                         total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 77309411328},
+                            vram={0: 71124658421},
                         ),
                     ),
                 ],
@@ -513,7 +589,7 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 23413653504,
+                    0: 22034849464,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -522,7 +598,7 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
                         total_gpus=1,
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
-                            vram={0: 23181498777},
+                            vram={0: 21816366071},
                         ),
                     )
                 ],
@@ -585,14 +661,14 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
                 "gpu_indexes": [0, 1, 2, 3, 4, 5, 6, 7],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 77309411328,
-                    1: 77309411328,
-                    2: 77309411328,
-                    3: 77309411328,
-                    4: 77309411328,
-                    5: 77309411328,
-                    6: 77309411328,
-                    7: 77309411328,
+                    0: 72756745994,
+                    1: 72756745994,
+                    2: 72756745994,
+                    3: 72756745994,
+                    4: 72756745994,
+                    5: 72756745994,
+                    6: 72756745994,
+                    7: 72756745994,
                 },
                 "subordinate_workers": [
                     ModelInstanceSubordinateWorker(
@@ -602,14 +678,14 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
                         gpu_indexes=[0, 1, 2, 3, 4, 5, 6, 7],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={
-                                0: 77309411328,
-                                1: 77309411328,
-                                2: 77309411328,
-                                3: 77309411328,
-                                4: 77309411328,
-                                5: 77309411328,
-                                6: 77309411328,
-                                7: 77309411328,
+                                0: 72756745994,
+                                1: 72756745994,
+                                2: 72756745994,
+                                3: 72756745994,
+                                4: 72756745994,
+                                5: 72756745994,
+                                6: 72756745994,
+                                7: 72756745994,
                             },
                         ),
                     ),
@@ -670,7 +746,7 @@ async def test_auto_schedule_embedding_models(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 23413653504,
+                    0: 22060864634,
                 },
             },
         ]
@@ -736,7 +812,7 @@ async def test_auto_schedule_single_work_single_gpu(config):
 
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
+- With --mem-fraction-static=0.848, all GPUs combined need to provide at least 88.71 GiB of total VRAM and each GPU needs 84% of allocatable VRAM.
 - The current available GPU only has 24.23 GiB allocatable VRAM (100.00%)."""
         ]
         assert resource_fit_selector._messages == expect_msg
@@ -758,8 +834,8 @@ async def test_auto_schedule_single_work_single_gpu(config):
             ),
             [
                 '- The model requires approximately 26.99 GiB of VRAM.\n'
-                '- With --mem-fraction-static=0.9, all GPUs combined need to provide at '
-                'least 29.99 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.\n'
+                '- With --mem-fraction-static=0.772, all GPUs combined need to provide at '
+                'least 34.96 GiB of total VRAM and each GPU needs 77% of allocatable VRAM.\n'
                 '- Total number of attention heads (25) must be divisible by tensor parallel size (4).'
             ],
         ),
@@ -776,8 +852,8 @@ async def test_auto_schedule_single_work_single_gpu(config):
             ),
             [
                 """- The model requires approximately 75.23 GiB of VRAM.
-- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
-- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
+- With --mem-fraction-static=0.772, all GPUs combined need to provide at least 97.45 GiB of total VRAM and each GPU needs 77% of allocatable VRAM.
+- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 49.38 GiB of allocatable VRAM."""
             ],
         ),
         (
@@ -793,8 +869,8 @@ async def test_auto_schedule_single_work_single_gpu(config):
             ),
             [
                 '- The model requires approximately 26.99 GiB of VRAM.\n'
-                '- With --mem-fraction-static=0.9, all GPUs combined need to provide at '
-                'least 29.99 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.\n'
+                '- With --mem-fraction-static=0.772, all GPUs combined need to provide at '
+                'least 34.96 GiB of total VRAM and each GPU needs 77% of allocatable VRAM.\n'
                 '- Vocabulary size (10001) must be divisible by tensor parallel size (4).'
             ],
         ),
@@ -879,8 +955,8 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
 
         expect_msg = [
             """- The model requires approximately 75.23 GiB of VRAM.
-- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
-- The optimal combination ['host4080', 'host4080-1'] provides 57.57 GiB of allocatable VRAM.
+- With --mem-fraction-static=0.772, all GPUs combined need to provide at least 97.45 GiB of total VRAM and each GPU needs 77% of allocatable VRAM.
+- The optimal combination ['host4080', 'host4080-1'] provides 49.38 GiB of allocatable VRAM.
 - Cannot find a suitable worker combination to run the model in distributed mode. If you are confident that the resources are sufficient, you may manually schedule the model by selecting the workers and GPUs."""
         ]
 
@@ -1124,7 +1200,7 @@ async def test_auto_schedule_extended_kv_cache_ram_size(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 23413653504,
+                    0: 22060864634,
                 },
                 "ram": 8589934592,
             },
@@ -1181,9 +1257,9 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
                 "gpu_indexes": [0],
                 "is_unified_memory": False,
                 "vram": {
-                    0: 23413653504,
+                    0: 22060864634,
                 },
-                "ram": 46827307008,
+                "ram": 44121729268,
             },
         ]
 
@@ -1203,9 +1279,9 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
             ),
             [
                 """- The model requires approximately 75.23 GiB of VRAM.
-- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
+- With --mem-fraction-static=0.765, all GPUs combined need to provide at least 98.34 GiB of total VRAM and each GPU needs 76% of allocatable VRAM.
 - Manual GPU selection resulted in resource overcommit.
-- Selected GPUs have 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.79 GiB of allocatable VRAM."""
+- Selected GPUs have 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 24.47 GiB of allocatable VRAM."""
             ],
         ),
         # Overcommit when partially used selected GPUs
@@ -1224,10 +1300,10 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
             ),
             [
                 """- The model requires approximately 75.23 GiB of VRAM.
-- With --mem-fraction-static=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
+- With --mem-fraction-static=0.749, all GPUs combined need to provide at least 100.44 GiB of total VRAM and each GPU needs 74% of allocatable VRAM.
 - Manual GPU selection resulted in resource overcommit.
 - Using worker host-4-4080 GPU indexes [0, 1] out of 4 selected devices.
-- Used GPUs provide 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 28.79 GiB of allocatable VRAM."""
+- Used GPUs provide 31.98 GiB allocatable VRAM, 2/2 of GPUs meet the VRAM utilization ratio, providing 23.96 GiB of allocatable VRAM."""
             ],
         ),
     ],

@@ -37,7 +37,7 @@ from gpustack.utils.command import (
     find_parameter,
     find_int_parameter,
 )
-from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.unit import byte_to_gib, byte_to_mib
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +52,17 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         self._vram_claim = 0
         self._ram_claim = 0
-        self._mem_fraction_static = 0.9  # SGLang default
-        self._set_mem_fraction_static()
+        self._mem_fraction_static = 0
         self._effective_vram = 0
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
+
+        self._tp_size = 1
+        self._pp_size = 1
+        self._dp_size = 1
+        self._chunked_prefill_size = None
+        self._cuda_graph_max_bs = None
+        self._enable_dp_attention = None
 
         # for multi worker schedule
         self._largest_multi_gpu_vram: int = 0
@@ -68,7 +74,16 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             SGLangResourceFitSelector.get_world_size_from_backend_parameters(model)
         )
         self._set_gpu_count(world_size, strategies)
-        self._validate_arguments()
+        self._validate_and_set_arguments()
+        # Just for calculate mem_fraction_static
+        self._max_pp_size = max(
+            self._pp_size, len(self._selected_gpu_indexes_by_worker)
+        )
+        self._select_tp_size = self._tp_size
+        # In manual mode, we need to consider the TP size if not set in backend param.
+        for v in self._selected_gpu_indexes_by_worker.values():
+            if len(v) > self._select_tp_size:
+                self._select_tp_size = len(v)
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -126,18 +141,68 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return 1
 
-    def _validate_arguments(self):
+    def _get_max_tp_size(self) -> int:
+        cmp_list = [self._tp_size, self._select_tp_size]
+        if self._model.gpu_selector and self._model.gpu_selector.gpus_per_replica:
+            cmp_list.append(self._model.gpu_selector.gpus_per_replica)
+        return max(cmp_list)
+
+    async def _get_min_gpu_sum(self, workers: List[Worker]) -> int:
+        """
+        Get the min GPU memory of input workers
+        """
+        use_manual = self._model.gpu_selector is not None
+        totals: List[int] = []
+        for worker in workers:
+            if not worker.status or not worker.status.gpu_devices:
+                continue
+            # Pre-selected GPU indexes for this worker when manual selection is used
+            selected = (
+                self._selected_gpu_indexes_by_worker.get(worker.name)
+                if use_manual
+                else None
+            )
+            # Traverse GPUs for this worker and respect manual selection if present
+            for gpu in worker.status.gpu_devices:
+                if selected is not None and gpu.index not in selected:
+                    continue
+                total = gpu.memory.total if (gpu.memory and gpu.memory.total) else 0
+                totals.append(total)
+        return min(totals) if totals else 0
+
+    def _validate_and_set_arguments(self):
         model = self._model
-        tp_size = find_int_parameter(
-            model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+        self._tp_size = (
+            find_int_parameter(
+                model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+            )
+            or 1
         )
-        pp_size = find_int_parameter(
-            model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
+        num_attention_heads = self._model_params.num_attention_heads
+        if (
+            self._tp_size
+            and num_attention_heads
+            and num_attention_heads % self._tp_size != 0
+        ):
+            raise ValueError(
+                f"Total number of attention heads ({num_attention_heads})"
+                " must be divisible by tp-size "
+                f"({self._tp_size})."
+            )
+
+        self._pp_size = (
+            find_int_parameter(
+                model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
+            )
+            or 1
         )
-        dp_size = find_int_parameter(
-            model.backend_parameters, ["dp-size", "data-parallel-size"]
+        self._dp_size = (
+            find_int_parameter(
+                model.backend_parameters, ["dp-size", "data-parallel-size"]
+            )
+            or 1
         )
-        speculative_algorithm = find_parameter(
+        self._speculative_algorithm = find_parameter(
             model.backend_parameters, ["speculative-algorithm"]
         )
         enable_mixed_chunk_param = find_parameter(
@@ -148,35 +213,43 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if enable_mixed_chunk_param is not None
             else False
         )
+        self._chunked_prefill_size = find_int_parameter(
+            self._model.backend_parameters, ["chunked-prefill-size"]
+        )
+        self._cuda_graph_max_bs = find_int_parameter(
+            self._model.backend_parameters, ["cuda-graph-max-bs"]
+        )
 
         nnodes = self._get_nnodes()
-        if tp_size or pp_size:
-            world_size = int(tp_size or 1) * int(pp_size or 1)
+        if self._tp_size or self._pp_size:
+            world_size = int(self._tp_size or 1) * int(self._pp_size or 1)
             if world_size % nnodes != 0:
                 raise ValueError(f"tp-size {world_size} must be divisible by nnodes")
 
-        if pp_size and int(pp_size) > 1:
-            if speculative_algorithm is not None or enable_mixed_chunk:
+        if self._pp_size and int(self._pp_size) > 1:
+            if self._speculative_algorithm is not None or enable_mixed_chunk:
                 # We don't need to check overlap schedule. SGLang ignore this conflict and proceed.
                 # Ref: https://github.com/sgl-project/sglang/blob/64480ec7124b8c23d9560746ca20415bfaf97a8e/python/sglang/srt/server_args.py#L1548-L1553
                 raise ValueError(
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )
 
-        if dp_size and int(dp_size) > 1 and nnodes != 1:
-            enable_dp_attention = find_bool_parameter(
-                model.backend_parameters, ["enable-dp-attention"]
-            )
-            if not enable_dp_attention:
+        self._enable_dp_attention = find_bool_parameter(
+            model.backend_parameters, ["enable-dp-attention"]
+        )
+        if self._dp_size and int(self._dp_size) > 1 and nnodes != 1:
+            if not self._enable_dp_attention:
                 raise ValueError(
                     "multi-node data parallel is not supported unless dp attention!"
                 )
 
-        if speculative_algorithm is not None and enable_mixed_chunk:
+        if self._speculative_algorithm is not None and enable_mixed_chunk:
             raise ValueError("enable_mixed_chunk is required for speculative decoding")
 
-        if message := self._check_tp_size_divisibility(tp_size):
+        if message := self._check_tp_size_divisibility(self._tp_size):
             raise ValueError(message + " Consider adjusting your tp-size value.")
+
+        self._set_mem_fraction_static()
 
     def _cal_effective_vram(self) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
@@ -225,6 +298,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement for SGLang.
         """
+        await self._cal_mem_fraction_static(workers)
         self._vram_claim = await estimate_model_vram(
             self._model, self._config.huggingface_token
         )
@@ -688,6 +762,201 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         )
 
         return []
+
+    async def _cal_mem_fraction_static(self, workers: List[Worker]):  # noqa: C901
+        """
+        Adapted from sglang's server_args memory fraction logic.
+
+        Args:
+            workers: List of workers used to determine GPU memory characteristics.
+        """
+        has_npu = any(
+            ((gpu.vendor or '').lower() == 'ascend')
+            or ((gpu.type or '').lower() == 'cann')
+            for w in workers
+            for gpu in ((w.status and w.status.gpu_devices) or [])
+        )
+        gpu_mem_bytes = await self._get_min_gpu_sum(workers)
+        gpu_mem = byte_to_mib(gpu_mem_bytes)
+        # Logic of SGLang set default mem_fraction_static
+        # https://github.com/sgl-project/sglang/blob/037c3982af4a996f41b38cacf59f0be24b8699f8/python/sglang/srt/server_args.py#L751-L919
+        # Step 1: Use the minimum GPU memory of all workers to calculate _chunked_prefill_size and _cuda_graph_max_bs.
+        if gpu_mem:
+            if gpu_mem < 20 * 1024:
+                # T4, 4080
+                # (_chunked_prefill_size 2k, _cuda_graph_max_bs 8)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 2048
+                if self._cuda_graph_max_bs is None:
+                    self._cuda_graph_max_bs = 8
+            elif has_npu and gpu_mem < 32 * 1024:
+                # Atlas A2B4
+                # (_chunked_prefill_size 32k, _cuda_graph_max_bs 16 if tp < 4 else 64)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 32768
+                if self._cuda_graph_max_bs is None:
+                    if self._get_max_tp_size() < 4:
+                        self._cuda_graph_max_bs = 16
+                    else:
+                        self._cuda_graph_max_bs = 64
+            elif gpu_mem < 35 * 1024:
+                # A10, 4090, 5090
+                # (_chunked_prefill_size 2k, _cuda_graph_max_bs 24 if tp < 4 else 80)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 2048
+                if self._cuda_graph_max_bs is None:
+                    # Based on detailed statistics, when serving TP1/TP2 models on lower-end GPUs with HBM < 35GB, you can either disable cuda graph or set `_cuda_graph_max_bs` to a very small value to reduce the memory overhead of creating cuda graphs, with almost no impact on performance.
+                    # However, when serving models with TP4 or TP8, we need to enable cuda graph to maintain high performance. In this case, we can set `_cuda_graph_max_bs` to 80 (half of the default value 160) to reduce the memory overhead of creating cuda graphs. Looking at the logs
+                    # from TP4 serving of qwen2-72b, a value of 80 is sufficient and can reduce the memory overhead of creating cuda graphs on lower-end GPUs compared to the original 160, avoiding OOM issues.
+                    if self._get_max_tp_size() < 4:
+                        self._cuda_graph_max_bs = 24
+                    else:
+                        self._cuda_graph_max_bs = 80
+            elif gpu_mem < 60 * 1024:
+                # A100 (40GB), L40,
+                # (_chunked_prefill_size 4k, _cuda_graph_max_bs 32 if tp < 4 else 160)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 4096
+                if self._cuda_graph_max_bs is None:
+                    if self._get_max_tp_size() < 4:
+                        self._cuda_graph_max_bs = 32
+                    else:
+                        self._cuda_graph_max_bs = 160
+            elif has_npu and gpu_mem < 64 * 1024:
+                # Atlas A2 and Atlas A3
+                # (_chunked_prefill_size 32k, _cuda_graph_max_bs 64 if tp < 4 else 128)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 32768
+                if self._cuda_graph_max_bs is None:
+                    if self._get_max_tp_size() < 4:
+                        self._cuda_graph_max_bs = 64
+                    else:
+                        self._cuda_graph_max_bs = 128
+            elif gpu_mem < 90 * 1024:
+                # H100, A100
+                # (_chunked_prefill_size 8k, _cuda_graph_max_bs 256 if tp < 4 else 512)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 8192
+                if self._cuda_graph_max_bs is None:
+                    if self._get_max_tp_size() < 4:
+                        self._cuda_graph_max_bs = 256
+                    else:
+                        self._cuda_graph_max_bs = 512
+            elif gpu_mem < 160 * 1024:
+                # H20, H200
+                # (_chunked_prefill_size 8k, _cuda_graph_max_bs 256 if tp < 4 else 512)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 8192
+                if self._cuda_graph_max_bs is None:
+                    if self._get_max_tp_size() < 4:
+                        self._cuda_graph_max_bs = 256
+                    else:
+                        self._cuda_graph_max_bs = 512
+            else:
+                # B200, MI300
+                # (_chunked_prefill_size 16k, _cuda_graph_max_bs 512)
+                if self._chunked_prefill_size is None:
+                    self._chunked_prefill_size = 16384
+                if self._cuda_graph_max_bs is None:
+                    self._cuda_graph_max_bs = 512
+        else:
+            # Fallback defaults when gpu_mem is None
+            if self._chunked_prefill_size is None:
+                self._chunked_prefill_size = 4096
+            if self._cuda_graph_max_bs is None:
+                self._cuda_graph_max_bs = 160
+
+        # Step 2: Calculate reserved memory by other configs
+        # Constant meta data (e.g., from attention backend)
+        reserved_mem = 512
+        # For activation during large prefill
+        if self._chunked_prefill_size > 0:
+            reserved_mem += max(self._chunked_prefill_size, 2048) * 1.5
+
+        # For cuda graphs
+        reserved_mem += self._cuda_graph_max_bs * 2
+        # Some adjustments for large parallel size
+        reserved_mem += self._get_max_tp_size() * self._max_pp_size / 8 * 1024
+
+        if self._enable_dp_attention:
+            # DP attention needs more padding for some operations
+            reserved_mem += self._cuda_graph_max_bs * self._dp_size * 3
+
+            # DP attention uses much more memory for large cuda graph max bs,
+            # likely due to some inefficiencies in torch allocator or our implementation.
+            # So we need to reserve more memory.
+            if self._cuda_graph_max_bs > 300:
+                reserved_mem += self._cuda_graph_max_bs * self._dp_size * 1.5
+
+        if gpu_mem is not None and gpu_mem > 60 * 1024:
+            reserved_mem = max(reserved_mem, 10 * 1024)
+
+        if self._speculative_algorithm is not None:
+            if self._speculative_algorithm == "STANDALONE":
+                # standalonedraft model and cuda graphs
+                reserved_mem += 6 * 1024
+            elif self._speculative_algorithm != "NGRAM":
+                # eagle draft models and cuda graphs
+                reserved_mem += 2 * 1024
+
+        # For piecewise cuda graphs
+        enable_piecewise_cuda_graph = find_parameter(
+            self._model.backend_parameters, ["enable-piecewise-cuda-graph"]
+        )
+        if enable_piecewise_cuda_graph:
+            piecewise_cuda_graph_max_tokens = find_int_parameter(
+                self._model.backend_parameters, ["piecewise-cuda-graph-max-tokens"]
+            )
+            reserved_mem += piecewise_cuda_graph_max_tokens // 4
+
+        self._mem_fraction_static = (
+            round((gpu_mem - reserved_mem) / gpu_mem, 3)
+            if gpu_mem is not None
+            else 0.88
+        )
+
+        # Step 3: adjust mem_fraction_static for VL models
+        # Multimodal models need more memory for the image processing,
+        # so we adjust the mem_fraction_static accordingly.
+        model_config = self._model_params
+        vision_config = getattr(model_config, "vision_config", None)
+        if vision_config is not None:
+            # roughly reduce the mem_fraction_static base on params of Vit
+            original_server_arg_mem_fraction = self._mem_fraction_static
+            # a base mem_fraction_static factor for regular Vit
+            base_mem_fraction_reduction_ratio = 0.95
+
+            vit_num_layers = getattr(vision_config, "num_hidden_layers", 24)
+            vit_hidden_size = getattr(vision_config, "hidden_size", 1024)
+
+            # baseline ViT params (ViT-L/14)
+            baseline_vit_layers = 24
+            baseline_vit_hidden_size = 1024
+
+            # weight params count
+            current_complexity_score = vit_num_layers * (vit_hidden_size**2)
+            baseline_complexity_score = baseline_vit_layers * (
+                baseline_vit_hidden_size**2
+            )
+            complexity_ratio = (
+                current_complexity_score / baseline_complexity_score
+                if baseline_complexity_score > 0
+                else 1.0
+            )
+
+            # every time the complexity grows 100%, adjust final factor for 10%
+            sensitivity_scale = 0.1
+            dynamic_adjustment_factor = 1.0 - sensitivity_scale * (
+                complexity_ratio - 1.0
+            )
+            dynamic_adjustment_factor = max(0.8, min(1.05, dynamic_adjustment_factor))
+
+            final_overall_factor = (
+                base_mem_fraction_reduction_ratio * dynamic_adjustment_factor
+            )
+            self._mem_fraction_static = round(
+                original_server_arg_mem_fraction * final_overall_factor, 3
+            )
 
 
 def _create_candidate(
