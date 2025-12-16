@@ -370,6 +370,10 @@ class ClusterListParams(ListParams):
         "name",
         "provider",
         "state",
+        "workers",
+        "ready_workers",
+        "gpus",
+        "models",
         "created_at",
         "updated_at",
     ]
