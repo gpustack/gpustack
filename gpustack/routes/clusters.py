@@ -1,8 +1,9 @@
+import math
 import secrets
-from typing import Optional
+from typing import Any, Callable, Optional
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
-
+from enum import Enum
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -10,6 +11,7 @@ from gpustack.api.exceptions import (
     InvalidException,
     ForbiddenException,
 )
+from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.deps import SessionDep, EngineDep
 from gpustack.schemas.clusters import (
     ClusterListParams,
@@ -69,14 +71,77 @@ async def get_clusters(
             media_type="text/event-stream",
         )
 
-    return await Cluster.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
-        order_by=params.order_by,
+    items = await Cluster.all_by_fields(
+        session=session, fields=fields, fuzzy_fields=fuzzy_fields
     )
+
+    if not items:
+        return ClustersPublic(
+            total=0,
+            page=params.page,
+            per_page=params.perPage,
+            items=[],
+        )
+
+    if params.page < 1 or params.perPage < 1:
+        # Return all items.
+        pagination = Pagination(
+            page=1,
+            perPage=len(items),
+            total=len(items),
+            totalPage=1,
+        )
+        return PaginatedList[ClusterPublic](items=items, pagination=pagination)
+
+    # sort in memory
+    order_by = params.order_by
+    if order_by:
+        for field, direction in reversed(order_by):
+            items.sort(
+                key=_make_sort_key(field),
+                reverse=direction == "desc",
+            )
+
+    # Paginate results.
+    start = (params.page - 1) * params.perPage
+    end = start + params.perPage
+    paginated_items = items[start:end]
+
+    count = len(items)
+    total_page = math.ceil(count / params.perPage)
+    pagination = Pagination(
+        page=params.page,
+        perPage=params.perPage,
+        total=count,
+        totalPage=total_page,
+    )
+
+    return PaginatedList[ClusterPublic](items=paginated_items, pagination=pagination)
+
+
+def _make_sort_key(field: str) -> Callable[[Any], tuple]:
+    """
+    Returns a key function for sorting objects by a given field.
+    Handles:
+      - None values (placed at the end regardless of sort direction),
+      - Enum instances (uses .value for comparison),
+      - Other types (str, int, float, datetime, etc.) as long as they are comparable.
+    """
+
+    def key_func(obj: Any) -> tuple:
+        val = getattr(obj, field, None)
+        if val is None:
+            # (1, None) ensures None is sorted after non-None values
+            return (1, None)
+        if isinstance(val, Enum):
+            # Use the underlying value of the Enum for comparison
+            sort_val = val.value
+        else:
+            sort_val = val
+        # (0, sort_val) so non-None values come first
+        return (0, sort_val)
+
+    return key_func
 
 
 @router.get("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)

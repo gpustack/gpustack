@@ -156,6 +156,7 @@ class ActiveRecordMixin:
         cls,
         session: AsyncSession,
         fields: dict = {},
+        fuzzy_fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
     ):
         """
@@ -166,6 +167,13 @@ class ActiveRecordMixin:
         statement = select(cls)
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
+
+        if fuzzy_fields:
+            fuzzy_conditions = [
+                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
+                for key, value in fuzzy_fields.items()
+            ]
+            statement = statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
