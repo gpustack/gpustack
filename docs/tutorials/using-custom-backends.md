@@ -48,7 +48,7 @@ You can engage in conversations in the Playground.
 2. Add the following backend configuration on the Inference Backend page:
     ```yaml
     backend_name: llama.cpp-custom
-    default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}}'
+    default_run_command: '-m {{model_path}} --host 0.0.0.0 --port {{port}} --alias {{model_name}}'
     version_configs:
       v1-cuda:
         image_name: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -56,7 +56,7 @@ You can engage in conversations in the Playground.
       v1-cpu:
         image_name: ghcr.io/ggml-org/llama.cpp:server
         custom_framework: cpu
-    default_version: v1-custom
+    default_version: v1-cuda
     ```
 3. On the Deployment page, locate a GGUF-format model, select `llama.cpp`, and deploy.
 
