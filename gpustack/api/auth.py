@@ -88,12 +88,8 @@ async def get_current_user(
         if not user.is_active:
             raise UnauthorizedException(message="User account is deactivated")
         request.state.user = user
-        access_key = None if api_key is None else api_key.access_key
         if api_key is not None:
             request.state.api_key = api_key
-        request.state.user_allow_model_names = await UserService(
-            session
-        ).get_user_accessible_model_names(user.id, access_key)
         return user
 
     raise credentials_exception

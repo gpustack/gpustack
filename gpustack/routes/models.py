@@ -37,7 +37,11 @@ from gpustack.schemas.models import (
     MyModel,
 )
 from gpustack.schemas.users import User
-from gpustack.server.services import ModelService, WorkerService
+from gpustack.server.services import (
+    ModelService,
+    WorkerService,
+    delete_accessible_model_cache,
+)
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
@@ -362,6 +366,7 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
     await validate_model_in(session, model_in)
 
     try:
+        await revoke_model_access_cache(session=session)
         model = await Model.create(session, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
@@ -400,6 +405,7 @@ async def delete_model(session: SessionDep, id: int):
         raise NotFoundException(message="Model not found")
 
     try:
+        await revoke_model_access_cache(session=session, model=model)
         await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
@@ -438,6 +444,9 @@ async def add_model_access(
         col(User.id).in_([user.id for user in access_request.users]),
     ]
 
+    affected_user_ids = {user.id for user in model.users}
+    cache_model = model
+
     users = await User.all_by_fields(
         session=session, fields={}, extra_conditions=extra_conditions
     )
@@ -448,9 +457,20 @@ async def add_model_access(
                 raise NotFoundException(message=f"User ID {req_user.id} not found")
 
     model.users = list(users)
-    if access_request.access_policy is not None:
+    if (
+        access_request.access_policy is not None
+        and access_request.access_policy != model.access_policy
+    ):
         model.access_policy = access_request.access_policy
+        # if changing to public, need to update all users
+        affected_user_ids = None
+        cache_model = None
     try:
+        await revoke_model_access_cache(
+            session=session,
+            model=cache_model,
+            extra_user_ids=affected_user_ids,
+        )
         await ModelService(session).update(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to add model access: {e}")
@@ -507,3 +527,19 @@ async def get_my_model(
         user_id=user_id,
         target_class=target_class,
     )
+
+
+async def revoke_model_access_cache(
+    session: AsyncSession,
+    model: Optional[Model] = None,
+    extra_user_ids: Optional[set[int]] = None,
+):
+    user_ids = set()
+    if model is None:
+        users = await User.all(session)
+        user_ids = {user.id for user in users}
+    else:
+        user_ids = {user.id for user in model.users}
+    if extra_user_ids:
+        user_ids.update(extra_user_ids)
+    await delete_accessible_model_cache(session, *user_ids)
