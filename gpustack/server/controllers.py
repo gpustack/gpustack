@@ -172,6 +172,8 @@ class ModelInstanceController:
 
                 await model.refresh(session)
                 await sync_ready_replicas(session, model)
+                if self._disable_gateway:
+                    return
                 await mcp_handler.ensure_model_instance_mcp_bridge(
                     event_type=event.type,
                     model_instance=model_instance,
