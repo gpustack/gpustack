@@ -377,7 +377,7 @@ class Server:
             await User.create(session, user)
 
     async def _migrate_legacy_token(self, session: AsyncSession):
-        if not self._config.token or self._config.token.startswith(API_KEY_PREFIX):
+        if not self._config.token:
             return
         # this should be created from sql migration script.
         cluster_user = await get_default_cluster_user(session)
@@ -550,15 +550,21 @@ class Server:
             config=k8s_config,
         )
 
+    def _should_create_default_cluster(self) -> bool:
+        # only server or both will get into this logic
+        if self._config.server_role() == Config.ServerRole.BOTH:
+            return True
+        if self._config.token:
+            return True
+        return False
+
     async def _init_default_cluster(self, session: AsyncSession):
-        if self._config.server_role() != Config.ServerRole.BOTH:
+        if not self._should_create_default_cluster():
             return
         default_cluster_user = await get_default_cluster_user(session)
         if default_cluster_user:
             return
-        logger.info(
-            "Creating default cluster due to running in Server and Worker mode."
-        )
+        logger.info("Creating default cluster...")
         hashed_suffix = secrets.token_hex(6)
         default_cluster = Cluster(
             name="Default Cluster",
