@@ -22,6 +22,7 @@ from gpustack import envs
 from gpustack.api.auth import (
     SESSION_COOKIE_NAME,
     OIDC_ID_TOKEN_COOKIE_NAME,
+    SSO_LOGIN_COOKIE_NAME,
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
@@ -277,6 +278,13 @@ async def saml_callback(request: Request, session: SessionDep):
             max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
             expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
         )
+        response.set_cookie(
+            key=SSO_LOGIN_COOKIE_NAME,
+            value="true",
+            httponly=True,
+            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        )
     except Exception as e:
         logger.error(f"SAML callback error: {str(e)}")
         raise UnauthorizedException(message=str(e))
@@ -293,6 +301,7 @@ async def saml_logout_callback(request: Request):
         pass
     response = RedirectResponse(url="/")
     response.delete_cookie(key=SESSION_COOKIE_NAME)
+    response.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
     return response
 
 
@@ -434,6 +443,13 @@ async def oidc_callback(request: Request, session: SessionDep):
                 max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
                 expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
             )
+            response.set_cookie(
+                key=SSO_LOGIN_COOKIE_NAME,
+                value="true",
+                httponly=True,
+                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            )
     except Exception as e:
         logger.warning(f"Failed to set id_token cookie: {str(e)}")
     return response
@@ -501,10 +517,12 @@ async def logout(request: Request):
         except Exception as e:
             logger.error(f"Failed to get SAML logout url: {str(e)}")
             external_logout_url = None
-    content = json.dumps({"logout_url": external_logout_url})
+    sso_login = request.cookies.get(SSO_LOGIN_COOKIE_NAME)
+    content = json.dumps({"logout_url": external_logout_url}) if sso_login else ""
     resp = Response(content=content, media_type="application/json")
     resp.delete_cookie(key=SESSION_COOKIE_NAME)
     resp.delete_cookie(key=OIDC_ID_TOKEN_COOKIE_NAME)
+    resp.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
     return resp
 
 
