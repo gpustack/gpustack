@@ -1997,7 +1997,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.22.post1" },
-    { name = "gpustack-runtime", specifier = "==0.1.36" },
+    { name = "gpustack-runtime", specifier = "==0.1.36.post1" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2084,7 +2084,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.36"
+version = "0.1.36.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2093,10 +2093,11 @@ dependencies = [
     { name = "kubernetes" },
     { name = "nvidia-ml-py" },
     { name = "pyyaml" },
+    { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/9b/baf5c87bed3f9b1c790697811e874cbb05f855ca305cc39fd7e9ab4c4f87/gpustack_runtime-0.1.36.tar.gz", hash = "sha256:aab1c3c79e7c26ddae5b63f22fec9a202e08954804fd789ebc2dc7090cd9ac4d", size = 200894, upload-time = "2025-12-15T02:46:00.138Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/f5/a6de9351fe8e10f3ea31ec8d2ec19308f6a4764cf14d3451b20d459856ef/gpustack_runtime-0.1.36.post1.tar.gz", hash = "sha256:d9a0ee39050ca6303008fadba6ac7b710b729a43a2f0c37fb9202bfa307ea24a", size = 201343, upload-time = "2025-12-16T07:15:49.874Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/43/b169bda3d56090f69df84abd3cb867a5c25245592bd42626eda0f18835b1/gpustack_runtime-0.1.36-py3-none-any.whl", hash = "sha256:9da08faefd0fea861b1410b2623a6a64e32f33ceeaef28151f02b4fbae8efaef", size = 173400, upload-time = "2025-12-15T02:45:58.664Z" },
+    { url = "https://files.pythonhosted.org/packages/69/f0/00daa46934385be480620b31f1fb080d28cede371114f82c4a03b4b3653c/gpustack_runtime-0.1.36.post1-py3-none-any.whl", hash = "sha256:0a29e7f6384ff3fa1befc5e7017ea87ab58940255919faa95e8a37e8c0646a24", size = 173452, upload-time = "2025-12-16T07:15:48.64Z" },
 ]
 
 [[package]]
