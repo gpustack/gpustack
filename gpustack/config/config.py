@@ -89,7 +89,7 @@ class Config(WorkerConfig, BaseSettings):
 
         token: Shared secret used to register worker.
         server_url: URL of the server.
-        worker_ip: Deprecated, use advertise_address instead.
+        worker_ip: IP address of the worker node. Auto-detected by default.
         worker_ifname: Network interface name of the worker node. Auto-detected by default.
         worker_name: Name of the worker node. Use the hostname by default.
         disable_worker_metrics: Disable worker metrics.
@@ -754,9 +754,6 @@ class Config(WorkerConfig, BaseSettings):
             if self.server_role() != self.ServerRole.WORKER
             else self.worker_port
         )
-
-    def static_worker_ip(self) -> Optional[str]:
-        return self.worker_ip or self.advertise_address or None
 
     def reload_token(self):
         token = read_registration_token(self.data_dir)

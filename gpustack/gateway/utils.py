@@ -24,6 +24,7 @@ from gpustack.server.bus import EventType
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
+from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException
 
@@ -132,35 +133,47 @@ def model_instance_prefix(
 def model_instance_registry(
     model_instance: Union[ModelInstance, ModelInstancePublic]
 ) -> Optional[McpBridgeRegistry]:
-    if (
-        model_instance.worker_ip is None
-        or model_instance.worker_ip == ""
-        or model_instance.port is None
-    ):
+    address = model_instance.worker_advertise_address or model_instance.worker_ip
+    if address is None or address == "" or model_instance.port is None:
         return None
+    domain = address
+    port = model_instance.port
+    registry_type = "dns"
+    if is_ipaddress(address):
+        domain = f"{address}:{model_instance.port}"
+        port = 80
+        registry_type = "static"
     return McpBridgeRegistry(
-        domain=f"{model_instance.worker_ip}:{model_instance.port}",
-        port=80,
+        domain=domain,
+        port=port,
         name=model_instance_prefix(model_instance),
         protocol="http",
-        type="static",
+        type=registry_type,
     )
 
 
 def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
+    address = worker.advertise_address or worker.ip
     if (
-        worker.ip is None
-        or worker.ip == ""
+        address is None
+        or address == ""
         or worker.port is None
         or worker.proxy_mode != ModelInstanceProxyModeEnum.WORKER
     ):
         return None
+    domain = address
+    port = worker.port
+    registry_type = "dns"
+    if is_ipaddress(address):
+        domain = f"{address}:{worker.port}"
+        port = 80
+        registry_type = "static"
     return McpBridgeRegistry(
-        domain=f"{worker.ip}:{worker.port}",
-        port=80,
+        domain=domain,
+        port=port,
         name=f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
         protocol="http",
-        type="static",
+        type=registry_type,
     )
 
 

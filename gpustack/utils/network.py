@@ -22,7 +22,7 @@ def normalize_route_path(path: str) -> str:
     return path
 
 
-def get_first_non_loopback_ip() -> str:
+def get_first_non_loopback_ip(expected_ifname: Optional[str] = None) -> str:
     """
     Get the first non-loopback IPv4 address of the machine.
 
@@ -31,14 +31,33 @@ def get_first_non_loopback_ip() -> str:
     """
 
     # Fallback to scanning all interfaces
-    for _, addrs in psutil.net_if_addrs().items():
+    for name, addrs in psutil.net_if_addrs().items():
+        if expected_ifname is not None and name != expected_ifname:
+            continue
         for addr in addrs:
             if addr.family == socket.AF_INET and not addr.address.startswith(
                 ("127.", "169.254.")
             ):
                 return addr.address
-
+    if expected_ifname is not None:
+        raise Exception(
+            f"No non-loopback IPv4 address found on interface {expected_ifname}."
+        )
     raise Exception("No non-loopback IPv4 address found.")
+
+
+def is_ipaddress(ip_str: str) -> bool:
+    """
+    Check if the given string is a valid IP address.
+
+    Returns:
+        True if valid IP address, False otherwise.
+    """
+    try:
+        ipaddress.ip_address(ip_str)
+        return True
+    except ValueError:
+        return False
 
 
 def _get_ifname_by_local_ip(

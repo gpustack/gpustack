@@ -265,6 +265,7 @@ class WorkerStatus(SystemInfo):
 
 
 class WorkerStatusStored(BaseModel):
+    advertise_address: Optional[str] = None
     hostname: str
     ip: str
     ifname: str
