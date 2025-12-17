@@ -328,6 +328,9 @@ class Scheduler:
                 model_instance.worker_id = candidate.worker.id
                 model_instance.worker_name = candidate.worker.name
                 model_instance.worker_ip = candidate.worker.ip
+                model_instance.worker_advertise_address = (
+                    candidate.worker.advertise_address
+                )
                 model_instance.worker_ifname = candidate.worker.ifname
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim

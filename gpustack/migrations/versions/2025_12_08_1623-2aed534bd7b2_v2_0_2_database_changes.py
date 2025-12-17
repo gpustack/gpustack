@@ -32,6 +32,10 @@ def upgrade() -> None:
     model_instance_proxy_mode.create(op.get_bind(), checkfirst=True)
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.add_column(sa.Column('proxy_mode', model_instance_proxy_mode, nullable=True))
+        batch_op.add_column(sa.Column('advertise_address', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('worker_advertise_address', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
 
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.add_column(sa.Column('server_url', sa.String(length=2048), nullable=True))
@@ -56,7 +60,11 @@ def downgrade() -> None:
     )
     with op.batch_alter_table('workers', schema=None) as batch_op:
         batch_op.drop_column('proxy_mode')
+        batch_op.drop_column('advertise_address')
     model_instance_proxy_mode.drop(op.get_bind(), checkfirst=True)
+
+    with op.batch_alter_table('model_instances', schema=None) as batch_op:
+        batch_op.drop_column('worker_advertise_address')
 
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.drop_column('server_url')

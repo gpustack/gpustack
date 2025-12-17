@@ -127,6 +127,7 @@ class WorkerStatusCollector:
             metrics_port = -1
 
         return WorkerStatusPublic(
+            advertise_address=self._cfg.advertise_address or self._worker_ip_getter(),
             hostname=socket.gethostname(),
             ip=self._worker_ip_getter(),
             ifname=self._worker_ifname_getter(),

@@ -93,8 +93,9 @@ class WorkerManager:
         logger.info(
             f"Registering worker: {self._worker_name}",
         )
-        # always reloads the token
-        self._cfg.reload_token()
+        if self._is_embedded:
+            # always reloads the token
+            self._cfg.reload_token()
         self._registration_client = registration_client(
             data_dir=self._cfg.data_dir,
             server_url=self._cfg.get_server_url(),
