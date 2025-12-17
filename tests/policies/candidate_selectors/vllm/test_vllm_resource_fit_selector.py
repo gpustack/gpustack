@@ -46,6 +46,7 @@ def expected_candidate(
         "is_unified_memory": False,
         "vram": vram,
         "subordinate_workers": subworkers or [],
+        "vram_utilization": 0.9,
     }
     if ram is not None:
         candidate["ram"] = ram
@@ -80,6 +81,7 @@ def expected_candidate(
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23181498777},
+                                vram_utilization=0.9,
                             ),
                         )
                     ],
@@ -141,6 +143,7 @@ def expected_candidate(
                             gpu_indexes=[0],
                             computed_resource_claim=ComputedResourceClaim(
                                 vram={0: 23413653504},
+                                vram_utilization=0.9,
                             ),
                         )
                     ],
@@ -215,6 +218,7 @@ def expected_candidate(
                             gpu_indexes=[0],
                             computed_resource_claim=ComputedResourceClaim(
                                 vram={0: 77309411328},
+                                vram_utilization=0.9,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -224,6 +228,7 @@ def expected_candidate(
                             gpu_indexes=[0],
                             computed_resource_claim=ComputedResourceClaim(
                                 vram={0: 77309411328},
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -369,6 +374,7 @@ def expected_candidate(
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23413653504},
+                                vram_utilization=0.9,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -379,6 +385,7 @@ def expected_candidate(
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23181498777},
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],

@@ -23,6 +23,8 @@ from gpustack.policies.utils import (
     get_model_ram_claim,
     ram_not_enough,
     sort_workers_by_gpu_count,
+    get_worker_allocatable_resource,
+    sort_gpu_indexes_by_allocatable_rate,
 )
 from gpustack.schemas.models import (
     ComputedResourceClaim,
@@ -162,6 +164,23 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 if use_manual
                 else None
             )
+            # If gpus_per_replica is set, choose top-N GPUs by allocatable VRAM
+            if use_manual and self._model.gpu_selector.gpus_per_replica:
+                allocatable = await get_worker_allocatable_resource(
+                    self._engine, worker
+                )
+                sorted_gpu_indexes = [
+                    idx
+                    for idx in sort_gpu_indexes_by_allocatable_rate(
+                        worker, allocatable.vram
+                    )
+                    if idx in selected
+                ]
+                sorted_gpu_indexes = sorted_gpu_indexes[
+                    : self._model.gpu_selector.gpus_per_replica
+                ]
+                selected = sorted_gpu_indexes
+
             # Traverse GPUs for this worker and respect manual selection if present
             for gpu in worker.status.gpu_devices:
                 if selected is not None and gpu.index not in selected:
@@ -472,6 +491,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
                         ram=get_computed_ram_claim(self._model, vram_claim),
+                        vram_utilization=self._mem_fraction_static,
                     ),
                 )
             )
@@ -585,6 +605,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                         computed_resource_claim=ComputedResourceClaim(
                             vram=vram_claim,
                             ram=get_computed_ram_claim(self._model, vram_claim),
+                            vram_utilization=self._mem_fraction_static,
                         ),
                     )
                 ]
@@ -766,7 +787,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
     async def _cal_mem_fraction_static(self, workers: List[Worker]):  # noqa: C901
         """
         Adapted from sglang's server_args memory fraction logic.
-
+        Logic of SGLang set default mem_fraction_static:
+        https://github.com/sgl-project/sglang/blob/037c3982af4a996f41b38cacf59f0be24b8699f8/python/sglang/srt/server_args.py#L751-L919
+        note: we largely maintained the same code structure and logic, except we removed some assignments unrelated to the calculation of mem_fraction_static.
         Args:
             workers: List of workers used to determine GPU memory characteristics.
         """
@@ -778,8 +801,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         )
         gpu_mem_bytes = await self._get_min_gpu_sum(workers)
         gpu_mem = byte_to_mib(gpu_mem_bytes)
-        # Logic of SGLang set default mem_fraction_static
-        # https://github.com/sgl-project/sglang/blob/037c3982af4a996f41b38cacf59f0be24b8699f8/python/sglang/srt/server_args.py#L751-L919
         # Step 1: Use the minimum GPU memory of all workers to calculate _chunked_prefill_size and _cuda_graph_max_bs.
         if gpu_mem:
             if gpu_mem < 20 * 1024:
@@ -1001,6 +1022,7 @@ def _create_candidate(
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claim,
                     ram=get_computed_ram_claim(model, vram_claim),
+                    vram_utilization=mem_fraction_static,
                 ),
             )
             subordinate_workers.append(subordinate_worker)

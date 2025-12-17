@@ -270,6 +270,23 @@ class SGLangServer(InferenceServer):
         hicache_arguments = self._get_hicache_arguments()
         arguments.extend(hicache_arguments)
 
+        if (
+            self._model_instance.computed_resource_claim
+            and self._model_instance.computed_resource_claim.vram_utilization
+        ):
+            input_utilization = find_parameter(
+                self._model.backend_parameters, ["mem_fraction_static"]
+            )
+            if not input_utilization:
+                arguments.extend(
+                    [
+                        "--mem-fraction-static",
+                        str(
+                            self._model_instance.computed_resource_claim.vram_utilization
+                        ),
+                    ]
+                )
+
         # Add user-defined backend parameters
         arguments.extend(self._flatten_backend_param())
 

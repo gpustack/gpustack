@@ -333,6 +333,7 @@ class ComputedResourceClaim(BaseModel):
     ram: Optional[int] = Field(default=None)  # in bytes
     vram: Optional[Dict[int, int]] = Field(default=None)  # in bytes
     tensor_split: Optional[List[int]] = Field(default=None)
+    vram_utilization: Optional[float] = Field(default=None)
 
 
 class ModelInstanceSubordinateWorker(BaseModel):
