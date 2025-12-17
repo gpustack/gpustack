@@ -32,7 +32,12 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 
-from gpustack.utils.gpu import any_gpu_match
+from gpustack.utils.gpu import (
+    all_gpu_match,
+    any_gpu_match,
+    find_one_gpu,
+    compare_compute_capability,
+)
 from gpustack.utils.hub import (
     auth_check,
     get_hugging_face_model_min_gguf_path,
@@ -289,6 +294,28 @@ async def evaluate_environment(
     ):
         return False, [
             "The Ascend MindIE backend requires Ascend NPUs but none are available."
+        ]
+
+    if (
+        backend == BackendEnum.SGLANG
+        and all_gpu_match(
+            workers, lambda gpu: gpu.vendor == ManufacturerEnum.NVIDIA.value
+        )
+        and not any_gpu_match(
+            workers,
+            lambda gpu: compare_compute_capability(gpu.compute_capability, "8.0") >= 0,
+        )
+    ):
+        # Ref: https://github.com/sgl-project/sglang/issues/6006
+        gpu = find_one_gpu(workers)
+        return False, [
+            "The SGLang backend requires NVIDIA GPUs with compute capability 8.0 or higher "
+            "(e.g., A100/SM80, H100/SM90, RTX 3090/SM86). "
+            + (
+                f"Available GPU: {gpu.name} (compute capability: {gpu.compute_capability})"
+                if gpu
+                else ""
+            )
         ]
 
     return True, []

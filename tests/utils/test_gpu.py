@@ -1,5 +1,5 @@
 import pytest
-from gpustack.utils.gpu import parse_gpu_id
+from gpustack.utils.gpu import parse_gpu_id, compare_compute_capability
 
 
 expected_matched_inputs = {
@@ -51,3 +51,55 @@ def test_parse_gpu_id():
         is_matched, result = parse_gpu_id(input)
         assert not is_matched, f"Expected {input} to not be matched but it was."
         assert result is None, f"Expected result to be None but got {result}"
+
+
+@pytest.mark.parametrize(
+    "current, target, expected",
+    [
+        # Equal cases
+        ("8.0", "8.0", 0),
+        ("7.5", "7.5", 0),
+        # Greater cases
+        ("8.0", "7.5", 1),
+        ("8.6", "8.0", 1),
+        ("9.0", "8.9", 1),
+        ("10.0", "9.0", 1),
+        # Less cases
+        ("7.5", "8.0", -1),
+        ("8.0", "8.6", -1),
+        ("8.9", "9.0", -1),
+        # Invalid current, valid target -> -1
+        (None, "8.0", -1),
+        ("", "8.0", -1),
+        ("   ", "8.0", -1),
+        ("invalid", "8.0", -1),
+        ("8", "8.0", -1),
+        ("8.", "8.0", -1),
+        (".0", "8.0", -1),
+        ("8.0.1", "8.0", -1),
+        # Valid current, invalid target -> 1
+        ("8.0", None, 1),
+        ("8.0", "", 1),
+        ("8.0", "   ", 1),
+        ("8.0", "invalid", 1),
+        ("8.0", "8", 1),
+        ("8.0", "8.", 1),
+        ("8.0", ".0", 1),
+        ("8.0", "8.0.1", 1),
+        # Both invalid -> 0
+        (None, None, 0),
+        ("", "", 0),
+        ("   ", "   ", 0),
+        ("invalid", "invalid", 0),
+        (None, "", 0),
+        ("8", "invalid", 0),
+        ("8.", ".0", 0),
+        ("-1.0", "-2.0", 0),
+        # Whitespace normalization
+        (" 8.0 ", "8.0", 0),
+        ("8.0", " 8.0 ", 0),
+        (" 8.6 ", " 8.0 ", 1),
+    ],
+)
+def test_compare_compute_capability(current, target, expected):
+    assert compare_compute_capability(current, target) == expected
