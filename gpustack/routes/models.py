@@ -55,6 +55,10 @@ async def get_models(
     engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
+    active: bool = Query(
+        default=False,
+        description="Filter to only active models (replicas > 0).",
+    ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
@@ -63,6 +67,7 @@ async def get_models(
         engine=engine,
         session=session,
         params=params,
+        active=active,
         search=search,
         categories=categories,
         cluster_id=cluster_id,
@@ -73,6 +78,7 @@ async def _get_models(
     engine: EngineDep,
     session: SessionDep,
     params: ModelListParams,
+    active: bool = False,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
@@ -105,6 +111,9 @@ async def _get_models(
     if categories:
         conditions = build_category_conditions(session, target_class, categories)
         extra_conditions.append(or_(*conditions))
+
+    if active:
+        extra_conditions.append(target_class.replicas > 0)
 
     order_by = params.order_by
     if order_by:
@@ -507,6 +516,10 @@ async def get_my_models(
     engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
+    active: bool = Query(
+        default=False,
+        description="Filter to only active models (replicas > 0).",
+    ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
@@ -521,6 +534,7 @@ async def get_my_models(
         engine=engine,
         session=session,
         params=params,
+        active=active,
         search=search,
         categories=categories,
         cluster_id=cluster_id,
