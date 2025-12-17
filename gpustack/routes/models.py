@@ -6,7 +6,7 @@ from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
-from sqlmodel import col, or_, func
+from sqlmodel import case, col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
@@ -119,6 +119,10 @@ async def _get_models(
                 new_order_by.append(("model_scope_file_path", direction))
                 new_order_by.append(("local_path", direction))
         order_by = new_order_by
+    else:
+        # Default ordering: active models first, then by creation time descending
+        active_model_priority_expr = case((Model.replicas > 0, 0), else_=1)
+        order_by = [(active_model_priority_expr, "asc"), ("created_at", "desc")]
 
     return await target_class.paginated_by_query(
         session=session,
