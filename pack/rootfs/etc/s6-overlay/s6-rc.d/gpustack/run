@@ -5,7 +5,7 @@
 # ================================
 
 source /etc/profile
-ARGS_FILE="/var/lib/gpustack/run/args/gpustack"
+ARGS_FILE="/run/gpustack/args"
 
 # Read arguments from the args file if it exists and is not empty
 set --
