@@ -59,7 +59,7 @@ SELECT
     JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.compute_capability')) AS `compute_capability`,
     JSON_EXTRACT(gpu_device, '$.core') AS `core`,
     JSON_EXTRACT(gpu_device, '$.memory') AS `memory`,
-    CAST(JSON_UNQUOTE(JSON_EXTRACT(gpu_device, '$.temperature')) AS DECIMAL(10, 2)) AS `temperature`,
+    CAST(COALESCE(JSON_VALUE(gpu_device, '$.temperature'), '0') AS DECIMAL(10, 2)) AS `temperature`,
     JSON_EXTRACT(gpu_device, '$.network') AS `network`
 FROM
     workers w,
