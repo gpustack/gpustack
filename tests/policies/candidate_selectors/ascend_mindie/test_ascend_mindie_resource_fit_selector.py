@@ -730,6 +730,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
                                 vram={3: 54975581388, 4: 54975581388},
+                                vram_utilization=0.8,
                             ),
                         ),
                     ],
@@ -778,6 +779,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
                                 vram={0: 54975581388},
+                                vram_utilization=0.8,
                             ),
                         ),
                     ],
@@ -1174,6 +1176,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -1203,6 +1206,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -1232,6 +1236,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                     ],
@@ -1345,6 +1350,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                     ],

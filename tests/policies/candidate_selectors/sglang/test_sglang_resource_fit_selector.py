@@ -350,6 +350,7 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
                         computed_resource_claim=ComputedResourceClaim(
                             is_unified_memory=False,
                             vram={0: 21687579967},
+                            vram_utilization=0.842,
                         ),
                     )
                 ],
@@ -435,6 +436,7 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 19069120020},
+                            vram_utilization=0.733,
                         ),
                     )
                 ],
@@ -522,6 +524,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 71124658421},
+                            vram_utilization=0.828,
                         ),
                     ),
                     ModelInstanceSubordinateWorker(
@@ -531,6 +534,7 @@ async def test_manual_schedule_to_3_workers_4_gpus(
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 71124658421},
+                            vram_utilization=0.828,
                         ),
                     ),
                 ],
@@ -599,6 +603,7 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
                         gpu_indexes=[0],
                         computed_resource_claim=ComputedResourceClaim(
                             vram={0: 21816366071},
+                            vram_utilization=0.847,
                         ),
                     )
                 ],
@@ -687,6 +692,7 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
                                 6: 72756745994,
                                 7: 72756745994,
                             },
+                            vram_utilization=0.847,
                         ),
                     ),
                 ],

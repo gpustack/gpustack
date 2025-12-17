@@ -737,6 +737,7 @@ class ScheduleCandidatesSelector(ABC):
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claims,
                     ram=get_computed_ram_claim(self._model, vram_claims, request.ram),
+                    vram_utilization=gpu_memory_utilization,
                 ),
             )
         ]
@@ -809,6 +810,7 @@ class ScheduleCandidatesSelector(ABC):
                         ram=get_computed_ram_claim(
                             self._model, vram_claim, request.ram
                         ),
+                        vram_utilization=gpu_memory_utilization,
                     ),
                 )
             )
