@@ -8,7 +8,7 @@
 source /etc/profile
 SCRIPT_ROOT=/etc/s6-overlay/scripts
 source "$SCRIPT_ROOT/base.sh"
-ARGS_FILE="/var/lib/gpustack/run/args/gpustack"
+ARGS_FILE="/run/gpustack/args"
 
 # Read arguments from the args file if it exists and is not empty
 set --
