@@ -609,16 +609,6 @@ class Config(WorkerConfig, BaseSettings):
     def _is_worker(self):
         return self.server_url is not None
 
-    def get_image_name(self, override: Optional[str] = None) -> str:
-        if self.image_name_override:
-            return self.image_name_override
-        version = __version__
-        if version.removeprefix("v") == "0.0.0":
-            version = "main"
-        registry = override or self.system_default_container_registry
-        prefix = f"{registry}/" if registry else ""
-        return f"{prefix}{self.image_repo}:{version}"
-
     def postgres_base_dir(self) -> str:
         return os.path.join(self.data_dir, "postgresql")
 
@@ -786,22 +776,38 @@ class Config(WorkerConfig, BaseSettings):
         self.check_all()
 
 
+def get_image_name(
+    image_name_override: Optional[str],
+    registry: Optional[str] = None,
+    image_repo: str = "gpustack/gpustack",
+) -> str:
+    if image_name_override:
+        return image_name_override
+    version = __version__
+    if version.removeprefix("v") == "0.0.0":
+        version = "main"
+    prefix = f"{registry}/" if registry else ""
+    return f"{prefix}{image_repo}:{version}"
+
+
 def get_cluster_image_name(worker_config: Optional[PredefinedConfigNoDefaults]) -> str:
     cfg = get_global_config()
     if worker_config is None:
-        return cfg.get_image_name(
-            determine_default_registry(cfg.system_default_container_registry)
+        return get_image_name(
+            image_repo=cfg.image_repo,
+            image_name_override=cfg.image_name_override,
+            registry=determine_default_registry(cfg.system_default_container_registry),
         )
-    combined_config = Config.model_validate(
-        {
-            **cfg.model_dump(),
-            **(worker_config.model_dump(exclude_none=True) if worker_config else {}),
-        }
+    registry = determine_default_registry(
+        worker_config.system_default_container_registry
+        or cfg.system_default_container_registry
     )
-    container_registry = determine_default_registry(
-        combined_config.system_default_container_registry,
+    return get_image_name(
+        image_name_override=worker_config.image_name_override
+        or cfg.image_name_override,
+        image_repo=worker_config.image_repo or cfg.image_repo,
+        registry=registry,
     )
-    return combined_config.get_image_name(container_registry)
 
 
 def get_openid_configuration(issuer: str) -> dict:
