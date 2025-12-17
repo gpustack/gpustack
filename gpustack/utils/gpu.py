@@ -67,6 +67,9 @@ def all_gpu_match(
     Returns:
         bool: True if all GPUs match the condition, False otherwise.
     """
+    if not worker:
+        return False
+
     if isinstance(worker, list):
         return all(all_gpu_match(w, verify) for w in worker)
 
@@ -94,6 +97,91 @@ def any_gpu_match(
     if not worker.status or not worker.status.gpu_devices:
         return False
     return any(verify(gpu) for gpu in worker.status.gpu_devices)
+
+
+def find_one_gpu(
+    worker: Union[List[WorkerBase], WorkerBase]
+) -> Union[GPUDeviceInfo, None]:
+    if isinstance(worker, list):
+        for w in worker:
+            gpu = find_one_gpu(w)
+            if gpu is not None:
+                return gpu
+    elif worker.status and worker.status.gpu_devices:
+        return worker.status.gpu_devices[0]
+
+    return None
+
+
+def compare_compute_capability(current: str | None, target: str | None) -> int:
+    """
+    Safely compares two CUDA compute capability version strings.
+
+    Args:
+        current: The compute capability of the current device (e.g., "7.5").
+                 Accepts None, empty, or whitespace-only strings as invalid.
+        target:  The required or reference compute capability (e.g., "8.0").
+                 Also accepts None or invalid strings.
+
+    Returns:
+        -1 if `current` is less than `target`,
+         0 if they are equal (including both being invalid),
+         1 if `current` is greater than `target`.
+
+    Invalid inputs (None, empty, whitespace, or malformed "X.Y" format)
+    are treated as the lowest possible version. Thus:
+      - Any valid version > any invalid version.
+      - Two invalid versions are considered equal.
+    """
+
+    def parse_cc(cc: str | None) -> tuple[int, int] | None:
+        """Parse a compute capability string into (major, minor) integers."""
+        if cc is None:
+            return None
+        cc = cc.strip()
+        if not cc:
+            return None
+        parts = cc.split('.', 1)
+        if len(parts) != 2:
+            return None
+        try:
+            major = int(parts[0])
+            minor = int(parts[1])
+            # Compute Capability versions are non-negative
+            if major < 0 or minor < 0:
+                return None
+            return major, minor
+        except (ValueError, TypeError):
+            return None
+
+    cur_parsed = parse_cc(current)
+    tgt_parsed = parse_cc(target)
+
+    # Both invalid → considered equal
+    if cur_parsed is None and tgt_parsed is None:
+        return 0
+    # Current is invalid, target is valid → current < target
+    if cur_parsed is None:
+        return -1
+    # Target is invalid, current is valid → current > target
+    if tgt_parsed is None:
+        return 1
+
+    # Both are valid: compare numerically
+    cur_major, cur_minor = cur_parsed
+    tgt_major, tgt_minor = tgt_parsed
+
+    if cur_major > tgt_major:
+        return 1
+    elif cur_major < tgt_major:
+        return -1
+    else:
+        if cur_minor > tgt_minor:
+            return 1
+        elif cur_minor < tgt_minor:
+            return -1
+        else:
+            return 0
 
 
 def abbreviate_gpu_indexes(indexes, max_show=3):
