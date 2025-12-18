@@ -76,11 +76,14 @@ async def get_clusters(
     )
 
     if not items:
-        return ClustersPublic(
-            total=0,
-            page=params.page,
-            per_page=params.perPage,
+        return PaginatedList[ClusterPublic](
             items=[],
+            pagination=Pagination(
+                page=params.page,
+                perPage=params.perPage,
+                total=0,
+                totalPage=0,
+            ),
         )
 
     if params.page < 1 or params.perPage < 1:
