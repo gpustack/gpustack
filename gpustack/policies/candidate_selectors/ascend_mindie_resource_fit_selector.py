@@ -380,6 +380,13 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                                 f"the --moe-tensor-parallel-size ({self._serving_params.moe_tensor_parallel_size})."
                             )
                             return False
+        if vocab_size := self._model_params.vocab_size:
+            if vocab_size % self._serving_params.tensor_parallel_size != 0:
+                self._diagnostic_messages.append(
+                    f"Model's vocabulary size ({vocab_size}) must be divisible by "
+                    f"the --tensor-parallel-size ({self._serving_params.tensor_parallel_size})."
+                )
+                return False
         return True
 
     async def _get_available_worker_devices_idx(  # noqa: C901
@@ -500,15 +507,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                 # Break if selected devices or requested VRAM are satisfied in automatic mode.
                 if world_size_remain < 0 and worker_vram_request_remain <= 0:
-                    if self._model_params.num_attention_heads:
-                        # Validate if attention heads can be divided by the selected devices count.
-                        if world_size_remain < -1 and (
-                            self._model_params.num_attention_heads
-                            % abs(world_size_remain + 1)
-                            == 0
-                        ):
+                    if world_size_remain < -1:
+                        try:
+                            self._check_tp_size_divisibility(abs(world_size_remain + 1))
                             break
-                        # Otherwise, find at least one device.
+                        except ValueError:
+                            pass
                     else:
                         break
 
@@ -552,12 +556,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
             # Skip if attention heads cannot be divided by the selected devices count in automatic mode.
             elif world_size_remain < -1:
-                if (
-                    self._model_params.num_attention_heads
-                    and self._model_params.num_attention_heads
-                    % abs(world_size_remain + 1)
-                    != 0
-                ):
+                try:
+                    self._check_tp_size_divisibility(abs(world_size_remain + 1))
+                except ValueError:
                     continue
 
             # Skip if the worker does not have enough VRAM.
@@ -672,12 +673,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     if local_world_size & (local_world_size - 1) != 0:
                         local_world_size -= 1
                         continue
-                    # Skip if the attention heads can be divided by the selected devices count.
-                    if (
-                        self._model_params.num_attention_heads
-                        and self._model_params.num_attention_heads % local_world_size
-                        != 0
-                    ):
+                    try:
+                        self._check_tp_size_divisibility(local_world_size)
+                    except ValueError:
                         local_world_size -= 1
                         continue
                     # Found a valid local world size.
@@ -821,12 +819,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                 # Skip if attention heads cannot be divided by the selected devices count in automatic mode.
                 elif world_size_remain < -1:
-                    if (
-                        self._model_params.num_attention_heads
-                        and self._model_params.num_attention_heads
-                        % abs(world_size_remain + 1)
-                        != 0
-                    ):
+                    try:
+                        self._check_tp_size_divisibility(abs(world_size_remain + 1))
+                    except ValueError:
                         continue
 
                 # Skip if the worker group does not have enough VRAM.
