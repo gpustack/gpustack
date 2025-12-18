@@ -6,6 +6,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 
 from gpustack.server.services import ModelInstanceService
+from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -112,7 +113,12 @@ async def get_serving_logs(  # noqa: C901
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
-    client: aiohttp.ClientSession = request.app.state.http_client
+    use_proxy_env = use_proxy_env_for_url(model_instance_log_url)
+    client: aiohttp.ClientSession = (
+        request.app.state.http_client
+        if use_proxy_env
+        else request.app.state.http_client_no_proxy
+    )
 
     if log_options.follow:
 

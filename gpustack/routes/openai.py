@@ -37,6 +37,7 @@ from gpustack.server.services import (
     WorkerService,
     UserService,
 )
+from gpustack.utils.network import use_proxy_env_for_url
 
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,12 @@ async def handle_streaming_request(
 
     async def stream_generator():
         try:
-            http_client: aiohttp.ClientSession = request.app.state.http_client
+            use_proxy_env = use_proxy_env_for_url(url)
+            http_client: aiohttp.ClientSession = (
+                request.app.state.http_client
+                if use_proxy_env
+                else request.app.state.http_client_no_proxy
+            )
             async with http_client.request(
                 method=request.method,
                 url=url,
@@ -332,7 +338,12 @@ async def handle_standard_request(
     if extra_headers:
         headers.update(extra_headers)
 
-    http_client: aiohttp.ClientSession = request.app.state.http_client
+    use_proxy_env = use_proxy_env_for_url(url)
+    http_client: aiohttp.ClientSession = (
+        request.app.state.http_client
+        if use_proxy_env
+        else request.app.state.http_client_no_proxy
+    )
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
     async with http_client.request(
         method=request.method,

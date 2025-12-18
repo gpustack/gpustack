@@ -12,6 +12,7 @@ from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableE
 from gpustack import envs
 from gpustack.schemas.models import Model, ModelInstance, ModelInstanceStateEnum
 from gpustack.gateway.utils import openai_model_prefixes
+from gpustack.utils.network import use_proxy_env_for_url
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
@@ -58,7 +59,12 @@ async def proxy(path: str, request: Request):
             async for chunk in resp.content.iter_chunked(1024):
                 yield chunk
 
-        http_client: aiohttp.ClientSession = request.app.state.http_client
+        use_proxy_env = use_proxy_env_for_url(url)
+        http_client: aiohttp.ClientSession = (
+            request.app.state.http_client
+            if use_proxy_env
+            else request.app.state.http_client_no_proxy
+        )
         timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT)
         resp = await http_client.request(
             method=request.method,
