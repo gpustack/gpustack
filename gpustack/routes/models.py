@@ -16,6 +16,7 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
@@ -345,6 +346,15 @@ async def validate_gpu_ids(  # noqa: C901
 
         if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
+
+    if (
+        is_custom_backend(model_backend)
+        and len(worker_name_set) > 1
+        and model_in.replicas == 1
+    ):
+        raise BadRequestException(
+            message="Distributed inference across multiple workers is not supported for custom backends."
+        )
 
 
 def validate_gpu(gpu_device: GPUDeviceInfo, model_backend: str = ""):

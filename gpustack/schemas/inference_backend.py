@@ -258,3 +258,22 @@ def is_built_in_backend(backend_name: Optional[str]) -> bool:
         backend.backend_name.lower() for backend in built_in_backends
     }
     return backend_name.lower() in built_in_backend_names
+
+
+def is_custom_backend(backend_name: Optional[str]) -> bool:
+    """
+    Check if a backend is a custom backend, i.e., not built-in or explicitly marked as CUSTOM.
+
+    Args:
+        backend_name: The name of the backend to check
+
+    Returns:
+        True if the backend is custom, False otherwise
+    """
+    if not backend_name:
+        return False
+
+    return (
+        not is_built_in_backend(backend_name)
+        or backend_name == BackendEnum.CUSTOM.value
+    )
