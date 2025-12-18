@@ -1240,7 +1240,7 @@ class WorkerProvisioningController:
         cfg: Config,
     ) -> str:
         user_data = await client.construct_user_data(
-            server_url=cfg.server_external_url,
+            server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
             image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
@@ -1386,13 +1386,16 @@ class WorkerProvisioningController:
         if worker.deleted_at is not None:
             await WorkerService(session).delete(worker, auto_commit=False)
 
-    async def check_server_external_url(self):
-        if self._cfg.server_external_url is None or self._cfg.server_external_url == "":
-            raise ValueError("External server url is not configured")
+    async def check_server_external_url(self, cluster_server_url: Optional[str] = None):
+        server_url = cluster_server_url or self._cfg.server_external_url
+        if server_url is None or server_url == "":
+            raise ValueError(
+                "Cluster's server_url is not configured, Please edit cluster first."
+            )
         import aiohttp
         from yarl import URL
 
-        healthz_url = str(URL(self._cfg.server_external_url) / "healthz")
+        healthz_url = str(URL(server_url) / "healthz")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(healthz_url, timeout=10) as resp:
@@ -1440,7 +1443,7 @@ class WorkerProvisioningController:
             )
             try:
                 if worker.state == WorkerStateEnum.PENDING:
-                    await self.check_server_external_url()
+                    await self.check_server_external_url(worker.cluster.server_url)
                 if worker.state in [
                     WorkerStateEnum.PENDING,
                     WorkerStateEnum.PROVISIONING,
