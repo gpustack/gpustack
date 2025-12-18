@@ -281,6 +281,8 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 state=ModelInstanceStateEnum.PENDING,
                 cluster_id=model.cluster_id,
                 draft_model_source=get_draft_model_source(model),
+                backend=get_backend(model),
+                backend_version=model.backend_version,
             )
 
             await ModelInstanceService(session).create(instance)

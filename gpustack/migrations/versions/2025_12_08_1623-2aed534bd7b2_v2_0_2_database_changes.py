@@ -36,6 +36,8 @@ def upgrade() -> None:
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.add_column(sa.Column('worker_advertise_address', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('backend', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('backend_version', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
 
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.add_column(sa.Column('server_url', sa.String(length=2048), nullable=True))
@@ -65,6 +67,8 @@ def downgrade() -> None:
 
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('worker_advertise_address')
+        batch_op.drop_column('backend')
+        batch_op.drop_column('backend_version')
 
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.drop_column('server_url')
