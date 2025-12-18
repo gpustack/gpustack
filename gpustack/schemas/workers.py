@@ -361,7 +361,8 @@ class WorkerBase(WorkerCreate):
             return
 
         if self.unreachable:
-            healthz_url = f"http://{self.ip}:{self.port}/healthz"
+            address = self.advertise_address or self.ip
+            healthz_url = f"http://{address}:{self.port}/healthz"
             msg = (
                 "Server cannot access the "
                 f"worker's health check endpoint at {healthz_url}. "
