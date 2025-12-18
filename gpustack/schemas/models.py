@@ -447,6 +447,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
     model_id: int = Field(default=None, foreign_key="models.id")
     model_name: str
 
+    backend: Optional[str] = None
+    backend_version: Optional[str] = None
+
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None
     )
