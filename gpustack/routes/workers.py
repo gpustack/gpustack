@@ -11,6 +11,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ForbiddenException,
 )
+from gpustack.config.config import get_global_config
 from gpustack.server.deps import (
     SessionDep,
     EngineDep,
@@ -30,6 +31,7 @@ from gpustack.schemas.workers import (
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
@@ -210,6 +212,18 @@ async def create_worker(
     if cluster is None or cluster.deleted_at is not None:
         raise NotFoundException(message="Cluster not found")
 
+    worker_config = (
+        {} if cluster.worker_config is None else cluster.worker_config.model_dump()
+    )
+    cfg = get_global_config()
+    if (
+        cfg.system_default_container_registry is not None
+        and len(cfg.system_default_container_registry) > 0
+    ):
+        worker_config.setdefault(
+            "system_default_container_registry", cfg.system_default_container_registry
+        )
+
     hashed_suffix = secrets.token_hex(6)
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
@@ -291,7 +305,9 @@ async def create_worker(
         await session.refresh(worker)
         worker_dump = worker.model_dump()
         worker_dump["token"] = worker.token
-        worker_dump["worker_config"] = cluster.worker_config
+        worker_dump["worker_config"] = PredefinedConfigNoDefaults.model_validate(
+            worker_config
+        )
 
         return WorkerRegistrationPublic.model_validate(worker_dump)
     except Exception as e:
