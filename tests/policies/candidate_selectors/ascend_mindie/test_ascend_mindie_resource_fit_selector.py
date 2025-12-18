@@ -1767,6 +1767,34 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
 - Selected GPUs have 307.20 GiB allocatable VRAM, 0/8 of GPUs meet the VRAM utilization ratio, providing 276.48 GiB of allocatable VRAM."""
             ],
         ),
+        (
+            1,
+            new_model(
+                id=1,
+                name="vocab_size_tp_divisibility_check",
+                replicas=1,
+                huggingface_repo_id="openai-community/gpt2",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--tensor-parallel-size=4",
+                    "--trust-remote-code",
+                ],
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_0:npu:0",
+                        "ascend_0:npu:1",
+                        "ascend_1:npu:0",
+                        "ascend_1:npu:1",
+                    ],
+                    gpus_per_replica=4,
+                ),
+                backend=BackendEnum.ASCEND_MINDIE.value,
+            ),
+            [
+                "Model's vocabulary size (50257) must be divisible by the --tensor-parallel-size (4).",
+                "",
+            ],
+        ),
     ],
 )
 @pytest.mark.asyncio
