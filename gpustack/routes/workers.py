@@ -31,7 +31,10 @@ from gpustack.schemas.workers import (
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
-from gpustack.schemas.config import PredefinedConfigNoDefaults
+from gpustack.schemas.config import (
+    SensitivePredefinedConfig,
+    PredefinedConfigNoDefaults,
+)
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
@@ -212,8 +215,12 @@ async def create_worker(
     if cluster is None or cluster.deleted_at is not None:
         raise NotFoundException(message="Cluster not found")
 
+    sensitive_fields = set(SensitivePredefinedConfig.model_fields.keys())
+
     worker_config = (
-        {} if cluster.worker_config is None else cluster.worker_config.model_dump()
+        {}
+        if cluster.worker_config is None
+        else cluster.worker_config.model_dump(exclude=sensitive_fields)
     )
     cfg = get_global_config()
     if (
