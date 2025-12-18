@@ -303,8 +303,10 @@ class Worker:
             app.state.http_client = aiohttp.ClientSession(
                 connector=connector, trust_env=True
             )
+            app.state.http_client_no_proxy = aiohttp.ClientSession(connector=connector)
             yield
             await app.state.http_client.close()
+            await app.state.http_client_no_proxy.close()
 
         app = FastAPI(
             title="GPUStack Worker",
