@@ -27,11 +27,19 @@ The **Applies to** column indicates where the environment variable should be set
 * **Worker** - Applies to GPUStack workers.
 * **Model** - Applies to model deployment configurations.
 
+### Proxy Configuration
+| <div style="width:100px">Variable</div>      | Description  | Default | Applies to       |
+| ------------- | ------------------------------------------- | ------- | ---------------- |
+| `HTTP_PROXY`  | HTTP proxy URL. e.g., `http://proxy-server:port` | (empty) | Server & Worker |
+| `HTTPS_PROXY` | HTTPS proxy URL. e.g., `https://proxy-server:port`| (empty) | Server & Worker |
+| `NO_PROXY`    | Comma-separated list of hosts to exclude. e.g., `127.0.0.1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/16,localhost,cluster.local` | (empty) | Server & Worker |
+
 ### Hugging Face Hub
 
-| Variable      | Description                                              | Default | Applies to       |
+| <div style="width:100px">Variable</div>      | Description               | Default | Applies to       |
 | ------------- | -------------------------------------------------------- | ------- | ---------------- |
 | `HF_ENDPOINT` | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` | (empty) | Server & Worker |
+| `HF_TOKEN`    | Hugging Face Hub access token.                           | (empty) | Server & Worker |
 
 ### Database Configuration
 
