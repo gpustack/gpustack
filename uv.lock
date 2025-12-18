@@ -1997,7 +1997,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.22.post1" },
-    { name = "gpustack-runtime", specifier = "==0.1.36.post1" },
+    { name = "gpustack-runtime", specifier = "==0.1.36.post2" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2084,7 +2084,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.36.post1"
+version = "0.1.36.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2095,9 +2095,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/f5/a6de9351fe8e10f3ea31ec8d2ec19308f6a4764cf14d3451b20d459856ef/gpustack_runtime-0.1.36.post1.tar.gz", hash = "sha256:d9a0ee39050ca6303008fadba6ac7b710b729a43a2f0c37fb9202bfa307ea24a", size = 201343, upload-time = "2025-12-16T07:15:49.874Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/53/766c162b4c7fc4130b51e8bfaafc5c0da7b4adb6eab7efb1d82a3dffae47/gpustack_runtime-0.1.36.post2.tar.gz", hash = "sha256:862f7cd0ebcb3d54a2cd8d246ddc7235de3de5cf36a5f4d8f6a25332866b77c2", size = 202306, upload-time = "2025-12-18T13:26:34.383Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/f0/00daa46934385be480620b31f1fb080d28cede371114f82c4a03b4b3653c/gpustack_runtime-0.1.36.post1-py3-none-any.whl", hash = "sha256:0a29e7f6384ff3fa1befc5e7017ea87ab58940255919faa95e8a37e8c0646a24", size = 173452, upload-time = "2025-12-16T07:15:48.64Z" },
+    { url = "https://files.pythonhosted.org/packages/59/95/5f49384f650c8fda2fb81089274501b0fee841eaa8507faa1a35ebf7dfdf/gpustack_runtime-0.1.36.post2-py3-none-any.whl", hash = "sha256:d966f2524132fd3a6c057d6e8cce43aa03ba10d0be2d220276466a20ffdea91e", size = 174463, upload-time = "2025-12-18T13:26:33.173Z" },
 ]
 
 [[package]]
