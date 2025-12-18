@@ -238,10 +238,7 @@ class Config(WorkerConfig, BaseSettings):
 
         # default to worker proxy mode if running as worker
         if self.proxy_mode is None:
-            if self._is_worker():
-                self.proxy_mode = ModelInstanceProxyModeEnum.WORKER
-            else:
-                self.proxy_mode = ModelInstanceProxyModeEnum.DIRECT
+            self.proxy_mode = ModelInstanceProxyModeEnum.WORKER
 
     @model_validator(mode="after")
     def check_all(self):  # noqa: C901
