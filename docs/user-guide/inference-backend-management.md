@@ -71,3 +71,7 @@ Use this mode to quickly verify or tweak the image and startup command without e
 2. In the Basic tab, open the "Backend" dropdown and select "Custom" under the "Built-in" section.
 3. Two fields appear: `image_name` and `run_command`. These override the backend configuration for this deployment only.
 4. Review the remaining required settings and submit the deployment.
+
+## Limitations of Custom Inference Backends
+
+Custom inference backends do not support distributed inference across multiple workers.
