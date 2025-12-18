@@ -175,10 +175,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         if speculative_algorithm is not None and enable_mixed_chunk:
             raise ValueError("enable_mixed_chunk is required for speculative decoding")
 
-        try:
-            self._check_tp_size_divisibility(tp_size)
-        except ValueError as e:
-            raise ValueError(str(e) + " Consider adjusting your tp-size value.")
+        if message := self._check_tp_size_divisibility(tp_size):
+            raise ValueError(message + " Consider adjusting your tp-size value.")
 
     def _cal_effective_vram(self) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
@@ -492,9 +490,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 gpu_sum += 1
                 vram_sum += vram_claim[gpu.index]
 
-                try:
-                    self._check_tp_size_divisibility(gpu_sum)
-                except ValueError:
+                if not self._is_tp_size_divisible(gpu_sum):
                     continue
 
                 if self._gpu_count and gpu_sum >= self._gpu_count:
@@ -519,12 +515,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     )
                 ]
         event_msg_list = []
-        try:
-            self._check_tp_size_divisibility(
-                self._largest_multi_gpu_utilization_satisfied_count
-            )
-        except ValueError as e:
-            event_msg_list.append(str(e))
+        if message := self._check_tp_size_divisibility(
+            self._largest_multi_gpu_utilization_satisfied_count
+        ):
+            event_msg_list.append(message)
 
         if len(event_msg_list) == 0:
             event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
@@ -651,9 +645,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     for gpu in worker.status.gpu_devices
                 )
 
-                try:
-                    self._check_tp_size_divisibility(gpu_count)
-                except ValueError:
+                if not self._is_tp_size_divisible(gpu_count):
                     continue
 
                 if vram_sum >= self._vram_claim:

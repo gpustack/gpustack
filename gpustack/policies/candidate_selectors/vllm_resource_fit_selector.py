@@ -591,9 +591,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             gpu_sum += 1
             vram_sum += vram_claim[gpu.index]
 
-            try:
-                self._check_tp_size_divisibility(gpu_sum)
-            except ValueError:
+            if not self._is_tp_size_divisible(gpu_sum):
                 continue
 
             if self._gpu_count and gpu_sum >= self._gpu_count:
@@ -618,12 +616,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 )
             ]
         event_msg_list = []
-        try:
-            self._check_tp_size_divisibility(
-                self._largest_multi_gpu_utilization_satisfied_count
-            )
-        except ValueError as e:
-            event_msg_list.append(str(e))
+        if msg := self._check_tp_size_divisibility(
+            self._largest_multi_gpu_utilization_satisfied_count
+        ):
+            event_msg_list.append(msg)
         event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram)} GiB allocatable VRAM."
         if self._gpu_memory_utilization != 0:
             event_msg = (
@@ -684,9 +680,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             if len(worker_group) < 2:
                 continue
 
-            try:
-                self._check_tp_size_divisibility(gpu_count)
-            except ValueError:
+            if not self._is_tp_size_divisible(gpu_count):
                 continue
 
             selected_workers: List[Worker] = []
@@ -774,11 +768,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         tp = find_int_parameter(
             self._model.backend_parameters, ["tensor-parallel-size", "tp"]
         )
-        try:
-            self._check_tp_size_divisibility(tp)
-        except ValueError as e:
+        if msg := self._check_tp_size_divisibility(tp):
             raise ValueError(
-                str(e) + " Consider adjusting your tensor-parallel-size value."
+                msg + " Consider adjusting your tensor-parallel-size value."
             )
 
 

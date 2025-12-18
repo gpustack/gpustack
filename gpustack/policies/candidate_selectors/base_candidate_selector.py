@@ -859,10 +859,7 @@ class ScheduleCandidatesSelector(ABC):
 
         return True
 
-    def _check_tp_size_divisibility(
-        self,
-        tp_size: int,
-    ):
+    def _is_tp_size_divisible(self, tp_size: int) -> bool:
         """
         Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
         1. num_attention_heads
@@ -876,9 +873,34 @@ class ScheduleCandidatesSelector(ABC):
           number of GPUs, so `tp_size` equals the per-worker GPU count (i.e., `gpu_count`)
         """
         if not tp_size:
-            return
+            return False
         if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
-            raise ValueError(
+            return False
+
+        if (
+            self._model_params.vocab_size
+            and self._model_params.vocab_size % tp_size != 0
+        ):
+            return False
+
+        return True
+
+    def _check_tp_size_divisibility(
+        self,
+        tp_size: int,
+    ) -> Optional[str]:
+        """
+        Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
+        1. num_attention_heads
+        2. vocab_size
+
+        Return:
+            None if divisibility is satisfied, otherwise an error message.
+        """
+        if not tp_size:
+            return None
+        if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
+            return (
                 f"Total number of attention heads ({self._num_attention_heads})"
                 " must be divisible by tensor parallel size "
                 f"({tp_size})."
@@ -888,8 +910,10 @@ class ScheduleCandidatesSelector(ABC):
             self._model_params.vocab_size
             and self._model_params.vocab_size % tp_size != 0
         ):
-            raise ValueError(
+            return (
                 f"Vocabulary size ({self._model_params.vocab_size})"
                 " must be divisible by tensor parallel size "
                 f"({tp_size})."
             )
+
+        return None

@@ -508,11 +508,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 # Break if selected devices or requested VRAM are satisfied in automatic mode.
                 if world_size_remain < 0 and worker_vram_request_remain <= 0:
                     if world_size_remain < -1:
-                        try:
-                            self._check_tp_size_divisibility(abs(world_size_remain + 1))
+                        if self._is_tp_size_divisible(abs(world_size_remain + 1)):
                             break
-                        except ValueError:
-                            pass
                     else:
                         break
 
@@ -556,9 +553,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
             # Skip if attention heads cannot be divided by the selected devices count in automatic mode.
             elif world_size_remain < -1:
-                try:
-                    self._check_tp_size_divisibility(abs(world_size_remain + 1))
-                except ValueError:
+                if not self._is_tp_size_divisible(abs(world_size_remain + 1)):
                     continue
 
             # Skip if the worker does not have enough VRAM.
@@ -673,9 +668,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                     if local_world_size & (local_world_size - 1) != 0:
                         local_world_size -= 1
                         continue
-                    try:
-                        self._check_tp_size_divisibility(local_world_size)
-                    except ValueError:
+                    if not self._is_tp_size_divisible(local_world_size):
                         local_world_size -= 1
                         continue
                     # Found a valid local world size.
@@ -819,9 +812,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
                 # Skip if attention heads cannot be divided by the selected devices count in automatic mode.
                 elif world_size_remain < -1:
-                    try:
-                        self._check_tp_size_divisibility(abs(world_size_remain + 1))
-                    except ValueError:
+                    if not self._is_tp_size_divisible(abs(world_size_remain + 1)):
                         continue
 
                 # Skip if the worker group does not have enough VRAM.
