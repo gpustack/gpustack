@@ -1,6 +1,6 @@
 import math
 import secrets
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from enum import Enum
@@ -152,6 +152,29 @@ async def get_cluster(session: SessionDep, id: int):
     return cluster
 
 
+def create_update_check(
+    provider: ClusterProvider, input: Union[ClusterCreate, ClusterUpdate]
+):
+    cfg = get_global_config()
+    is_cloud_provider = provider not in [
+        ClusterProvider.Kubernetes,
+        ClusterProvider.Docker,
+    ]
+    if (
+        is_cloud_provider
+        and isinstance(input, ClusterCreate)
+        and input.credential_id is None
+    ):
+        raise InvalidException(
+            message=f"credential_id is required for provider {provider}"
+        )
+    server_url = input.server_url or cfg.server_external_url
+    if is_cloud_provider and server_url is None:
+        raise InvalidException(
+            message=f"server_url is required for provider {provider}"
+        )
+
+
 @router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
 async def create_cluster(session: SessionDep, input: ClusterCreate):
     existing = await Cluster.one_by_fields(
@@ -160,13 +183,8 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
     )
     if existing:
         raise AlreadyExistsException(message=f"cluster {input.name} already exists")
-    if (
-        input.provider not in [ClusterProvider.Kubernetes, ClusterProvider.Docker]
-        and input.credential_id is None
-    ):
-        raise InvalidException(
-            message=f"credential_id is required for provider {input.provider}"
-        )
+
+    create_update_check(input.provider, input)
 
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
@@ -230,6 +248,8 @@ async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
         raise NotFoundException(message=f"cluster {id} not found")
+
+    create_update_check(cluster.provider, input)
 
     try:
         await cluster.update(session=session, source=input)
