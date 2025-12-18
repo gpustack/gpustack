@@ -247,6 +247,8 @@ class ClusterUpdate(SQLModel):
 
     @field_validator("server_url")
     def validate_server_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(v) == 0:
+            return None
         if v is not None:
             parsed = urlparse(v)
             if not parsed.scheme or not parsed.netloc:
