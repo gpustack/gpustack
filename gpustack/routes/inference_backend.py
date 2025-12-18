@@ -594,16 +594,17 @@ async def update_inference_backend(
         backend_in.version_configs.root[version].built_in_frameworks = None
 
     try:
-        update_backend = InferenceBackend(
-            backend_name=backend_in.backend_name,
-            version_configs=backend_in.version_configs,
-            default_version=backend_in.default_version,
-            default_backend_param=backend_in.default_backend_param,
-            default_run_command=backend_in.default_run_command,
-            health_check_path=backend_in.health_check_path,
-            description=backend_in.description,
-        )
-        await backend.update(session, update_backend)
+        # Use a dict for changes to prevent version_config serialization errors and None field overrides issues.
+        update_data = {
+            "backend_name": backend_in.backend_name,
+            "version_configs": backend_in.version_configs,
+            "default_version": backend_in.default_version,
+            "default_backend_param": backend_in.default_backend_param,
+            "default_run_command": backend_in.default_run_command,
+            "health_check_path": backend_in.health_check_path,
+            "description": backend_in.description,
+        }
+        await backend.update(session, update_data)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update inference backend: {e}"
@@ -817,11 +818,8 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             for v in yaml_data['version_configs'].root.keys():
                 yaml_data['version_configs'].root[v].built_in_frameworks = None
 
-        # Create InferenceBackendUpdate object from YAML data (after normalization)
-        backend_data = InferenceBackendUpdate(**yaml_data)
-
-        # Update the backend
-        await backend.update(session, backend_data)
+        # Update the backend from YAML data (after normalization)
+        await backend.update(session, yaml_data)
 
         return backend
 

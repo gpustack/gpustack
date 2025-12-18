@@ -91,6 +91,13 @@ class VLLMServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Get container entrypoint from inference backend configuration
+        container_entrypoint = None
+        if self.inference_backend:
+            container_entrypoint = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         run_container = Container(
             image=image,
             name="default",
@@ -98,6 +105,7 @@ class VLLMServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command=container_entrypoint,
                 command_script=command_script,
                 args=command_args,
             ),
@@ -154,6 +162,7 @@ class VLLMServer(InferenceServer):
         logger.info(f"Creating vLLM container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
+            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
