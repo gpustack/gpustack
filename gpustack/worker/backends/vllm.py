@@ -211,6 +211,31 @@ class VLLMServer(InferenceServer):
             ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
             env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
 
+    def _set_distributed_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for distributed execution.
+        """
+        # Configure Internal communication IP and port.
+        # see https://docs.vllm.ai/en/stable/configuration/env_vars.html.
+        env["VLLM_HOST_IP"] = self._worker.ip
+        # During distributed setup,
+        # we must get more than one port here,
+        # so we use ports[1] for distributed initialization.
+        env["VLLM_PORT"] = str(self._model_instance.ports[1])
+
+        if is_ascend(self._get_selected_gpu_devices()):
+            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
+            if "HCCL_SOCKET_IFNAME" not in env:
+                env["HCCL_IF_IP"] = self._worker.ip
+                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+                env["TP_SOCKET_IFNAME"] = self._worker.ifname
+            return
+
+        if "NCCL_SOCKET_IFNAME" not in env:
+            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+
     def _get_speculative_arguments(self) -> List[str]:
         """
         Get speculative arguments for vLLM.
@@ -246,31 +271,6 @@ class VLLMServer(InferenceServer):
                 json.dumps(sp_dict),
             ]
         return []
-
-    def _set_distributed_env(self, env: Dict[str, str]):
-        """
-        Set up environment variables for distributed execution.
-        """
-        # Configure Internal communication IP and port.
-        # see https://docs.vllm.ai/en/stable/configuration/env_vars.html.
-        env["VLLM_HOST_IP"] = self._worker.ip
-        # During distributed setup,
-        # we must get more than one port here,
-        # so we use ports[1] for distributed initialization.
-        env["VLLM_PORT"] = str(self._model_instance.ports[1])
-
-        if is_ascend(self._get_selected_gpu_devices()):
-            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
-            if "HCCL_SOCKET_IFNAME" not in env:
-                env["HCCL_IF_IP"] = self._worker.ip
-                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
-                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
-                env["TP_SOCKET_IFNAME"] = self._worker.ifname
-            return
-
-        if "NCCL_SOCKET_IFNAME" not in env:
-            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
-            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
 
     def _get_total_vram_claim(self) -> int:
         """
