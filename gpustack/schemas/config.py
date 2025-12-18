@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GatewayModeEnum(str, Enum):
@@ -24,7 +24,12 @@ class ModelInstanceProxyModeEnum(str, Enum):
     DELEGATED = "delegated"
 
 
-class PredefinedConfig(BaseModel):
+class SensitivePredefinedConfig(BaseModel):
+    # Common options
+    huggingface_token: Optional[str] = Field(default=None, env_var="HF_TOKEN")
+
+
+class PredefinedConfig(SensitivePredefinedConfig):
     # Common options
     debug: bool = False
     cache_dir: Optional[str] = None
@@ -38,7 +43,6 @@ class PredefinedConfig(BaseModel):
     gateway_concurrency: int = 16
     service_discovery_name: Optional[str] = None
     namespace: Optional[str] = None
-    huggingface_token: Optional[str] = None
 
     # Worker options
     disable_worker_metrics: bool = False
@@ -66,3 +70,22 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     image_repo: Optional[str] = None
     gateway_mode: Optional[str] = None
     gateway_concurrency: Optional[int] = None
+
+
+def parse_base_model_to_env_vars(
+    config: BaseModel,
+) -> dict[str, str]:
+    env_vars = {}
+    for field_name, field in config.__class__.model_fields.items():
+        extra = getattr(field, 'json_schema_extra', None) or {}
+        env_var = extra.get("env_var")
+        if env_var is None:
+            # assuming the field name is in snake_case
+            env_var = f"GPUSTACK_{field_name.upper()}"
+        value = getattr(config, field_name)
+        if value is not None:
+            if isinstance(value, bool):
+                env_vars[env_var] = "true" if value else "false"
+            else:
+                env_vars[env_var] = str(value)
+    return env_vars

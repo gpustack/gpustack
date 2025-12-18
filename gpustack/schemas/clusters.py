@@ -3,7 +3,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from enum import Enum
 from typing import ClassVar, Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field, field_validator
+from pydantic import BaseModel, computed_field, field_validator, ConfigDict
 from sqlmodel import (
     Field,
     Relationship,
@@ -20,7 +20,10 @@ from sqlalchemy.orm.state import InstanceState
 from sqlalchemy.orm.attributes import NO_VALUE
 from typing import TYPE_CHECKING
 
-from gpustack.schemas.config import PredefinedConfigNoDefaults
+from gpustack.schemas.config import (
+    SensitivePredefinedConfig,
+    PredefinedConfigNoDefaults,
+)
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList, pydantic_column_type
 
@@ -392,10 +395,22 @@ class ClusterPublic(ClusterBase, PublicFields):
 ClustersPublic = PaginatedList[ClusterPublic]
 
 
+class SensitiveRegistrationConfig(SensitivePredefinedConfig):
+    model_config = ConfigDict(extra="ignore")
+    token: str
+
+
 class ClusterRegistrationTokenPublic(BaseModel):
+    """
+    The arguments of docker run command to register a worker.
+    The env attribute is basically a dict of environment variables parsed from SensitiveRegistrationConfig.
+    """
+
     token: str
     server_url: str
     image: str
+    env: Dict[str, str]
+    args: List[str]
 
 
 class CredentialType(str, Enum):

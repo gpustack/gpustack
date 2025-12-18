@@ -12,7 +12,9 @@ metadata:
   namespace: {{ config.namespace }}
 type: Opaque
 data:
-  token: {{ config.token | b64encode }}
+  {%- for k, v in config.env.items() %}
+  {{ k }}: {{ v | b64encode }}
+  {%- endfor %}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -117,11 +119,6 @@ spec:
     spec:
       containers:
         - env:
-            - name: GPUSTACK_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  key: token
-                  name: registration-token
             - name: GPUSTACK_SERVER_URL
               value: {{ config.server_url }}
             - name: GPUSTACK_WORKER_NAME
@@ -144,6 +141,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          envFrom:
+            - secretRef:
+                name: registration-token
+                optional: false
+          {% if config.args and config.args|length > 0 -%}
+          args:
+          {%- for arg in config.args %}
+            - {{ arg }}
+          {%- endfor %}
+          {%- endif %}
           image: {{ config.image }}
           imagePullPolicy: IfNotPresent
           name: gpustack-worker

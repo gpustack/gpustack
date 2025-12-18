@@ -32,6 +32,7 @@ from gpustack.schemas.models import (
 from gpustack.schemas.config import (
     GatewayModeEnum,
     ModelInstanceProxyModeEnum,
+    SensitivePredefinedConfig,
 )
 from gpustack.schemas.workers import (
     Worker,
@@ -1241,11 +1242,18 @@ class WorkerProvisioningController:
         worker: Worker,
         cfg: Config,
     ) -> str:
+        secret_fields = set(SensitivePredefinedConfig.model_fields.keys())
+        secret_configs = (
+            worker.cluster.worker_config.model_dump(include=secret_fields)
+            if worker.cluster.worker_config
+            else {}
+        )
         user_data = await client.construct_user_data(
             server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
             image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
+            secret_configs=secret_configs,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:

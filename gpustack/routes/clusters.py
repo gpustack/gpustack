@@ -12,6 +12,7 @@ from gpustack.api.exceptions import (
     ForbiddenException,
 )
 from gpustack.schemas.common import PaginatedList, Pagination
+from gpustack.schemas.config import parse_base_model_to_env_vars
 from gpustack.server.deps import SessionDep, EngineDep
 from gpustack.schemas.clusters import (
     ClusterListParams,
@@ -22,6 +23,7 @@ from gpustack.schemas.clusters import (
     Cluster,
     ClusterStateEnum,
     ClusterProvider,
+    SensitiveRegistrationConfig,
     ClusterRegistrationTokenPublic,
     WorkerPoolCreate,
     WorkerPoolPublic,
@@ -307,18 +309,30 @@ async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCrea
         raise InternalServerErrorException(message=f"Failed to create worker pool: {e}")
 
 
-@router.get("/{id}/registration-token", response_model=ClusterRegistrationTokenPublic)
-async def get_registration_token(request: Request, session: SessionDep, id: int):
-    cluster = await Cluster.one_by_id(session, id)
-    if not cluster or cluster.deleted_at is not None:
-        raise NotFoundException(message=f"cluster {id} not found")
+def get_registration_from_cluster(
+    request: Request, cluster: Cluster
+) -> ClusterRegistrationTokenPublic:
+    config = cluster.worker_config.model_dump() if cluster.worker_config else {}
+    sensitive_registration = SensitiveRegistrationConfig(
+        token=cluster.registration_token, **config
+    )
     return ClusterRegistrationTokenPublic(
         token=cluster.registration_token,
         server_url=get_server_url(request, cluster.server_url),
         image=get_cluster_image_name(
             cluster.worker_config
         ),  # Default image, can be customized
+        env=parse_base_model_to_env_vars(sensitive_registration),
+        args=[],
     )
+
+
+@router.get("/{id}/registration-token", response_model=ClusterRegistrationTokenPublic)
+async def get_registration_token(request: Request, session: SessionDep, id: int):
+    cluster = await Cluster.one_by_id(session, id)
+    if not cluster or cluster.deleted_at is not None:
+        raise NotFoundException(message=f"cluster {id} not found")
+    return get_registration_from_cluster(request, cluster)
 
 
 @router.get("/{id}/manifests")
@@ -331,10 +345,8 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
     config = TemplateConfig(
+        registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
-        token=cluster.registration_token,
-        image=get_cluster_image_name(cluster.worker_config),
-        server_url=get_server_url(request, cluster.server_url),
         namespace=getattr(cluster.worker_config, "namespace", None),
     )
     yaml_content = config.render()
