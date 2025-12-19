@@ -1,3 +1,4 @@
+import shlex
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -18,12 +19,14 @@ class VersionConfig(BaseModel):
     Attributes:
         image_name: Docker image name for this version
         run_command: Command to run the inference server (Optional, uses default if not specified)
+        entrypoint: Container entrypoint command that overrides the default image entrypoint. (Optional)
         built_in_frameworks: Only built-in backend will return this field, sourced from gpustack-runner configuration. (Optional)
         custom_framework: User-provided value (upon backend creation) used for deployment and compatibility checks. (Optional)
     """
 
     image_name: Optional[str] = Field(None)
     run_command: Optional[str] = Field(None)
+    entrypoint: Optional[str] = Field(None)
     built_in_frameworks: Optional[List[str]] = Field(None)
     custom_framework: Optional[str] = Field(None)
 
@@ -47,6 +50,7 @@ class InferenceBackendBase(SQLModel):
         default_version: Default version to use if not specified
         default_backend_param: Default parameters to pass to the backend
         default_run_command: Default command to run the inference server
+        default_entrypoint: Default entrypoint to replace for the inference server
         description: Backend description
         health_check_path: Path for health check endpoint
 
@@ -62,6 +66,9 @@ class InferenceBackendBase(SQLModel):
         sa_column=Column(JSON), default=[]
     )
     default_run_command: Optional[str] = SQLField(
+        sa_column=Column(Text, nullable=True), default=""
+    )
+    default_entrypoint: Optional[str] = SQLField(
         sa_column=Column(Text, nullable=True), default=""
     )
     is_built_in: bool = SQLField(default=False)
@@ -149,6 +156,32 @@ class InferenceBackendBase(SQLModel):
         command = command.replace("{{worker_ip}}", str(worker_ip))
         command = command.replace("{{model_name}}", model_name)
         return command
+
+    def get_container_entrypoint(
+        self, version: Optional[str] = None
+    ) -> Optional[List[str]]:
+        """
+        Get container entrypoint for the specified version.
+
+        Args:
+            version: Desired backend version; falls back to `default_version` when None.
+
+        Returns:
+            The container entrypoint string, or None if not configured.
+        """
+        if self.backend_name == BackendEnum.CUSTOM.value:
+            return None
+        try:
+            # Resolve concrete version and fetch its configuration
+            version_config, _ = self.get_version_config(version)
+        except KeyError:
+            # Version not found or cannot be resolved
+            return None
+        entrypoint = version_config.entrypoint or self.default_entrypoint
+        if entrypoint:
+            return shlex.split(entrypoint)
+        else:
+            return None
 
     def get_image_name(self, version: Optional[str] = None) -> (str, str):
         """
@@ -258,3 +291,22 @@ def is_built_in_backend(backend_name: Optional[str]) -> bool:
         backend.backend_name.lower() for backend in built_in_backends
     }
     return backend_name.lower() in built_in_backend_names
+
+
+def is_custom_backend(backend_name: Optional[str]) -> bool:
+    """
+    Check if a backend is a custom backend, i.e., not built-in or explicitly marked as CUSTOM.
+
+    Args:
+        backend_name: The name of the backend to check
+
+    Returns:
+        True if the backend is custom, False otherwise
+    """
+    if not backend_name:
+        return False
+
+    return (
+        not is_built_in_backend(backend_name)
+        or backend_name == BackendEnum.CUSTOM.value
+    )

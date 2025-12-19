@@ -8,7 +8,10 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import (
+    Config,
+    get_cluster_image_name,
+)
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
@@ -26,11 +29,15 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_backend,
 )
+from gpustack.schemas.config import (
+    GatewayModeEnum,
+    ModelInstanceProxyModeEnum,
+    SensitivePredefinedConfig,
+)
 from gpustack.schemas.workers import (
     Worker,
     WorkerStateEnum,
     WorkerStatus,
-    ModelInstanceProxyModeEnum,
 )
 from gpustack.schemas.clusters import (
     Cluster,
@@ -166,6 +173,8 @@ class ModelInstanceController:
 
                 await model.refresh(session)
                 await sync_ready_replicas(session, model)
+                if self._disable_gateway:
+                    return
                 await mcp_handler.ensure_model_instance_mcp_bridge(
                     event_type=event.type,
                     model_instance=model_instance,
@@ -273,6 +282,8 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 state=ModelInstanceStateEnum.PENDING,
                 cluster_id=model.cluster_id,
                 draft_model_source=get_draft_model_source(model),
+                backend=get_backend(model),
+                backend_version=model.backend_version,
             )
 
             await ModelInstanceService(session).create(instance)
@@ -1231,11 +1242,18 @@ class WorkerProvisioningController:
         worker: Worker,
         cfg: Config,
     ) -> str:
+        secret_fields = set(SensitivePredefinedConfig.model_fields.keys())
+        secret_configs = (
+            worker.cluster.worker_config.model_dump(include=secret_fields)
+            if worker.cluster.worker_config
+            else {}
+        )
         user_data = await client.construct_user_data(
-            server_url=cfg.server_external_url,
+            server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
-            image_name=cfg.get_image_name(),
+            image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
+            secret_configs=secret_configs,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
@@ -1259,10 +1277,12 @@ class WorkerProvisioningController:
             (getattr(worker.worker_pool.cloud_options, "volumes", None) or [])
         )
         volume_ids = provider_config.get("volume_ids", [])
-        if worker.ip is None or worker.ip == "":
+        if worker.advertise_address is None or worker.advertise_address == "":
             try:
                 instance = await client.wait_for_public_ip(worker.external_id)
-                worker.ip = instance.ip_address if instance.ip_address else ""
+                worker.advertise_address = (
+                    instance.ip_address if instance.ip_address else ""
+                )
                 worker.state_message = "Waiting for volumes to attach"
             except Exception as e:
                 logger.warning(
@@ -1378,13 +1398,16 @@ class WorkerProvisioningController:
         if worker.deleted_at is not None:
             await WorkerService(session).delete(worker, auto_commit=False)
 
-    async def check_server_external_url(self):
-        if self._cfg.server_external_url is None or self._cfg.server_external_url == "":
-            raise ValueError("External server url is not configured")
+    async def check_server_external_url(self, cluster_server_url: Optional[str] = None):
+        server_url = cluster_server_url or self._cfg.server_external_url
+        if server_url is None or server_url == "":
+            raise ValueError(
+                "Cluster's server_url is not configured, Please edit cluster first."
+            )
         import aiohttp
         from yarl import URL
 
-        healthz_url = str(URL(self._cfg.server_external_url) / "healthz")
+        healthz_url = str(URL(server_url) / "healthz")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(healthz_url, timeout=10) as resp:
@@ -1432,7 +1455,7 @@ class WorkerProvisioningController:
             )
             try:
                 if worker.state == WorkerStateEnum.PENDING:
-                    await self.check_server_external_url()
+                    await self.check_server_external_url(worker.cluster.server_url)
                 if worker.state in [
                     WorkerStateEnum.PENDING,
                     WorkerStateEnum.PROVISIONING,
@@ -1493,7 +1516,9 @@ class ClusterController:
         workers = [
             worker
             for worker in workers
-            if worker.deleted_at is None and worker.ip != "" and worker.port is not None
+            if worker.deleted_at is None
+            and (worker.advertise_address or worker.ip) != ""
+            and worker.port is not None
         ]
         worker_registry_list = [
             mcp_handler.worker_registry(worker)

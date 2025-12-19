@@ -1,8 +1,9 @@
 import secrets
 from datetime import datetime
+from urllib.parse import urlparse
 from enum import Enum
-from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, computed_field, field_validator
+from typing import ClassVar, Optional, Dict, Any, List
+from pydantic import BaseModel, computed_field, field_validator, ConfigDict
 from sqlmodel import (
     Field,
     Relationship,
@@ -19,8 +20,12 @@ from sqlalchemy.orm.state import InstanceState
 from sqlalchemy.orm.attributes import NO_VALUE
 from typing import TYPE_CHECKING
 
+from gpustack.schemas.config import (
+    SensitivePredefinedConfig,
+    PredefinedConfigNoDefaults,
+)
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList, pydantic_column_type
+from gpustack.schemas.common import ListParams, PaginatedList, pydantic_column_type
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model, ModelInstance
@@ -204,6 +209,15 @@ class CloudCredential(CloudCredentialCreate, BaseModelMixin, table=True):
         return False
 
 
+class CloudCredentialListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "provider",
+        "created_at",
+        "updated_at",
+    ]
+
+
 class CloudCredentialPublic(CloudCredentialBase, PublicFields):
     pass
 
@@ -221,6 +235,28 @@ class ClusterUpdate(SQLModel):
     name: str
     description: Optional[str] = None
     gateway_endpoint: Optional[str] = None
+    server_url: Optional[str] = None
+    worker_config: Optional[PredefinedConfigNoDefaults] = Field(
+        default=None,
+        sa_column=Column(
+            pydantic_column_type(
+                PredefinedConfigNoDefaults,
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    )
+
+    @field_validator("server_url")
+    def validate_server_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(v) == 0:
+            return None
+        if v is not None:
+            parsed = urlparse(v)
+            if not parsed.scheme or not parsed.netloc:
+                raise ValueError("Invalid server_url format")
+        return v
 
 
 class ClusterCreateBase(ClusterUpdate):
@@ -334,20 +370,47 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
         self._models = models
 
 
+class ClusterListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "provider",
+        "state",
+        "workers",
+        "ready_workers",
+        "gpus",
+        "models",
+        "created_at",
+        "updated_at",
+    ]
+
+
 class ClusterPublic(ClusterBase, PublicFields):
     workers: int = Field(default=0)
     ready_workers: int = Field(default=0)
     gpus: int = Field(default=0)
     models: int = Field(default=0)
+    worker_config: Optional[PredefinedConfigNoDefaults] = Field(default=None)
 
 
 ClustersPublic = PaginatedList[ClusterPublic]
 
 
+class SensitiveRegistrationConfig(SensitivePredefinedConfig):
+    model_config = ConfigDict(extra="ignore")
+    token: str
+
+
 class ClusterRegistrationTokenPublic(BaseModel):
+    """
+    The arguments of docker run command to register a worker.
+    The env attribute is basically a dict of environment variables parsed from SensitiveRegistrationConfig.
+    """
+
     token: str
     server_url: str
     image: str
+    env: Dict[str, str]
+    args: List[str]
 
 
 class CredentialType(str, Enum):

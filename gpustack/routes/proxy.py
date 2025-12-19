@@ -13,6 +13,7 @@ from gpustack.api.exceptions import (
     ForbiddenException,
 )
 from gpustack.config.config import get_global_config
+from gpustack.utils.network import use_proxy_env_for_url
 
 router = APIRouter()
 
@@ -83,7 +84,10 @@ async def proxy_to(
             else None
         )
 
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        use_proxy_env = use_proxy_env_for_url(url)
+        async with aiohttp.ClientSession(
+            timeout=timeout, trust_env=use_proxy_env
+        ) as session:
             async with session.request(
                 method=request.method,
                 url=url,

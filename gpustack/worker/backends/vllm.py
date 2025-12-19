@@ -91,6 +91,13 @@ class VLLMServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Get container entrypoint from inference backend configuration
+        container_entrypoint = None
+        if self.inference_backend:
+            container_entrypoint = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         run_container = Container(
             image=image,
             name="default",
@@ -98,6 +105,7 @@ class VLLMServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command=container_entrypoint,
                 command_script=command_script,
                 args=command_args,
             ),
@@ -154,6 +162,7 @@ class VLLMServer(InferenceServer):
         logger.info(f"Creating vLLM container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
+            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -182,12 +191,28 @@ class VLLMServer(InferenceServer):
         # Apply GPUStack's inference environment setup
         env = super()._get_configured_env()
 
+        # Optimize environment variables
+        # -- Disable OpenMP parallelism to avoid resource contention, increases model loading.
+        env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
+        # -- Enable safetensors GPU loading pass-through for faster model loading.
+        env["SAFETENSORS_FAST_GPU"] = env.pop("SAFETENSORS_FAST_GPU", "1")
+        # -- Observe RUN:AI streamer model loading.
+        env["RUNAI_STREAMER_MEMORY_LIMIT"] = env.pop("RUNAI_STREAMER_MEMORY_LIMIT", "0")
+        env["RUNAI_STREAMER_LOG_TO_STDERR"] = env.pop(
+            "RUNAI_STREAMER_LOG_TO_STDERR", "1"
+        )
+        env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
+
         # Apply LMCache environment variables if extended KV cache is enabled
         self._set_lmcache_env(env)
 
         # Apply distributed environment variables
         if is_distributed:
             self._set_distributed_env(env)
+
+        # Apply Ascend-specific environment variables
+        if is_ascend(self._get_selected_gpu_devices()):
+            self._set_ascend_env(env)
 
         return env
 
@@ -210,6 +235,56 @@ class VLLMServer(InferenceServer):
             vram_claim = self._get_total_vram_claim()
             ram_size = int(vram_claim * extended_kv_cache.ram_ratio)
             env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
+
+    def _set_distributed_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for distributed execution.
+        """
+        # Configure Internal communication IP and port.
+        # see https://docs.vllm.ai/en/stable/configuration/env_vars.html.
+        env["VLLM_HOST_IP"] = self._worker.ip
+        # During distributed setup,
+        # we must get more than one port here,
+        # so we use ports[1] for distributed initialization.
+        env["VLLM_PORT"] = str(self._model_instance.ports[1])
+
+        if is_ascend(self._get_selected_gpu_devices()):
+            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
+            if "HCCL_SOCKET_IFNAME" not in env:
+                env["HCCL_IF_IP"] = self._worker.ip
+                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+                env["TP_SOCKET_IFNAME"] = self._worker.ifname
+            return
+
+        if "NCCL_SOCKET_IFNAME" not in env:
+            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+
+    def _set_ascend_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for Ascend devices.
+        """
+
+        # -- Optimize Pytorch NPU operations delivery performance.
+        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "1")
+        # -- Enable NUMA coarse-grained binding.
+        env["CPU_AFFINITY_CONF"] = env.pop("CPU_AFFINITY_CONF", "1")
+        # -- Reuse memory in multi-streams.
+        env["PYTORCH_NPU_ALLOC_CONF"] = env.pop(
+            "PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"
+        )
+        # -- Increase HCCL connection timeout to avoid issues in large clusters.
+        env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
+        # -- Enable RDMA PCIe direct post with no strict mode for better performance.
+        env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
+            "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
+        )
+        if not is_ascend_310p(self._get_selected_gpu_devices()):
+            # -- Disable HCCL execution timeout for better stability.
+            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
+            # -- Enable the communication is scheduled by AI Vector directly with ROCE, instead of AI CPU.
+            env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
 
     def _get_speculative_arguments(self) -> List[str]:
         """
@@ -246,31 +321,6 @@ class VLLMServer(InferenceServer):
                 json.dumps(sp_dict),
             ]
         return []
-
-    def _set_distributed_env(self, env: Dict[str, str]):
-        """
-        Set up environment variables for distributed execution.
-        """
-        # Configure Internal communication IP and port.
-        # see https://docs.vllm.ai/en/stable/configuration/env_vars.html.
-        env["VLLM_HOST_IP"] = self._worker.ip
-        # During distributed setup,
-        # we must get more than one port here,
-        # so we use ports[1] for distributed initialization.
-        env["VLLM_PORT"] = str(self._model_instance.ports[1])
-
-        if is_ascend(self._get_selected_gpu_devices()):
-            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
-            if "HCCL_SOCKET_IFNAME" not in env:
-                env["HCCL_IF_IP"] = self._worker.ip
-                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
-                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
-                env["TP_SOCKET_IFNAME"] = self._worker.ifname
-            return
-
-        if "NCCL_SOCKET_IFNAME" not in env:
-            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
-            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
 
     def _get_total_vram_claim(self) -> int:
         """
@@ -316,7 +366,15 @@ class VLLMServer(InferenceServer):
         arguments = self.build_versioned_command_args(arguments)
 
         derived_max_model_len = self._derive_max_model_len()
-        if derived_max_model_len and derived_max_model_len > 8192:
+        specified_max_model_len = find_parameter(
+            self._model.backend_parameters,
+            ["max-model-len"],
+        )
+        if (
+            specified_max_model_len is None
+            and derived_max_model_len
+            and derived_max_model_len > 8192
+        ):
             arguments.extend(["--max-model-len", "8192"])
 
         auto_parallelism_arguments = get_auto_parallelism_arguments(

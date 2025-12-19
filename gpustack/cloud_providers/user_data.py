@@ -1,17 +1,22 @@
 # flake8: noqa: W605
+import jinja2
 from typing import Dict, Optional, Any, List
 import yaml
 from gpustack_runtime.detector import ManufacturerEnum
 
 # default_user_data_template is assuming the NVIDIA drivers and container toolkit
 # are pre-installed on the base image
-default_user_data_template = """#cloud-config
+default_user_data_template_jinja = """#cloud-config
 write_files:
   - path: /var/lib/gpustack/config.yaml
-    permissions: '0644'
+    permissions: '0600'
     content: |
-      server_url: {server_url}
-      token: {token}
+      server_url: {{ server_url }}
+      token: {{ token }}
+      {%- for k, v in secret_configs.items() %}
+      {{ k }}: {{ v }}
+      {%- endfor %}
+        
 
   - path: /opt/gpustack-run-worker.sh
     permissions: '0755'
@@ -21,11 +26,14 @@ write_files:
       echo "$(date): trying to bring up gpustack worker container..." >> /var/log/post-reboot.log
 
       docker run -d --name gpustack-worker \\
+      -e "GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME=gpustack-worker" \\
       --restart=unless-stopped \\
-      --privileged --net=host \\
+      --privileged \\
+      --network=host \\
       -v /var/lib/gpustack:/var/lib/gpustack \\
       -v /var/run/docker.sock:/var/run/docker.sock \\
-      {image_name} --config-file=/var/lib/gpustack/config.yaml
+      {{ image_name }} \\
+      --config-file=/var/lib/gpustack/config.yaml
 
       echo "$(date): gpustack worker container started" >> /var/log/post-reboot.log
 """
@@ -74,19 +82,29 @@ class UserDataTemplate:
     install_driver: Optional[ManufacturerEnum]
     setup_driver: Optional[ManufacturerEnum]
     _data: Optional[Dict[str, Any]]
+    secret_configs: Dict[str, Any]
 
-    def __init__(self, server_url: str, token: str, image_name: str):
+    def __init__(
+        self,
+        server_url: str,
+        token: str,
+        image_name: str,
+        secret_configs: Dict[str, Any] = {},
+    ):
         self.server_url = server_url
         self.token = token
         self.image_name = image_name
         self.install_driver = None
         self.setup_driver = None
         self.distribution = None
+        self.secret_configs = secret_configs
+        template = jinja2.Environment().from_string(default_user_data_template_jinja)
         self._data = yaml.safe_load(
-            default_user_data_template.format(
+            template.render(
                 server_url=self.server_url,
                 token=self.token,
                 image_name=self.image_name,
+                secret_configs=self.secret_configs,
             )
         )
         self.distribution = "ubuntu"

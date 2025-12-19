@@ -536,6 +536,7 @@ def run(args: argparse.Namespace):
         debug_env_info()
         set_third_party_env(cfg=cfg)
         set_ulimit()
+        start_tracemalloc_if_debug(cfg)
         initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
@@ -561,7 +562,8 @@ def run_server(cfg: Config):
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     except Exception as e:
-        logger.error(f"Error running server: {e}")
+        logger.exception(f"Error running server: {e}")
+        # logger.error(f"Error running server: {e}")
     finally:
         logger.info("Server has shut down.")
 
@@ -706,6 +708,14 @@ def debug_env_info():
     hf_endpoint = os.getenv("HF_ENDPOINT")
     if hf_endpoint:
         logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
+
+
+def start_tracemalloc_if_debug(cfg: Config):
+    if cfg.debug:
+        import tracemalloc
+
+        tracemalloc.start()
+        logger.debug("tracemalloc started for memory profiling")
 
 
 def set_third_party_env(cfg: Config):

@@ -530,6 +530,7 @@ async def create_inference_backend(
             default_version=backend_in.default_version,
             default_backend_param=backend_in.default_backend_param,
             default_run_command=backend_in.default_run_command,
+            default_entrypoint=backend_in.default_entrypoint,
             health_check_path=backend_in.health_check_path,
             description=backend_in.description,
         )
@@ -565,7 +566,6 @@ async def update_inference_backend(
             message=f"Built-in backend '{backend.backend_name}' cannot have default_version set. Default version is managed automatically.",
         )
 
-    # Check if any versions are being removed or modified that are currently in use
     if backend_in.version_configs is not None:
         current_versions = {}
         if backend.version_configs and backend.version_configs.root:
@@ -575,42 +575,14 @@ async def update_inference_backend(
         if backend_in.version_configs and backend_in.version_configs.root:
             new_versions = backend_in.version_configs.root
 
-        # Find versions that are being removed
         removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-
-        # Find versions that are being modified (same version name but different config)
-        modified_versions = []
-        for version_name in set(current_versions.keys()) & set(new_versions.keys()):
-            current_config = current_versions[version_name]
-            new_config = new_versions[version_name]
-
-            # Compare the configurations by converting to dict and comparing
-            current_dict = (
-                current_config.model_dump()
-                if hasattr(current_config, 'model_dump')
-                else current_config.__dict__
-            )
-            new_dict = (
-                new_config.model_dump()
-                if hasattr(new_config, 'model_dump')
-                else new_config.__dict__
-            )
-
-            if current_dict != new_dict:
-                modified_versions.append(version_name)
-
-        # Collect all versions that need to be checked (removed + modified)
-        versions_to_check = list(removed_versions) + modified_versions
-
-        # Check if any of these versions are in use
-        for version in versions_to_check:
+        for version in removed_versions:
             is_in_use, model_names = await check_backend_in_use(
                 session, backend.backend_name, version
             )
             if is_in_use:
-                action = "remove" if version in removed_versions else "modify"
                 raise BadRequestException(
-                    message=f"Cannot {action} version '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+                    message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
                 )
 
     # Validate version names for custom backends before updating
@@ -623,16 +595,18 @@ async def update_inference_backend(
         backend_in.version_configs.root[version].built_in_frameworks = None
 
     try:
-        update_backend = InferenceBackend(
-            backend_name=backend_in.backend_name,
-            version_configs=backend_in.version_configs,
-            default_version=backend_in.default_version,
-            default_backend_param=backend_in.default_backend_param,
-            default_run_command=backend_in.default_run_command,
-            health_check_path=backend_in.health_check_path,
-            description=backend_in.description,
-        )
-        await backend.update(session, update_backend)
+        # Use a dict for changes to prevent version_config serialization errors and None field overrides issues.
+        update_data = {
+            "backend_name": backend_in.backend_name,
+            "version_configs": backend_in.version_configs,
+            "default_version": backend_in.default_version,
+            "default_backend_param": backend_in.default_backend_param,
+            "default_run_command": backend_in.default_run_command,
+            "default_entrypoint": backend_in.default_entrypoint,
+            "health_check_path": backend_in.health_check_path,
+            "description": backend_in.description,
+        }
+        await backend.update(session, update_data)
     except Exception as e:
         raise InternalServerErrorException(
             message=f"Failed to update inference backend: {e}"
@@ -817,7 +791,6 @@ async def update_inference_backend_from_yaml(  # noqa: C901
                 version_configs_dict[version] = VersionConfig(**config)
             yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
 
-        # Check if any versions are being removed or modified that are currently in use
         if 'version_configs' in yaml_data:
             current_versions = {}
             if backend.version_configs and backend.version_configs.root:
@@ -827,42 +800,14 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             if yaml_data['version_configs'] and yaml_data['version_configs'].root:
                 new_versions = yaml_data['version_configs'].root
 
-            # Find versions that are being removed
             removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-
-            # Find versions that are being modified (same version name but different config)
-            modified_versions = []
-            for version_name in set(current_versions.keys()) & set(new_versions.keys()):
-                current_config = current_versions[version_name]
-                new_config = new_versions[version_name]
-
-                # Compare the configurations by converting to dict and comparing
-                current_dict = (
-                    current_config.model_dump()
-                    if hasattr(current_config, 'model_dump')
-                    else current_config.__dict__
-                )
-                new_dict = (
-                    new_config.model_dump()
-                    if hasattr(new_config, 'model_dump')
-                    else new_config.__dict__
-                )
-
-                if current_dict != new_dict:
-                    modified_versions.append(version_name)
-
-            # Collect all versions that need to be checked (removed + modified)
-            versions_to_check = list(removed_versions) + modified_versions
-
-            # Check if any of these versions are in use
-            for version in versions_to_check:
+            for version in removed_versions:
                 is_in_use, model_names = await check_backend_in_use(
                     session, backend.backend_name, version
                 )
                 if is_in_use:
-                    action = "remove" if version in removed_versions else "modify"
                     raise BadRequestException(
-                        message=f"Cannot {action} version '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+                        message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
                     )
 
         # Validate version names
@@ -875,11 +820,8 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             for v in yaml_data['version_configs'].root.keys():
                 yaml_data['version_configs'].root[v].built_in_frameworks = None
 
-        # Create InferenceBackendUpdate object from YAML data (after normalization)
-        backend_data = InferenceBackendUpdate(**yaml_data)
-
-        # Update the backend
-        await backend.update(session, backend_data)
+        # Update the backend from YAML data (after normalization)
+        await backend.update(session, yaml_data)
 
         return backend
 

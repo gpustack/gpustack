@@ -32,7 +32,12 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 
-from gpustack.utils.gpu import any_gpu_match
+from gpustack.utils.gpu import (
+    all_gpu_match,
+    any_gpu_match,
+    find_one_gpu,
+    compare_compute_capability,
+)
 from gpustack.utils.hub import (
     auth_check,
     get_hugging_face_model_min_gguf_path,
@@ -291,6 +296,28 @@ async def evaluate_environment(
             "The Ascend MindIE backend requires Ascend NPUs but none are available."
         ]
 
+    if (
+        backend == BackendEnum.SGLANG
+        and all_gpu_match(
+            workers, lambda gpu: gpu.vendor == ManufacturerEnum.NVIDIA.value
+        )
+        and not any_gpu_match(
+            workers,
+            lambda gpu: compare_compute_capability(gpu.compute_capability, "8.0") >= 0,
+        )
+    ):
+        # Ref: https://github.com/sgl-project/sglang/issues/6006
+        gpu = find_one_gpu(workers)
+        return False, [
+            "The SGLang backend requires NVIDIA GPUs with compute capability 8.0 or higher "
+            "(e.g., A100/SM80, H100/SM90, RTX 3090/SM86). "
+            + (
+                f"Available GPU: {gpu.name} (compute capability: {gpu.compute_capability})"
+                if gpu
+                else ""
+            )
+        ]
+
     return True, []
 
 
@@ -304,8 +331,8 @@ async def evaluate_model_metadata(
         ):
             # The local path model is not accessible from the server.
             return False, [
-                "The model file path you specified does not exist on the server. "
-                "It's recommended to place the model file at the same path on both the server and the worker. This helps GPUStack make better decisions."
+                "The model file path you specified does not exist on the GPUStack server. "
+                "It's recommended to place the model file at the same path on both the GPUStack server and GPUStack workers. This helps GPUStack make better decisions."
             ]
 
         if model.source in [
@@ -332,7 +359,7 @@ async def evaluate_model_metadata(
 
         set_default_worker_selector(model)
     except Exception as e:
-        if model.env and model.env.get("GPUSTACK_MODEL_EVALUATION_SKIP"):
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
             return True, []
 

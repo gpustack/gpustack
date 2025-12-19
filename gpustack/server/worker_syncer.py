@@ -85,7 +85,8 @@ class WorkerSyncer:
         self,
         worker: Worker,
     ) -> bool:
-        healthz_url = f"http://{worker.ip}:{worker.port}/healthz"
+        address = worker.advertise_address or worker.ip
+        healthz_url = f"http://{address}:{worker.port}/healthz"
         reachable = await is_url_reachable(
             healthz_url,
             self._worker_unreachable_timeout,

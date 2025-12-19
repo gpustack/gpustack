@@ -1060,11 +1060,14 @@ class AscendMindIEServer(InferenceServer):
         env["NPU_MEMORY_FRACTION"] = "0.8"
         # -- Disable OpenMP parallelism, speed up model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
+        # -- Enable safetensors GPU loading pass-through for faster model loading.
+        env["SAFETENSORS_FAST_GPU"] = env.pop("SAFETENSORS_FAST_GPU", "1")
         # -- Improve performance.
         env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = env.pop(
             "MINDIE_ASYNC_SCHEDULING_ENABLE", "1"
         )
-        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "2")
+        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "1")
+        env["CPU_AFFINITY_CONF"] = env.pop("CPU_AFFINITY_CONF", "1")
         env["ATB_OPERATION_EXECUTE_ASYNC"] = "1"
         env["ATB_LAYER_INTERNAL_TENSOR_REUSE"] = env.pop(
             "ATB_LAYER_INTERNAL_TENSOR_REUSE", "1"
@@ -1453,11 +1456,11 @@ class AscendMindIEServer(InferenceServer):
             env["ATB_LLM_HCCL_ENABLE"] = env.pop("ATB_LLM_HCCL_ENABLE", "1")
             env["ATB_LLM_COMM_BACKEND"] = env.pop("ATB_LLM_COMM_BACKEND", "hccl")
             env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
-            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
             env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
                 "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
             )
-            if env.get("CANN_CHIP", "310p") != "310p":
+            if not is_ascend_310p(self._get_selected_gpu_devices()):
+                env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
                 env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
             # NB(thxCode): For deterministic calculation, needs the following environment variables.
             # LCCL_DETERMINISTIC=1
@@ -1525,6 +1528,13 @@ class AscendMindIEServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Get container entrypoint from inference backend configuration
+        container_entrypoint = None
+        if self.inference_backend:
+            container_entrypoint = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         run_container = Container(
             image=image,
             name="default",
@@ -1532,6 +1542,7 @@ class AscendMindIEServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command=container_entrypoint,
                 command_script=command_script,
                 args=command_args,
                 working_dir=working_dir,
@@ -1554,6 +1565,7 @@ class AscendMindIEServer(InferenceServer):
         )
         logger.info(
             f"With image: {image}, "
+            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"

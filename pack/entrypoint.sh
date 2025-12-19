@@ -4,7 +4,7 @@
 set -e
 
 source /etc/s6-overlay/scripts/base.sh
-ARGS_FILE="/var/lib/gpustack/run/args/gpustack"
+ARGS_FILE="/run/gpustack/args"
 mkdir -p "$(dirname "$ARGS_FILE")"
 
 # If any arguments are passed to the container, save them to the args file

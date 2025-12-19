@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import secrets
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -9,10 +9,11 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.security import API_KEY_PREFIX, get_secret_hash
-from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import CurrentUserDep, SessionDep, EngineDep
 from gpustack.schemas.api_keys import (
     ApiKey,
     ApiKeyCreate,
+    ApiKeyListParams,
     ApiKeyPublic,
     ApiKeysPublic,
     ApiKeyUpdate,
@@ -28,7 +29,7 @@ async def get_api_keys(
     engine: EngineDep,
     session: SessionDep,
     user: CurrentUserDep,
-    params: ListParamsDep,
+    params: ApiKeyListParams = Depends(),
     search: str = None,
 ):
     fields = {"user_id": user.id}
@@ -49,6 +50,7 @@ async def get_api_keys(
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        order_by=params.order_by,
     )
 
 

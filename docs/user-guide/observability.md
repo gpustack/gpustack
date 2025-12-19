@@ -6,71 +6,6 @@ This document describes how to monitor GPUStack Server/Worker/LLM serving runtim
 
 GPUStack provides a comprehensive set of metrics for model serving and GPU resource management. By integrating Prometheus and Grafana, users can collect, store, and visualize these metrics in real time, enabling efficient monitoring and troubleshooting.
 
-## Metrics Exposed by GPUStack
-
-The following metrics are exposed by GPUStack and can be scraped by Prometheus. Each metric includes hierarchical labels for cluster, worker, model, and instance identification.
-
-### LLM Serving Runtime Metrics
-
-| Metric Name                            | Type      | Description                                                                 |
-| -------------------------------------- | --------- | --------------------------------------------------------------------------- |
-| gpustack:num_requests_running          | Gauge     | Number of requests currently being processed.                               |
-| gpustack:num_requests_waiting          | Gauge     | Number of requests waiting in the queue.                                    |
-| gpustack:num_requests_swapped          | Gauge     | Number of requests swapped out to CPU.                                      |
-| gpustack:prefix_cache_hit_rate         | Gauge     | Prefix cache hit rate.                                                      |
-| gpustack:kv_cache_usage_ratio          | Gauge     | KV-cache usage ratio. 1.0 means fully used.                                 |
-| gpustack:prefix_cache_queries          | Counter   | Number of prefix cache queries (total tokens).                              |
-| gpustack:prefix_cache_hits             | Counter   | Number of prefix cache hits (total tokens).                                 |
-| gpustack:prompt_tokens                 | Counter   | Total number of prefill tokens processed.                                   |
-| gpustack:generation_tokens             | Counter   | Total number of generated tokens.                                           |
-| gpustack:request_prompt_tokens         | Histogram | Number of prefill tokens processed per request.                             |
-| gpustack:request_generation_tokens     | Histogram | Number of generation tokens processed per request.                          |
-| gpustack:time_to_first_token_seconds   | Histogram | Time to generate first token.                                               |
-| gpustack:inter_token_latency_seconds   | Histogram | Time to generate the next token after the previous token has been produced. |
-| gpustack:time_per_output_token_seconds | Histogram | Time per generated token.                                                   |
-| gpustack:e2e_request_latency_seconds   | Histogram | End-to-end request latency.                                                 |
-| gpustack:request_success               | Counter   | Total number of successful requests.                                        |
-
-These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as defined in metrics_config.yaml.
-
-### Worker Metrics
-
-| Metric Name                                      | Type  | Description                                      |
-| ------------------------------------------------ | ----- | ------------------------------------------------ |
-| gpustack:worker_status                           | Gauge | Worker status (with state label).                |
-| gpustack:worker_node_os                          | Info  | Operating system information of the worker node. |
-| gpustack:worker_node_kernel                      | Info  | Kernel information of the worker node.           |
-| gpustack:worker_node_uptime_seconds              | Gauge | Uptime in seconds of the worker node.            |
-| gpustack:worker_node_cpu_cores                   | Gauge | Total CPU cores of the worker node.              |
-| gpustack:worker_node_cpu_utilization_rate        | Gauge | CPU utilization rate of the worker node.         |
-| gpustack:worker_node_memory_total_bytes          | Gauge | Total memory in bytes of the worker node.        |
-| gpustack:worker_node_memory_used_bytes           | Gauge | Memory used in bytes of the worker node.         |
-| gpustack:worker_node_memory_utilization_rate     | Gauge | Memory utilization rate of the worker node.      |
-| gpustack:worker_node_gpu                         | Info  | GPU information of the worker node.              |
-| gpustack:worker_node_gpu_cores                   | Gauge | Total GPU cores of the worker node.              |
-| gpustack:worker_node_gpu_utilization_rate        | Gauge | GPU utilization rate of the worker node.         |
-| gpustack:worker_node_gpu_temperature_celsius     | Gauge | GPU temperature in Celsius.                      |
-| gpustack:worker_node_gram_total_bytes            | Gauge | Total GPU RAM in bytes.                          |
-| gpustack:worker_node_gram_allocated_bytes        | Gauge | Allocated GPU RAM in bytes.                      |
-| gpustack:worker_node_gram_used_bytes             | Gauge | Used GPU RAM in bytes.                           |
-| gpustack:worker_node_gram_utilization_rate       | Gauge | GPU RAM utilization rate.                        |
-| gpustack:worker_node_filesystem_total_bytes      | Gauge | Total filesystem size in bytes.                  |
-| gpustack:worker_node_filesystem_used_bytes       | Gauge | Used filesystem size in bytes.                   |
-| gpustack:worker_node_filesystem_utilization_rate | Gauge | Filesystem utilization rate.                     |
-
-### Server Metrics
-
-| Metric Name                      | Type  | Description                                       |
-| -------------------------------- | ----- | ------------------------------------------------- |
-| gpustack:cluster                 | Info  | Cluster information (ID, name, provider).         |
-| gpustack:cluster_status          | Gauge | Cluster status (with state label).                |
-| gpustack:model                   | Info  | Model information (ID, name, runtime, source).    |
-| gpustack:model_desired_instances | Gauge | Desired number of model instances.                |
-| gpustack:model_running_instances | Gauge | Number of running model instances.                |
-| gpustack:model_instance_status   | Gauge | Status of each model instance (with state label). |
-
-> **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.
-
 ## Deploy Observability Stack
 
 The observability stack consists of two components:
@@ -186,3 +121,68 @@ curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/def
 ```
 
 > **Note**: The configuration should be provided in valid JSON format.
+
+## Metrics Exposed by GPUStack
+
+The following metrics are exposed by GPUStack and can be scraped by Prometheus. Each metric includes hierarchical labels for cluster, worker, model, and instance identification.
+
+### LLM Serving Runtime Metrics
+
+| Metric Name                            | Type      | Description                                                                 |
+| -------------------------------------- | --------- | --------------------------------------------------------------------------- |
+| gpustack:num_requests_running          | Gauge     | Number of requests currently being processed.                               |
+| gpustack:num_requests_waiting          | Gauge     | Number of requests waiting in the queue.                                    |
+| gpustack:num_requests_swapped          | Gauge     | Number of requests swapped out to CPU.                                      |
+| gpustack:prefix_cache_hit_rate         | Gauge     | Prefix cache hit rate.                                                      |
+| gpustack:kv_cache_usage_ratio          | Gauge     | KV-cache usage ratio. 1.0 means fully used.                                 |
+| gpustack:prefix_cache_queries          | Counter   | Number of prefix cache queries (total tokens).                              |
+| gpustack:prefix_cache_hits             | Counter   | Number of prefix cache hits (total tokens).                                 |
+| gpustack:prompt_tokens                 | Counter   | Total number of prefill tokens processed.                                   |
+| gpustack:generation_tokens             | Counter   | Total number of generated tokens.                                           |
+| gpustack:request_prompt_tokens         | Histogram | Number of prefill tokens processed per request.                             |
+| gpustack:request_generation_tokens     | Histogram | Number of generation tokens processed per request.                          |
+| gpustack:time_to_first_token_seconds   | Histogram | Time to generate first token.                                               |
+| gpustack:inter_token_latency_seconds   | Histogram | Time to generate the next token after the previous token has been produced. |
+| gpustack:time_per_output_token_seconds | Histogram | Time per generated token.                                                   |
+| gpustack:e2e_request_latency_seconds   | Histogram | End-to-end request latency.                                                 |
+| gpustack:request_success               | Counter   | Total number of successful requests.                                        |
+
+These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as defined in metrics_config.yaml.
+
+### Worker Metrics
+
+| Metric Name                                      | Type  | Description                                      |
+| ------------------------------------------------ | ----- | ------------------------------------------------ |
+| gpustack:worker_status                           | Gauge | Worker status (with state label).                |
+| gpustack:worker_node_os                          | Info  | Operating system information of the worker node. |
+| gpustack:worker_node_kernel                      | Info  | Kernel information of the worker node.           |
+| gpustack:worker_node_uptime_seconds              | Gauge | Uptime in seconds of the worker node.            |
+| gpustack:worker_node_cpu_cores                   | Gauge | Total CPU cores of the worker node.              |
+| gpustack:worker_node_cpu_utilization_rate        | Gauge | CPU utilization rate of the worker node.         |
+| gpustack:worker_node_memory_total_bytes          | Gauge | Total memory in bytes of the worker node.        |
+| gpustack:worker_node_memory_used_bytes           | Gauge | Memory used in bytes of the worker node.         |
+| gpustack:worker_node_memory_utilization_rate     | Gauge | Memory utilization rate of the worker node.      |
+| gpustack:worker_node_gpu                         | Info  | GPU information of the worker node.              |
+| gpustack:worker_node_gpu_cores                   | Gauge | Total GPU cores of the worker node.              |
+| gpustack:worker_node_gpu_utilization_rate        | Gauge | GPU utilization rate of the worker node.         |
+| gpustack:worker_node_gpu_temperature_celsius     | Gauge | GPU temperature in Celsius.                      |
+| gpustack:worker_node_gram_total_bytes            | Gauge | Total GPU RAM in bytes.                          |
+| gpustack:worker_node_gram_allocated_bytes        | Gauge | Allocated GPU RAM in bytes.                      |
+| gpustack:worker_node_gram_used_bytes             | Gauge | Used GPU RAM in bytes.                           |
+| gpustack:worker_node_gram_utilization_rate       | Gauge | GPU RAM utilization rate.                        |
+| gpustack:worker_node_filesystem_total_bytes      | Gauge | Total filesystem size in bytes.                  |
+| gpustack:worker_node_filesystem_used_bytes       | Gauge | Used filesystem size in bytes.                   |
+| gpustack:worker_node_filesystem_utilization_rate | Gauge | Filesystem utilization rate.                     |
+
+### Server Metrics
+
+| Metric Name                      | Type  | Description                                       |
+| -------------------------------- | ----- | ------------------------------------------------- |
+| gpustack:cluster                 | Info  | Cluster information (ID, name, provider).         |
+| gpustack:cluster_status          | Gauge | Cluster status (with state label).                |
+| gpustack:model                   | Info  | Model information (ID, name, runtime, source).    |
+| gpustack:model_desired_instances | Gauge | Desired number of model instances.                |
+| gpustack:model_running_instances | Gauge | Number of running model instances.                |
+| gpustack:model_instance_status   | Gauge | Status of each model instance (with state label). |
+
+> **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.

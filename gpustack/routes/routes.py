@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from gpustack.routes import (
     api_keys,
     auth,
+    config,
     dashboard,
     debug,
     draft_models,
@@ -164,6 +165,12 @@ api_router.include_router(
 )
 api_router.include_router(
     v1_admin_router, dependencies=[Depends(get_admin_user)], prefix=versioned_prefix
+)
+api_router.include_router(
+    config.router,
+    dependencies=[Depends(get_admin_user)],
+    prefix=versioned_prefix,
+    include_in_schema=False,
 )
 api_router.include_router(
     debug.router,

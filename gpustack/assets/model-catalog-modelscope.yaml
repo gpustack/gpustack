@@ -742,10 +742,14 @@ model_sets:
   specs:
     - mode: standard
       quantization: "BF16"
+      gpu_filters:
+        vendor: nvidia
       source: model_scope
       model_scope_model_id: black-forest-labs/FLUX.1-dev
       backend: SGLang
-      backend_version: 0.5.5
+      backend_version: 0.5.6.post2
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "37580963840" # 35 GiB, observed empirically
 - name: Qwen-Image
   description: Qwen-Image is an image generation foundation model in the Qwen series that achieves significant advances in complex text rendering and precise image editing.
   home: https://qwen.ai
@@ -759,10 +763,54 @@ model_sets:
   specs:
     - mode: standard
       quantization: "BF16"
+      gpu_filters:
+        vendor: nvidia
       source: model_scope
       model_scope_model_id: Qwen/Qwen-Image
       backend: SGLang
-      backend_version: 0.5.5
+      backend_version: 0.5.6.post2
       env:
         # Miss the weight files in sub-directories at the moment, claim empirical value here.
         GPUSTACK_MODEL_VRAM_CLAIM: "53687091200" # 50 GiB
+- name: Qwen-Image-Edit
+  description: Built upon our 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image’s unique text rendering capabilities to image editing tasks, enabling precise text editing.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 20
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-08-19"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      gpu_filters:
+        vendor: nvidia
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen-Image-Edit
+      backend: SGLang
+      backend_version: 0.5.6.post2
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "64424509440" # 60 GiB, , observed empirically
+- name: Z-Image-Turbo
+  description: Z-Image is a powerful and highly efficient image generation model with 6B parameters.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 6
+  categories:
+    - image
+  licenses:
+    - apache-2.0
+  release_date: "2025-11-27"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      gpu_filters:
+        vendor: nvidia
+      source: model_scope
+      model_scope_model_id: Tongyi-MAI/Z-Image-Turbo
+      backend: SGLang
+      backend_version: 0.5.6.post2
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "35433480192" # 33 GiB, observed empirically

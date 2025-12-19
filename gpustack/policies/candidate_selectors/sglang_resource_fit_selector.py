@@ -131,14 +131,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         tp_size = find_int_parameter(
             model.backend_parameters, ["tp-size", "tensor-parallel-size"]
         )
-        num_attention_heads = self._model_params.num_attention_heads
-        if tp_size and num_attention_heads and num_attention_heads % tp_size != 0:
-            raise ValueError(
-                f"Total number of attention heads ({num_attention_heads})"
-                " must be divisible by tp-size "
-                f"({tp_size})."
-            )
-
         pp_size = find_int_parameter(
             model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
         )
@@ -182,6 +174,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         if speculative_algorithm is not None and enable_mixed_chunk:
             raise ValueError("enable_mixed_chunk is required for speculative decoding")
+
+        if message := self._check_tp_size_divisibility(tp_size):
+            raise ValueError(message + " Consider adjusting your tp-size value.")
 
     def _cal_effective_vram(self) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
@@ -495,10 +490,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 gpu_sum += 1
                 vram_sum += vram_claim[gpu.index]
 
-                if (
-                    self._num_attention_heads
-                    and self._num_attention_heads % gpu_sum != 0
-                ):
+                if not self._is_tp_size_divisible(gpu_sum):
                     continue
 
                 if self._gpu_count and gpu_sum >= self._gpu_count:
@@ -523,18 +515,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     )
                 ]
         event_msg_list = []
-        if (
-            self._num_attention_heads
-            and self._largest_multi_gpu_utilization_satisfied_count != 0
-            and self._num_attention_heads
-            % self._largest_multi_gpu_utilization_satisfied_count
-            != 0
+        if message := self._check_tp_size_divisibility(
+            self._largest_multi_gpu_utilization_satisfied_count
         ):
-            event_msg_list.append(
-                f"Total number of attention heads ({self._num_attention_heads})"
-                " must be divisible by gpu count "
-                f"({self._largest_multi_gpu_utilization_satisfied_count})."
-            )
+            event_msg_list.append(message)
+
         if len(event_msg_list) == 0:
             event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
             if self._mem_fraction_static != 0:
@@ -660,10 +645,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     for gpu in worker.status.gpu_devices
                 )
 
-                if (
-                    self._num_attention_heads
-                    and self._num_attention_heads % gpu_sum == 0
-                ) and (vram_sum >= self._vram_claim):
+                if not self._is_tp_size_divisible(gpu_count):
+                    continue
+
+                if vram_sum >= self._vram_claim:
                     return [
                         _create_candidate(
                             self._model,

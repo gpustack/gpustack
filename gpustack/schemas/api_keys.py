@@ -1,10 +1,10 @@
 from datetime import datetime
-from typing import Optional, List, TYPE_CHECKING
+from typing import ClassVar, Optional, List, TYPE_CHECKING
 from sqlalchemy import Column, UniqueConstraint
 from sqlmodel import Field, SQLModel, Text, JSON, Relationship
 
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList, UTCDateTime
+from gpustack.schemas.common import ListParams, PaginatedList, UTCDateTime
 
 if TYPE_CHECKING:
     from gpustack.schemas.users import User
@@ -36,6 +36,15 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
         back_populates="api_keys",
         sa_relationship_kwargs={"lazy": "noload"},
     )
+
+
+class ApiKeyListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "expires_at",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class ApiKeyCreate(ApiKeyBase):

@@ -69,6 +69,7 @@ class ModelParameters:
     derived_max_seq_len: int = 0
     num_hidden_layers: int = 0
     hidden_size: Optional[int] = None
+    vocab_size: Optional[int] = None
     num_attention_heads: Optional[int] = None
     num_key_value_heads: int = 1
     n_group: Optional[int] = None
@@ -857,3 +858,62 @@ class ScheduleCandidatesSelector(ABC):
                 return False
 
         return True
+
+    def _is_tp_size_divisible(self, tp_size: int) -> bool:
+        """
+        Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
+        1. num_attention_heads
+        2. vocab_size
+
+        Notes on `tp_size` (tensor parallel size) usage in auto scheduling:
+        - Single-worker multi-GPU: `tp_size` is the number of GPUs currently selected
+          in the traversal (i.e., `gpu_sum`). The scheduler grows the candidate set
+          incrementally and validates divisibility at each step.
+        - Multi-worker multi-GPU: selected workers are constrained to have the same
+          number of GPUs, so `tp_size` equals the per-worker GPU count (i.e., `gpu_count`)
+        """
+        if not tp_size:
+            return False
+        if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
+            return False
+
+        if (
+            self._model_params.vocab_size
+            and self._model_params.vocab_size % tp_size != 0
+        ):
+            return False
+
+        return True
+
+    def _check_tp_size_divisibility(
+        self,
+        tp_size: int,
+    ) -> Optional[str]:
+        """
+        Check whether InferenceBackend's constraint of parameter divisibility is satisfied.
+        1. num_attention_heads
+        2. vocab_size
+
+        Return:
+            None if divisibility is satisfied, otherwise an error message.
+        """
+        if not tp_size:
+            return None
+        if self._num_attention_heads and self._num_attention_heads % tp_size != 0:
+            return (
+                f"Total number of attention heads ({self._num_attention_heads})"
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
+            )
+
+        if (
+            self._model_params.vocab_size
+            and self._model_params.vocab_size % tp_size != 0
+        ):
+            return (
+                f"Vocabulary size ({self._model_params.vocab_size})"
+                " must be divisible by tensor parallel size "
+                f"({tp_size})."
+            )
+
+        return None

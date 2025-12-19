@@ -11,6 +11,12 @@ WHITELIST_CONFIG_FIELDS = {
     "system_default_container_registry",
 }
 
+READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
+    {
+        "server_external_url",
+    }
+)
+
 
 def _unwrap_optional(tp):
     origin = get_origin(tp)

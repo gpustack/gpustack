@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Set, Annotated
+from typing import Optional, Annotated
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi import APIRouter, Request, Response, Depends
 from gpustack.api.exceptions import (
@@ -8,7 +8,7 @@ from gpustack.api.exceptions import (
     UnauthorizedException,
     BadRequestException,
 )
-from gpustack.server.services import ModelService
+from gpustack.server.services import ModelService, UserService
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.users import User
 from gpustack.schemas.models import AccessPolicyEnum
@@ -45,7 +45,6 @@ async def server_auth(
     api_key: Optional[ApiKey] = None
     access_key: Optional[str] = None
     consumer = 'none'
-    allowed_model_names: Set[str] = set()
     try:
         user = await get_current_user(
             request=request,
@@ -56,7 +55,6 @@ async def server_auth(
         )
         api_key = getattr(request.state, "api_key", None)
         access_key = None if api_key is None else api_key.access_key
-        allowed_model_names = getattr(request.state, "user_allow_model_names", set())
         consumer = '.'.join(
             [part for part in [access_key, f"gpustack-{user.id}"] if part is not None]
         )
@@ -87,7 +85,11 @@ async def server_auth(
         raise credentials_exception
 
     if policy != AccessPolicyEnum.PUBLIC:
-        if model_name not in allowed_model_names:
+        if not await UserService(session).model_allowed_for_user(
+            model_name=model_name,
+            user_id=user.id,
+            api_key=api_key,
+        ):
             raise ForbiddenException(
                 message=f"Api key not allowed to access model {model_name}"
             )

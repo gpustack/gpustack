@@ -30,6 +30,7 @@ from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
     is_ascend,
+    is_ascend_310p,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,13 @@ class SGLangServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Get container entrypoint from inference backend configuration
+        container_entrypoint = None
+        if self.inference_backend:
+            container_entrypoint = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         # Create container configuration
         run_container = Container(
             image=image,
@@ -141,6 +149,7 @@ class SGLangServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command=container_entrypoint,
                 command_script=command_script,
                 args=command_args,
             ),
@@ -166,6 +175,7 @@ class SGLangServer(InferenceServer):
         logger.info(f"Creating SGLang container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
+            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -177,15 +187,31 @@ class SGLangServer(InferenceServer):
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """
-        Setup environment variables for the SGLang container server.
+        Get environment variables for SGLang service.
         """
 
         # Apply GPUStack's inference environment setup
         env = super()._get_configured_env()
 
+        # Optimize environment variables
+        # -- Disable OpenMP parallelism to avoid resource contention, increases model loading.
+        env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
+        # -- Enable safetensors GPU loading pass-through for faster model loading.
+        env["SAFETENSORS_FAST_GPU"] = env.pop("SAFETENSORS_FAST_GPU", "1")
+        # -- Observe RUN:AI streamer model loading.
+        env["RUNAI_STREAMER_MEMORY_LIMIT"] = env.pop("RUNAI_STREAMER_MEMORY_LIMIT", "0")
+        env["RUNAI_STREAMER_LOG_TO_STDERR"] = env.pop(
+            "RUNAI_STREAMER_LOG_TO_STDERR", "1"
+        )
+        env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
+
         # Apply distributed environment variables
         if is_distributed:
             self._set_distributed_env(env)
+
+        # Apply Ascend-specific environment variables
+        if is_ascend(self._get_selected_gpu_devices()):
+            self._set_ascend_env(env)
 
         return env
 
@@ -206,6 +232,31 @@ class SGLangServer(InferenceServer):
         if "NCCL_SOCKET_IFNAME" not in env:
             env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
             env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+
+    def _set_ascend_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for Ascend devices.
+        """
+
+        # -- Optimize Pytorch NPU operations delivery performance.
+        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "1")
+        # -- Enable NUMA coarse-grained binding.
+        env["CPU_AFFINITY_CONF"] = env.pop("CPU_AFFINITY_CONF", "1")
+        # -- Reuse memory in multi-streams.
+        env["PYTORCH_NPU_ALLOC_CONF"] = env.pop(
+            "PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"
+        )
+        # -- Increase HCCL connection timeout to avoid issues in large clusters.
+        env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
+        # -- Enable RDMA PCIe direct post with no strict mode for better performance.
+        env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
+            "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
+        )
+        if not is_ascend_310p(self._get_selected_gpu_devices()):
+            # -- Disable HCCL execution timeout for better stability.
+            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
+            # -- Enable the communication is scheduled by AI Vector directly with ROCE, instead of AI CPU.
+            env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
 
     def _build_command_args(
         self,
@@ -228,7 +279,15 @@ class SGLangServer(InferenceServer):
         arguments = self.build_versioned_command_args(arguments)
 
         derived_max_model_len = self._derive_max_model_len()
-        if derived_max_model_len and derived_max_model_len > 8192:
+        specified_max_model_len = find_parameter(
+            self._model.backend_parameters,
+            ["context-length"],
+        )
+        if (
+            specified_max_model_len is None
+            and derived_max_model_len
+            and derived_max_model_len > 8192
+        ):
             arguments.extend(["--context-length", "8192"])
 
         # Add auto parallelism arguments if needed

@@ -2,7 +2,8 @@ import uuid
 from datetime import datetime, timezone
 import logging
 from fastapi import Depends, Request
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import get_session
 from typing import Annotated, Optional, Tuple
 from fastapi.security import (
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 SESSION_COOKIE_NAME = "gpustack_session"
 OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
+SSO_LOGIN_COOKIE_NAME = "gpustack_sso_login"
 SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 basic_auth = HTTPBasic(auto_error=False)
@@ -87,12 +89,8 @@ async def get_current_user(
         if not user.is_active:
             raise UnauthorizedException(message="User account is deactivated")
         request.state.user = user
-        access_key = None if api_key is None else api_key.access_key
         if api_key is not None:
             request.state.api_key = api_key
-        request.state.user_allow_model_names = await UserService(
-            session
-        ).get_user_accessible_model_names(user.id, access_key)
         return user
 
     raise credentials_exception

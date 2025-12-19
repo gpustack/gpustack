@@ -1,7 +1,9 @@
+import math
 import secrets
-from fastapi import APIRouter, Request, Response
+from typing import Any, Callable, Optional, Union
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
-
+from enum import Enum
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -9,8 +11,11 @@ from gpustack.api.exceptions import (
     InvalidException,
     ForbiddenException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
+from gpustack.schemas.common import PaginatedList, Pagination
+from gpustack.schemas.config import parse_base_model_to_env_vars
+from gpustack.server.deps import SessionDep, EngineDep
 from gpustack.schemas.clusters import (
+    ClusterListParams,
     ClusterUpdate,
     ClusterCreate,
     ClusterPublic,
@@ -18,6 +23,7 @@ from gpustack.schemas.clusters import (
     Cluster,
     ClusterStateEnum,
     ClusterProvider,
+    SensitiveRegistrationConfig,
     ClusterRegistrationTokenPublic,
     WorkerPoolCreate,
     WorkerPoolPublic,
@@ -28,14 +34,15 @@ from gpustack.schemas.users import User, UserRole, system_name_prefix
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
-from gpustack.config.config import get_global_config
-from gpustack.config import registration
+from gpustack.config.config import get_global_config, get_cluster_image_name
 
 router = APIRouter()
 
 
-def get_server_url(request: Request) -> str:
+def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
     """Construct the server URL based on request headers or fallback to default."""
+    if cluster_override:
+        return cluster_override.strip("/")
     url = get_global_config().server_external_url
     if not url:
         url = f"{request.url.scheme}://{request.url.hostname}"
@@ -44,11 +51,11 @@ def get_server_url(request: Request) -> str:
     return url
 
 
-@router.get("", response_model=ClustersPublic)
+@router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ClusterListParams = Depends(),
     name: str = None,
     search: str = None,
 ):
@@ -66,16 +73,83 @@ async def get_clusters(
             media_type="text/event-stream",
         )
 
-    return await Cluster.paginated_by_query(
-        session=session,
-        fields=fields,
-        fuzzy_fields=fuzzy_fields,
-        page=params.page,
-        per_page=params.perPage,
+    items = await Cluster.all_by_fields(
+        session=session, fields=fields, fuzzy_fields=fuzzy_fields
     )
 
+    if not items:
+        return PaginatedList[ClusterPublic](
+            items=[],
+            pagination=Pagination(
+                page=params.page,
+                perPage=params.perPage,
+                total=0,
+                totalPage=0,
+            ),
+        )
 
-@router.get("/{id}", response_model=ClusterPublic)
+    if params.page < 1 or params.perPage < 1:
+        # Return all items.
+        pagination = Pagination(
+            page=1,
+            perPage=len(items),
+            total=len(items),
+            totalPage=1,
+        )
+        return PaginatedList[ClusterPublic](items=items, pagination=pagination)
+
+    # sort in memory
+    order_by = params.order_by
+    if order_by:
+        for field, direction in reversed(order_by):
+            items.sort(
+                key=_make_sort_key(field),
+                reverse=direction == "desc",
+            )
+
+    # Paginate results.
+    start = (params.page - 1) * params.perPage
+    end = start + params.perPage
+    paginated_items = items[start:end]
+
+    count = len(items)
+    total_page = math.ceil(count / params.perPage)
+    pagination = Pagination(
+        page=params.page,
+        perPage=params.perPage,
+        total=count,
+        totalPage=total_page,
+    )
+
+    return PaginatedList[ClusterPublic](items=paginated_items, pagination=pagination)
+
+
+def _make_sort_key(field: str) -> Callable[[Any], tuple]:
+    """
+    Returns a key function for sorting objects by a given field.
+    Handles:
+      - None values (placed at the end regardless of sort direction),
+      - Enum instances (uses .value for comparison),
+      - Other types (str, int, float, datetime, etc.) as long as they are comparable.
+    """
+
+    def key_func(obj: Any) -> tuple:
+        val = getattr(obj, field, None)
+        if val is None:
+            # (1, None) ensures None is sorted after non-None values
+            return (1, None)
+        if isinstance(val, Enum):
+            # Use the underlying value of the Enum for comparison
+            sort_val = val.value
+        else:
+            sort_val = val
+        # (0, sort_val) so non-None values come first
+        return (0, sort_val)
+
+    return key_func
+
+
+@router.get("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
 async def get_cluster(session: SessionDep, id: int):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
@@ -83,7 +157,30 @@ async def get_cluster(session: SessionDep, id: int):
     return cluster
 
 
-@router.post("", response_model=ClusterPublic)
+def create_update_check(
+    provider: ClusterProvider, input: Union[ClusterCreate, ClusterUpdate]
+):
+    cfg = get_global_config()
+    is_cloud_provider = provider not in [
+        ClusterProvider.Kubernetes,
+        ClusterProvider.Docker,
+    ]
+    if (
+        is_cloud_provider
+        and isinstance(input, ClusterCreate)
+        and input.credential_id is None
+    ):
+        raise InvalidException(
+            message=f"credential_id is required for provider {provider}"
+        )
+    server_url = input.server_url or cfg.server_external_url
+    if is_cloud_provider and server_url is None:
+        raise InvalidException(
+            message=f"server_url is required for provider {provider}"
+        )
+
+
+@router.post("", response_model=ClusterPublic, response_model_exclude_none=True)
 async def create_cluster(session: SessionDep, input: ClusterCreate):
     existing = await Cluster.one_by_fields(
         session,
@@ -91,13 +188,9 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
     )
     if existing:
         raise AlreadyExistsException(message=f"cluster {input.name} already exists")
-    if (
-        input.provider not in [ClusterProvider.Kubernetes, ClusterProvider.Docker]
-        and input.credential_id is None
-    ):
-        raise InvalidException(
-            message=f"credential_id is required for provider {input.provider}"
-        )
+
+    create_update_check(input.provider, input)
+
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
     target_state = ClusterStateEnum.PROVISIONING
@@ -155,11 +248,13 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
         raise InternalServerErrorException(message=f"Failed to create cluster: {e}")
 
 
-@router.put("/{id}", response_model=ClusterPublic)
+@router.put("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
 async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster:
         raise NotFoundException(message=f"cluster {id} not found")
+
+    create_update_check(cluster.provider, input)
 
     try:
         await cluster.update(session=session, source=input)
@@ -214,24 +309,30 @@ async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCrea
         raise InternalServerErrorException(message=f"Failed to create worker pool: {e}")
 
 
+def get_registration_from_cluster(
+    request: Request, cluster: Cluster
+) -> ClusterRegistrationTokenPublic:
+    config = cluster.worker_config.model_dump() if cluster.worker_config else {}
+    sensitive_registration = SensitiveRegistrationConfig(
+        token=cluster.registration_token, **config
+    )
+    return ClusterRegistrationTokenPublic(
+        token=cluster.registration_token,
+        server_url=get_server_url(request, cluster.server_url),
+        image=get_cluster_image_name(
+            cluster.worker_config
+        ),  # Default image, can be customized
+        env=parse_base_model_to_env_vars(sensitive_registration),
+        args=[],
+    )
+
+
 @router.get("/{id}/registration-token", response_model=ClusterRegistrationTokenPublic)
 async def get_registration_token(request: Request, session: SessionDep, id: int):
     cluster = await Cluster.one_by_id(session, id)
     if not cluster or cluster.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
-    url = get_server_url(request)
-    cfg = get_global_config()
-    container_registry = registration.determine_default_registry(
-        cfg.system_default_container_registry
-    )
-
-    return ClusterRegistrationTokenPublic(
-        token=cluster.registration_token,
-        server_url=url,
-        image=get_global_config().get_image_name(
-            container_registry
-        ),  # Default image, can be customized
-    )
+    return get_registration_from_cluster(request, cluster)
 
 
 @router.get("/{id}/manifests")
@@ -243,12 +344,10 @@ async def get_cluster_manifests(request: Request, session: SessionDep, id: int):
         raise InvalidException(
             message=f"Cannot get manifests for cluster {cluster.name}(id: {id}) with provider {cluster.provider}"
         )
-    url = get_server_url(request)
     config = TemplateConfig(
+        registration=get_registration_from_cluster(request, cluster),
         cluster_suffix=cluster.hashed_suffix,
-        token=cluster.registration_token,
-        image=get_global_config().get_image_name(),
-        server_url=url,
+        namespace=getattr(cluster.worker_config, "namespace", None),
     )
     yaml_content = config.render()
     return Response(

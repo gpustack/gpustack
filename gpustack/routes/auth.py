@@ -22,6 +22,7 @@ from gpustack import envs
 from gpustack.api.auth import (
     SESSION_COOKIE_NAME,
     OIDC_ID_TOKEN_COOKIE_NAME,
+    SSO_LOGIN_COOKIE_NAME,
     authenticate_user,
 )
 from gpustack.server.deps import CurrentUserDep, SessionDep
@@ -30,6 +31,8 @@ from fastapi.responses import RedirectResponse
 from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
 from urllib.parse import urlencode
+
+from gpustack.utils.network import use_proxy_env_for_url
 
 router = APIRouter()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
@@ -277,6 +280,13 @@ async def saml_callback(request: Request, session: SessionDep):
             max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
             expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
         )
+        response.set_cookie(
+            key=SSO_LOGIN_COOKIE_NAME,
+            value="true",
+            httponly=True,
+            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        )
     except Exception as e:
         logger.error(f"SAML callback error: {str(e)}")
         raise UnauthorizedException(message=str(e))
@@ -293,6 +303,7 @@ async def saml_logout_callback(request: Request):
         pass
     response = RedirectResponse(url="/")
     response.delete_cookie(key=SESSION_COOKIE_NAME)
+    response.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
     return response
 
 
@@ -347,9 +358,10 @@ async def oidc_callback(request: Request, session: SessionDep):
         "client_secret": config.oidc_client_secret,
         "redirect_uri": config.oidc_redirect_uri,
     }
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    token_endpoint = config.openid_configuration["token_endpoint"]
+    use_proxy_env = use_proxy_env_for_url(token_endpoint)
+    async with httpx.AsyncClient(timeout=timeout, trust_env=use_proxy_env) as client:
         try:
-            token_endpoint = config.openid_configuration["token_endpoint"]
             token_res = await client.request("POST", token_endpoint, data=data)
             res_data = json.loads(token_res.text)
             if token_res.status_code != 200:
@@ -434,6 +446,13 @@ async def oidc_callback(request: Request, session: SessionDep):
                 max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
                 expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
             )
+            response.set_cookie(
+                key=SSO_LOGIN_COOKIE_NAME,
+                value="true",
+                httponly=True,
+                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            )
     except Exception as e:
         logger.warning(f"Failed to set id_token cookie: {str(e)}")
     return response
@@ -501,10 +520,12 @@ async def logout(request: Request):
         except Exception as e:
             logger.error(f"Failed to get SAML logout url: {str(e)}")
             external_logout_url = None
-    content = json.dumps({"logout_url": external_logout_url})
+    sso_login = request.cookies.get(SSO_LOGIN_COOKIE_NAME)
+    content = json.dumps({"logout_url": external_logout_url}) if sso_login else ""
     resp = Response(content=content, media_type="application/json")
     resp.delete_cookie(key=SESSION_COOKIE_NAME)
     resp.delete_cookie(key=OIDC_ID_TOKEN_COOKIE_NAME)
+    resp.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
     return resp
 
 

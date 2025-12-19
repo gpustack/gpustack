@@ -3,12 +3,13 @@ from datetime import datetime
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel, Text
 
 from gpustack.schemas.common import (
+    ListParams,
     PaginatedList,
     UTCDateTime,
     pydantic_column_type,
@@ -259,6 +260,18 @@ class Model(ModelBase, BaseModelMixin, table=True):
     )
 
 
+class ModelListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "source",
+        "cluster_id",
+        "replicas",
+        "ready_replicas",
+        "created_at",
+        "updated_at",
+    ]
+
+
 class ModelCreate(ModelBase):
     pass
 
@@ -403,6 +416,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     worker_id: Optional[int] = None
     worker_name: Optional[str] = None
+    worker_advertise_address: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     pid: Optional[int] = None
@@ -432,6 +446,9 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
     model_id: int = Field(default=None, foreign_key="models.id")
     model_name: str
+
+    backend: Optional[str] = None
+    backend_version: Optional[str] = None
 
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None
