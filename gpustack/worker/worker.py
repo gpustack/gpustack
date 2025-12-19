@@ -25,7 +25,7 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
 )
 from gpustack import envs
-from gpustack.routes import debug, probes
+from gpustack.routes import config as route_config, debug, probes
 from gpustack.routes.worker import logs, proxy
 from gpustack.routes.token import worker_auth
 from gpustack.server import catalog
@@ -321,7 +321,8 @@ class Worker:
             self._serve_manager._model_instance_by_instance_id
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
-        app.include_router(debug.router, prefix=default_versioned_prefix)
+        app.include_router(route_config.router, prefix=default_versioned_prefix)
+        app.include_router(debug.router, prefix="/debug")
         app.include_router(probes.router)
         app.include_router(logs.router)
         app.include_router(proxy.router)
