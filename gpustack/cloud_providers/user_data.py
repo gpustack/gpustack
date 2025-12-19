@@ -152,7 +152,7 @@ class UserDataTemplate:
             'echo "blacklist nouveau" >> /etc/modprobe.d/blacklist.conf',
             'echo "options nouveau modeset=0" >> /etc/modprobe.d/blacklist.conf',
             'update-initramfs -u',
-            "distribution=$(. /etc/os-release; echo $ID$(echo $VERSION_ID | sed 's/\.//g'))",
+            r"distribution=$(. /etc/os-release; echo $ID$(echo $VERSION_ID | sed 's/\.//g'))",
             'wget "https://developer.download.nvidia.com/compute/cuda/repos/$distribution/$(uname -m)/cuda-keyring_1.1-1_all.deb" -O /tmp/cuda-keyring_1.1-1_all.deb',
             'dpkg -i /tmp/cuda-keyring_1.1-1_all.deb',
             'rm /tmp/cuda-keyring_1.1-1_all.deb',

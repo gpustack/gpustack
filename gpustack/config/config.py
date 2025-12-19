@@ -11,7 +11,7 @@ from gpustack_runtime.detector import (
     supported_backends,
 )
 from pydantic import model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import requests
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -179,6 +179,10 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_post_logout_redirect_key: Optional[str] = None
 
     _set_worker_fields = {}
+
+    model_config = SettingsConfigDict(
+        env_prefix="GPUSTACK_", protected_namespaces=('settings_',)
+    )
 
     def __init__(self, **values):
         super().__init__(**values)
@@ -582,10 +586,6 @@ class Config(WorkerConfig, BaseSettings):
             raise Exception("Unsupported OS")
 
         return os.path.abspath(data_dir)
-
-    class Config:
-        env_prefix = "GPUSTACK_"
-        protected_namespaces = ('settings_',)
 
     def prepare_jwt_secret_key(self):
         if self.jwt_secret_key is not None:

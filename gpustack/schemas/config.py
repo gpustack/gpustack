@@ -26,7 +26,9 @@ class ModelInstanceProxyModeEnum(str, Enum):
 
 class SensitivePredefinedConfig(BaseModel):
     # Common options
-    huggingface_token: Optional[str] = Field(default=None, env_var="HF_TOKEN")
+    huggingface_token: Optional[str] = Field(
+        default=None, json_schema_extra={"env_var": "HF_TOKEN"}
+    )
 
 
 class PredefinedConfig(SensitivePredefinedConfig):
