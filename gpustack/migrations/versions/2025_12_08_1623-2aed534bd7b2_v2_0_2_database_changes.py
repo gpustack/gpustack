@@ -50,6 +50,7 @@ def upgrade() -> None:
 
     with op.batch_alter_table('inference_backends', schema=None) as batch_op:
         batch_op.alter_column('default_run_command', type_=sa.Text(), existing_type=sa.String(length=255), nullable=True)
+        batch_op.add_column(sa.Column('default_entrypoint', sa.Text(), nullable=True))
 
 
 
