@@ -1269,10 +1269,12 @@ class WorkerProvisioningController:
             (getattr(worker.worker_pool.cloud_options, "volumes", None) or [])
         )
         volume_ids = provider_config.get("volume_ids", [])
-        if worker.ip is None or worker.ip == "":
+        if worker.advertise_address is None or worker.advertise_address == "":
             try:
                 instance = await client.wait_for_public_ip(worker.external_id)
-                worker.ip = instance.ip_address if instance.ip_address else ""
+                worker.advertise_address = (
+                    instance.ip_address if instance.ip_address else ""
+                )
                 worker.state_message = "Waiting for volumes to attach"
             except Exception as e:
                 logger.warning(
@@ -1506,7 +1508,9 @@ class ClusterController:
         workers = [
             worker
             for worker in workers
-            if worker.deleted_at is None and worker.ip != "" and worker.port is not None
+            if worker.deleted_at is None
+            and (worker.advertise_address or worker.ip) != ""
+            and worker.port is not None
         ]
         worker_registry_list = [
             mcp_handler.worker_registry(worker)

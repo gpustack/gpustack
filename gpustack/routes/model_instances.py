@@ -98,7 +98,7 @@ async def get_serving_logs(  # noqa: C901
     worker = await fetch_worker(session, model_instance.worker_id)
 
     model_instance_log_url = (
-        f"http://{worker.ip}:{worker.port}/serveLogs"
+        f"http://{worker.advertise_address}:{worker.port}/serveLogs"
         f"/{model_instance.id}?{log_options.url_encode()}"
         f"&model_instance_name={model_instance.name}"
     )

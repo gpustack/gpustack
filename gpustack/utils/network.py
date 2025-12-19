@@ -122,7 +122,9 @@ def get_ifname_by_ip_hostname(
             with socket.socket(af, socket.SOCK_DGRAM) as s:
                 # the port is arbitrary since we won't actually send any data
                 s.connect((test_ip, 1))
-                return _get_ifname_by_local_ip(s.getsockname()[0], af)
+                local_ifname = _get_ifname_by_local_ip(s.getsockname()[0], af)
+                if local_ifname is not None:
+                    return local_ifname
 
     return None
 
