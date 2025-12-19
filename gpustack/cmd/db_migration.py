@@ -76,6 +76,8 @@ async def _run(args):
         sqlite_db_url, postgres_db_url, old_engine, new_engine = await prepare_env(args)
         await upgrade_schema(sqlite_db_url, postgres_db_url, old_engine)
         await migrate_all_data(old_engine, new_engine)
+        await old_engine.dispose()
+        await new_engine.dispose()
         clean_env(args)
         logger.info("Migration completed successfully.")
 
