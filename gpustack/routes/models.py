@@ -146,7 +146,7 @@ async def _get_models(
         order_by = new_order_by
     else:
         # Default ordering: active models first, then by creation time descending
-        active_model_priority_expr = case((Model.replicas > 0, 0), else_=1)
+        active_model_priority_expr = case((target_class.replicas > 0, 0), else_=1)
         order_by = [(active_model_priority_expr, "asc"), ("created_at", "desc")]
 
     return await target_class.paginated_by_query(
