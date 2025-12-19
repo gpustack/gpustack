@@ -1,8 +1,13 @@
 import logging
+import tracemalloc
 from fastapi import APIRouter, Request
 from typing import Any, Dict
 
-from gpustack.api.exceptions import InvalidException, ForbiddenException
+from gpustack.api.exceptions import (
+    BadRequestException,
+    InvalidException,
+    ForbiddenException,
+)
 from gpustack.config.config import Config, set_global_config
 from gpustack.utils.config import (
     WHITELIST_CONFIG_FIELDS,
@@ -74,3 +79,16 @@ async def set_config(request: Request):
     set_global_config(cfg)
     logger.info("Applied runtime config updates")
     return "ok"
+
+
+@router.get("/memory")
+def get_memory_profile():
+    if not tracemalloc.is_tracing():
+        raise BadRequestException(
+            message="tracemalloc is not enabled. Please run GPUStack server in debug mode."
+        )
+
+    snapshot = tracemalloc.take_snapshot()
+    top_stats = snapshot.statistics('lineno')
+    result = [str(stat) for stat in top_stats[:20]]
+    return {"top_memory_lines": result}
