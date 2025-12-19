@@ -6,8 +6,9 @@ from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
-from sqlmodel import case, col, or_, func
+from sqlmodel import and_, case, col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
+from enum import Enum
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -51,14 +52,20 @@ from gpustack.utils.gpu import parse_gpu_id
 router = APIRouter()
 
 
+class ModelStateFilterEnum(str, Enum):
+    READY = "ready"
+    NOT_READY = "not_ready"
+    STOPPED = "stopped"
+
+
 @router.get("", response_model=ModelsPublic)
 async def get_models(
     engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
-    active: bool = Query(
-        default=False,
-        description="Filter to only active models (replicas > 0).",
+    state: Optional[ModelStateFilterEnum] = Query(
+        default=None,
+        description="Filter by model state.",
     ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
@@ -68,7 +75,7 @@ async def get_models(
         engine=engine,
         session=session,
         params=params,
-        active=active,
+        state=state,
         search=search,
         categories=categories,
         cluster_id=cluster_id,
@@ -79,7 +86,7 @@ async def _get_models(
     engine: EngineDep,
     session: SessionDep,
     params: ModelListParams,
-    active: bool = False,
+    state: Optional[ModelStateFilterEnum] = None,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
@@ -113,8 +120,16 @@ async def _get_models(
         conditions = build_category_conditions(session, target_class, categories)
         extra_conditions.append(or_(*conditions))
 
-    if active:
-        extra_conditions.append(target_class.replicas > 0)
+    if state is None:
+        pass
+    elif state == ModelStateFilterEnum.READY:
+        extra_conditions.append(target_class.ready_replicas > 0)
+    elif state == ModelStateFilterEnum.NOT_READY:
+        extra_conditions.append(
+            and_(target_class.ready_replicas == 0, target_class.replicas > 0)
+        )
+    elif state == ModelStateFilterEnum.STOPPED:
+        extra_conditions.append(target_class.replicas == 0)
 
     order_by = params.order_by
     if order_by:
@@ -526,9 +541,9 @@ async def get_my_models(
     engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
-    active: bool = Query(
-        default=False,
-        description="Filter to only active models (replicas > 0).",
+    state: Optional[ModelStateFilterEnum] = Query(
+        default=None,
+        description="Filter by model state.",
     ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
@@ -544,7 +559,7 @@ async def get_my_models(
         engine=engine,
         session=session,
         params=params,
-        active=active,
+        state=state,
         search=search,
         categories=categories,
         cluster_id=cluster_id,
