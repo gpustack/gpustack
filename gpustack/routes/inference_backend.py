@@ -530,6 +530,7 @@ async def create_inference_backend(
             default_version=backend_in.default_version,
             default_backend_param=backend_in.default_backend_param,
             default_run_command=backend_in.default_run_command,
+            default_entrypoint=backend_in.default_entrypoint,
             health_check_path=backend_in.health_check_path,
             description=backend_in.description,
         )
@@ -601,6 +602,7 @@ async def update_inference_backend(
             "default_version": backend_in.default_version,
             "default_backend_param": backend_in.default_backend_param,
             "default_run_command": backend_in.default_run_command,
+            "default_entrypoint": backend_in.default_entrypoint,
             "health_check_path": backend_in.health_check_path,
             "description": backend_in.description,
         }

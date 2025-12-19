@@ -50,6 +50,7 @@ class InferenceBackendBase(SQLModel):
         default_version: Default version to use if not specified
         default_backend_param: Default parameters to pass to the backend
         default_run_command: Default command to run the inference server
+        default_entrypoint: Default entrypoint to replace for the inference server
         description: Backend description
         health_check_path: Path for health check endpoint
 
@@ -65,6 +66,9 @@ class InferenceBackendBase(SQLModel):
         sa_column=Column(JSON), default=[]
     )
     default_run_command: Optional[str] = SQLField(
+        sa_column=Column(Text, nullable=True), default=""
+    )
+    default_entrypoint: Optional[str] = SQLField(
         sa_column=Column(Text, nullable=True), default=""
     )
     is_built_in: bool = SQLField(default=False)
@@ -173,8 +177,9 @@ class InferenceBackendBase(SQLModel):
         except KeyError:
             # Version not found or cannot be resolved
             return None
-        if version_config.entrypoint:
-            return shlex.split(version_config.entrypoint)
+        entrypoint = version_config.entrypoint or self.default_entrypoint
+        if entrypoint:
+            return shlex.split(entrypoint)
         else:
             return None
 
