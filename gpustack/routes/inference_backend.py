@@ -31,6 +31,8 @@ from gpustack.schemas.inference_backend import (
 from gpustack.schemas.models import BackendEnum, Model
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
 from gpustack_runner import list_service_runners
+from gpustack_runtime.detector.ascend import get_ascend_cann_variant
+from gpustack_runtime.detector import ManufacturerEnum
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -112,13 +114,14 @@ async def check_backend_in_use(
 
 
 def get_runner_versions_and_configs(
-    backend_name: str,
+    backend_name: str, variant: Optional[str] = None
 ) -> Tuple[Dict[str, ServiceVersionedRunner], VersionConfigDict, Optional[str]]:
     """
     Get runner versions and version configs for a given backend.
 
     Args:
         backend_name: The name of the backend service
+        variant: The variant of the backend service
 
     Returns:
         A tuple containing:
@@ -126,7 +129,9 @@ def get_runner_versions_and_configs(
         - VersionConfigDict with version configurations
         - Default version (first available version or None)
     """
-    runners_list = list_service_runners(service=backend_name.lower())
+    runners_list = list_service_runners(
+        service=backend_name.lower(), backend_variant=variant
+    )
     runner_versions: Dict[str, ServiceVersionedRunner] = {}
     version_configs = VersionConfigDict()
     default_version = None
@@ -161,7 +166,9 @@ def deduplicate_versions(versions: List[VersionListItem]) -> List[VersionListIte
 
 
 @router.get("/list", response_model=InferenceBackendResponse)
-async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = None):
+async def list_backend_configs(  # noqa: C901
+    session: SessionDep, cluster_id: Optional[int] = None
+):
     """
     Get list of available backend configurations with version information.
 
@@ -176,10 +183,22 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
     else:
         workers = await Worker.all(session)
     framework_list = set()
+    variants = set()
     for worker in workers:
         if worker.status and worker.status.gpu_devices:
             for gpu in worker.status.gpu_devices:
                 framework_list.add(gpu.type)
+                if (
+                    gpu.vendor == ManufacturerEnum.ASCEND
+                    and gpu.arch_family is not None
+                ):
+                    if variant := get_ascend_cann_variant(gpu.arch_family).lower():
+                        variants.add(variant)
+
+    target_variant = None
+    if variants and len(variants) == 1:
+        # Only apply variant filtering when all GPUs have the same variant
+        target_variant = list(variants)[0]
 
     # Process all backends from database (includes both built-in and custom backends)
     try:
@@ -196,7 +215,9 @@ async def list_backend_configs(session: SessionDep, cluster_id: Optional[int] = 
             if backend.is_built_in:
                 # For built-in backends, add runner versions and use special show name
                 runner_versions, version_configs, default_version = (
-                    get_runner_versions_and_configs(backend.backend_name)
+                    get_runner_versions_and_configs(
+                        backend.backend_name, target_variant
+                    )
                 )
                 # Merge runner versions with existing versions
                 for version, config in version_configs.root.items():
