@@ -66,7 +66,7 @@ def plot_throughput_comparison(
             fontsize=9,
         )
         # Improvement percentage
-        offset = 500
+        offset = 1000
         if improvement[i] > 0:
             ax.text(
                 x[i] + width / 2,
@@ -92,6 +92,8 @@ def plot_throughput_comparison(
     ax.set_title(f'Optimizing {model_name} Throughput on {gpu_type} GPUs')
     ax.set_xticks(x)
     ax.set_xticklabels(case_names)
+    plt.xticks(rotation=30, ha='right')
+
     ax.legend()
     plt.ylim(0, max(optimized_tps) * 1.2)
     plt.grid(axis='y', linestyle='--', alpha=0.7)
@@ -106,17 +108,19 @@ def plot_throughput_comparison(
 
 
 # Example usage
-model_name = "gpt-oss-120b"
-gpu_type = "A100"
+model_name = "deepseek-ai/DeepSeek-V3.2"
+gpu_type = "H200"
 case_names = [
     "ShareGPT",
     "Short Prompt",
     "Medium Prompt",
     "Long Prompt",
     "Very Long Prompt",
+    "Ultra Long Prompt",
+    "Generation-Heavy Prompt",
 ]
-baseline_tps = [4768.75, 9353.12, 8456.65, 7671.00, 4337.21]
-optimized_tps = [5055.82, 10785.60, 9249.89, 8468.21, 4605.91]
+baseline_tps = [4113.24, 10539.36, 10488.24, 9313.06, 9789.64, 6288.25, 3112.52]
+optimized_tps = [7351.59, 19778.53, 27385.86, 20094.60, 20022.76, 16442.29, 3611.95]
 
 plot_throughput_comparison(
     model_name,
