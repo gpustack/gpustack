@@ -52,7 +52,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
     worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
     ray_port_range: Optional[str] = "41000-41999"
-    resources: Optional[dict] = None
+    system_reserved: Optional[dict] = None
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
     enable_hf_transfer: bool = False
