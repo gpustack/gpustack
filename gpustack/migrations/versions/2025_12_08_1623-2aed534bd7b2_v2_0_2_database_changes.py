@@ -42,6 +42,7 @@ def upgrade() -> None:
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.add_column(sa.Column('server_url', sa.String(length=2048), nullable=True))
         batch_op.add_column(sa.Column('worker_config',  SQLAlchemyJSON(), nullable=True))
+        batch_op.add_column(sa.Column('is_default', sa.Boolean(), nullable=False, server_default=sa.false()))
 
     op.execute(model_user_after_drop_view_stmt)
 
@@ -74,6 +75,7 @@ def downgrade() -> None:
     with op.batch_alter_table('clusters', schema=None) as batch_op:
         batch_op.drop_column('server_url')
         batch_op.drop_column('worker_config')
+        batch_op.drop_column('is_default')
 
     op.execute(model_user_after_drop_view_stmt)
 
