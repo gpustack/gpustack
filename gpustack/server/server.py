@@ -573,6 +573,7 @@ class Server:
             state=ClusterStateEnum.READY,
             hashed_suffix=hashed_suffix,
             registration_token="",
+            is_default=True,
         )
         default_cluster = await Cluster.create(
             session, default_cluster, auto_commit=False

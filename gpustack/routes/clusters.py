@@ -285,6 +285,38 @@ async def delete_cluster(session: SessionDep, id: int):
         raise InternalServerErrorException(message=f"Failed to delete cluster: {e}")
 
 
+@router.post("/{id}/set-default")
+async def set_default_cluster(session: SessionDep, id: int):
+    cluster = await Cluster.one_by_id(session, id)
+    if not cluster:
+        raise NotFoundException(message=f"cluster {id} not found")
+
+    try:
+        # unset other default clusters
+        default_clusters = await Cluster.all_by_fields(
+            session,
+            {'is_default': True, 'deleted_at': None},
+        )
+        for dc in default_clusters:
+            if dc.id != cluster.id:
+                await dc.update(
+                    session=session,
+                    source={"is_default": False},
+                    auto_commit=False,
+                )
+        # set this cluster as default
+        await cluster.update(
+            session=session,
+            source={"is_default": True},
+            auto_commit=False,
+        )
+        await session.commit()
+    except Exception as e:
+        raise InternalServerErrorException(
+            message=f"Failed to set default cluster: {e}"
+        )
+
+
 @router.post("/{id}/worker-pools", response_model=WorkerPoolPublic)
 async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCreate):
     cluster = await Cluster.one_by_id(session, id)
