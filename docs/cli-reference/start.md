@@ -128,6 +128,7 @@ port: 80
 tls_port: 443
 api_port: 30080
 metrics_port: 10161
+disable_metrics: false
 enable_worker: false
 bootstrap_password: your_admin_password
 database_url: postgresql://user:password@host:port/db_name
@@ -164,7 +165,7 @@ server_external_url: http://your_gpustack_server_url_for_external_access
 server_url: http://your_gpustack_server_url
 worker_name: your_worker_name
 worker_ip: 192.168.1.101
-disable_metrics: false
+disable_worker_metrics: false
 worker_metrics_port: 10151
 worker_port: 10150
 service_port_range: 40000-40063

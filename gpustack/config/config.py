@@ -134,7 +134,7 @@ class Config(WorkerConfig, BaseSettings):
     enable_worker: bool = False
     bootstrap_password: Optional[str] = None
     jwt_secret_key: Optional[str] = None
-    system_reserved: Optional[dict] = None
+    resources: Optional[dict] = None
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
