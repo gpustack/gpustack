@@ -165,6 +165,8 @@ nav:
               - H100: performance-lab/gpt-oss-120b/h100.md
           - DeepSeek-R1:
               - H200: performance-lab/deepseek-r1/h200.md
+          - DeepSeek-V3.2:
+              - H200: performance-lab/deepseek-v3.2/h200.md
           - Qwen3-8B:
               - 910B: performance-lab/qwen3-8b/910b.md
           - Qwen3-14B:
