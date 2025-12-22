@@ -665,7 +665,7 @@ $@
         if image_name is None:
             return None
         # Update model backend service version at upper layer if we detected it
-        if target_version and not self._model.backend_version:
+        if target_version:
             self._update_model_backend_service_version(target_version)
         return self._apply_registry_override(image_name)
 
@@ -837,10 +837,17 @@ $@
         if not service_version:
             return
         try:
-            self._model.backend_version = service_version
-            self._clientset.models.update(
-                self._model.id, ModelUpdate(**self._model.model_dump())
-            )
+            if not self._model.backend_version:
+                self._model.backend_version = service_version
+                self._clientset.models.update(
+                    self._model.id, ModelUpdate(**self._model.model_dump())
+                )
+            if not self._model_instance.backend_version:
+                self._model_instance.backend_version = service_version
+                self._clientset.model_instances.update(
+                    self._model_instance.id,
+                    ModelInstanceUpdate(**self._model_instance.model_dump()),
+                )
         except Exception as e:
             logger.error(
                 f"Failed to update model service version {service_version}: {e}"
