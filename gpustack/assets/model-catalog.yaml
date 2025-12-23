@@ -658,8 +658,6 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-      backend_parameters:
-        - --task=embed
 - name: Qwen3 Embedding 4B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -681,8 +679,6 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-      backend_parameters:
-        - --task=embed
 - name: Qwen3 Embedding 8B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -704,8 +700,6 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-      backend_parameters:
-        - --task=embed
 # Reranker models
 - name: Qwen3 Reranker 0.6B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -729,7 +723,6 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-        - --task=score
 - name: Qwen3 Reranker 4B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -754,7 +747,6 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-        - --task=score
 - name: Qwen3 Reranker 8B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -777,7 +769,6 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-        - --task=score
 # Image models
 - name: FLUX.1 Dev
   description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
