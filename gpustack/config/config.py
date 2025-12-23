@@ -1,7 +1,7 @@
 import os
 import secrets
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict
 from urllib.parse import urlparse
 import ipaddress
 
@@ -768,6 +768,22 @@ class Config(WorkerConfig, BaseSettings):
             if key in self.__class__.model_fields:
                 setattr(self, key, value)
         self.check_all()
+
+    def get_system_reserved(self) -> Dict[str, int]:
+        system_reserved_in_bytes = {**(self.system_reserved or {})}
+        system_reserved_in_bytes["ram"] = (
+            system_reserved_in_bytes.get(
+                "ram", system_reserved_in_bytes.pop("memory", 0)
+            )
+            << 30
+        )
+        system_reserved_in_bytes["vram"] = (
+            system_reserved_in_bytes.get(
+                "vram", system_reserved_in_bytes.pop("gpu_memory", 0)
+            )
+            << 30
+        )
+        return system_reserved_in_bytes
 
 
 def get_image_name(
