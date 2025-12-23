@@ -315,6 +315,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             )
 
         if gpu_count == 0:
+            # computed_resource_claim.ram must have value when running cpu only model instance
             if scale_type == ScaleTypeEnum.SCALE_UP:
                 score = computed_resource_claim.ram / allocatable.ram * MaxScore
             elif scale_type == ScaleTypeEnum.SCALE_DOWN:
@@ -334,7 +335,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             elif scale_type == ScaleTypeEnum.SCALE_DOWN:
                 score = calculate_score(
                     computed_resource_claim.ram,
-                    allocatable.ram + computed_resource_claim.ram,
+                    allocatable.ram + computed_resource_claim.ram or 0,
                     computed_resource_claim.vram[gpu_indexes[0]],
                     allocatable.vram[gpu_indexes[0]]
                     + computed_resource_claim.vram[gpu_indexes[0]],
@@ -351,7 +352,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 elif scale_type == ScaleTypeEnum.SCALE_DOWN:
                     result = calculate_score(
                         computed_resource_claim.ram,
-                        allocatable.ram + computed_resource_claim.ram,
+                        allocatable.ram + (computed_resource_claim.ram or 0),
                         computed_resource_claim.vram[i],
                         allocatable.vram[i] + computed_resource_claim.vram[i],
                     )
