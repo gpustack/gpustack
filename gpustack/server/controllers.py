@@ -684,6 +684,8 @@ class WorkerController:
         """
 
         async for event in Worker.subscribe(self._engine):
+            if event.type == EventType.HEARTBEAT:
+                continue
             try:
                 await self._reconcile(event)
                 await self._provisioning._reconcile(event)
@@ -691,7 +693,7 @@ class WorkerController:
             except Exception as e:
                 logger.error(f"Failed to reconcile worker: {e}")
 
-    async def _reconcile(self, event):
+    async def _reconcile(self, event: Event):
         """
         Delete instances base on the worker state and event type.
         """
@@ -713,7 +715,17 @@ class WorkerController:
             if not instances:
                 return
 
-            instance_names = []
+            if event.type == EventType.DELETED:
+                instance_names = await ModelInstanceService(session).batch_delete(
+                    instances
+                )
+                if instance_names:
+                    logger.info(
+                        f"Delete instance {', '.join(instance_names)} "
+                        f"since worker {worker.name} is deleted"
+                    )
+                return
+
             if (
                 worker.unreachable
                 or worker.state == WorkerStateEnum.UNREACHABLE
@@ -728,16 +740,6 @@ class WorkerController:
                     "worker is unreachable from the server",
                 )
                 return
-
-            if event.type == EventType.DELETED:
-                instance_names = await ModelInstanceService(session).batch_delete(
-                    instances
-                )
-                if instance_names:
-                    logger.info(
-                        f"Delete instance {', '.join(instance_names)} "
-                        f"since worker {worker.name} is deleted"
-                    )
 
             if worker.state == WorkerStateEnum.READY:
                 await self.update_instance_states(
