@@ -10,9 +10,9 @@ from gpustack.schemas.models import BackendEnum
 logger = logging.getLogger(__name__)
 
 BackendVersionAPI = {
-    BackendEnum.VLLM.value: "version",
-    BackendEnum.SGLANG.value: "get_server_info",
-    BackendEnum.ASCEND_MINDIE.value: "info",
+    BackendEnum.VLLM.value: ["version"],
+    BackendEnum.SGLANG.value: ["server_info", "get_server_info"],
+    BackendEnum.ASCEND_MINDIE.value: ["info"],
 }
 
 
@@ -79,26 +79,37 @@ class Client:
     def fetch_runtime_version_from_endpoint(
         self, endpoint: str, runtime: str
     ) -> Optional[str]:
-        path = BackendVersionAPI.get(runtime)
-        if path is None:
+        """
+        Try to fetch the runtime version from all possible API paths. Return on first success.
+        Log last error or warning for troubleshooting.
+        """
+
+        paths = BackendVersionAPI.get(runtime)
+        if paths is None:
             return None
 
-        url = f"http://{endpoint}/{path}"
-        try:
-            resp = requests.get(
-                url,
-                timeout=self.config.timeout,
-                verify=not self.config.insecure_tls,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("version", None)
-            else:
-                logger.warning(
-                    f"[{endpoint}] Bad status {resp.status_code} when fetching {runtime} version from {url}"
+        error_msg = ""
+        warning_msg = ""
+        for path in paths:
+            url = f"http://{endpoint}/{path}"
+            try:
+                resp = requests.get(
+                    url,
+                    timeout=self.config.timeout,
+                    verify=not self.config.insecure_tls,
                 )
-        except Exception as e:
-            logger.error(
-                f"[{endpoint}] Error {e} when fetching {runtime} version from {url}"
-            )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("version", None)
+                else:
+                    warning_msg = f"[{endpoint}] Bad status {resp.status_code} when fetching {runtime} version from {url}"
+            except Exception as e:
+                error_msg = (
+                    f"[{endpoint}] Error {e} when fetching {runtime} version from {url}"
+                )
+
+        if error_msg:
+            logger.error(error_msg)
+        elif warning_msg:
+            logger.warning(warning_msg)
         return None
