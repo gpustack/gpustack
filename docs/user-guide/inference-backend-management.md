@@ -56,7 +56,7 @@ Version Configs parameter description:
 
 !!! note
 
-    vLLM has changed the entrypoint of its Docker image since v0.11.1. Therefore, when adding a custom version for vLLM v0.11.1 or later, you must specify the `Execution Command` field; otherwise, the model will fail to start.
+    vLLM has changed the entrypoint of its Docker image since v0.11.1. Therefore, when adding a custom version for vLLM v0.11.1 or later, you must specify the `Execution Command` field; otherwise, the model will fail to start. If you use newer versions of `gpustack/runner` images, you don't need to set the `Execution Command` field.
 
 ## Delete Custom Inference Backend
 1. On the Inference Backend page, locate the target backend and select "Delete" from the card's top-right dropdown menu.
