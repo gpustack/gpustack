@@ -1998,7 +1998,7 @@ requires-dist = [
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.22.post1" },
+    { name = "gpustack-runner", specifier = ">=0.1.22.post3" },
     { name = "gpustack-runtime", specifier = "==0.1.36.post2" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -2074,16 +2074,16 @@ dev = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.22.post1"
+version = "0.1.22.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/d2/3e73c68b823c56106696e0f362243330d910e408cee84298784940c0ed2f/gpustack_runner-0.1.22.post1.tar.gz", hash = "sha256:c3f17cc0a8c2afd77949456917e8aa5aff2572552428b2d1532286d249033c29", size = 114823, upload-time = "2025-12-15T15:27:02.82Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/52/58/42f23ddc5c0efe1a2f81fda619d919430be55c15ced221c387e91233c3b1/gpustack_runner-0.1.22.post3.tar.gz", hash = "sha256:9c40a2c219d13c03307679e4907b2270b6376b6feea380904a0d7241f0103e33", size = 116642, upload-time = "2025-12-23T01:14:29.782Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/ff/8e4824eb8b2c6bf3c7c94475dc2891f372592b1bb827acef09d545cdb40e/gpustack_runner-0.1.22.post1-py3-none-any.whl", hash = "sha256:5626ca08e4d61bdf2e4269fa839bd8fa03f957e9e30806164826c97c20d3c0f7", size = 23946, upload-time = "2025-12-15T15:27:01.966Z" },
+    { url = "https://files.pythonhosted.org/packages/81/96/86f7022359c6b880568389aca777ce624dd904b66ca831f4e67f7e8fceb9/gpustack_runner-0.1.22.post3-py3-none-any.whl", hash = "sha256:8416955528e237abac0f77d0dd802d7a1a85b0b0501aa2643e9a703deea4a0f8", size = 24132, upload-time = "2025-12-23T01:14:28.884Z" },
 ]
 
 [[package]]
