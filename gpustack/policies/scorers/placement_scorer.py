@@ -166,6 +166,11 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 continue
 
             worker = worker_map.get(instance.worker_id)
+            if worker is None:
+                scored_instances.append(
+                    ModelInstanceScore(model_instance=instance, score=0)
+                )
+                continue
 
             allocatable = await get_worker_allocatable_resource(self._engine, worker)
 
@@ -257,6 +262,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         """
         Score the candidates with the spread strategy.
         """
+
+        if worker is None:
+            return 0
 
         instance_worker_id = worker.id
         # level 1: max score, no model instances

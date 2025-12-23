@@ -41,6 +41,11 @@ class StatusScorer:
 
                 score = 0
                 worker = worker_map.get(instance.worker_id)
+                if worker is None:
+                    scored_instances.append(
+                        ModelInstanceScore(model_instance=instance, score=0)
+                    )
+                    continue
 
                 if worker.state == WorkerStateEnum.NOT_READY:
                     score = 0
