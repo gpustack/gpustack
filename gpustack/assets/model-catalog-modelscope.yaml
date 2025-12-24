@@ -417,6 +417,53 @@ model_sets:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
         - --max-model-len=65536
+- name: GLM-4.7
+  description: GLM-4.7 is a large language model developed by Zhipu AI, featuring advanced agentic, reasoning, and coding capabilities.
+  home: https://z.ai
+  icon: /static/catalog_icons/zai.png
+  size: 355
+  activated_size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - reasoning
+    - tools
+  licenses:
+    - mit
+  release_date: "2025-12-22"
+  specs:
+    # TODO: tool-call-parser glm47 not yet available in the latest vLLM/SGLang release
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.7-FP8
+      backend: SGLang
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --context-length=65536
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: "<9.0" # Before Hopper
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.7-FP8
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --max-model-len=65536
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.7
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --max-model-len=65536
 - name: GLM-4.6
   description: GLM-4.6 is a large language model developed by Zhipu AI, featuring advanced agentic, reasoning, and coding capabilities.
   home: https://z.ai
@@ -467,7 +514,7 @@ model_sets:
         - --reasoning-parser=glm45
         - --tool-call-parser=glm45
         - --enable-auto-tool-choice
-        - --max-model-len=32768
+        - --max-model-len=65536
 - name: gpt-oss 120B
   description: The gpt-oss series is OpenAI's family of open-weight models, designed for powerful reasoning, agentic tasks, and versatile developer use cases.
   home: https://openai.com
