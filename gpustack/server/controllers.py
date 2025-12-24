@@ -644,6 +644,7 @@ async def calculate_destinations(
             instance.worker_ip is None
             or instance.worker_ip == ""
             or instance.port is None
+            or instance.state != ModelInstanceStateEnum.RUNNING
         ):
             continue
         if instance.worker_id not in instances_by_worker_id:
