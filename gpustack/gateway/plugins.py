@@ -58,7 +58,7 @@ supported_plugins: List[HigressPlugin] = [
     HigressPlugin(
         name="gpustack-token-usage",
         version="1.0.0",
-        digest="sha256:ca7082cf3fb6ddd83621d1ba7198bcf6ab7670de6b76ab13ce783c66c6d64776",
+        digest="sha256:4e30bc942a4a71f7541da12841b6e2b9ab6a305a9af0d598ff528304333b7fb4",
         registry_prefix="oci://docker.io/gpustack/higress-plugin-",
     ),
 ]
