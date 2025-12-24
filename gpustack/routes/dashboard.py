@@ -104,8 +104,7 @@ async def get_system_load(
     one_hour_ago = int((now - timedelta(hours=1)).timestamp())
 
     statement = select(SystemLoad)
-    if cluster_id is not None:
-        statement = statement.where(SystemLoad.cluster_id == cluster_id)
+    statement = statement.where(SystemLoad.cluster_id == cluster_id)
     statement = statement.where(SystemLoad.timestamp >= one_hour_ago)
 
     system_loads = (await session.exec(statement)).all()
@@ -139,7 +138,10 @@ async def get_system_load(
                 value=system_load.vram,
             )
         )
-
+    cpu.sort(key=lambda x: x.timestamp, reverse=False)
+    ram.sort(key=lambda x: x.timestamp, reverse=False)
+    gpu.sort(key=lambda x: x.timestamp, reverse=False)
+    vram.sort(key=lambda x: x.timestamp, reverse=False)
     return SystemLoadSummary(
         current=CurrentSystemLoad(
             cpu=current_system_load.cpu,
