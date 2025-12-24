@@ -51,11 +51,26 @@ rules:
     resources:
       - "pods"
       - "configmaps"
+      - "secrets
       - "services"
       - "pods/log"
       - "pods/exec"
     verbs:
       - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources: 
+      - "events"
+    verbs: 
+      - "create"
 ---
 apiVersion: v1
 kind: ServiceAccount
