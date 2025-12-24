@@ -8,6 +8,22 @@
 
 ## Before Migration
 
+### Breaking Changes
+
+#### 1. Removal of Ollama Model Source (since v0.7.x)
+
+- **Change:** Starting from version 0.7, GPUStack no longer supports `ollama` as a model source.
+- **Impact:** Models, Model Files, and Model Instances whose source is `ollama` will not be preserved during the upgrade process.
+- **Action Required:**  If you are upgrading from a version earlier than v0.7 and currently have models deployed from the `ollama` source, you must migrate these models manually before upgrading.  
+  We recommend re-deploying affected models using one of the supported sources:
+    - Hugging Face
+    - ModelScope
+    - Local path
+
+    You can perform this migration by re-deploying the models through the **GPUStack UI** before initiating the upgrade.
+
+### Backup Your Data
+
 !!! warning
 
       **Backup First:** Before starting the server migration, it’s strongly recommended to back up your database.
