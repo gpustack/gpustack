@@ -180,7 +180,7 @@ class ModelInstanceController:
                     event_type=event.type,
                     model_instance=model_instance,
                     networking_higress_api=self._higress_network_api,
-                    namespace=self._config.get_gateway_namespace(),
+                    namespace=self._config.gateway_namespace,
                     cluster_id=model.cluster_id,
                 )
 
@@ -614,7 +614,7 @@ async def sync_gateway(
         destinations = []
     await mcp_handler.ensure_model_ingress(
         event_type=event.type,
-        namespace=cfg.get_gateway_namespace(),
+        namespace=cfg.get_namespace(),
         model=model,
         destinations=destinations,
         networking_api=networking_api,
@@ -1487,7 +1487,6 @@ class ClusterController:
         self._engine = get_engine()
         self._cfg = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
-        self._namespace = cfg.get_gateway_namespace()
         self._k8s_config = get_async_k8s_config(cfg=cfg)
         pass
 
@@ -1544,7 +1543,7 @@ class ClusterController:
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,
-                namespace=self._namespace,
+                namespace=self._cfg.gateway_namespace,
                 mcp_bridge_name=mcp_resource_name,
                 desired_registries=desired_registries,
                 to_delete_prefix=to_delete_prefix,

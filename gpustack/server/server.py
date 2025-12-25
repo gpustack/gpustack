@@ -547,7 +547,7 @@ class Server:
         model_ids = [model.id for model in models]
         k8s_config = get_async_k8s_config(cfg=self.config)
         await cleanup_orphaned_model_ingresses(
-            namespace=self.config.get_gateway_namespace(),
+            namespace=self.config.get_namespace(),
             existing_model_ids=model_ids,
             config=k8s_config,
         )

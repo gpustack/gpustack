@@ -144,10 +144,10 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("GATEWAY_KUBECONFIG"),
     )
     group.add_argument(
-        "--gateway-concurrency",
-        type=int,
-        help="Number of concurrent connections for the gateway. The default is 16.",
-        default=get_gpustack_env("GATEWAY_CONCURRENCY"),
+        "--gateway-namespace",
+        type=str,
+        help="The namespace where the gateway component is deployed.",
+        default=get_gpustack_env("GATEWAY_NAMESPACE"),
     )
     group.add_argument(
         "--service-discovery-name",
@@ -159,7 +159,7 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         "--namespace",
         type=str,
         help="Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.",
-        default=get_gpustack_env("NAMESPACE"),
+        default=os.getenv("POD_NAMESPACE"),
     )
 
     group = parser_server.add_argument_group("Server settings")
@@ -255,6 +255,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         type=str,
         help="External URL of the server. Should be set if the server is behind a reverse proxy.",
         default=get_gpustack_env("SERVER_EXTERNAL_URL"),
+    )
+    group.add_argument(
+        "--gateway-concurrency",
+        type=int,
+        help="Number of concurrent connections for the embedded gateway. The default is 16.",
+        default=get_gpustack_env("GATEWAY_CONCURRENCY"),
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -621,7 +627,7 @@ def set_common_options(args, config_data: dict):
         "api_port",
         "gateway_mode",
         "gateway_kubeconfig",
-        "gateway_concurrency",
+        "gateway_namespace",
         "service_discovery_name",
         "namespace",
     ]
@@ -674,6 +680,7 @@ def set_server_options(args, config_data: dict):
         "saml_sp_attribute_prefix",
         "saml_security",
         "server_external_url",
+        "gateway_concurrency",
     ]
 
     for option in options:

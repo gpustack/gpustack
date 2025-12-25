@@ -38,7 +38,6 @@ class WorkerGatewayController:
         self._worker_id = worker_id
         self._clientset = clientset
         self._config = cfg
-        self._namespace = cfg.get_gateway_namespace()
         self._cluster_id = cluster_id
         self._async_k8s_config = get_async_k8s_config(cfg=cfg)
         self._lock = asyncio.Lock()
@@ -113,7 +112,7 @@ class WorkerGatewayController:
         if self._config.server_role() == Config.ServerRole.WORKER:
             model_ids = list(self._model_cache._cache.keys())
             await mcp_handler.cleanup_orphaned_model_ingresses(
-                self._namespace,
+                self._config.get_namespace(),
                 model_ids,
                 self._async_k8s_config,
             )
@@ -126,7 +125,7 @@ class WorkerGatewayController:
             event.type,
             model_instance,
             self._networking_hisgress_api,
-            self._namespace,
+            self._config.gateway_namespace,
             self._cluster_id,
         )
         if self._config.server_role() == Config.ServerRole.WORKER:
@@ -137,7 +136,7 @@ class WorkerGatewayController:
                 try:
                     await self._networking_api.delete_namespaced_ingress(
                         name=ingress_name,
-                        namespace=self._namespace,
+                        namespace=self._config.get_namespace(),
                     )
                 except ApiException as e:
                     if e.status != 404:
@@ -146,7 +145,7 @@ class WorkerGatewayController:
                 destinations = [(1, registry) for registry in desired_registry]
                 mcp_handler.replace_registry_weight(destinations)
                 await mcp_handler.ensure_model_ingress(
-                    namespace=self._namespace,
+                    namespace=self._config.get_namespace(),
                     destinations=destinations,
                     model=model,
                     event_type=event.type,
