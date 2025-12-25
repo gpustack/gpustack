@@ -50,6 +50,7 @@ from gpustack.config.registration import read_worker_token
 from gpustack.config import registration
 from gpustack.worker.worker_gateway import WorkerGatewayController
 from gpustack.gateway.plugins import register as register_gateway_plugins
+from gpustack.gateway import init_async_k8s_config
 from gpustack.client.generated_http_client import default_versioned_prefix
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,7 @@ class Worker:
             setproctitle.setproctitle("gpustack_worker")
 
         check_glibc_version()
+        init_async_k8s_config(cfg=self._config)
 
         tools_manager = ToolsManager(
             tools_download_base_url=self._config.tools_download_base_url,

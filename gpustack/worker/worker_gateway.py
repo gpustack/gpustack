@@ -18,6 +18,7 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
     NetworkingHigressIoV1Api,
 )
 from gpustack.gateway import utils as mcp_handler
+from gpustack.gateway import get_async_k8s_config
 from gpustack.api.exceptions import NotFoundException
 
 from kubernetes_asyncio.client import ApiException
@@ -39,7 +40,7 @@ class WorkerGatewayController:
         self._config = cfg
         self._namespace = cfg.get_gateway_namespace()
         self._cluster_id = cluster_id
-        self._async_k8s_config = cfg.get_async_k8s_config()
+        self._async_k8s_config = get_async_k8s_config(cfg=cfg)
         self._lock = asyncio.Lock()
         self._model_cache = Cache(Cache.MEMORY)
         self._cache_synced = False
