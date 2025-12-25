@@ -203,7 +203,7 @@ async def get_user_from_bearer_token(
     session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
 ) -> Tuple[Optional[User], Optional[ApiKey]]:
     try:
-        parts = bearer_token.credentials.split("_")
+        parts = bearer_token.credentials.split("_", maxsplit=2)
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
