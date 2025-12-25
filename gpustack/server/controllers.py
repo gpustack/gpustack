@@ -78,6 +78,7 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
     McpBridgeRegistry,
 )
 from gpustack.gateway import utils as mcp_handler
+from gpustack.gateway import get_async_k8s_config
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ class ModelController:
         self._engine = get_engine()
         self._config = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
-        self._k8s_config = cfg.get_async_k8s_config()
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
 
         pass
 
@@ -134,7 +135,7 @@ class ModelInstanceController:
     def __init__(self, cfg: Config):
         self._engine = get_engine()
         self._config = cfg
-        self._k8s_config = cfg.get_async_k8s_config()
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
@@ -1487,7 +1488,7 @@ class ClusterController:
         self._cfg = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
         self._namespace = cfg.get_gateway_namespace()
-        self._k8s_config = cfg.get_async_k8s_config()
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
         pass
 
     async def start(self):

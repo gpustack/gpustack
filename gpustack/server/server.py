@@ -53,6 +53,7 @@ from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
 from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
+from gpustack.gateway import get_async_k8s_config
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
     GATEWAY_PORT_CHECK_RETRY_COUNT,
@@ -544,7 +545,7 @@ class Server:
             session=session, field="deleted_at", value=None
         )
         model_ids = [model.id for model in models]
-        k8s_config = self.config.get_async_k8s_config()
+        k8s_config = get_async_k8s_config(cfg=self.config)
         await cleanup_orphaned_model_ingresses(
             namespace=self.config.get_gateway_namespace(),
             existing_model_ids=model_ids,

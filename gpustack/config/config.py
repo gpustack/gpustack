@@ -685,16 +685,6 @@ class Config(WorkerConfig, BaseSettings):
 
         return True
 
-    def set_async_k8s_config(self, config):
-        if getattr(self, '_k8s_async_config', None) is not None:
-            # ignore setting config if config is set
-            return
-        self._k8s_async_config = config
-
-    def get_async_k8s_config(self):
-        rtn = getattr(self, '_k8s_async_config', None)
-        return rtn
-
     def get_advertise_address(self) -> str:
         return self.advertise_address or get_first_non_loopback_ip()
 
