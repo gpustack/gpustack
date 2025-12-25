@@ -231,6 +231,7 @@ spec:
             type: DirectoryOrCreate
       hostNetwork: true
       hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: gpustack-worker
   updateStrategy:
     rollingUpdate:

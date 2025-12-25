@@ -4,6 +4,18 @@ from pydantic import BaseModel, Field
 
 
 class GatewayModeEnum(str, Enum):
+    """
+    For both server and worker gateway mode
+    auto - automatically detect the gateway mode
+    embedded - use the embedded gateway(server)
+    incluster - connect to an in-cluster gateway(server)
+    external - connect to an external gateway(server)
+    disabled - disable the gateway(server/worker)
+
+    The support of worker gateway mode is reserved for future use.
+    Only incluster and external modes are supported for worker.
+    """
+
     auto = "auto"
     embedded = "embedded"
     incluster = "incluster"
@@ -42,9 +54,9 @@ class PredefinedConfig(SensitivePredefinedConfig):
     image_repo: str = "gpustack/gpustack"
     gateway_mode: GatewayModeEnum = GatewayModeEnum.auto
     gateway_kubeconfig: Optional[str] = None
-    gateway_concurrency: int = 16
+    gateway_namespace: str = "higress-system"
     service_discovery_name: Optional[str] = None
-    namespace: Optional[str] = None
+    namespace: str = "gpustack-system"
 
     # Worker options
     disable_worker_metrics: bool = False
@@ -71,7 +83,8 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     ray_port_range: Optional[str] = None
     image_repo: Optional[str] = None
     gateway_mode: Optional[str] = None
-    gateway_concurrency: Optional[int] = None
+    gateway_namespace: Optional[str] = None
+    namespace: Optional[str] = None
 
 
 def parse_base_model_to_env_vars(

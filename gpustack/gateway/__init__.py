@@ -97,9 +97,11 @@ def wait_for_apiserver_ready(cfg: Config, timeout: int = 60, interval: int = 5):
 
 
 def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
+    # this is only for non-incluster mode.
+    # In this case, the related resource will be installed into gateway namespace.
     # default to incluster mode
     registry_type = "dns"
-    domain = f"{cfg.service_discovery_name}.{cfg.get_gateway_namespace()}.svc"
+    domain = f"{cfg.service_discovery_name}.{cfg.gateway_namespace}.svc"
     if cfg.gateway_mode != GatewayModeEnum.incluster:
         registry_type = "static"
         port = cfg.get_api_port()
@@ -127,7 +129,7 @@ def get_gpustack_higress_registry(cfg: Config) -> McpBridgeRegistry:
 async def ensure_mcp_resources(cfg: Config, api_client: k8s_client.ApiClient):
     api = gw_client.NetworkingHigressIoV1Api(api_client)
     # use default name for embedded mode
-    gateway_namespace = cfg.get_gateway_namespace()
+    gateway_namespace = cfg.gateway_namespace
     try:
         data: Dict[str, Any] = await api.get_mcpbridge(
             namespace=gateway_namespace, name=default_mcp_bridge_name
@@ -184,7 +186,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
     """
     Ensure the ingress resources to route traffic to mcpbridge are created.
     """
-    gateway_namespace = cfg.get_gateway_namespace()
+    gateway_namespace = cfg.gateway_namespace
     hostname = cfg.get_external_hostname()
     tls_secret_name = cfg.get_tls_secret_name()
     network_v1_client = k8s_client.NetworkingV1Api(api_client=api_client)
@@ -413,7 +415,7 @@ async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
     ssl_key_data = base64.b64encode(ssl_key_bytes).decode()
     ssl_cert_data = base64.b64encode(ssl_cert_bytes).decode()
 
-    gateway_namespace = cfg.get_gateway_namespace()
+    gateway_namespace = cfg.gateway_namespace
     core_v1_client = k8s_client.CoreV1Api(api_client=api_client)
     secret_name = cfg.get_tls_secret_name()
     to_create_tls_secret = k8s_client.V1Secret(
@@ -479,7 +481,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,
-                    namespace=cfg.get_gateway_namespace(),
+                    namespace=cfg.gateway_namespace,
                     expected=plugin_spec,
                 )
 

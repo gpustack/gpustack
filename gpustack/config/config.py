@@ -115,8 +115,9 @@ class Config(WorkerConfig, BaseSettings):
         image_repo: Repository for the container images.
         service_discovery_name: Name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.
         gateway_mode: Gateway deployment mode. Options are 'auto', 'embedded', 'incluster', 'external', 'disabled'. Default is 'auto'.
-        gateway_kubeconfig: Path to the kubeconfig file for Gateway. Only used when gateway_mode is 'external'.
-        gateway_concurrency: Number of concurrent connections for the Gateway. Default is 16.
+        gateway_kubeconfig: Path to the kubeconfig file for gateway. Only used when gateway_mode is 'external'.
+        gateway_concurrency: Number of concurrent connections for the embedded gateway. Default is 16.
+        gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
     """
 
@@ -177,6 +178,8 @@ class Config(WorkerConfig, BaseSettings):
     server_external_url: Optional[str] = None
     # custom post-logout redirection key for compatibility with different IdPs.
     external_auth_post_logout_redirect_key: Optional[str] = None
+    # Number of concurrent connections for the embedded gateway.
+    gateway_concurrency: int = 16
 
     _set_worker_fields = {}
 
@@ -688,11 +691,11 @@ class Config(WorkerConfig, BaseSettings):
     def get_advertise_address(self) -> str:
         return self.advertise_address or get_first_non_loopback_ip()
 
-    def get_gateway_namespace(self) -> str:
-        default_gateway_namespace = "higress-system"
-        if self.gateway_mode == GatewayModeEnum.embedded:
-            return default_gateway_namespace
-        return self.namespace if self.namespace else default_gateway_namespace
+    def get_namespace(self) -> str:
+        # for the embedded gateway, use the gateway namespace
+        if self.gateway_mode in [GatewayModeEnum.embedded, GatewayModeEnum.external]:
+            return self.gateway_namespace
+        return self.namespace
 
     def get_external_hostname(self) -> Optional[str]:
         hostname = None
