@@ -23,23 +23,24 @@ These environment variables are typically used for third-party service integrati
 
 The **Applies to** column indicates where the environment variable should be set:
 
-* **Server** - Applies to the GPUStack server.
-* **Worker** - Applies to GPUStack workers.
-* **Model** - Applies to model deployment configurations.
+- **Server** - Applies to the GPUStack server.
+- **Worker** - Applies to GPUStack workers.
+- **Model** - Applies to model deployment configurations.
 
 ### Proxy Configuration
-| <div style="width:100px">Variable</div>      | Description  | Default | Applies to       |
-| ------------- | ------------------------------------------- | ------- | ---------------- |
-| `HTTP_PROXY`  | HTTP proxy URL. e.g., `http://proxy-server:port` | (empty) | Server & Worker |
-| `HTTPS_PROXY` | HTTPS proxy URL. e.g., `https://proxy-server:port`| (empty) | Server & Worker |
-| `NO_PROXY`    | Comma-separated list of hosts to exclude. e.g., `127.0.0.1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/16,localhost,cluster.local` | (empty) | Server & Worker |
+
+| <div style="width:100px">Variable</div> | Description                                                                                                                 | Default | Applies to      |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------- | --------------- |
+| `HTTP_PROXY`                            | HTTP proxy URL. e.g., `http://proxy-server:port`                                                                            | (empty) | Server & Worker |
+| `HTTPS_PROXY`                           | HTTPS proxy URL. e.g., `https://proxy-server:port`                                                                          | (empty) | Server & Worker |
+| `NO_PROXY`                              | Comma-separated list of hosts to exclude. e.g., `127.0.0.1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/16,localhost,cluster.local` | (empty) | Server & Worker |
 
 ### Hugging Face Hub
 
-| <div style="width:100px">Variable</div>      | Description               | Default | Applies to       |
-| ------------- | -------------------------------------------------------- | ------- | ---------------- |
-| `HF_ENDPOINT` | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` | (empty) | Server & Worker |
-| `HF_TOKEN`    | Hugging Face Hub access token.                           | (empty) | Server & Worker |
+| <div style="width:100px">Variable</div> | Description                                              | Default | Applies to      |
+| --------------------------------------- | -------------------------------------------------------- | ------- | --------------- |
+| `HF_ENDPOINT`                           | Hugging Face Hub endpoint. e.g., `https://hf-mirror.com` | (empty) | Server & Worker |
+| `HF_TOKEN`                              | Hugging Face Hub access token.                           | (empty) | Server & Worker |
 
 ### Database Configuration
 
@@ -70,6 +71,12 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `3000`  | Server     |
 | `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`    | The interval in seconds of GPUStack Server checking embedded gateway listening port | `2`     | Server     |
 | `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT` | The retry count of GPUStack Server checking embedded gateway listening port         | `300`   | Server     |
+
+### Cluster Configuration
+
+| Variable                              | Description                                                                                                     | Default | Applies to |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_DEFAULT_CLUSTER_KUBERNETES` | If a default cluster is created automatically, it will use the `Kubernetes` provider when this variable is set. | `false` | Server     |
 
 ### Worker and Model Configuration
 
@@ -128,7 +135,7 @@ They are only usable within workers. Please set the environment variables in the
 ### Global Variables
 
 | Variable                         | Description                | Default |
-|----------------------------------|----------------------------|---------|
+| -------------------------------- | -------------------------- | ------- |
 | `GPUSTACK_RUNTIME_LOG_LEVEL`     | Log level.                 | `INFO`  |
 | `GPUSTACK_RUNTIME_LOG_WARNING`   | Enable logging warnings.   | `0`     |
 | `GPUSTACK_RUNTIME_LOG_EXCEPTION` | Enable logging exceptions. | `1`     |
@@ -136,7 +143,7 @@ They are only usable within workers. Please set the environment variables in the
 ### Detector Variables
 
 | Variable                                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Default                                 |
-|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
 | `GPUSTACK_RUNTIME_DETECT`                          | Detector to use. Options: Auto, AMD, ASCEND, CAMBRICON, HYGON, ILUVATAR, METAX, MTHREADS, NVIDIA.                                                                                                                                                                                                                                                                                                                                                                                                                                          | `Auto`                                  |
 | `GPUSTACK_RUNTIME_DETECT_NO_PCI_CHECK`             | Enable no PCI check during detection. Useful for WSL environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | (empty)                                 |
 | `GPUSTACK_RUNTIME_DETECT_NO_TOOLKIT_CALL`          | Enable only using management libraries calls during detection. Device detection typically involves calling platform-side management libraries and platform-side toolkit to retrieve extra information. For example, during NVIDIA detection, the NVML and CUDA are called, with CUDA used to retrieve GPU cores. However, if certain toolchains are not correctly installed in the environment, such as the Nvidia Fabric Manager being missing, calling the CUDA can cause blocking. Enabling this parameter can prevent blocking events. | `0`                                     |
@@ -158,27 +165,27 @@ They are only usable within workers. Please set the environment variables in the
 
 ### Deployer Variables
 
-| Variable                                                           | Description                                                                                               | Default                                         |
-|--------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|-------------------------------------------------|
-| `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                                       | `Auto`                                          |
-| `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                                                    | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME`                | Username for the default container registry.                                                              | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD`                | Password for the default container registry.                                                              | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                    | Enable asynchronous deployment.                                                                           | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS`                            | The number of threads in the threadpool.                                                                  | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                                                 | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                                          | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                                           | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).                                   | `IfNotPresent`                                  |
-| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                                          | The default values named by each vendor         |
-| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_BACKEND_VISIBLE_DEVICES` | Manual mapping of backend visible devices environment variables.                                          | The default values named by each vendor         |
-| `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID`       | Use UUIDs for the given runtime visible devices environment variables.                                    | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT`  | Enable value alignment for the given backend visible devices environment variables.                       | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
+| Variable                                                           | Description                                                                         | Default                                         |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                 | `Auto`                                          |
+| `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                              | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME`                | Username for the default container registry.                                        | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD`                | Password for the default container registry.                                        | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                    | Enable asynchronous deployment.                                                     | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS`                            | The number of threads in the threadpool.                                            | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                           | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                    | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                     | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).             | `IfNotPresent`                                  |
+| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                    | The default values named by each vendor         |
+| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_BACKEND_VISIBLE_DEVICES` | Manual mapping of backend visible devices environment variables.                    | The default values named by each vendor         |
+| `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID`       | Use UUIDs for the given runtime visible devices environment variables.              | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT`  | Enable value alignment for the given backend visible devices environment variables. | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
 
 #### Docker Deployer Specific Variables
 
 | Variable                                          | Description                                        | Default                                     |
-|---------------------------------------------------|----------------------------------------------------|---------------------------------------------|
+| ------------------------------------------------- | -------------------------------------------------- | ------------------------------------------- |
 | `GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE`             | Docker image used for the pause container.         | `gpustack/runtime:pause`                    |
 | `GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE` | Docker image used for unhealthy restart container. | `gpustack/runtime:health`                   |
 | `GPUSTACK_RUNTIME_DOCKER_EPHEMERAL_FILES_DIR`     | Directory for storing ephemeral files for Docker.  | `/var/lib/gpustack/.cache/gpustack-runtime` |
@@ -186,7 +193,7 @@ They are only usable within workers. Please set the environment variables in the
 #### Kubernetes Deployer Specific Variables
 
 | Variable                                    | Description                                                                       | Default         |
-|---------------------------------------------|-----------------------------------------------------------------------------------|-----------------|
+| ------------------------------------------- | --------------------------------------------------------------------------------- | --------------- |
 | `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME`     | Name of the Kubernetes Node to deploy workloads to.                               | (empty)         |
 | `GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE`     | Namespace of the Kubernetes to deploy workloads to.                               | `default`       |
 | `GPUSTACK_RUNTIME_KUBERNETES_DOMAIN_SUFFIX` | Domain suffix for Kubernetes services.                                            | `cluster.local` |

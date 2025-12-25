@@ -150,13 +150,13 @@ nav:
   - Inference Performance Lab:
       - Overview: performance-lab/overview.md
       - Optimizing Throughput:
-          - GLM-4.6/4.5-Air:
+          - GLM-4.5-Air:
               - A100: performance-lab/glm-4.5-air/a100.md
               - H100: performance-lab/glm-4.5-air/h100.md
-          - GLM-4.6/4.5:
-              - A100: performance-lab/glm-4.6/a100.md
-              - H100: performance-lab/glm-4.6/h100.md
-              - H200: performance-lab/glm-4.6/h200.md
+          - GLM-4.x:
+              - A100: performance-lab/glm-4.x/a100.md
+              - H100: performance-lab/glm-4.x/h100.md
+              - H200: performance-lab/glm-4.x/h200.md
           - GPT-OSS-20B:
               - A100: performance-lab/gpt-oss-20b/a100.md
               - H100: performance-lab/gpt-oss-20b/h100.md
@@ -165,6 +165,8 @@ nav:
               - H100: performance-lab/gpt-oss-120b/h100.md
           - DeepSeek-R1:
               - H200: performance-lab/deepseek-r1/h200.md
+          - DeepSeek-V3.2:
+              - H200: performance-lab/deepseek-v3.2/h200.md
           - Qwen3-8B:
               - 910B: performance-lab/qwen3-8b/910b.md
           - Qwen3-14B:

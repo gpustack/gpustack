@@ -387,7 +387,7 @@ RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
 EOF
 # Initialize configurations
 COPY pack/rootfs/ /
-ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/opt/data/plugins
+ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/usr/local/share/gpustack-higress/plugins
 ## END Install Higress standalone components
 
 ## Install Skopeo

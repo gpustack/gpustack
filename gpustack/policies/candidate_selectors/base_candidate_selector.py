@@ -86,6 +86,9 @@ class ModelParameters:
     moe_num_shared_experts: Optional[int] = None
     moe_intermediate_size: Optional[int] = None
 
+    is_multimodel: bool = False
+    vision_config: Optional[Dict] = None
+
     def from_model(self, model: Model):  # noqa: C901
         """
         Parse the model's (hyper)parameters from the model.
@@ -97,6 +100,10 @@ class ModelParameters:
             )
         except Exception as e:
             raise e
+
+        if hasattr(pretrained_config, "vision_config"):
+            self.is_multimodel = True
+            self.vision_config = pretrained_config.vision_config
 
         pretrained_config = get_hf_text_config(pretrained_config)
         if pretrained_config is None and CategoryEnum.LLM in model.categories:
@@ -730,6 +737,7 @@ class ScheduleCandidatesSelector(ABC):
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claims,
                     ram=get_computed_ram_claim(self._model, vram_claims, request.ram),
+                    vram_utilization=gpu_memory_utilization,
                 ),
             )
         ]
@@ -802,6 +810,7 @@ class ScheduleCandidatesSelector(ABC):
                         ram=get_computed_ram_claim(
                             self._model, vram_claim, request.ram
                         ),
+                        vram_utilization=gpu_memory_utilization,
                     ),
                 )
             )

@@ -270,6 +270,11 @@ class ServeManager:
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
+            if not model.backend_version:
+                # backend version may be empty on initialization.
+                # try to refresh to get updated model info on syncs.
+                model = self._refresh_model(model_instance)
+
             backend = get_backend(model)
             health_check_path = self._get_health_check_path(backend)
             if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
@@ -822,6 +827,21 @@ class ServeManager:
         self._model_cache_by_instance[mi.id] = model
         return model
 
+    def _refresh_model(self, mi: ModelInstance) -> Model:
+        """
+        Refresh the model information from the server.
+
+        Args:
+            mi: The model instance whose model to refresh.
+
+        Returns:
+            The refreshed model.
+        """
+        logger.debug(f"Refreshing model {mi.model_name} information from server.")
+        refreshed_model = self._clientset.models.get(mi.model_id)
+        self._model_cache_by_instance[mi.id] = refreshed_model
+        return refreshed_model
+
     def _is_provisioning(self, mi: ModelInstance) -> bool:
         """
         Check if the model instance is still provisioning.
@@ -872,10 +892,14 @@ def is_ready(
         and model
         and CategoryEnum.IMAGE in model.categories
     ):
-        # SGLang Diffusion supported health check path at v0.5.5.post3
-        if compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+        if not model.backend_version:
+            # version may be empty at initialization, consider it not ready.
+            return False
+        elif compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+            # SGLang Diffusion supported health check path at v0.5.5.post3
             health_check_path = "/health"
         else:
+            # Older versions do not support health check, consider it always ready.
             return True
     elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
         # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.

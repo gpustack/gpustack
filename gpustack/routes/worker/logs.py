@@ -165,7 +165,7 @@ async def container_log_generator(model_instance_name: str, options: LogOptionsD
     """
     try:
         # Convert LogOptions to container log parameters
-        tail = options.tail if options.tail > 0 else None
+        tail = options.tail if options.tail else -1
         follow = options.follow
 
         # Get logs from the workload
@@ -209,7 +209,11 @@ async def container_log_generator(model_instance_name: str, options: LogOptionsD
                 yield str(log_stream)
 
     except Exception as e:
-        logger.error(f"Failed to get container logs for {model_instance_name}: {e}")
+        cause = getattr(e, "__cause__", None)
+        cause_text = f": {cause}" if cause else ""
+        logger.error(
+            f"Failed to get container logs for {model_instance_name}: {e}{cause_text}"
+        )
 
 
 async def _stream_file_logs_preempt_to_container(
@@ -400,6 +404,9 @@ async def get_serve_logs(
         file_log_exists = True
     except (FileNotFoundError, RetryError):
         file_log_exists = False
+
+    if log_options.follow:
+        file_log_exists = True
 
     # show_download_logs parameter is passed from server based on model instance state
     return StreamingResponse(

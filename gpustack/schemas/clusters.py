@@ -277,6 +277,7 @@ class ClusterBase(ClusterCreateBase):
         default=None, sa_column=Column(Text, nullable=True)
     )
     reported_gateway_endpoint: Optional[str] = None
+    is_default: bool = Field(default=False)
 
 
 class Cluster(ClusterBase, BaseModelMixin, table=True):

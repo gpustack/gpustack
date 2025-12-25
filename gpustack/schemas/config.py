@@ -26,7 +26,9 @@ class ModelInstanceProxyModeEnum(str, Enum):
 
 class SensitivePredefinedConfig(BaseModel):
     # Common options
-    huggingface_token: Optional[str] = Field(default=None, env_var="HF_TOKEN")
+    huggingface_token: Optional[str] = Field(
+        default=None, json_schema_extra={"env_var": "HF_TOKEN"}
+    )
 
 
 class PredefinedConfig(SensitivePredefinedConfig):
@@ -50,7 +52,7 @@ class PredefinedConfig(SensitivePredefinedConfig):
     worker_metrics_port: int = 10151
     service_port_range: Optional[str] = "40000-40063"
     ray_port_range: Optional[str] = "41000-41999"
-    resources: Optional[dict] = None
+    system_reserved: Optional[dict] = None
     pipx_path: Optional[str] = None
     tools_download_base_url: Optional[str] = None
     enable_hf_transfer: bool = False

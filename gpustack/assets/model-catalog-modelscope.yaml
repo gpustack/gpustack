@@ -417,6 +417,53 @@ model_sets:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
         - --max-model-len=65536
+- name: GLM-4.7
+  description: GLM-4.7 is a large language model developed by Zhipu AI, featuring advanced agentic, reasoning, and coding capabilities.
+  home: https://z.ai
+  icon: /static/catalog_icons/zai.png
+  size: 355
+  activated_size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - reasoning
+    - tools
+  licenses:
+    - mit
+  release_date: "2025-12-22"
+  specs:
+    # TODO: tool-call-parser glm47 not yet available in the latest vLLM/SGLang release
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.7-FP8
+      backend: SGLang
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --context-length=65536
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: "<9.0" # Before Hopper
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.7-FP8
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --max-model-len=65536
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ZhipuAI/GLM-4.7
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=glm45
+        - --max-model-len=65536
 - name: GLM-4.6
   description: GLM-4.6 is a large language model developed by Zhipu AI, featuring advanced agentic, reasoning, and coding capabilities.
   home: https://z.ai
@@ -467,7 +514,7 @@ model_sets:
         - --reasoning-parser=glm45
         - --tool-call-parser=glm45
         - --enable-auto-tool-choice
-        - --max-model-len=32768
+        - --max-model-len=65536
 - name: gpt-oss 120B
   description: The gpt-oss series is OpenAI's family of open-weight models, designed for powerful reasoning, agentic tasks, and versatile developer use cases.
   home: https://openai.com
@@ -588,6 +635,76 @@ model_sets:
         - --logits_processors=vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
         - --no-enable-prefix-caching
         - --mm-processor-cache-gb=0
+- name: Deepseek V3.2
+  description: 'DeepSeek-V3.2 is a model that balances computational efficiency with strong reasoning and agent capabilities through three technical innovations: DeepSeek Sparse Attention (DSA), Scalable Reinforcement Learning Framework, Large-Scale Agentic Task Synthesis Pipeline.'
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  size: 685
+  licenses:
+    - mit
+  release_date: "2025-12-01"
+  specs:
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V3.2
+      backend: SGLang
+      backend_version: 0.5.6.post2
+      backend_parameters:
+        - --enable-dp-attention
+        - --context-length=32768
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V3.2
+      backend: vLLM
+      backend_version: 0.13.0
+      backend_parameters:
+        - --max-model-len=32768
+        - --tokenizer-mode=deepseek_v32
+        - --reasoning-parser=deepseek_v3
+- name: Deepseek V3.2 Speciale
+  description: This model is the high-compute variant of DeepSeek-V3.2, surpasses GPT-5 and matches Gemini-3.0-Pro in reasoning, achieving gold-medal level performance in the 2025 IMO and IOI competitions. 
+  home: https://www.deepseek.com
+  icon: /static/catalog_icons/deepseek.png
+  categories:
+    - llm
+  capabilities:
+    - context/128K
+  size: 685
+  licenses:
+    - mit
+  release_date: "2025-12-01"
+  specs:
+    - mode: throughput
+      quantization: FP8
+      gpu_filters:
+        vendor: nvidia
+        compute_capability: ">=9.0" # Hopper or later
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V3.2-Speciale
+      backend: SGLang
+      backend_version: 0.5.6.post2
+      backend_parameters:
+        - --enable-dp-attention
+        - --context-length=32768
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: deepseek-ai/DeepSeek-V3.2-Speciale
+      backend: vLLM
+      backend_version: 0.13.0
+      backend_parameters:
+        - --max-model-len=32768
+        - --tokenizer-mode=deepseek_v32
+        - --reasoning-parser=deepseek_v3
 # Embedding models
 - name: Qwen3 Embedding 0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -610,8 +727,6 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-      backend_parameters:
-        - --task=embed
 - name: Qwen3 Embedding 4B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -633,8 +748,6 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-      backend_parameters:
-        - --task=embed
 - name: Qwen3 Embedding 8B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -656,8 +769,6 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-      backend_parameters:
-        - --task=embed
 # Reranker models
 - name: Qwen3 Reranker 0.6B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -681,7 +792,6 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-        - --task=score
 - name: Qwen3 Reranker 4B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -704,7 +814,6 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-        - --task=score
 - name: Qwen3 Reranker 8B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
@@ -727,7 +836,6 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-        - --task=score
 # Image models
 - name: FLUX.1 Dev
   description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.

@@ -1,7 +1,7 @@
 import os
 import secrets
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict
 from urllib.parse import urlparse
 import ipaddress
 
@@ -11,7 +11,7 @@ from gpustack_runtime.detector import (
     supported_backends,
 )
 from pydantic import model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import requests
 from gpustack.utils import validators
 from gpustack.schemas.workers import (
@@ -134,7 +134,7 @@ class Config(WorkerConfig, BaseSettings):
     enable_worker: bool = False
     bootstrap_password: Optional[str] = None
     jwt_secret_key: Optional[str] = None
-    system_reserved: Optional[dict] = None
+    resources: Optional[dict] = None
     ssl_keyfile: Optional[str] = None
     ssl_certfile: Optional[str] = None
     force_auth_localhost: bool = False
@@ -179,6 +179,10 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_post_logout_redirect_key: Optional[str] = None
 
     _set_worker_fields = {}
+
+    model_config = SettingsConfigDict(
+        env_prefix="GPUSTACK_", protected_namespaces=('settings_',)
+    )
 
     def __init__(self, **values):
         super().__init__(**values)
@@ -583,10 +587,6 @@ class Config(WorkerConfig, BaseSettings):
 
         return os.path.abspath(data_dir)
 
-    class Config:
-        env_prefix = "GPUSTACK_"
-        protected_namespaces = ('settings_',)
-
     def prepare_jwt_secret_key(self):
         if self.jwt_secret_key is not None:
             return
@@ -768,6 +768,22 @@ class Config(WorkerConfig, BaseSettings):
             if key in self.__class__.model_fields:
                 setattr(self, key, value)
         self.check_all()
+
+    def get_system_reserved(self) -> Dict[str, int]:
+        system_reserved_in_bytes = {**(self.system_reserved or {})}
+        system_reserved_in_bytes["ram"] = (
+            system_reserved_in_bytes.get(
+                "ram", system_reserved_in_bytes.pop("memory", 0)
+            )
+            << 30
+        )
+        system_reserved_in_bytes["vram"] = (
+            system_reserved_in_bytes.get(
+                "vram", system_reserved_in_bytes.pop("gpu_memory", 0)
+            )
+            << 30
+        )
+        return system_reserved_in_bytes
 
 
 def get_image_name(

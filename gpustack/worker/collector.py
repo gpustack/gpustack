@@ -1,6 +1,6 @@
 import socket
 import logging
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable
 from gpustack.config.config import Config
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.detectors.base import GPUDetectExepction
@@ -31,7 +31,6 @@ class WorkerStatusCollector:
     _worker_ip_getter: Callable[[], str]
     _system_uuid: str
     _machine_id: str
-    _system_reserved: SystemReserved
     _gpu_devices: GPUDevicesInfo
     _system_info: SystemInfo
 
@@ -58,19 +57,6 @@ class WorkerStatusCollector:
             cfg.data_dir
         )
         self._machine_id = get_machine_id()
-        reserved_config: Dict[str, int] = {**(cfg.system_reserved or {})}
-        reserved_config["ram"] = reserved_config.get(
-            "ram", reserved_config.pop("memory", 2)
-        )
-        reserved_config["vram"] = reserved_config.get(
-            "vram", reserved_config.pop("gpu_memory", 1)
-        )
-        # GB to Bytes
-        self._system_reserved = SystemReserved(
-            ram=reserved_config["ram"] << 30,
-            vram=reserved_config["vram"] << 30,
-        )
-
         self._gpu_devices = cfg.get_gpu_devices()
         self._system_info = cfg.get_system_info()
         if self._gpu_devices and self._system_info:
@@ -133,7 +119,7 @@ class WorkerStatusCollector:
             ifname=self._worker_ifname_getter(),
             port=self._cfg.worker_port,
             metrics_port=metrics_port,
-            system_reserved=self._system_reserved,
+            system_reserved=SystemReserved(**self._cfg.get_system_reserved()),
             state_message=state_message,
             status=status,
             worker_uuid=self._system_uuid,
