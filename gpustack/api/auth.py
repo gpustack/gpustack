@@ -74,7 +74,7 @@ async def get_current_user(
     server_config: Config = request.app.state.server_config
 
     def client_ip_getter() -> str:
-        if server_config.gateway_mode != GatewayModeEnum.disabled:
+        if server_config.gateway_mode == GatewayModeEnum.embedded:
             return request.headers.get("X-GPUStack-Real-IP", "")
         else:
             return request.client.host
