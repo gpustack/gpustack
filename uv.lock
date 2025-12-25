@@ -1999,7 +1999,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.22.post5" },
-    { name = "gpustack-runtime", specifier = "==0.1.37.post1" },
+    { name = "gpustack-runtime", specifier = "==0.1.37.post2" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2088,7 +2088,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.37.post1"
+version = "0.1.37.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2099,9 +2099,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d3/92/c7305be6a0977bc85bef1331c33cecdbc1db5c9ce5c344f9e64f7b50c458/gpustack_runtime-0.1.37.post1.tar.gz", hash = "sha256:29f43f1039c5e469e880716599c5ffcd193e5c37be131c4900d86f2245c1a1bd", size = 210225, upload-time = "2025-12-24T08:02:30.229Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/7b/dff4354fd4ec5850f042e4e136b734bdb022da719baf03e53505b0f63597/gpustack_runtime-0.1.37.post2.tar.gz", hash = "sha256:b6e3f294dc16c89d9589b8111e7b1a4fdc318024f3b8529d0d815137b7a905df", size = 212928, upload-time = "2025-12-25T07:10:34.279Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/b1/1ff77d904e825d2497beaa4709d43c7ddbdf82a6dbb521bb49731ce82180/gpustack_runtime-0.1.37.post1-py3-none-any.whl", hash = "sha256:954ec2e40a9f0ef382e5e94c6e2247d206f332d232798df5f91f60f7fb65154c", size = 181916, upload-time = "2025-12-24T08:02:28.971Z" },
+    { url = "https://files.pythonhosted.org/packages/35/7d/8e4c70689a108a0e403522ef5d943864d617711826f1bf14b9bfe1fedb62/gpustack_runtime-0.1.37.post2-py3-none-any.whl", hash = "sha256:0a432ca0e05c976ce17edfbf52ff6e6b5a1ecd80d0dc9adb956b4c17ecc2bf73", size = 184412, upload-time = "2025-12-25T07:10:32.941Z" },
 ]
 
 [[package]]
