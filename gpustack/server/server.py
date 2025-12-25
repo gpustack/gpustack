@@ -56,6 +56,7 @@ from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
 from gpustack.envs import (
     GATEWAY_PORT_CHECK_INTERVAL,
     GATEWAY_PORT_CHECK_RETRY_COUNT,
+    DEFAULT_CLUSTER_KUBERNETES,
 )
 
 logger = logging.getLogger(__name__)
@@ -564,16 +565,21 @@ class Server:
         default_cluster_user = await get_default_cluster_user(session)
         if default_cluster_user:
             return
+        user_defined_default_cluster = await self.user_defined_default_cluster(session)
+        set_default = user_defined_default_cluster is None
         logger.info("Creating default cluster...")
+        provider = ClusterProvider.Docker
+        if DEFAULT_CLUSTER_KUBERNETES:
+            provider = ClusterProvider.Kubernetes
         hashed_suffix = secrets.token_hex(6)
         default_cluster = Cluster(
             name="Default Cluster",
             description="The default cluster for GPUStack",
-            provider=ClusterProvider.Docker,
+            provider=provider,
             state=ClusterStateEnum.READY,
             hashed_suffix=hashed_suffix,
             registration_token="",
-            is_default=True,
+            is_default=set_default,
         )
         default_cluster = await Cluster.create(
             session, default_cluster, auto_commit=False
@@ -592,3 +598,9 @@ class Server:
 
         await session.commit()
         logger.debug("Default cluster created.")
+
+    async def user_defined_default_cluster(self, session: AsyncSession) -> Cluster:
+        cluster = await Cluster.first_by_field(
+            session=session, field="is_default", value=True
+        )
+        return cluster
