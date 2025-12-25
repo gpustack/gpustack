@@ -469,7 +469,9 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             plugin_list.append(token_usage_plugin(cfg=cfg))
 
         async def prepare():
-            api_client = k8s_client.ApiClient(configuration=get_async_k8s_config())
+            api_client = k8s_client.ApiClient(
+                configuration=get_async_k8s_config(cfg=cfg)
+            )
             await ensure_tls_secret(cfg=cfg, api_client=api_client)
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)
