@@ -44,6 +44,15 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('worker_config',  SQLAlchemyJSON(), nullable=True))
         batch_op.add_column(sa.Column('is_default', sa.Boolean(), nullable=False, server_default=sa.false()))
 
+    # Set the first cluster as default for deployment
+    conn = op.get_bind()
+    first_cluster = conn.execute(sa.text("SELECT id FROM clusters ORDER BY id LIMIT 1")).fetchone()
+    if first_cluster:
+        conn.execute(
+            sa.text("UPDATE clusters SET is_default = :is_default WHERE id = :id"),
+            {'is_default': True, 'id': first_cluster.id}
+        )
+
     op.execute(model_user_after_drop_view_stmt)
 
     with op.batch_alter_table('models', schema=None) as batch_op:
