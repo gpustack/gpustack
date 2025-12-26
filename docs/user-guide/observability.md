@@ -44,7 +44,7 @@ If you started GPUStack using `docker run` (not Compose), you can deploy the obs
 
 2. **Edit the Prometheus configuration file `prometheus.yml`**.
 
-    Edit `prometheus/prometheus.yml` to replace `<gpustack_server_host>` with the actual hostname or IP address of your GPUStack server.
+    Edit `prometheus/prometheus.yml` to replace `<gpustack_server_host>` with the actual hostname or IP address of your GPUStack server. Ensure the metrics port is open and accessible, 10161 is the default metrics port, if you have changed it during server startup, please use the custom port.
 
     ```yaml
     scrape_configs:

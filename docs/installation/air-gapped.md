@@ -64,12 +64,13 @@ The displayed image list includes all supported accelerators, inference backends
 
 ## Installation
 
-After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment.
+After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment. Port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.
 
 ```diff
  sudo docker run -d --name gpustack \
      --restart unless-stopped \
      -p 80:80 \
+     -p 10161:10161 \
      --volume gpustack-data:/var/lib/gpustack \
 -    gpustack/gpustack
 +    <your_internal_registry>/gpustack/gpustack \

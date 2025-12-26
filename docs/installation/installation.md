@@ -14,12 +14,13 @@
 
 ## Install GPUStack Server
 
-Run the following command to install and start the GPUStack server using Docker:
+Run the following command to install and start the GPUStack server using Docker. Port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
     -p 80:80 \
+    -p 10161:10161 \
     --volume gpustack-data:/var/lib/gpustack \
     gpustack/gpustack
 ```
