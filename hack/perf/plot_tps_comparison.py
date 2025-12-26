@@ -89,7 +89,9 @@ def plot_throughput_comparison(
             )
 
     ax.set_ylabel(ylabel)
-    ax.set_title(f'Optimizing {model_name} Throughput on {gpu_type} GPUs')
+    ax.set_title(
+        f'{model_name} Throughput on {gpu_type} GPUs: vLLM Baseline vs. GPUStack-Optimized'
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(case_names)
     plt.xticks(rotation=30, ha='right')
