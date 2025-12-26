@@ -1,7 +1,7 @@
 services:
   
   prometheus:
-    image: prom/prometheus
+    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-prom}/prometheus:${PROMETHEUS_TAG:-latest}
     container_name: gpustack-prometheus
     restart: unless-stopped
     ports:
@@ -14,7 +14,7 @@ services:
       - prom_data:/prometheus
 
   grafana:
-    image: grafana/grafana
+    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-grafana}/grafana:${GRAFANA_TAG:-latest}
     container_name: gpustack-grafana
     restart: unless-stopped
     ports:

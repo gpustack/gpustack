@@ -1,16 +1,15 @@
 services:
   gpustack-server:
-    image: gpustack/gpustack
+    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-gpustack}/gpustack:${GPUSTACK_TAG:-latest}
     container_name: gpustack-server
     restart: unless-stopped
     volumes:
       - gpustack-data:/var/lib/gpustack
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "80:80"
 
   prometheus:
-    image: prom/prometheus
+    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-prom}/prometheus:${PROMETHEUS_TAG:-latest}
     container_name: gpustack-prometheus
     restart: unless-stopped
     ports:
@@ -23,7 +22,7 @@ services:
       - prom_data:/prometheus
 
   grafana:
-    image: grafana/grafana
+    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-grafana}/grafana:${GRAFANA_TAG:-latest}
     container_name: gpustack-grafana
     restart: unless-stopped
     environment:
