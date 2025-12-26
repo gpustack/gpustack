@@ -16,7 +16,7 @@ draft_models:
   source: model_scope
   model_scope_model_id: gpustack/EAGLE3-gpt-oss-120b-bf16
 model_sets:
-- name: Qwen3 0.6B
+- name: Qwen3-0.6B
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -49,7 +49,7 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=8192
-- name: Qwen3 8B
+- name: Qwen3-8B
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -101,7 +101,7 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
-- name: Qwen3 14B
+- name: Qwen3-14B
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -156,7 +156,7 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
-- name: Qwen3 32B
+- name: Qwen3-32B
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -208,7 +208,7 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
-- name: Qwen3 30B A3B Instruct 2507
+- name: Qwen3-30B-A3B-Instruct-2507
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -266,7 +266,7 @@ model_sets:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
         - --max-model-len=32768
-- name: Qwen3 30B A3B Thinking 2507
+- name: Qwen3-30B-A3B-Thinking-2507
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -327,7 +327,7 @@ model_sets:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
         - --max-model-len=32768
-- name: Qwen3 235B A22B Instruct 2507
+- name: Qwen3-235B-A22B-Instruct-2507
   description: The updated version of the Qwen3-235B-A22B non-thinking mode.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -371,7 +371,7 @@ model_sets:
         - --tool-call-parser=hermes
         - --enable-auto-tool-choice
         - --max-model-len=65536
-- name: Qwen3 235B A22B Thinking 2507
+- name: Qwen3-235B-A22B-Thinking-2507
   description: The updated version of the Qwen3-235B-A22B thinking mode.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -515,7 +515,7 @@ model_sets:
         - --tool-call-parser=glm45
         - --enable-auto-tool-choice
         - --max-model-len=65536
-- name: gpt-oss 120B
+- name: gpt-oss-120b
   description: The gpt-oss series is OpenAI's family of open-weight models, designed for powerful reasoning, agentic tasks, and versatile developer use cases.
   home: https://openai.com
   icon: /static/catalog_icons/openai.png
@@ -547,7 +547,7 @@ model_sets:
         - --max-model-len=32768
         - --tool-call-parser=openai
         - --enable-auto-tool-choice
-- name: gpt-oss 20B
+- name: gpt-oss-20b
   description: The gpt-oss series is OpenAI's family of open-weight models, designed for powerful reasoning, agentic tasks, and versatile developer use cases.
   home: https://openai.com
   icon: /static/catalog_icons/openai.png
@@ -579,7 +579,7 @@ model_sets:
         - --max-model-len=32768
         - --tool-call-parser=openai
         - --enable-auto-tool-choice
-- name: Deepseek R1 0528
+- name: Deepseek-R1-0528
   description: DeepSeek-R1-0528 is a minor version of the DeepSeek R1 model that features enhanced reasoning depth and inference capabilities. These improvements are achieved through increased computational resources and algorithmic optimizations applied during post-training. The model delivers strong performance across a range of benchmark evaluations, including mathematics, programming, and general logic, with overall capabilities approaching those of leading models such as O3 and Gemini 2.5 Pro.
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
@@ -635,7 +635,7 @@ model_sets:
         - --logits_processors=vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
         - --no-enable-prefix-caching
         - --mm-processor-cache-gb=0
-- name: Deepseek V3.2
+- name: Deepseek-V3.2
   description: 'DeepSeek-V3.2 is a model that balances computational efficiency with strong reasoning and agent capabilities through three technical innovations: DeepSeek Sparse Attention (DSA), Scalable Reinforcement Learning Framework, Large-Scale Agentic Task Synthesis Pipeline.'
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
@@ -675,7 +675,7 @@ model_sets:
         - --reasoning-parser=deepseek_v3
         - --tool-call-parser=deepseek_v32 
         - --enable-auto-tool-choice
-- name: Deepseek V3.2 Speciale
+- name: Deepseek-V3.2-Speciale
   description: This model is the high-compute variant of DeepSeek-V3.2, surpasses GPT-5 and matches Gemini-3.0-Pro in reasoning, achieving gold-medal level performance in the 2025 IMO and IOI competitions. 
   home: https://www.deepseek.com
   icon: /static/catalog_icons/deepseek.png
@@ -712,7 +712,7 @@ model_sets:
         - --tokenizer-mode=deepseek_v32
         - --reasoning-parser=deepseek_v3
 # Embedding models
-- name: Qwen3 Embedding 0.6B
+- name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -733,7 +733,7 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-- name: Qwen3 Embedding 4B
+- name: Qwen3-Embedding-4B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -754,7 +754,7 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
-- name: Qwen3 Embedding 8B
+- name: Qwen3-Embedding-8B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -776,7 +776,7 @@ model_sets:
         - embedding
       backend: vLLM
 # Reranker models
-- name: Qwen3 Reranker 0.6B
+- name: Qwen3-Reranker-0.6B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -798,7 +798,7 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-- name: Qwen3 Reranker 4B
+- name: Qwen3-Reranker-4B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -820,7 +820,7 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-- name: Qwen3 Reranker 8B
+- name: Qwen3-Reranker-8B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
   home: https://qwenlm.github.io
   icon: /static/catalog_icons/qwen.png
@@ -843,7 +843,7 @@ model_sets:
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
 # Image models
-- name: FLUX.1 Dev
+- name: FLUX.1-dev
   description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
   home: https://blackforestlabs.ai
   icon: /static/catalog_icons/blackforestlabs.png
