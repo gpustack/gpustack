@@ -7,6 +7,7 @@ services:
       - gpustack-data:/var/lib/gpustack
     ports:
       - "80:80"
+      - "10161:10161"    
 
   prometheus:
     image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-prom}/prometheus:${PROMETHEUS_TAG:-latest}
