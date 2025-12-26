@@ -174,7 +174,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--truncation",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Truncate the input token length, "
             "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len` - 1.",
@@ -294,7 +293,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--support-select-batch",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable batch selecting. "
             "According to `--prefill-time-ms-per-req` and `--decode-time-ms-per-req`, "
@@ -326,7 +324,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-memory-decoding",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable memory decoding speculation. "
             "Use `--no-enable-memory-decoding` to disable explicitly.",
@@ -344,7 +341,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-lookahead",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable lookahead speculation. "
             "Use `--no-enable-lookahead` to disable explicitly.",
@@ -369,7 +365,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-buffer-response",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable buffer response. "
             "Use `--no-enable-buffer-response` to disable explicitly.",
@@ -388,7 +383,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-split",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable split fuse, something like chunked prefill. "
             "Use `--no-enable-split` to disable explicitly.",
@@ -419,7 +413,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-multi-token-prediction",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable multi-token prediction. "
             "Use `--no-enable-multi-token-prediction` to disable explicitly.",
@@ -433,7 +426,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-prefix-caching",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable prefix caching. "
             "Use `--no-enable-prefix-caching` to disable explicitly.",
