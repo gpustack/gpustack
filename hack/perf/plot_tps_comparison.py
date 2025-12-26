@@ -44,7 +44,7 @@ def plot_throughput_comparison(
 
     _, ax = plt.subplots(figsize=(10, 6))
     ax.bar(x - width / 2, baseline_tps, width, label='vLLM Baseline')
-    ax.bar(x + width / 2, optimized_tps, width, label='Optimized')
+    ax.bar(x + width / 2, optimized_tps, width, label='GPUStack-Optimized')
 
     # Add text annotations
     for i in range(len(case_names)):
