@@ -1,0 +1,26 @@
+{{- if .Values.enableWorkers }}
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.worker.metricsPort }}"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Release.Name }}-worker
+  ports:
+    - name: api
+      port: {{ .Values.worker.port }}
+      targetPort: {{ .Values.worker.port }}
+    - name: metrics
+      port: {{ .Values.worker.metricsPort }}
+      targetPort: {{ .Values.worker.metricsPort }}
+{{- end }}

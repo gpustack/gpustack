@@ -1,0 +1,62 @@
+# Default values for gpustack.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+debug: false
+registrationToken: random_generated_token_change_me
+defaultDataDir: /var/lib/gpustack
+enableWorkers: true
+systemDefaultContainerRegistry: null
+gpustackImage: null
+image:
+  repository: gpustack/gpustack
+  tag: null
+  pullPolicy: IfNotPresent
+server:
+  ingress:
+    # example: gpustack.example.com
+    hostname: null
+    tls:
+      # if tls.cert and tls.key are set, the schema will be https
+      cert: null
+      # cert: |-
+      #   -----BEGIN CERTIFICATE-----
+      #   MIID...
+      #   -----END CERTIFICATE-----
+      key: null
+      # key: |-
+      #   -----BEGIN PRIVATE KEY-----
+      #   MIIE...
+      #   -----END PRIVATE KEY-----
+
+  # if you have an existing database, set externalDatabaseURL to its connection string
+  # e.g. postgresql://user:password@hostname:port/dbname
+  externalDatabaseURL: null
+  dataVolume:
+    hostPath: null
+    size: 10Gi
+  apiPort: 30080
+  metricsPort: 10161
+  environmentConfig: {}
+clusterDomain: cluster.local
+gateway:
+  # if ingress class is not higress, it will set gateway mode to embedded
+  ingressClassname: higress
+higressPlugins:
+  image:
+    repository: gpustack/higress-plugins
+    pullPolicy: IfNotPresent
+    tag: "0.2.0"
+worker:
+  gpuVendor: nvidia
+  port: 10150
+  metricsPort: 10151
+  environmentConfig: {}
+  extraVolumeMounts: []
+  # - name: custom-lib
+  #   mountPath: /opt/custom/lib
+  #   readOnly: true
+  extraVolumes: []
+  # - name: custom-lib
+  #   hostPath:
+  #     path: /opt/custom/lib
+  #     type: DirectoryOrCreate

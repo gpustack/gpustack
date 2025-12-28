@@ -4,7 +4,7 @@ repos:
     hooks:
       - id: check-yaml
         name: check-yaml (safe)
-        exclude: ^mkdocs\.yml$
+        exclude: ^(mkdocs\.yml$|charts/.*/templates/)
       - id: check-yaml
         name: check-yaml (unsafe for mkdocs)
         files: ^mkdocs\.yml$
