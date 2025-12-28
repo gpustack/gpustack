@@ -1,0 +1,12 @@
+{{ if .Values.enableWorkers -}}
+apiVersion: v1
+data:
+  GPUSTACK_TOKEN: {{ .Values.registrationToken | b64enc }}
+kind: Secret
+metadata:
+  name: registration-token
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+type: Opaque
+{{- end }}

@@ -3,6 +3,7 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-yaml
+        exclude: ^charts/.*/templates/
       - id: debug-statements
       - id: end-of-file-fixer
         exclude: "CNAME"

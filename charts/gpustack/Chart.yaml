@@ -1,0 +1,18 @@
+apiVersion: v2
+name: gpustack
+version: 0.1.0
+description: A Helm chart for gpustack
+appVersion: "2.0.2"
+keywords:
+  - ai
+  - gpu
+  - stack
+home: https://github.com/gpustack/gpustack
+sources:
+  - https://github.com/gpustack/gpustack
+icon: https://docs.gpustack.ai/2.0/assets/logo.png
+kubeVersion: ">=1.30.0-0"
+annotations:
+  artifacthub.io/links: |
+    - name: GitHub
+      url: https://github.com/gpustack/gpustack

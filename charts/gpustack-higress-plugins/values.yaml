@@ -1,0 +1,7 @@
+# Default values for gpustack.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+gpustackAPIPort: "30080"
+gpustackNamespace: gpustack-system
+clusterDomain: cluster.local
