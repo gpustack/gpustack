@@ -1999,7 +1999,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.22.post5" },
-    { name = "gpustack-runtime", specifier = "==0.1.37.post2" },
+    { name = "gpustack-runtime", specifier = "==0.1.38" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2088,7 +2088,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.37.post2"
+version = "0.1.38"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2099,9 +2099,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/09/7b/dff4354fd4ec5850f042e4e136b734bdb022da719baf03e53505b0f63597/gpustack_runtime-0.1.37.post2.tar.gz", hash = "sha256:b6e3f294dc16c89d9589b8111e7b1a4fdc318024f3b8529d0d815137b7a905df", size = 212928, upload-time = "2025-12-25T07:10:34.279Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/60/16/a9e98fd2477c433a7ad5b9293b63f1728ccd9d9de51bee9677a864eab01b/gpustack_runtime-0.1.38.tar.gz", hash = "sha256:ad343b44ec1616c8da138392d49fc6bb164f33467dff3eb282a7d7c1e94796df", size = 217317, upload-time = "2025-12-29T12:09:10.949Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/7d/8e4c70689a108a0e403522ef5d943864d617711826f1bf14b9bfe1fedb62/gpustack_runtime-0.1.37.post2-py3-none-any.whl", hash = "sha256:0a432ca0e05c976ce17edfbf52ff6e6b5a1ecd80d0dc9adb956b4c17ecc2bf73", size = 184412, upload-time = "2025-12-25T07:10:32.941Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/67/328889bd563a232b609fb25a817a463354326d88df8a08fe5b52406f576c/gpustack_runtime-0.1.38-py3-none-any.whl", hash = "sha256:8c9b6b177ed7f28ae458c51e9b44f3f8bee48db772841319aed807acc37da733", size = 190246, upload-time = "2025-12-29T12:09:09.809Z" },
 ]
 
 [[package]]

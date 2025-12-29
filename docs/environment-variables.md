@@ -165,22 +165,24 @@ They are only usable within workers. Please set the environment variables in the
 
 ### Deployer Variables
 
-| Variable                                                           | Description                                                                         | Default                                         |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                 | `Auto`                                          |
-| `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                              | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME`                | Username for the default container registry.                                        | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD`                | Password for the default container registry.                                        | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                    | Enable asynchronous deployment.                                                     | `1`                                             |
-| `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS`                            | The number of threads in the threadpool.                                            | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                           | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                    | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                     | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).             | `IfNotPresent`                                  |
-| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                    | The default values named by each vendor         |
-| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_BACKEND_VISIBLE_DEVICES` | Manual mapping of backend visible devices environment variables.                    | The default values named by each vendor         |
-| `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID`       | Use UUIDs for the given runtime visible devices environment variables.              | (empty)                                         |
-| `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT`  | Enable value alignment for the given backend visible devices environment variables. | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
+| Variable                                                           | Description                                                                                                        | Default                                         |
+|--------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| `GPUSTACK_RUNTIME_DEPLOY`                                          | Deployer to use. Options: Auto, Docker, Kubernetes.                                                                | `Auto`                                          |
+| `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                    | Enable detailing the API call error during deployment.                                                             | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME`                | Username for the default container registry.                                                                       | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD`                | Password for the default container registry.                                                                       | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                    | Enable asynchronous deployment.                                                                                    | `1`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_ASYNC_THREADS`                            | The number of threads in the threadpool.                                                                           | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME`                            | The name of the deployer.                                                                                          | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_ENVIRONMENTS`  | Environment variable names to ignore during mirrored deployment.                                                   | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES`       | Volume mount destinations to ignore during mirrored deployment.                                                    | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_IMAGE_PULL_POLICY`                        | Image pull policy for the deployer (e.g., Always, IfNotPresent, Never).                                            | `IfNotPresent`                                  |
+| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_RUNTIME_VISIBLE_DEVICES` | Manual mapping of runtime visible devices environment variables.                                                   | The default values named by each vendor         |
+| `GPUSTACK_RUNTIME_DEPLOY_RESOURCE_KEY_MAP_BACKEND_VISIBLE_DEVICES` | Manual mapping of backend visible devices environment variables.                                                   | The default values named by each vendor         |
+| `GPUSTACK_RUNTIME_DEPLOY_RUNTIME_VISIBLE_DEVICES_VALUE_UUID`       | Use UUIDs for the given runtime visible devices environment variables.                                             | (empty)                                         |
+| `GPUSTACK_RUNTIME_DEPLOY_BACKEND_VISIBLE_DEVICES_VALUE_ALIGNMENT`  | Enable value alignment for the given backend visible devices environment variables.                                | `ASCEND_RT_VISIBLE_DEVICES,NPU_VISIBLE_DEVICES` |
+| `GPUSTACK_RUNTIME_DEPLOY_CPU_AFFINITY`                             | Enable CPU affinity for deployed workloads.                                                                        | `0`                                             |
+| `GPUSTACK_RUNTIME_DEPLOY_NUMA_AFFINITY`                            | Enable NUMA affinity for deployed workloads. When enabled, `GPUSTACK_RUNTIME_DEPLOY_CPU_AFFINITY` is also implied. | `0`                                             |
 
 #### Docker Deployer Specific Variables
 
@@ -192,10 +194,11 @@ They are only usable within workers. Please set the environment variables in the
 
 #### Kubernetes Deployer Specific Variables
 
-| Variable                                    | Description                                                                       | Default         |
-| ------------------------------------------- | --------------------------------------------------------------------------------- | --------------- |
-| `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME`     | Name of the Kubernetes Node to deploy workloads to.                               | (empty)         |
-| `GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE`     | Namespace of the Kubernetes to deploy workloads to.                               | `default`       |
-| `GPUSTACK_RUNTIME_KUBERNETES_DOMAIN_SUFFIX` | Domain suffix for Kubernetes services.                                            | `cluster.local` |
-| `GPUSTACK_RUNTIME_KUBERNETES_SERVICE_TYPE`  | Service type for Kubernetes services. Options: ClusterIP, NodePort, LoadBalancer. | `ClusterIP`     |
-| `GPUSTACK_RUNTIME_KUBERNETES_QUORUM_READ`   | Whether to use quorum read for Kubernetes services.                               | `0`             |
+| Variable                                                | Description                                                                                    | Default         |
+|---------------------------------------------------------|------------------------------------------------------------------------------------------------|-----------------|
+| `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME`                 | Name of the Kubernetes Node to deploy workloads to.                                            | (empty)         |
+| `GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE`                 | Namespace of the Kubernetes to deploy workloads to.                                            | `default`       |
+| `GPUSTACK_RUNTIME_KUBERNETES_DOMAIN_SUFFIX`             | Domain suffix for Kubernetes services.                                                         | `cluster.local` |
+| `GPUSTACK_RUNTIME_KUBERNETES_SERVICE_TYPE`              | Service type for Kubernetes services. Options: ClusterIP, NodePort, LoadBalancer.              | `ClusterIP`     |
+| `GPUSTACK_RUNTIME_KUBERNETES_QUORUM_READ`               | Whether to use quorum read for Kubernetes services.                                            | `0`             |
+| `GPUSTACK_RUNTIME_KUBERNETES_DELETE_PROPAGATION_POLICY` | Deletion propagation policy for Kubernetes resources. Options: Foreground, Background, Orphan. | `Foreground`    |
