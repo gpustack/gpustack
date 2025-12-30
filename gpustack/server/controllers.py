@@ -101,7 +101,7 @@ class ModelController:
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
             self._networking_api = k8s_client.NetworkingV1Api(api_client=base_client)
 
-        async for event in Model.subscribe(self._engine):
+        async for event in Model.subscribe(self._engine, source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -148,7 +148,9 @@ class ModelInstanceController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in ModelInstance.subscribe(self._engine):
+        async for event in ModelInstance.subscribe(
+            self._engine, source="model_instance_controller"
+        ):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -695,7 +697,7 @@ class WorkerController:
         Start the controller.
         """
 
-        async for event in Worker.subscribe(self._engine):
+        async for event in Worker.subscribe(self._engine, source="worker_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -882,7 +884,9 @@ class ModelFileController:
         Start the controller.
         """
 
-        async for event in ModelFile.subscribe(self._engine):
+        async for event in ModelFile.subscribe(
+            self._engine, source="model_file_controller"
+        ):
             if event.type == EventType.CREATED or event.type == EventType.UPDATED:
                 await self._reconcile(event)
 
@@ -1180,7 +1184,9 @@ class WorkerPoolController:
         pass
 
     async def start(self):
-        async for event in WorkerPool.subscribe(self._engine):
+        async for event in WorkerPool.subscribe(
+            self._engine, source="worker_pool_controller"
+        ):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -1508,7 +1514,7 @@ class ClusterController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in Cluster.subscribe(self._engine):
+        async for event in Cluster.subscribe(self._engine, source="cluster_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
