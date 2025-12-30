@@ -177,9 +177,12 @@ class ModelInstanceController:
 
                 if event.type == EventType.DELETED:
                     # trigger model replica sync
-                    event_bus.publish(
-                        Model.__name__.lower(),
-                        Event(type=EventType.UPDATED, data=model),
+                    copied_model = Model(**model.model_dump())
+                    asyncio.create_task(
+                        event_bus.publish(
+                            Model.__name__.lower(),
+                            Event(type=EventType.UPDATED, data=copied_model),
+                        )
                     )
                 elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
