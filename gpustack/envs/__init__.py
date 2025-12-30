@@ -64,6 +64,10 @@ GATEWAY_PORT_CHECK_RETRY_COUNT = int(
     os.getenv("GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT", 300)
 )  # number of retries
 
+GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
+    "GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME", "gpustack"
+)
+
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )
