@@ -166,24 +166,27 @@ class ModelInstanceController:
                 if not model:
                     return
 
-                if event.type == EventType.DELETED:
-                    await sync_replicas(session, model, self._config)
+                if not self._disable_gateway:
+                    await mcp_handler.ensure_model_instance_mcp_bridge(
+                        event_type=event.type,
+                        model_instance=model_instance,
+                        networking_higress_api=self._higress_network_api,
+                        namespace=self._config.gateway_namespace,
+                        cluster_id=model.cluster_id,
+                    )
 
-                if model_instance.state == ModelInstanceStateEnum.INITIALIZING:
+                if event.type == EventType.DELETED:
+                    # trigger model replica sync
+                    event_bus.publish(
+                        Model.__name__.lower(),
+                        Event(type=EventType.UPDATED, data=model),
+                    )
+                elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
+                    return
 
                 await model.refresh(session)
                 await sync_ready_replicas(session, model)
-                if self._disable_gateway:
-                    return
-                await mcp_handler.ensure_model_instance_mcp_bridge(
-                    event_type=event.type,
-                    model_instance=model_instance,
-                    networking_higress_api=self._higress_network_api,
-                    namespace=self._config.gateway_namespace,
-                    cluster_id=model.cluster_id,
-                )
-
         except Exception as e:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
@@ -291,6 +294,10 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
             logger.debug(f"Created model instance for model {model.name}")
 
     elif len(instances) > model.replicas:
+        # Get instances for update lock, to avoid race condition with scheduler
+        instances = await ModelInstance.all_by_field(
+            session, "model_id", model.id, for_update=True
+        )
         candidates = await find_scale_down_candidates(instances, model)
 
         scale_down_count = len(candidates) - model.replicas

@@ -142,12 +142,17 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def all_by_field(cls, session: AsyncSession, field: str, value: Any):
+    async def all_by_field(
+        cls, session: AsyncSession, field: str, value: Any, for_update: bool = False
+    ):
         """
         Return all objects with the given field and value.
         Return an empty list if not found.
         """
         statement = select(cls).where(getattr(cls, field) == value)
+        if for_update:
+            statement = statement.with_for_update()
+
         result = await session.exec(statement)
         return result.all()
 
