@@ -56,7 +56,7 @@ def event_decoder(obj):
 
 class Subscriber:
     def __init__(self):
-        self.queue = asyncio.Queue(maxsize=256)
+        self.queue = asyncio.Queue(maxsize=1024)
         self.latest_by_key = {}
         self.lock = asyncio.Lock()
 
