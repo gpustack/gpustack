@@ -179,7 +179,7 @@ class ModelInstanceController:
 
                 if event.type == EventType.DELETED:
                     # trigger model replica sync
-                    copied_model = Model(**model.model_dump())
+                    copied_model = Model.model_validate(model.model_dump())
                     asyncio.create_task(
                         event_bus.publish(
                             Model.__name__.lower(),
