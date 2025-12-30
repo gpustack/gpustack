@@ -34,6 +34,8 @@ from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
 )
 
+from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
+
 mcp_registry_port = 80
 
 supported_openai_routes = [
@@ -190,7 +192,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
     hostname = cfg.get_external_hostname()
     tls_secret_name = cfg.get_tls_secret_name()
     network_v1_client = k8s_client.NetworkingV1Api(api_client=api_client)
-    ingress_name = "gpustack"
+    ingress_name = GATEWAY_MIRROR_INGRESS_NAME
     try:
         ingress: k8s_client.V1Ingress = await network_v1_client.read_namespaced_ingress(
             name=ingress_name, namespace=gateway_namespace

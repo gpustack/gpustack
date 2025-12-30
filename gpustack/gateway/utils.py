@@ -26,7 +26,8 @@ from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
 from gpustack.utils.network import is_ipaddress
 from kubernetes_asyncio import client as k8s_client
-from kubernetes_asyncio.client import ApiException
+from kubernetes_asyncio.client import ApiException, V1IngressTLS
+from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +278,7 @@ def generate_model_ingress(
     model: Model,
     destinations: str,
     hostname: Optional[str] = None,
-    tls_secret_name: Optional[str] = None,
+    tls: Optional[List[V1IngressTLS]] = None,
     included_generic_route: Optional[bool] = False,
     included_proxy_route: Optional[bool] = False,
 ) -> k8s_client.V1Ingress:
@@ -323,13 +324,7 @@ def generate_model_ingress(
 
     expected_rule.host = hostname
     spec = k8s_client.V1IngressSpec(ingress_class_name="higress", rules=[expected_rule])
-    if tls_secret_name is not None:
-        spec.tls = [
-            k8s_client.V1IngressTLS(
-                hosts=[hostname] if hostname is not None else None,
-                secret_name=tls_secret_name,
-            )
-        ]
+    spec.tls = tls
     ingress = k8s_client.V1Ingress(
         api_version="networking.k8s.io/v1",
         kind="Ingress",
@@ -451,8 +446,6 @@ async def ensure_model_ingress(
     model: Union[Model, ModelPublic],
     event_type: EventType,
     networking_api: k8s_client.NetworkingV1Api,
-    hostname: Optional[str] = None,
-    tls_secret_name: Optional[str] = None,
     included_generic_route: Optional[bool] = False,
     included_proxy_route: Optional[bool] = False,
 ):
@@ -499,12 +492,17 @@ async def ensure_model_ingress(
             logger.error(f"Failed to get ingress {ingress_name}: {e}")
             return
         existing_ingress = None
+    hostname, tls = await mirror_hostname_tls_from_ingress(
+        network_v1_client=networking_api,
+        gateway_namespace=namespace,
+        target_ingress_name=GATEWAY_MIRROR_INGRESS_NAME,
+    )
     expected_ingress = generate_model_ingress(
         namespace=namespace,
         model=model,
         destinations=expected_destinations,
         hostname=hostname,
-        tls_secret_name=tls_secret_name,
+        tls=tls,
         included_generic_route=included_generic_route,
         included_proxy_route=included_proxy_route,
     )
@@ -644,3 +642,38 @@ async def ensure_model_instance_mcp_bridge(
         to_delete_prefix=to_delete_prefix,
     )
     return desired_registry
+
+
+async def mirror_hostname_tls_from_ingress(
+    network_v1_client: k8s_client.NetworkingV1Api,
+    gateway_namespace: str,
+    target_ingress_name: str,
+) -> Tuple[Optional[str], Optional[List[V1IngressTLS]]]:
+    """
+    Mirror TLS settings from an existing ingress to be used in the gateway.
+
+    Parameters:
+        api_client (k8s_client.ApiClient): The Kubernetes API client.
+        gateway_namespace (str): The namespace where the gateway ingress resides.
+        target_ingress_name (str): The name of the ingress to mirror TLS settings from.
+
+    Returns:
+        Optional[Tuple[Optional[str], Optional[str]]]: A tuple containing the hostname and TLS secret name,
+        or None if the target ingress does not exist or has no TLS settings.
+    """
+    try:
+        ingress: k8s_client.V1Ingress = await network_v1_client.read_namespaced_ingress(
+            name=target_ingress_name, namespace=gateway_namespace
+        )
+    except ApiException as e:
+        if e.status == 404:
+            logger.warning(
+                f"Target ingress {target_ingress_name} not found in namespace {gateway_namespace} for TLS mirroring."
+            )
+            return None
+        else:
+            raise
+
+    tls = getattr(ingress.spec, 'tls', None)
+    hostname = ingress.spec.rules[0].host if ingress.spec.rules else None
+    return hostname, tls
