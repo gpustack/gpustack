@@ -116,7 +116,7 @@ class Scheduler:
         logger.info("Scheduler started.")
 
         # scheduler job trigger by event.
-        async for event in ModelInstance.subscribe(self._engine):
+        async for event in ModelInstance.subscribe(self._engine, source="scheduler"):
             if event.type != EventType.CREATED:
                 continue
 

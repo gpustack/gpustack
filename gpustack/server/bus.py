@@ -1,8 +1,11 @@
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 import copy
+
+logger = logging.getLogger(__name__)
 
 
 class EventType(Enum):
@@ -21,10 +24,28 @@ class Event:
     type: EventType
     data: Any
     changed_fields: Dict[str, Tuple[Any, Any]] = field(default_factory=dict)
+    id: Optional[Any] = None
 
     def __post_init__(self):
         if isinstance(self.type, int):
             self.type = EventType(self.type)
+
+        if self.id is None:
+            self.id = self._derive_id_from_data()
+
+    def _derive_id_from_data(self) -> Optional[Any]:
+        if self.data is None:
+            return None
+
+        # SQLModel
+        if hasattr(self.data, "id"):
+            return getattr(self.data, "id")
+
+        # Plain dict
+        if isinstance(self.data, dict):
+            return self.data.get("id")
+
+        return None
 
 
 def event_decoder(obj):
@@ -36,12 +57,39 @@ def event_decoder(obj):
 class Subscriber:
     def __init__(self):
         self.queue = asyncio.Queue(maxsize=256)
+        self.latest_by_key = {}
+        self.lock = asyncio.Lock()
 
     async def enqueue(self, event: Event):
+        # Squash UPDATED events by keeping only the latest per key
+        if event.type == EventType.UPDATED and event.id is not None:
+            async with self.lock:
+                if event.id in self.latest_by_key:
+                    self.latest_by_key[event.id] = event
+                    return
+                self.latest_by_key[event.id] = event
+
+            try:
+                self.queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # If the queue is full, skip adding the event, relying on latest_by_key, could receive it later
+                logger.warning(
+                    "Subscriber:%s queue full, skipping UPDATED event for id=%s",
+                    id(self),
+                    event.id,
+                )
+            return
+
+        # For other event types, enqueue directly
         await self.queue.put(event)
 
     async def receive(self) -> Any:
-        return await self.queue.get()
+        event = await self.queue.get()
+        if event.type == EventType.UPDATED and event.id is not None:
+            async with self.lock:
+                return self.latest_by_key.pop(event.id, event)
+
+        return event
 
 
 class EventBus:
