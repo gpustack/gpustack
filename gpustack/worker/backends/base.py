@@ -843,11 +843,10 @@ $@
                     self._model.id, ModelUpdate(**self._model.model_dump())
                 )
             if not self._model_instance.backend_version:
-                self._model_instance.backend_version = service_version
-                self._clientset.model_instances.update(
-                    self._model_instance.id,
-                    ModelInstanceUpdate(**self._model_instance.model_dump()),
-                )
+                patch_dict = {
+                    "backend_version": service_version,
+                }
+                self._update_model_instance(self._model_instance.id, patch_dict)
         except Exception as e:
             logger.error(
                 f"Failed to update model service version {service_version}: {e}"
