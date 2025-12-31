@@ -56,8 +56,9 @@ GPUStack 采用插件式架构，可以轻松添加新的 AI 模型、推理引�
 - Qwen3
 - gpt-oss
 - GLM-4.5-Air
-- GLM-4.5/4.6
+- GLM-4.x
 - DeepSeek-R1
+- DeepSeek-V3.2
 
 ## 架构
 
