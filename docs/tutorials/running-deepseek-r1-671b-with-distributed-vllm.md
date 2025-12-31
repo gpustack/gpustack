@@ -35,6 +35,7 @@ According to the [Installation](../installation/installation.md), you can use th
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
     -p 80:80 \
+    -p 10161:10161 \
     --volume gpustack-data:/var/lib/gpustack \
     --volume /path/to/your/model:/path/to/your/model \
     gpustack/gpustack
