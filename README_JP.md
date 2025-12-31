@@ -56,8 +56,9 @@ GPUStackはプラグインアーキテクチャを採用しており、新しい
 - Qwen3
 - gpt-oss
 - GLM-4.5-Air
-- GLM-4.5/4.6
+- GLM-4.x
 - DeepSeek-R1
+- DeepSeek-V3.2
 
 ## アーキテクチャ
 
