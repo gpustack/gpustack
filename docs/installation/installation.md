@@ -61,6 +61,7 @@ The following sections describe examples of custom configuration options when st
  sudo docker run -d --name gpustack \
      ...
      -p 80:80 \
+     -p 10161:10161 \
 +    -p 443:443 \
      --volume gpustack-data:/var/lib/gpustack \
 +    --volume /path/to/cert_files:/path/to/cert_files:ro \
