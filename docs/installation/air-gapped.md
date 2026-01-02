@@ -86,9 +86,22 @@ set the following environment variables when starting the GPUStack worker to all
 ```diff
  sudo docker run -d --name gpustack \
      ...
-+    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_USERNAME=<your_internal_registry_username> \
-+    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_REGISTRY_PASSWORD=<your_internal_registry_password> \
++    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_IMAGE_REGISTRY_USERNAME=<your_internal_registry_username> \
++    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_IMAGE_REGISTRY_PASSWORD=<your_internal_registry_password> \
      <your_internal_registry>/gpustack/gpustack \
      --system-default-container-registry <your_internal_registry>
 
+```
+
+### Pulling Inference Backend Images from none default Namespace
+
+If your internal container registry uses a different namespace than the default `gpustack`,  
+set the following environment variable when starting the GPUStack worker to allow it to pull the runner image.
+
+```diff
+ sudo docker run -d --name gpustack \
+     ...
++    --env GPUSTACK_RUNTIME_DEPLOY_DEFAULT_IMAGE_NAMESPACE=<your_namespace> \
+     <your_internal_registry>/gpustack/gpustack \
+     --system-default-container-registry <your_internal_registry>
 ```
