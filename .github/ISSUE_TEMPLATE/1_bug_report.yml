@@ -7,12 +7,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        🙏 Thanks for taking the time to report a bug!  
-        Please fill out the details below so we can help you faster ⚡
+        🙏 Thank you for taking the time to report a bug!
+        Please fill out the details below so we can help you resolve the issue faster ⚡
 
-        Before submitting
-        - If logs are lengthly, please upload them as a file or attachment instead of pasting inline.
-        - When sharing content, wrap them in code blocks (```).
+        Before submitting, please note:
+        - If logs are lengthy, please upload them as a file or attachment instead of pasting them inline.
+        - When sharing code or logs, wrap them in code blocks (```).
         - Providing the diagnostic information below will significantly accelerate troubleshooting.
 
   - type: input
