@@ -9,7 +9,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
     InvalidException,
-    ForbiddenException,
+    ConflictException,
 )
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
@@ -271,13 +271,18 @@ async def delete_cluster(session: SessionDep, id: int):
         raise NotFoundException(message=f"cluster {id} not found")
     # check for workers, if any are present, prevent deletion
     if len(existing.cluster_workers) > 0:
-        raise ForbiddenException(
+        raise ConflictException(
             message=f"cluster {existing.name}(id: {id}) has workers, cannot be deleted"
         )
     # check for models, if any are present, prevent deletion
     if len(existing.cluster_models) > 0:
-        raise ForbiddenException(
+        raise ConflictException(
             message=f"cluster {existing.name}(id: {id}) has models, cannot be deleted"
+        )
+    # check for model instances, if any are present, prevent deletion
+    if len(existing.cluster_model_instances) > 0:
+        raise ConflictException(
+            message=f"cluster {existing.name}(id: {id}) has model instances, cannot be deleted"
         )
     try:
         await existing.delete(session=session)
