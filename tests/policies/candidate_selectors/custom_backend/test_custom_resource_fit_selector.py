@@ -30,9 +30,9 @@ from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector imp
             make_model(
                 1,
                 [
-                    "host-4-4080:nvidia:0",
-                    "host-4-4080:nvidia:1",
-                    "host-4-4080:nvidia:2",
+                    "host-4-4080:cuda:0",
+                    "host-4-4080:cuda:1",
+                    "host-4-4080:cuda:2",
                 ],
                 "Qwen/Qwen3-8B",
             ),
