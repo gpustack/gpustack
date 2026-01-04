@@ -1,6 +1,7 @@
 import json
+import logging
 import math
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from gpustack_runtime.detector import ManufacturerEnum
@@ -57,6 +58,8 @@ from gpustack.utils.hub import (
     read_repo_file_content,
     get_max_model_len,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -476,7 +479,7 @@ async def delete_model(session: SessionDep, id: int):
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
 
 
-@router.post("/context_length", response_model=ModelContextLengths)
+@router.post("/context-length", response_model=ModelContextLengths | Dict[str, int])
 async def calculate_context_length(
     request: Request,
     session: SessionDep,
@@ -484,7 +487,7 @@ async def calculate_context_length(
 ):
     config_content = read_repo_file_content(model_evaluation_in.model, "config.json")
     if not config_content:
-        raise BadRequestException(message="Model config file not found")
+        return {}
     try:
         try:
             content = (config_content or b"").decode("utf-8")
@@ -493,7 +496,8 @@ async def calculate_context_length(
         config_dict = json.loads(content)
         pretrained_config = PretrainedConfig.from_dict(config_dict)
     except Exception as ce:
-        raise ce
+        logger.warning(f"read_repo_file_content failed: {ce}")
+        return {}
     lengths = get_max_model_len(pretrained_config)
     return lengths
 
