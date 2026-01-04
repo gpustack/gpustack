@@ -75,7 +75,8 @@ async def create_api_key(
         if key_in.custom_key is not None and key_in.custom_key.strip() != "":
             # Custom API key
             custom_key = key_in.custom_key.strip()
-            access_key = secrets.token_hex(8)  # Still need an access key for internal tracking
+            # Still need an access key for internal tracking
+            access_key = secrets.token_hex(8)
             secret_key = custom_key  # Use custom key as secret key
             is_custom = True
             hashed_secret_key = get_secret_hash(secret_key)

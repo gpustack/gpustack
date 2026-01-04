@@ -232,11 +232,15 @@ async def get_user_from_bearer_token(
         # For custom API keys, we need to check against all possible keys for the user
         # Since custom keys don't follow the standard format, we'll need to check the hashed values
         # This is less efficient but necessary for custom keys
-        api_key = await APIKeyService(session).get_by_custom_key(bearer_token.credentials)
+        api_key = await APIKeyService(session).get_by_custom_key(
+            bearer_token.credentials
+        )
         if (
             api_key is not None
             and api_key.is_custom
-            and verify_hashed_secret(api_key.hashed_secret_key, bearer_token.credentials)
+            and verify_hashed_secret(
+                api_key.hashed_secret_key, bearer_token.credentials
+            )
             and (
                 api_key.expires_at is None
                 or api_key.expires_at > datetime.now(timezone.utc)
