@@ -193,14 +193,17 @@ async def create_cluster(session: SessionDep, input: ClusterCreate):
 
     access_key = secrets.token_hex(8)
     secret_key = secrets.token_hex(16)
-    target_state = ClusterStateEnum.PROVISIONING
-    if input.provider in [ClusterProvider.Kubernetes, ClusterProvider.Docker]:
-        target_state = ClusterStateEnum.READY
+    target_state = ClusterStateEnum.READY
+    state_message = None
+    if input.provider not in [ClusterProvider.Kubernetes, ClusterProvider.Docker]:
+        target_state = ClusterStateEnum.PENDING
+        state_message = "No workers have been provisioned for this cluster yet."
     pools = input.worker_pools or []
     to_create_cluster = Cluster.model_validate(
         {
             **input.model_dump(exclude={"worker_pools"}),
             "state": target_state,
+            "state_message": state_message,
             "hashed_suffix": secrets.token_hex(6),
             "registration_token": f"{API_KEY_PREFIX}_{access_key}_{secret_key}",
         }
