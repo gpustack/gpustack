@@ -167,6 +167,7 @@ class ModelInstanceController:
                 model = await Model.one_by_id(session, model_instance.model_id)
                 if not model:
                     return
+                model_deleting = model.deleted_at is not None
 
                 if not self._disable_gateway:
                     await mcp_handler.ensure_model_instance_mcp_bridge(
@@ -188,6 +189,9 @@ class ModelInstanceController:
                     )
                 elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
+                    return
+
+                if model_deleting:
                     return
 
                 await model.refresh(session)
@@ -620,12 +624,16 @@ async def sync_gateway(
     model: Model,
     networking_api: k8s_client.NetworkingV1Api,
 ):
+    event_type = event.type
+    model_from_db = await Model.one_by_id(session, model.id)
+    if not model_from_db:
+        event_type = EventType.DELETED
     if event.type != EventType.DELETED:
         destinations = await calculate_destinations(session, model)
     else:
         destinations = []
     await mcp_handler.ensure_model_ingress(
-        event_type=event.type,
+        event_type=event_type,
         namespace=cfg.get_namespace(),
         model=model,
         destinations=destinations,
