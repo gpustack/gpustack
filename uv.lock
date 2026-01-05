@@ -1998,8 +1998,8 @@ requires-dist = [
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.22.post5" },
-    { name = "gpustack-runtime", specifier = "==0.1.38" },
+    { name = "gpustack-runner", specifier = "==0.1.22.post5" },
+    { name = "gpustack-runtime", specifier = "==0.1.38.post1" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2088,7 +2088,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.38"
+version = "0.1.38.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -2099,9 +2099,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/16/a9e98fd2477c433a7ad5b9293b63f1728ccd9d9de51bee9677a864eab01b/gpustack_runtime-0.1.38.tar.gz", hash = "sha256:ad343b44ec1616c8da138392d49fc6bb164f33467dff3eb282a7d7c1e94796df", size = 217317, upload-time = "2025-12-29T12:09:10.949Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/d0/c9f77bd3d82b6e661be8f887b23c42bff64b4625e8f9515db22147f65cf5/gpustack_runtime-0.1.38.post1.tar.gz", hash = "sha256:d3fb4ae4a8880a48a7317edc54aee73de788279585af0c3bb420d54306304e0f", size = 217726, upload-time = "2026-01-05T04:35:16.069Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/67/328889bd563a232b609fb25a817a463354326d88df8a08fe5b52406f576c/gpustack_runtime-0.1.38-py3-none-any.whl", hash = "sha256:8c9b6b177ed7f28ae458c51e9b44f3f8bee48db772841319aed807acc37da733", size = 190246, upload-time = "2025-12-29T12:09:09.809Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/f7/5490c6bcbd7d2663cbb9abd05def421cb8f848b145bea90223cebdd7b7a5/gpustack_runtime-0.1.38.post1-py3-none-any.whl", hash = "sha256:b98ce6b374340c7f4b1c1fcabba5ef2d894ad7a5833515cdb39dd46c65bce268", size = 190356, upload-time = "2026-01-05T04:35:14.809Z" },
 ]
 
 [[package]]
