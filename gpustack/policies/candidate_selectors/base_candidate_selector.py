@@ -14,7 +14,6 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
@@ -22,8 +21,8 @@ from gpustack.utils.hub import (
 )
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
-    parse_gpu_id,
     group_gpu_ids_by_worker,
+    group_gpu_indexes_by_gpu_type_and_worker,
 )
 from gpustack.server.db import get_engine
 from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
@@ -34,7 +33,7 @@ from gpustack.policies.utils import (
     get_worker_allocatable_resource,
     get_worker_model_instances,
     sort_gpu_indexes_by_allocatable_rate,
-    sort_selected_workers_by_resource,
+    sort_selected_workers_by_gpu_type_and_resource,
 )
 from gpustack.utils.unit import byte_to_gib
 
@@ -181,14 +180,14 @@ class ScheduleCandidatesSelector(ABC):
     _gpu_count: int
     # Selected worker names if manual GPU selection is used.
     _selected_gpu_workers: Optional[List[str]]
-    # Number of selected workers if manual GPU selection is used.
-    _selected_gpu_worker_count: int
-    # Selected GPU indexes by worker name if manual GPU selection is used.
-    _selected_gpu_indexes_by_worker: Dict[str, List[int]]
-    # Worker allocatable resource cache.
-    _workers_allocatable_resource: Dict[int, Allocatable] = {}
+    # Selected GPU indexes by gpu type and worker name if manual GPU selection is used.
+    _selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[str, List[int]]]
     # Worker VRAM totals by GPU indexs cache.
-    _worker_vram_totals_by_gpu_idxs: Dict[str, Dict[int, int]] = {}
+    _vram_totals_by_gpu_type_and_worker_and_gpu_idxs: Dict[
+        str, Dict[str, Dict[int, int]]
+    ]
+    # Worker allocatable resource cache by gpu type.
+    _workers_allocatable_resource_by_gpu_type: Dict[str, Dict[int, Allocatable]]
 
     def __init__(
         self,
@@ -203,8 +202,9 @@ class ScheduleCandidatesSelector(ABC):
         self._num_attention_heads = 0
         self._gpu_count = 0
         self._selected_gpu_workers = None
-        self._selected_gpu_worker_count = 0
-        self._selected_gpu_indexes_by_worker = {}
+        self._selected_gpu_indexes_by_gpu_type_and_worker = {}
+        self._vram_totals_by_gpu_type_and_worker_and_gpu_idxs = {}
+        self._workers_allocatable_resource_by_gpu_type = {}
 
         if parse_model_params:
             self._set_model_parameters()
@@ -244,17 +244,14 @@ class ScheduleCandidatesSelector(ABC):
     ):
         model = self._model
         if model.gpu_selector and model.gpu_selector.gpu_ids:
+            gpu_indexes_by_gpu_type_and_worker = (
+                group_gpu_indexes_by_gpu_type_and_worker(model.gpu_selector.gpu_ids)
+            )
             gpu_ids_by_worker = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
             self._selected_gpu_workers = list(gpu_ids_by_worker.keys())
-            self._selected_gpu_worker_count = len(self._selected_gpu_workers)
-            for worker_name, gpu_ids in gpu_ids_by_worker.items():
-                gpu_indexes = []
-                for gpu_id in gpu_ids:
-                    valid, matched = parse_gpu_id(gpu_id)
-                    if valid:
-                        gpu_index = safe_int(matched.get("gpu_index"))
-                        gpu_indexes.append(gpu_index)
-                self._selected_gpu_indexes_by_worker[worker_name] = gpu_indexes
+            self._selected_gpu_indexes_by_gpu_type_and_worker = (
+                gpu_indexes_by_gpu_type_and_worker
+            )
 
             self._gpu_count = model.gpu_selector.gpus_per_replica or len(
                 model.gpu_selector.gpu_ids
@@ -271,14 +268,37 @@ class ScheduleCandidatesSelector(ABC):
 
             self._gpu_count = world_size
 
-    async def _get_worker_allocatable_resource(self, worker: Worker):
-        allocatable = await get_worker_allocatable_resource(self._engine, worker)
-        self._workers_allocatable_resource[worker.id] = allocatable
+    async def get_worker_allocatable_resource(
+        self, worker: Worker, gpu_type: Optional[str] = None
+    ) -> Allocatable:
+        """
+        Get the worker's allocatable resource, with caching for efficiency.
+        Args:
+            worker: Worker object
+            gpu_type: Optional GPU type to filter
+        Returns:
+            Allocatable: The allocatable resource of the worker
+        """
+
+        allocatable = self._workers_allocatable_resource_by_gpu_type.get(
+            gpu_type, {}
+        ).get(worker.id)
+        if allocatable is not None:
+            return allocatable
+
+        allocatable = await get_worker_allocatable_resource(
+            self._engine, worker, gpu_type
+        )
+        self._workers_allocatable_resource_by_gpu_type.setdefault(
+            gpu_type, {}
+        ).setdefault(worker.id, allocatable)
         return allocatable
 
-    def _get_worker_vram_totals_by_gpu_idxs(self, worker: Worker) -> Dict[int, int]:
+    def _get_worker_vram_totals(
+        self, worker: Worker, gpu_type: Optional[str] = None
+    ) -> Dict[int, int]:
         """
-        Get a mapping from GPU idxs to total VRAM for the given worker.
+        Get a mapping from GPU idxs to total VRAM for the given worker, filtered by gpu_type if provided.
         Uses cache for efficiency.
 
         Args:
@@ -287,9 +307,11 @@ class ScheduleCandidatesSelector(ABC):
         Returns:
             Dict[int, int]: Mapping from GPU idxs to total VRAM (bytes)
         """
-        self._worker_vram_totals_by_gpu_idxs = {}
-        if worker.name in self._worker_vram_totals_by_gpu_idxs:
-            return self._worker_vram_totals_by_gpu_idxs[worker.name]
+        vram_by_ids = self._vram_totals_by_gpu_type_and_worker_and_gpu_idxs.get(
+            gpu_type, {}
+        ).get(worker.name)
+        if vram_by_ids is not None:
+            return vram_by_ids
 
         if not worker.status or not worker.status.gpu_devices:
             return {}
@@ -297,9 +319,11 @@ class ScheduleCandidatesSelector(ABC):
         vram_by_idxs = {
             gpu.index: gpu.memory.total if gpu.memory and gpu.memory.total else 0
             for gpu in worker.status.gpu_devices
-            if gpu.index is not None
+            if gpu.index is not None and (gpu_type is None or gpu.type == gpu_type)
         }
-        self._worker_vram_totals_by_gpu_idxs[worker.name] = vram_by_idxs
+        self._vram_totals_by_gpu_type_and_worker_and_gpu_idxs.setdefault(gpu_type, {})[
+            worker.name
+        ] = vram_by_idxs
         return vram_by_idxs
 
     async def _get_worker_resource_claim(
@@ -308,6 +332,7 @@ class ScheduleCandidatesSelector(ABC):
         gpu_indexes: List[int],
         gpu_memory_utilization: float,
         request: Optional[RequestEstimateUsage] = None,
+        gpu_type: Optional[str] = None,
     ) -> Dict[int, int]:
         """
         Given a worker and gpu indexes, get the vram claim according to gpu_memory_utilization.
@@ -315,7 +340,9 @@ class ScheduleCandidatesSelector(ABC):
         """
         vram_claim: Dict[int, int] = {}
         for gpu in worker.status.gpu_devices:
-            if gpu.index not in gpu_indexes:
+            if gpu.index not in gpu_indexes or (
+                gpu_type is not None and gpu.type != gpu_type
+            ):
                 continue
 
             claim = 0
@@ -336,6 +363,7 @@ class ScheduleCandidatesSelector(ABC):
         self,
         worker: Worker,
         gpu_indexes: List[int],
+        gpu_type: Optional[str] = None,
     ) -> List[str]:
         """
         Given a worker and gpu indexes, get the gpu addresses according to gpu_indexes.
@@ -347,7 +375,9 @@ class ScheduleCandidatesSelector(ABC):
             return gpu_addresses
 
         for gpu in worker.status.gpu_devices:
-            if gpu.index not in gpu_indexes:
+            if gpu.index not in gpu_indexes and (
+                gpu_type is not None and gpu.type != gpu_type
+            ):
                 continue
 
             addr = (
@@ -376,6 +406,7 @@ class ScheduleCandidatesSelector(ABC):
         Returns:
             Tuple[bool, str, float]: A tuple of (is_overcommit, message, effective_vram).
         """
+
         if not self._model.gpu_selector or not self._model.gpu_selector.gpu_ids:
             return (False, "", 0)
 
@@ -383,44 +414,55 @@ class ScheduleCandidatesSelector(ABC):
         worker_set = {w.name: w for w in workers}
 
         # 2. Summarize the total VRAM and the number that meets the utilization for selected GPUs.
+        #    Generate:
+        #    - total_vram
+        #    - satisfied_gpus_by_worker
+        #    - satisfied_gpus_total_allocatable_vram_for_non_llms
+        #    - selected_gpus_total_allocatable_vram_for_non_llms
         selected_gpu_count = len(self._model.gpu_selector.gpu_ids)
         satisfied_gpus_by_worker = {}
         satisfied_gpus_count = 0
         satisfied_gpus_total_allocatable_vram_for_non_llms = 0
         selected_gpus_total_allocatable_vram_for_non_llms = 0
-        for wn, g in self._selected_gpu_indexes_by_worker.items():
-            w = worker_set.get(wn)
-            if w is None:
-                continue
+        for (
+            gpu_type,
+            worker_gpu_indexes,
+        ) in self._selected_gpu_indexes_by_gpu_type_and_worker.items():
+            for wn, g in worker_gpu_indexes.items():
+                w = worker_set.get(wn)
+                if w is None:
+                    continue
 
-            wa = await self._get_worker_allocatable_resource(w)
-            vram_total_by_index = self._get_worker_vram_totals_by_gpu_idxs(w)
-            if wa.vram is None:
-                continue
-            for gpu_index in g:
-                total_vram = vram_total_by_index.get(gpu_index)
-                allocatable_vram = wa.vram.get(gpu_index)
-                selected_gpus_total_allocatable_vram_for_non_llms += (
-                    allocatable_vram or 0
-                )
-                if gpu_memory_utilization == 0:  # non LLMs
-                    satisfied_gpus_count += 1
-                    satisfied_gpus_total_allocatable_vram_for_non_llms += (
+                wa = await self.get_worker_allocatable_resource(w, gpu_type)
+                vram_total_by_index = self._get_worker_vram_totals(w, gpu_type)
+                if wa.vram is None:
+                    continue
+                for gpu_index in g:
+                    total_vram = vram_total_by_index.get(gpu_index)
+                    allocatable_vram = wa.vram.get(gpu_index)
+                    selected_gpus_total_allocatable_vram_for_non_llms += (
                         allocatable_vram or 0
                     )
-                    if wn not in satisfied_gpus_by_worker:
-                        satisfied_gpus_by_worker[wn] = {}
-                    satisfied_gpus_by_worker[wn][gpu_index] = True
-                else:  # LLMs
-                    if total_vram is None or allocatable_vram is None:
-                        continue
-
-                    allocatable_gpu_memory_utilization = allocatable_vram / total_vram
-                    if allocatable_gpu_memory_utilization >= gpu_memory_utilization:
+                    if gpu_memory_utilization == 0:  # non LLMs
                         satisfied_gpus_count += 1
-                        if wn not in satisfied_gpus_by_worker:
-                            satisfied_gpus_by_worker[wn] = {}
-                        satisfied_gpus_by_worker[wn][gpu_index] = True
+                        satisfied_gpus_total_allocatable_vram_for_non_llms += (
+                            allocatable_vram or 0
+                        )
+                        satisfied_gpus_by_worker.setdefault(gpu_type, {}).setdefault(
+                            wn, {}
+                        )[gpu_index] = True
+                    else:  # LLMs
+                        if total_vram is None or allocatable_vram is None:
+                            continue
+
+                        allocatable_gpu_memory_utilization = (
+                            allocatable_vram / total_vram
+                        )
+                        if allocatable_gpu_memory_utilization >= gpu_memory_utilization:
+                            satisfied_gpus_count += 1
+                            satisfied_gpus_by_worker.setdefault(
+                                gpu_type, {}
+                            ).setdefault(wn, {})[gpu_index] = True
 
         # 3. Summarize the total VRAM and the number that meets the utilization for used GPUs.
         used_gpu_count = 0
@@ -432,6 +474,7 @@ class ScheduleCandidatesSelector(ABC):
         pairs = [
             (
                 candidate.worker.name,
+                candidate.gpu_type,
                 candidate.gpu_indexes,
                 candidate.computed_resource_claim,
             )
@@ -439,12 +482,17 @@ class ScheduleCandidatesSelector(ABC):
         if candidate.subordinate_workers:
             for sw in candidate.subordinate_workers:
                 pairs.append(
-                    (sw.worker_name, sw.gpu_indexes, sw.computed_resource_claim)
+                    (
+                        sw.worker_name,
+                        sw.gpu_type,
+                        sw.gpu_indexes,
+                        sw.computed_resource_claim,
+                    )
                 )
 
-        for wn, indexes, claim in pairs:
+        for wn, gpu_type, indexes, claim in pairs:
             w = worker_set.get(wn)
-            wa = await self._get_worker_allocatable_resource(w)
+            wa = await self.get_worker_allocatable_resource(w, gpu_type)
             used_vram_claim_total += (
                 sum(v for k, v in claim.vram.items() if claim.vram is not None) or 0
             )
@@ -455,7 +503,12 @@ class ScheduleCandidatesSelector(ABC):
                 allocatable_vram = wa.vram.get(idx)
                 used_gpus_total_allocatable_vram_for_non_llms += allocatable_vram or 0
 
-                if satisfied_gpus_by_worker.get(wn, {}).get(idx, None) is not None:
+                if (
+                    satisfied_gpus_by_worker.get(gpu_type, {})
+                    .get(wn, {})
+                    .get(idx, None)
+                    is not None
+                ):
                     used_satisfied_count += 1
 
         # 4. Determine if overcommit occurred.
@@ -532,20 +585,35 @@ class ScheduleCandidatesSelector(ABC):
         candidates: List[ModelInstanceScheduleCandidate],
         workers: List[Worker],
         request: RequestEstimateUsage,
-        gpu_memory_utilization: float,
+        gpu_memory_utilization: Dict[str, float],
     ) -> Tuple[
         List[ModelInstanceScheduleCandidate],
         Optional[ModelInstanceScheduleCandidate],
         Optional[str],
     ]:
+        """Separate non-overcommit candidates and find the best overcommit candidate.
+        Args:
+            candidates (List[ModelInstanceScheduleCandidate]): The list of candidates to check.
+            workers (List[Worker]): The list of workers.
+            request (RequestEstimateUsage): The estimated resource usage request.
+            gpu_memory_utilization (Dict[str, float]): The required GPU memory utilization ratio by GPU type, key is the GPU type, * is for all types.
+        Returns:
+            Tuple[List[ModelInstanceScheduleCandidate], Optional[ModelInstanceScheduleCandidate], Optional[str]]:
+                A tuple of (non_overcommit_candidates, best_overcommit_candidate, overcommit_message).
+        """
+
         non_overcommits_candidates = []
         max_effective_vram = 0
         best_overcommit_candidate = None
         overcommit_msg = None
         for c in candidates:
+            gpu_memory_utilization_for_type = gpu_memory_utilization.get(
+                c.gpu_type,
+                gpu_memory_utilization.get("*", 0),
+            )
             overcommit, msg, effective_vram = (
                 await self._generate_manual_selected_gpus_overcommit_message(
-                    c, workers, request, gpu_memory_utilization
+                    c, workers, request, gpu_memory_utilization_for_type
                 )
             )
             c.overcommit = overcommit
@@ -562,88 +630,121 @@ class ScheduleCandidatesSelector(ABC):
 
         return non_overcommits_candidates, best_overcommit_candidate, overcommit_msg
 
-    async def _find_manual_gpu_selection_candidates(
+    async def _find_manual_gpu_selection_candidates(  # noqa: C901
         self,
         workers: List[Worker],
-        gpu_memory_utilization: float,
+        gpu_memory_utilization: Dict[str, float],
         request: RequestEstimateUsage,
         event_collector: EventCollector,
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Find candidates for manual GPU selection based on user-specified GPU IDs.
         This function handles all manual GPU selection scenarios for vLLM.
+
+        args:
+            workers: List of available workers.
+            gpu_memory_utilization: Required GPU memory utilization ratio by GPU type, key is the GPU type, * is for all types.
+            request: The estimated resource usage request.
+            event_collector: Event collector for logging events.
         """
         # Skip if no manual GPU selection is specified
         if not self._selected_gpu_workers:
             return []
 
+        # Not allow heterogeneous gpu types
+        if (
+            self._gpu_count == len(self._model.gpu_selector.gpu_ids)
+            and len(self._selected_gpu_indexes_by_gpu_type_and_worker.keys()) > 1
+        ):
+            event_collector.add(
+                EventLevelEnum.ERROR,
+                EVENT_ACTION_MANUAL_MULTI,
+                str(
+                    ListMessageBuilder(
+                        "Deployment with heterogeneous GPU types is not supported, please select GPUs of the same type or update GPUs per replica.",
+                    )
+                ),
+            )
+            return []
+
         logger.debug(
             f"Manual GPU selection: workers={self._selected_gpu_workers}, "
-            f"worker_count={self._selected_gpu_worker_count}, "
-            f"gpu_indexes_by_worker={self._selected_gpu_indexes_by_worker}"
+            f"worker_count={len(self._selected_gpu_workers)}, "
+            f"gpu_indexes_by_worker_and_type={self._selected_gpu_indexes_by_gpu_type_and_worker}"
         )
 
         candidates = []
 
         # Filter and sort selected workers by resource
-        selected_workers = await sort_selected_workers_by_resource(
-            workers,
-            self._selected_gpu_indexes_by_worker,
-            self._get_worker_allocatable_resource,
-        )
-        if len(selected_workers) != self._selected_gpu_worker_count:
-            missing_workers = set(self._selected_gpu_workers) - {
-                w.name for w in selected_workers
-            }
-
-            event_collector.add(
-                EventLevelEnum.INFO,
-                EVENT_ACTION_MANUAL_MULTI,
-                f"Selected workers not found: {list(missing_workers)}",
+        selected_workers_by_gpu_type = (
+            await sort_selected_workers_by_gpu_type_and_resource(
+                workers,
+                self._selected_gpu_indexes_by_gpu_type_and_worker,
+                self.get_worker_allocatable_resource,
             )
-            return []
+        )
 
         # Handle single-worker single gpu scenarios
         if self._gpu_count == 1:
-            for worker in selected_workers:
-                selected_gpu_indexes = self._selected_gpu_indexes_by_worker.get(
-                    worker.name
+            for gpu_type, workers_of_type in selected_workers_by_gpu_type.items():
+                gpu_memory_utilization_for_type = gpu_memory_utilization.get(
+                    gpu_type,
+                    gpu_memory_utilization.get("*", 0),
                 )
-                if selected_gpu_indexes is None:
-                    continue
-
-                for idx in selected_gpu_indexes:
-                    worker_candidates = (
-                        await self._manual_select_single_worker_multi_gpu_candidates(
-                            worker, [idx], gpu_memory_utilization, request
+                for worker in workers_of_type:
+                    for gpu in worker.status.gpu_devices:
+                        worker_candidates = await self._manual_select_single_worker_multi_gpu_candidates(
+                            worker,
+                            [gpu.index],
+                            gpu_memory_utilization_for_type,
+                            request,
+                            gpu_type,
                         )
-                    )
-                    candidates.extend(worker_candidates)
+                        candidates.extend(worker_candidates)
 
         # Handle single-worker multi-GPU and multi-worker scenarios
         elif self._gpu_count > 1:
 
             # Single-worker multi-GPU selection
-            for worker in selected_workers:
-                selected_gpu_indexes = [gpu.index for gpu in worker.status.gpu_devices]
-                if selected_gpu_indexes is None:
-                    continue
-
-                worker_candidates = (
-                    await self._manual_select_single_worker_multi_gpu_candidates(
-                        worker, selected_gpu_indexes, gpu_memory_utilization, request
-                    )
+            for gpu_type, workers_of_type in selected_workers_by_gpu_type.items():
+                gpu_memory_utilization_for_type = gpu_memory_utilization.get(
+                    gpu_type,
+                    gpu_memory_utilization.get("*", 0),
                 )
-                candidates.extend(worker_candidates)
+                for worker in workers_of_type:
+                    selected_gpu_indexes = [
+                        gpu.index for gpu in worker.status.gpu_devices
+                    ]
+                    if selected_gpu_indexes is None:
+                        continue
+
+                    worker_candidates = (
+                        await self._manual_select_single_worker_multi_gpu_candidates(
+                            worker,
+                            selected_gpu_indexes,
+                            gpu_memory_utilization_for_type,
+                            request,
+                            gpu_type,
+                        )
+                    )
+                    candidates.extend(worker_candidates)
 
             # Multi-worker multi-GPU selection
             if not candidates:
-                worker_candidates = (
-                    await self._manual_select_multi_worker_multi_gpu_candidates(
-                        selected_workers, gpu_memory_utilization, request
+                for gpu_type, selected_workers in selected_workers_by_gpu_type.items():
+                    gpu_memory_utilization_for_type = gpu_memory_utilization.get(
+                        gpu_type,
+                        gpu_memory_utilization.get("*", 0),
                     )
-                )
-                candidates.extend(worker_candidates)
+                    worker_candidates = (
+                        await self._manual_select_multi_worker_multi_gpu_candidates(
+                            selected_workers,
+                            gpu_memory_utilization_for_type,
+                            request,
+                            gpu_type,
+                        )
+                    )
+                    candidates.extend(worker_candidates)
 
         if not candidates:
             return []
@@ -686,6 +787,7 @@ class ScheduleCandidatesSelector(ABC):
         gpu_indexes: List[int],
         gpu_memory_utilization: float,
         request: RequestEstimateUsage,
+        gpu_type: Optional[str] = None,
     ) -> List[ModelInstanceScheduleCandidate]:
         """Manually select multi GPU candidates."""
 
@@ -693,8 +795,8 @@ class ScheduleCandidatesSelector(ABC):
         if len(gpu_indexes) < self._gpu_count:
             return []
 
-        allocatable = await self._get_worker_allocatable_resource(worker)
-        vram_totals_by_gpu_idx = self._get_worker_vram_totals_by_gpu_idxs(worker)
+        allocatable = await self.get_worker_allocatable_resource(worker, gpu_type)
+        vram_totals_by_gpu_idx = self._get_worker_vram_totals(worker, gpu_type)
 
         # Check if the GPU is satisfied the requirement
         satisfied_gpu_indexes = []
@@ -727,13 +829,16 @@ class ScheduleCandidatesSelector(ABC):
 
         # Get vram claims for used gpus
         vram_claims = await self._get_worker_resource_claim(
-            worker, used_gpu_indexes, gpu_memory_utilization, request
+            worker, used_gpu_indexes, gpu_memory_utilization, request, gpu_type
         )
         return [
             ModelInstanceScheduleCandidate(
                 worker=worker,
+                gpu_type=gpu_type,
                 gpu_indexes=used_gpu_indexes,
-                gpu_addresses=self._get_worker_gpu_addresses(worker, used_gpu_indexes),
+                gpu_addresses=self._get_worker_gpu_addresses(
+                    worker, used_gpu_indexes, gpu_type
+                ),
                 computed_resource_claim=ComputedResourceClaim(
                     vram=vram_claims,
                     ram=get_computed_ram_claim(self._model, vram_claims, request.ram),
@@ -747,6 +852,7 @@ class ScheduleCandidatesSelector(ABC):
         workers: List[Worker],
         gpu_memory_utilization: float,
         request: RequestEstimateUsage,
+        gpu_type: Optional[str] = None,
     ) -> List[ModelInstanceScheduleCandidate]:
         """Manual select multi worker multi GPU candidates."""
         if len(workers) < 2:
@@ -755,9 +861,11 @@ class ScheduleCandidatesSelector(ABC):
         # Main worker is the first one (with most GPUs)
         main_worker = workers[0]
         main_worker_name = main_worker.name
-        main_gpu_indexes = self._selected_gpu_indexes_by_worker[main_worker_name]
+        main_gpu_indexes = self._selected_gpu_indexes_by_gpu_type_and_worker.get(
+            gpu_type, {}
+        ).get(main_worker_name, [])
         main_vram_claim = await self._get_worker_resource_claim(
-            main_worker, main_gpu_indexes, gpu_memory_utilization, request
+            main_worker, main_gpu_indexes, gpu_memory_utilization, request, gpu_type
         )
 
         # Handle subordinate workers
@@ -765,7 +873,12 @@ class ScheduleCandidatesSelector(ABC):
         for worker in workers:
 
             # Skip if the worker is not selected
-            if worker.name not in self._selected_gpu_workers:
+            if (
+                self._selected_gpu_indexes_by_gpu_type_and_worker.get(gpu_type, {}).get(
+                    worker.name
+                )
+                is None
+            ):
                 continue
             if worker.name == main_worker_name:
                 continue
@@ -773,12 +886,14 @@ class ScheduleCandidatesSelector(ABC):
                 continue
 
             # Sort GPUs by allocatable rate
-            gpu_indexes = self._selected_gpu_indexes_by_worker[worker.name]
+            gpu_indexes = self._selected_gpu_indexes_by_gpu_type_and_worker.get(
+                gpu_type, {}
+            ).get(worker.name, [])
             vram_allocatable = await self._get_worker_resource_claim(
-                worker, gpu_indexes, gpu_memory_utilization, request
+                worker, gpu_indexes, gpu_memory_utilization, request, gpu_type
             )
             sorted_gpu_indexes = sort_gpu_indexes_by_allocatable_rate(
-                worker, vram_allocatable
+                worker, vram_allocatable, gpu_type
             )
 
             # Calculate how many GPUs can be assigned to this subordinate worker
@@ -791,7 +906,7 @@ class ScheduleCandidatesSelector(ABC):
             # Assign GPUs to the subordinate worker
             sw_gpu_indexes = sorted_gpu_indexes[:assign_count]
             vram_claim = await self._get_worker_resource_claim(
-                worker, sw_gpu_indexes, gpu_memory_utilization, request
+                worker, sw_gpu_indexes, gpu_memory_utilization, request, gpu_type
             )
 
             subordinate_workers.append(
@@ -801,6 +916,7 @@ class ScheduleCandidatesSelector(ABC):
                     worker_ip=worker.ip,
                     worker_ifname=worker.ifname,
                     total_gpus=len(worker.status.gpu_devices),
+                    gpu_type=gpu_type,
                     gpu_indexes=sw_gpu_indexes,
                     gpu_addresses=self._get_worker_gpu_addresses(
                         worker, sw_gpu_indexes
@@ -827,6 +943,7 @@ class ScheduleCandidatesSelector(ABC):
         return [
             ModelInstanceScheduleCandidate(
                 worker=main_worker,
+                gpu_type=gpu_type,
                 gpu_indexes=main_gpu_indexes,
                 gpu_addresses=self._get_worker_gpu_addresses(
                     main_worker, main_gpu_indexes

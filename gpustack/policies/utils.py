@@ -36,9 +36,10 @@ class WorkerGPUInfo(BaseModel):
 async def get_worker_allocatable_resource(  # noqa: C901
     engine: AsyncEngine,
     worker: Worker,
+    gpu_type: Optional[str] = None,
 ) -> Allocatable:
     """
-    Get the worker with the latest allocatable resources.
+    Get the worker with the latest allocatable resources, if gpu_type is provided, only consider the GPUs of that type.
     """
 
     def update_allocated_vram(allocated, resource_claim):
@@ -51,7 +52,11 @@ async def get_worker_allocatable_resource(  # noqa: C901
 
     for model_instance in model_instances:
         # Handle resource allocation for main worker
-        if model_instance.worker_id == worker.id:
+        if model_instance.worker_id == worker.id and (
+            gpu_type is None
+            or model_instance.gpu_type is None
+            or model_instance.gpu_type == gpu_type
+        ):
             allocated.ram += model_instance.computed_resource_claim.ram or 0
             if model_instance.gpu_indexes:
                 update_allocated_vram(allocated, model_instance.computed_resource_claim)
@@ -67,7 +72,9 @@ async def get_worker_allocatable_resource(  # noqa: C901
                 if subordinate_worker.worker_id != worker.id:
                     continue
 
-                if subordinate_worker.computed_resource_claim:
+                if subordinate_worker.computed_resource_claim and (
+                    gpu_type is None or model_instance.gpu_type == gpu_type
+                ):
                     # rpc server only consider the vram
                     update_allocated_vram(
                         allocated, subordinate_worker.computed_resource_claim
@@ -78,7 +85,11 @@ async def get_worker_allocatable_resource(  # noqa: C901
         for _, gpu in enumerate(worker.status.gpu_devices):
             gpu_index = gpu.index
 
-            if gpu.memory is None or gpu.memory.total is None:
+            if (
+                gpu.memory is None
+                or gpu.memory.total is None
+                or (gpu_type is not None and gpu.type != gpu_type)
+            ):
                 continue
             allocatable_vram = max(
                 (
@@ -108,7 +119,8 @@ async def get_worker_allocatable_resource(  # noqa: C901
             allocatable.vram[0] = min(allocatable.ram, allocatable.vram[0])
 
     logger.debug(
-        f"Worker {worker.name} reserved memory: {worker.system_reserved.ram}, "
+        f"Worker {worker.name} gpu_type {gpu_type}, "
+        f"reserved memory: {worker.system_reserved.ram}, "
         f"reserved gpu memory: {worker.system_reserved.vram}, "
         f"allocatable memory: {allocatable.ram}, "
         f"allocatable gpu memory: {allocatable.vram}"
@@ -186,6 +198,37 @@ def group_gpu_devices_by_memory(gpu_devices: GPUDevicesInfo) -> List[GPUDevicesI
         groups.append(current_group)
 
     return groups
+
+
+def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
+    """
+    Group workers by their GPU types.
+
+    Args:
+        workers: List of workers containing GPU devices
+
+    Returns:
+        Dictionary mapping GPU type to list of workers that with gpus of that type
+    """
+    gpu_type_to_workers: Dict[str, List[Worker]] = {}
+
+    for worker in workers:
+        if not worker.status or not worker.status.gpu_devices:
+            gpu_type_to_workers.setdefault(None, []).append(worker)
+            continue
+
+        # Collect unique GPU types for this worker
+        gpus: Dict[str, GPUDevicesInfo] = {}
+        for gpu in worker.status.gpu_devices:
+            gpus.setdefault(gpu.type, []).append(gpu)
+
+        # Add worker to each GPU type group
+        for gpu_type in gpus.keys():
+            w = worker.model_copy()
+            w.status.gpu_devices = gpus[gpu_type]
+            gpu_type_to_workers.setdefault(gpu_type, []).append(w)
+
+    return gpu_type_to_workers
 
 
 async def estimate_model_vram(model: Model, token: Optional[str] = None) -> int:
@@ -358,7 +401,10 @@ def get_local_model_weight_size(local_path: str) -> int:
 
 
 async def group_worker_gpu_by_memory(
-    engine: AsyncEngine, workers: List[Worker], ram_claim: int = 0
+    engine: AsyncEngine,
+    workers: List[Worker],
+    ram_claim: int = 0,
+    gpu_type: Optional[str] = None,
 ) -> List[List[WorkerGPUInfo]]:
     """
     Group GPU devices from multiple workers by allocatable memory size with the constraint
@@ -392,7 +438,7 @@ async def group_worker_gpu_by_memory(
             continue
 
         # Get allocatable resources for this worker
-        allocatable = await get_worker_allocatable_resource(engine, worker)
+        allocatable = await get_worker_allocatable_resource(engine, worker, gpu_type)
 
         if ram_not_enough(ram_claim, allocatable):
             continue
@@ -526,7 +572,7 @@ def sort_workers_by_gpu_count(workers: List[Worker]):
 
 
 def sort_gpu_indexes_by_allocatable_rate(
-    worker: Worker, allocatable: dict
+    worker: Worker, allocatable: dict, gpu_type: Optional[str] = None
 ) -> List[int]:
     """
     Sort GPU indexes of a worker by allocatable VRAM rate (allocatable_vram / total_vram), ascending.
@@ -534,7 +580,9 @@ def sort_gpu_indexes_by_allocatable_rate(
     allocatable_rate = {
         gpu.index: (
             allocatable.get(gpu.index, 0) / gpu.memory.total
-            if gpu.memory and gpu.memory.total
+            if gpu.memory
+            and gpu.memory.total
+            and (gpu_type is None or gpu.type == gpu_type)
             else 0
         )
         for gpu in worker.status.gpu_devices
@@ -544,11 +592,13 @@ def sort_gpu_indexes_by_allocatable_rate(
     return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx], reverse=True)
 
 
-async def sort_selected_workers_by_resource(
+async def sort_selected_workers_by_gpu_type_and_resource(
     workers: List[Worker],
-    selected_gpu_indexes_by_worker: Dict[str, List[int]],
-    get_worker_allocatable_resource: Callable[[Worker], Awaitable[Allocatable]],
-) -> List[Worker]:
+    selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[str, List[int]]],
+    get_worker_allocatable_resource: Callable[
+        [Worker, Optional[str]], Awaitable[Allocatable]
+    ],
+) -> Dict[str, List[Worker]]:
     """
     Filter and sort selected workers by their GPU resource availability.
 
@@ -556,36 +606,45 @@ async def sort_selected_workers_by_resource(
     then sorts their GPU devices by allocatable VRAM rate (ascending),
     and finally sorts the workers by the number of GPUs (descending).
     """
-    selected_workers = []
-    for worker in workers:
-        # Skip invalid
-        selected_gpu_indexes = selected_gpu_indexes_by_worker.get(worker.name)
-        if (
-            not worker.status
-            or not worker.status.gpu_devices
-            or not selected_gpu_indexes
-        ):
-            continue
+    selected_workers_by_gpu_type = {
+        gpu_type: [] for gpu_type in selected_gpu_indexes_by_gpu_type_and_worker.keys()
+    }
+    selected_gpu_types = list(selected_gpu_indexes_by_gpu_type_and_worker.keys())
+    for gpu_type in selected_gpu_types:
+        for worker in workers:
+            # Skip invalid
+            selected_gpu_indexes = selected_gpu_indexes_by_gpu_type_and_worker.get(
+                gpu_type, {}
+            ).get(worker.name)
+            if (
+                not worker.status
+                or not worker.status.gpu_devices
+                or not selected_gpu_indexes
+            ):
+                continue
 
-        # Sort selected GPUs by allocatable rate
-        allocatable = await get_worker_allocatable_resource(worker)
-        sorted_gpu_indexes = [
-            idx
-            for idx in sort_gpu_indexes_by_allocatable_rate(worker, allocatable.vram)
-            if idx in selected_gpu_indexes
-        ]
-        sorted_gpus = [
-            gpu
-            for idx in sorted_gpu_indexes
-            for gpu in worker.status.gpu_devices
-            if gpu.index == idx
-        ]
+            # Sort selected GPUs by allocatable rate
+            allocatable = await get_worker_allocatable_resource(worker, gpu_type)
+            sorted_gpu_indexes = [
+                idx
+                for idx in sort_gpu_indexes_by_allocatable_rate(
+                    worker, allocatable.vram
+                )
+                if idx in selected_gpu_indexes
+            ]
+            sorted_gpus = [
+                gpu
+                for idx in sorted_gpu_indexes
+                for gpu in worker.status.gpu_devices
+                if gpu.index == idx and (gpu_type is None or gpu.type == gpu_type)
+            ]
 
-        # Create a copy of the worker with sorted GPUs
-        w = worker.model_copy(deep=True)
-        w.status.gpu_devices = sorted_gpus
-        selected_workers.append(w)
+            # Create a copy of the worker with sorted GPUs
+            w = worker.model_copy(deep=True)
+            w.status.gpu_devices = sorted_gpus
+            selected_workers_by_gpu_type[gpu_type].append(w)
 
     # Sort workers by GPU count
-    sort_workers_by_gpu_count(selected_workers)
-    return selected_workers
+    for gpu_type in selected_workers_by_gpu_type:
+        sort_workers_by_gpu_count(selected_workers_by_gpu_type[gpu_type])
+    return selected_workers_by_gpu_type
