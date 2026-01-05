@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from typing import List, Optional, Dict, Tuple
 from transformers.utils import strtobool
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
@@ -10,6 +11,7 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
     EVENT_ACTION_AUTO_SINGLE_WORKER_MULTI_GPU,
     EVENT_ACTION_DEFAULT,
     EVENT_ACTION_MANUAL_MULTI,
+    ModelParameters,
     RequestEstimateUsage,
     ScheduleCandidatesSelector,
 )
@@ -21,6 +23,7 @@ from gpustack.policies.utils import (
     WorkerGPUInfo,
     estimate_model_vram,
     get_model_ram_claim,
+    group_workers_by_gpu_type,
     ram_not_enough,
     sort_workers_by_gpu_count,
     get_worker_allocatable_resource,
@@ -54,17 +57,17 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         self._vram_claim = 0
         self._ram_claim = 0
-        self._mem_fraction_static = 0
-        self._effective_vram = 0
         self._messages = []
         self._event_collector = EventCollector(self._model, logger)
+
+        self._param_mem_fraction_static = 0
+        self._mem_fraction_static_by_gpu_type = {}
 
         self._tp_size = 1
         self._pp_size = 1
         self._dp_size = 1
         self._chunked_prefill_size = None
         self._cuda_graph_max_bs = None
-        self._enable_dp_attention = None
 
         # for multi worker schedule
         self._largest_multi_gpu_vram: int = 0
@@ -77,15 +80,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         )
         self._set_gpu_count(world_size, strategies)
         self._validate_and_set_arguments()
-        # Just for calculate mem_fraction_static
-        self._max_pp_size = max(
-            self._pp_size, len(self._selected_gpu_indexes_by_worker)
-        )
-        self._select_tp_size = self._tp_size
-        # In manual mode, we need to consider the TP size if not set in backend param.
-        for v in self._selected_gpu_indexes_by_worker.values():
-            if len(v) > self._select_tp_size:
-                self._select_tp_size = len(v)
 
     @staticmethod
     def get_world_size_from_backend_parameters(
@@ -125,16 +119,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return None, None
 
-    def _set_mem_fraction_static(self):
-        """Set memory fraction static parameter for SGLang."""
-        # SGLang's argument `--mem-fraction-static`, it may
-        if self._model.backend_parameters:
-            mem_fraction_static = find_parameter(
-                self._model.backend_parameters, ["mem-fraction-static"]
-            )
-            if mem_fraction_static:
-                self._mem_fraction_static = float(mem_fraction_static)
-
     def _get_nnodes(self) -> int:
         if self._model.backend_parameters:
             nnodes_param = find_parameter(self._model.backend_parameters, ["nnodes"])
@@ -142,52 +126,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 return int(nnodes_param)
 
         return 1
-
-    def _get_max_tp_size(self) -> int:
-        cmp_list = [self._tp_size, self._select_tp_size]
-        if self._model.gpu_selector and self._model.gpu_selector.gpus_per_replica:
-            cmp_list.append(self._model.gpu_selector.gpus_per_replica)
-        return max(cmp_list)
-
-    async def _get_min_gpu_sum(self, workers: List[Worker]) -> int:
-        """
-        Get the min GPU memory of input workers
-        """
-        use_manual = self._model.gpu_selector is not None
-        totals: List[int] = []
-        for worker in workers:
-            if not worker.status or not worker.status.gpu_devices:
-                continue
-            # Pre-selected GPU indexes for this worker when manual selection is used
-            selected = (
-                self._selected_gpu_indexes_by_worker.get(worker.name)
-                if use_manual
-                else None
-            )
-            # If gpus_per_replica is set, choose top-N GPUs by allocatable VRAM
-            if use_manual and self._model.gpu_selector.gpus_per_replica:
-                allocatable = await get_worker_allocatable_resource(
-                    self._engine, worker
-                )
-                sorted_gpu_indexes = [
-                    idx
-                    for idx in sort_gpu_indexes_by_allocatable_rate(
-                        worker, allocatable.vram
-                    )
-                    if idx in selected
-                ]
-                sorted_gpu_indexes = sorted_gpu_indexes[
-                    : self._model.gpu_selector.gpus_per_replica
-                ]
-                selected = sorted_gpu_indexes
-
-            # Traverse GPUs for this worker and respect manual selection if present
-            for gpu in worker.status.gpu_devices:
-                if selected is not None and gpu.index not in selected:
-                    continue
-                total = gpu.memory.total if (gpu.memory and gpu.memory.total) else 0
-                totals.append(total)
-        return min(totals) if totals else 0
 
     def _validate_and_set_arguments(self):
         model = self._model
@@ -221,9 +159,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             )
             or 1
         )
-        self._speculative_algorithm = find_parameter(
-            model.backend_parameters, ["speculative-algorithm"]
-        )
+
         enable_mixed_chunk_param = find_parameter(
             model.backend_parameters, ["enable-mixed-chunk"]
         )
@@ -232,12 +168,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if enable_mixed_chunk_param is not None
             else False
         )
-        self._chunked_prefill_size = find_int_parameter(
-            self._model.backend_parameters, ["chunked-prefill-size"]
-        )
-        self._cuda_graph_max_bs = find_int_parameter(
-            self._model.backend_parameters, ["cuda-graph-max-bs"]
-        )
 
         nnodes = self._get_nnodes()
         if self._tp_size or self._pp_size:
@@ -245,36 +175,43 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if world_size % nnodes != 0:
                 raise ValueError(f"tp-size {world_size} must be divisible by nnodes")
 
+        _speculative_algorithm = find_parameter(
+            model.backend_parameters, ["speculative-algorithm"]
+        )
         if self._pp_size and int(self._pp_size) > 1:
-            if self._speculative_algorithm is not None or enable_mixed_chunk:
+            if _speculative_algorithm is not None or enable_mixed_chunk:
                 # We don't need to check overlap schedule. SGLang ignore this conflict and proceed.
                 # Ref: https://github.com/sgl-project/sglang/blob/64480ec7124b8c23d9560746ca20415bfaf97a8e/python/sglang/srt/server_args.py#L1548-L1553
                 raise ValueError(
                     "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
                 )
 
-        self._enable_dp_attention = find_bool_parameter(
+        _enable_dp_attention = find_bool_parameter(
             model.backend_parameters, ["enable-dp-attention"]
         )
         if self._dp_size and int(self._dp_size) > 1 and nnodes != 1:
-            if not self._enable_dp_attention:
+            if not _enable_dp_attention:
                 raise ValueError(
                     "multi-node data parallel is not supported unless dp attention!"
                 )
 
-        if self._speculative_algorithm is not None and enable_mixed_chunk:
+        if _speculative_algorithm is not None and enable_mixed_chunk:
             raise ValueError("enable_mixed_chunk is required for speculative decoding")
 
         if message := self._check_tp_size_divisibility(self._tp_size):
             raise ValueError(message + " Consider adjusting your tp-size value.")
 
-        self._set_mem_fraction_static()
+        mem_fraction_static = find_parameter(
+            self._model.backend_parameters, ["mem-fraction-static"]
+        )
+        if mem_fraction_static:
+            self._param_mem_fraction_static = float(mem_fraction_static)
 
-    def _cal_effective_vram(self) -> float:
+    def _cal_effective_vram(self, gpu_type: str) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
-        if self._mem_fraction_static == 0:
+        if self._mem_fraction_static_by_gpu_type.get(gpu_type) == 0:
             return self._vram_claim
-        return self._vram_claim / self._mem_fraction_static
+        return self._vram_claim / self._mem_fraction_static_by_gpu_type.get(gpu_type)
 
     def _set_messages(self):
         """Set scheduling messages for SGLang."""
@@ -317,12 +254,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement for SGLang.
         """
-        await self._cal_mem_fraction_static(workers)
+        await self.cal_mem_fraction_static(workers)
         self._vram_claim = await estimate_model_vram(
             self._model, self._config.huggingface_token
         )
         self._ram_claim = get_model_ram_claim(self._model)
-        self._effective_vram = self._cal_effective_vram()
+
         logger.info(
             f"Calculated SGLang resource claim for model {self._model.readable_source}, "
             f"VRAM claim: {self._vram_claim}, RAM claim: {self._ram_claim}"
@@ -332,11 +269,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM"
             f"{f' and {byte_to_gib(self._ram_claim)} GiB of RAM' if self._ram_claim > 0 else ''}."
         )
-        if self._mem_fraction_static != 0:
+        max_mem_fraction_static = max(self._mem_fraction_static_by_gpu_type.values())
+        if max_mem_fraction_static != 0:
             default_msg_list.append(
-                f"With --mem-fraction-static={self._mem_fraction_static}, "
-                f"all GPUs combined need to provide at least {byte_to_gib(int(self._vram_claim / self._mem_fraction_static))} GiB of total VRAM "
-                f"and each GPU needs {int(self._mem_fraction_static * 100)}% of allocatable VRAM."
+                f"With --mem-fraction-static={max_mem_fraction_static}, "
+                f"all GPUs combined need to provide at least {byte_to_gib(int(self._vram_claim / max_mem_fraction_static))} GiB of total VRAM "
+                f"and each GPU needs {int(max_mem_fraction_static * 100)}% of allocatable VRAM."
             )
         self._event_collector.add(
             EventLevelEnum.INFO,
@@ -373,6 +311,30 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._set_messages()
         return []
 
+    async def cal_mem_fraction_static(self, workers: List[Worker]):
+        """Calculate mem_fraction_static for SGLang for all type gpus."""
+        workers_by_gpu_type = group_workers_by_gpu_type(workers)
+        valid_gpu_types = (
+            set(self._selected_gpu_indexes_by_gpu_type_and_worker.keys())
+            if self._selected_gpu_indexes_by_gpu_type_and_worker
+            else set(workers_by_gpu_type.keys())
+        )
+        self._mem_fraction_static_by_gpu_type = {
+            gpu_type: (
+                self._param_mem_fraction_static
+                if self._param_mem_fraction_static > 0
+                else await MemFractionStaticCalculator(
+                    self._model,
+                    self._model_params,
+                    gpu_type,
+                    self._selected_gpu_indexes_by_gpu_type_and_worker,
+                    self._engine,
+                )._cal_mem_fraction_static(workers_of_type)
+            )
+            for gpu_type, workers_of_type in workers_by_gpu_type.items()
+            if gpu_type in valid_gpu_types
+        }
+
     def should_skip_candidate_func(self, candidate_func) -> bool:
         # Skip conditions for manual GPU selection.
         if (
@@ -405,7 +367,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             vram=self._vram_claim,
         )
         return await self._find_manual_gpu_selection_candidates(
-            workers, self._mem_fraction_static, request, self._event_collector
+            workers,
+            self._mem_fraction_static_by_gpu_type,
+            request,
+            self._event_collector,
         )
 
     async def find_single_worker_single_gpu_full_offloading_candidates(
@@ -419,29 +384,20 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             # Skip multi-GPU selection
             return []
 
-        if (
-            self._selected_gpu_worker_count > 1
-            and self._gpu_count
-            and self._gpu_count > 1
-        ):
-            # Skip multi-worker selection
-            return []
-
-        candidates = []
-
         # Auto selection only
-        for worker in workers:
-            worker_candidates = (
-                await self._find_single_worker_single_gpu_full_offloading_candidates(
-                    worker, None
+        candidates = []
+        workers_by_gpu_type = group_workers_by_gpu_type(workers)
+        for gpu_type, workers_of_type in workers_by_gpu_type.items():
+            for worker in workers_of_type:
+                worker_candidates = await self._find_single_worker_single_gpu_full_offloading_candidates(
+                    worker, gpu_type
                 )
-            )
-            candidates.extend(worker_candidates)
+                candidates.extend(worker_candidates)
 
         return candidates
 
     async def _find_single_worker_single_gpu_full_offloading_candidates(
-        self, worker: Worker, selected_gpu_index: Optional[int]
+        self, worker: Worker, gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Find single worker single gpu full offloading candidates for the model instance with worker.
@@ -450,7 +406,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         candidates = []
 
-        allocatable = await self._get_worker_allocatable_resource(worker)
+        allocatable = await self.get_worker_allocatable_resource(worker, gpu_type)
 
         if ram_not_enough(self._ram_claim, allocatable):
             return []
@@ -462,8 +418,6 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         largest_single_gpu_utilization = 0
 
         for _, gpu in enumerate(worker.status.gpu_devices):
-            if selected_gpu_index is not None and gpu.index != selected_gpu_index:
-                continue
             gpu_index = gpu.index
             allocatable_vram = allocatable.vram.get(gpu_index, 0)
             allocatable_gpu_utilization = allocatable_vram / gpu.memory.total
@@ -472,33 +426,40 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 largest_single_gpu_vram = allocatable_vram
                 largest_single_gpu_utilization = allocatable_gpu_utilization
             exceeds_vram = (
-                self._vram_claim > gpu.memory.total * self._mem_fraction_static
+                self._vram_claim
+                > gpu.memory.total * self._mem_fraction_static_by_gpu_type.get(gpu_type)
             )
             exceeds_memory_utilization = (
-                allocatable_gpu_utilization < self._mem_fraction_static
+                allocatable_gpu_utilization
+                < self._mem_fraction_static_by_gpu_type.get(gpu_type)
             )
             if exceeds_vram or exceeds_memory_utilization:
-                if selected_gpu_index is None:
-                    continue
+                continue
 
             vram_claim = await self._get_worker_resource_claim(
-                worker, [gpu_index], self._mem_fraction_static
+                worker,
+                [gpu_index],
+                self._mem_fraction_static_by_gpu_type.get(gpu_type),
+                gpu_type=gpu_type,
             )
             candidates.append(
                 ModelInstanceScheduleCandidate(
                     worker=worker,
+                    gpu_type=gpu.type,
                     gpu_indexes=[gpu_index],
                     computed_resource_claim=ComputedResourceClaim(
                         vram=vram_claim,
                         ram=get_computed_ram_claim(self._model, vram_claim),
-                        vram_utilization=self._mem_fraction_static,
+                        vram_utilization=self._mem_fraction_static_by_gpu_type.get(
+                            gpu_type
+                        ),
                     ),
                 )
             )
 
         if not candidates:
             event_msg = f"The current available GPU only has {byte_to_gib(largest_single_gpu_vram)} GiB allocatable VRAM."
-            if self._mem_fraction_static != 0:
+            if self._mem_fraction_static_by_gpu_type.get(gpu_type) != 0:
                 event_msg = (
                     event_msg.rstrip(".")
                     + f" ({(largest_single_gpu_utilization * 100):.2f}%)."
@@ -520,18 +481,20 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         """
         candidates = []
 
-        for worker in workers:
-            worker_candidates = (
-                await self._find_single_worker_multi_gpu_full_offloading_candidates(
-                    worker
+        workers_by_gpu_type = group_workers_by_gpu_type(workers)
+        for gpu_type, workers_of_type in workers_by_gpu_type.items():
+            for worker in workers_of_type:
+                worker_candidates = (
+                    await self._find_single_worker_multi_gpu_full_offloading_candidates(
+                        worker, gpu_type
+                    )
                 )
-            )
-            candidates.extend(worker_candidates)
+                candidates.extend(worker_candidates)
 
         return candidates
 
     async def _find_single_worker_multi_gpu_full_offloading_candidates(  # noqa: C901
-        self, worker: Worker
+        self, worker: Worker, gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """Find single worker multi GPU candidates for a specific worker."""
         if not worker.status.gpu_devices or len(worker.status.gpu_devices) < 2:
@@ -539,14 +502,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         # SGLang performs VRAM balancing checks. We group all GPUs based on available VRAM capacity
         gpu_group = await group_worker_gpu_by_memory(
-            self._engine, [worker], ram_claim=self._ram_claim
+            self._engine, [worker], ram_claim=self._ram_claim, gpu_type=gpu_type
         )
 
         for info in gpu_group:
             gpu_list = info
             if any(
                 gpu.allocatable_vram / gpu.gpu_device.memory.total
-                < self._mem_fraction_static
+                < self._mem_fraction_static_by_gpu_type.get(gpu_type)
                 for gpu in gpu_list
             ):
                 continue
@@ -560,7 +523,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 self._largest_multi_gpu_utilization_satisfied_count = len(gpu_list)
                 self._largest_multi_gpu_total = len(worker.status.gpu_devices)
 
-            if total_allocatable_vram < self._effective_vram:
+            if total_allocatable_vram < self._cal_effective_vram(gpu_type):
                 continue
 
             # Sort by vram in descending order
@@ -579,7 +542,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 gpu = gpu_device.gpu_device
                 gpu_indexes.append(gpu.index)
                 vram_claim[gpu.index] = int(
-                    gpu.memory.total * self._mem_fraction_static
+                    gpu.memory.total
+                    * self._mem_fraction_static_by_gpu_type.get(gpu_type)
                 )
                 gpu_sum += 1
                 vram_sum += vram_claim[gpu.index]
@@ -601,11 +565,14 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 return [
                     ModelInstanceScheduleCandidate(
                         worker=worker,
+                        gpu_type=gpu_type,
                         gpu_indexes=gpu_indexes,
                         computed_resource_claim=ComputedResourceClaim(
                             vram=vram_claim,
                             ram=get_computed_ram_claim(self._model, vram_claim),
-                            vram_utilization=self._mem_fraction_static,
+                            vram_utilization=self._mem_fraction_static_by_gpu_type.get(
+                                gpu_type
+                            ),
                         ),
                     )
                 ]
@@ -617,12 +584,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         if len(event_msg_list) == 0:
             event_msg = f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
-            if self._mem_fraction_static != 0:
+            if self._mem_fraction_static_by_gpu_type.get(gpu_type) != 0:
                 effective_vram = (
                     byte_to_gib(
                         int(
                             self._largest_multi_gpu_vram
-                            * self._mem_fraction_static
+                            * self._mem_fraction_static_by_gpu_type.get(gpu_type)
                             * self._largest_multi_gpu_utilization_satisfied_count
                             / self._largest_multi_gpu_total
                         )
@@ -645,7 +612,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         return []
 
     async def find_multi_worker_multi_gpu_candidates(
-        self, workers: List[Worker]
+        self, workers: List[Worker], gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Find multi worker multi GPU candidates for SGLang.
@@ -654,41 +621,54 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         candidates = []
 
-        gpu_group = await group_worker_gpu_by_memory(
-            self._engine, workers, ram_claim=self._ram_claim
-        )
-        for gpu_list in gpu_group:
-            if len(gpu_list) <= 1:
-                continue
-            if any(
-                gpu.allocatable_vram / gpu.gpu_device.memory.total
-                < self._mem_fraction_static
-                for gpu in gpu_list
-            ):
-                continue
+        workers_by_gpu_type = group_workers_by_gpu_type(workers)
+        for gpu_type, workers_of_type in workers_by_gpu_type.items():
+            gpu_group = await group_worker_gpu_by_memory(
+                self._engine,
+                workers_of_type,
+                ram_claim=self._ram_claim,
+                gpu_type=gpu_type,
+            )
 
-            worker_gpu_cnt = {}
-            for gpu_info in gpu_list:
-                if not worker_gpu_cnt.get(gpu_info.worker_id):
-                    worker_gpu_cnt[gpu_info.worker_id] = 0
-                worker_gpu_cnt[gpu_info.worker_id] += 1
-            first_cnt = 0
-            # workers must with the same number of GPUs
-            for gpu_cnt in worker_gpu_cnt.values():
+            for gpu_list in gpu_group:
+                if len(gpu_list) <= 1:
+                    continue
+                if any(
+                    gpu.allocatable_vram / gpu.gpu_device.memory.total
+                    < self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                    for gpu in gpu_list
+                ):
+                    continue
+
+                worker_gpu_cnt = {}
+                for gpu_info in gpu_list:
+                    if not worker_gpu_cnt.get(gpu_info.worker_id):
+                        worker_gpu_cnt[gpu_info.worker_id] = 0
+                    worker_gpu_cnt[gpu_info.worker_id] += 1
+                first_cnt = 0
+                # workers must with the same number of GPUs
+                for gpu_cnt in worker_gpu_cnt.values():
+                    if not first_cnt:
+                        first_cnt = gpu_cnt
+                    if first_cnt != gpu_cnt:
+                        first_cnt = 0
+                        break
                 if not first_cnt:
-                    first_cnt = gpu_cnt
-                if first_cnt != gpu_cnt:
-                    first_cnt = 0
-                    break
-            if not first_cnt:
-                continue
+                    continue
 
-            return await self.auto_select_multi_worker_multi_gpu_candidates(workers)
+                workers_candidates = (
+                    await self.auto_select_multi_worker_multi_gpu_candidates(
+                        workers_of_type, gpu_type
+                    )
+                )
+                if workers_candidates:
+                    candidates.extend(workers_candidates)
+                    break  # only need one group since gpu_list is sorted by vram in ascending order
 
         return candidates
 
     async def auto_select_multi_worker_multi_gpu_candidates(
-        self, workers: List[Worker]
+        self, workers: List[Worker], gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """Auto select multi worker multi GPU candidates for SGLang."""
         candidates = []
@@ -720,7 +700,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             gpu_sum = 0
             vram_sum = 0
             for worker in worker_group:
-                allocatable = await self._get_worker_allocatable_resource(worker)
+                allocatable = await self.get_worker_allocatable_resource(
+                    worker, gpu_type
+                )
 
                 if ram_not_enough(self._ram_claim, allocatable):
                     # The RAM resource(for extended KV cache) is required per worker.
@@ -729,14 +711,17 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
                 if any(
                     allocatable.vram.get(gpu.index, 0) / gpu.memory.total
-                    < self._mem_fraction_static
+                    < self._mem_fraction_static_by_gpu_type.get(gpu_type)
                     for gpu in worker.status.gpu_devices
                 ):
                     continue
                 selected_workers.append(worker)
                 gpu_sum += gpu_count
                 vram_sum += sum(
-                    int(gpu.memory.total * self._mem_fraction_static)
+                    int(
+                        gpu.memory.total
+                        * self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                    )
                     for gpu in worker.status.gpu_devices
                 )
 
@@ -748,7 +733,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                         _create_candidate(
                             self._model,
                             selected_workers,
-                            self._mem_fraction_static,
+                            self._mem_fraction_static_by_gpu_type.get(gpu_type),
                         )
                     ]
             if vram_sum > largest_vram:
@@ -784,23 +769,171 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
-    async def _cal_mem_fraction_static(self, workers: List[Worker]):  # noqa: C901
+
+def _create_candidate(
+    model: Model,
+    selected_workers: List[Worker],
+    mem_fraction_static: float = 0.9,
+) -> ModelInstanceScheduleCandidate:
+    """Create a candidate with SGLang-specific parameters and primary node confirmation."""
+    if not selected_workers:
+        raise ValueError("No workers provided for candidate creation")
+
+    # Primary worker is the first one (with most GPUs)
+    primary_worker = selected_workers[0]
+    subordinate_workers = []
+
+    # Calculate primary worker resources
+    primary_gpu_indexes = []
+    primary_vram_claim = {}
+    gpu_type = None
+
+    for gpu in primary_worker.status.gpu_devices:
+        primary_gpu_indexes.append(gpu.index)
+        primary_vram_claim[gpu.index] = int(gpu.memory.total * mem_fraction_static)
+        gpu_type = gpu.type
+
+    # Process subordinate workers if any
+    if len(selected_workers) > 1:
+        for worker in selected_workers[1:]:
+            gpu_indexes = []
+            vram_claim = {}
+
+            if worker.status.gpu_devices:
+                for gpu in worker.status.gpu_devices:
+                    gpu_indexes.append(gpu.index)
+                    vram_claim[gpu.index] = int(gpu.memory.total * mem_fraction_static)
+
+            subordinate_worker = ModelInstanceSubordinateWorker(
+                worker_id=worker.id,
+                worker_name=worker.name,
+                worker_ip=worker.ip,
+                worker_ifname=worker.ifname,
+                total_gpus=len(gpu_indexes),
+                gpu_type=gpu_type,
+                gpu_indexes=gpu_indexes,
+                computed_resource_claim=ComputedResourceClaim(
+                    vram=vram_claim,
+                    ram=get_computed_ram_claim(model, vram_claim),
+                    vram_utilization=mem_fraction_static,
+                ),
+            )
+            subordinate_workers.append(subordinate_worker)
+
+    computed_resource_claim = ComputedResourceClaim(
+        vram=primary_vram_claim,
+        ram=get_computed_ram_claim(model, primary_vram_claim),
+    )
+
+    return ModelInstanceScheduleCandidate(
+        worker=primary_worker,
+        gpu_type=gpu_type,
+        gpu_indexes=primary_gpu_indexes,
+        computed_resource_claim=computed_resource_claim,
+        subordinate_workers=subordinate_workers if subordinate_workers else None,
+    )
+
+
+class MemFractionStaticCalculator:
+    _model: Model
+    _gpu_type: Optional[str]
+    _chunked_prefill_size: Optional[int]
+    _cuda_graph_max_bs: Optional[int]
+    _enable_dp_attention: Optional[bool]
+    _speculative_algorithm: Optional[str]
+    _tp_size: int
+    _pp_size: int
+    _dp_size: int
+    _max_pp_size: int
+
+    # Model hyperparameters.
+    _model_params: ModelParameters
+    # Database engine.
+    _engine: AsyncEngine
+
+    _selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]] = {}
+
+    def __init__(
+        self,
+        model: Model,
+        model_params: ModelParameters,
+        gpu_type: str,
+        selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]],
+        engine: AsyncEngine,
+    ) -> None:
+        self._model = model
+        self._model_params = model_params
+        self._gpu_type = gpu_type
+        self._selected_gpu_indexes_by_gpu_type_and_worker = (
+            selected_gpu_indexes_by_gpu_type_and_worker
+        )
+        self._engine = engine
+
+        self._chunked_prefill_size = find_int_parameter(
+            self._model.backend_parameters, ["chunked-prefill-size"]
+        )
+        self._cuda_graph_max_bs = find_int_parameter(
+            self._model.backend_parameters, ["cuda-graph-max-bs"]
+        )
+        self._enable_dp_attention = find_bool_parameter(
+            model.backend_parameters, ["enable-dp-attention"]
+        )
+        self._speculative_algorithm = find_parameter(
+            model.backend_parameters, ["speculative-algorithm"]
+        )
+        self._tp_size = (
+            find_int_parameter(
+                model.backend_parameters, ["tp-size", "tensor-parallel-size"]
+            )
+            or 1
+        )
+        self._pp_size = (
+            find_int_parameter(
+                model.backend_parameters, ["pp-size", "pipeline-parallel-size"]
+            )
+            or 1
+        )
+        self._dp_size = (
+            find_int_parameter(
+                model.backend_parameters, ["dp-size", "data-parallel-size"]
+            )
+            or 1
+        )
+
+        self._max_pp_size = max(
+            self._pp_size,
+            len(
+                self._selected_gpu_indexes_by_gpu_type_and_worker.get(
+                    self._gpu_type, {}
+                )
+            ),
+        )
+
+        self._select_tp_size = max(
+            [self._tp_size]
+            + [
+                len(gpu_indexes)
+                for gpu_indexes in self._selected_gpu_indexes_by_gpu_type_and_worker.get(
+                    self._gpu_type, {}
+                ).values()
+            ]
+        )
+
+    async def _cal_mem_fraction_static(  # noqa: C901
+        self, workers: List[Worker]
+    ) -> float:
         """
         Adapted from sglang's server_args memory fraction logic.
         Logic of SGLang set default mem_fraction_static:
         https://github.com/sgl-project/sglang/blob/037c3982af4a996f41b38cacf59f0be24b8699f8/python/sglang/srt/server_args.py#L751-L919
         note: we largely maintained the same code structure and logic, except we removed some assignments unrelated to the calculation of mem_fraction_static.
         Args:
-            workers: List of workers used to determine GPU memory characteristics.
+            workers: List of workers used to determine GPU memory characteristics, the input workers should only contain same type GPUs.
         """
         if find_parameter(self._model.backend_parameters, ["mem-fraction-static"]):
             return
-        has_npu = any(
-            ((gpu.vendor or '').lower() == 'ascend')
-            or ((gpu.type or '').lower() == 'cann')
-            for w in workers
-            for gpu in ((w.status and w.status.gpu_devices) or [])
-        )
+
+        is_npu = self._is_npu(workers)
         gpu_mem_bytes = await self._get_min_gpu_sum(workers)
         gpu_mem = byte_to_mib(gpu_mem_bytes)
         # Step 1: Use the minimum GPU memory of all workers to calculate _chunked_prefill_size and _cuda_graph_max_bs.
@@ -812,7 +945,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                     self._chunked_prefill_size = 2048
                 if self._cuda_graph_max_bs is None:
                     self._cuda_graph_max_bs = 8
-            elif has_npu and gpu_mem < 32 * 1024:
+            elif is_npu and gpu_mem < 32 * 1024:
                 # Atlas A2B4
                 # (_chunked_prefill_size 32k, _cuda_graph_max_bs 16 if tp < 4 else 64)
                 if self._chunked_prefill_size is None:
@@ -845,7 +978,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                         self._cuda_graph_max_bs = 32
                     else:
                         self._cuda_graph_max_bs = 160
-            elif has_npu and gpu_mem < 64 * 1024:
+            elif is_npu and gpu_mem < 64 * 1024:
                 # Atlas A2 and Atlas A3
                 # (_chunked_prefill_size 32k, _cuda_graph_max_bs 64 if tp < 4 else 128)
                 if self._chunked_prefill_size is None:
@@ -927,12 +1060,15 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             self._model.backend_parameters, ["enable-piecewise-cuda-graph"]
         )
         if enable_piecewise_cuda_graph:
-            piecewise_cuda_graph_max_tokens = find_int_parameter(
-                self._model.backend_parameters, ["piecewise-cuda-graph-max-tokens"]
+            piecewise_cuda_graph_max_tokens = (
+                find_int_parameter(
+                    self._model.backend_parameters, ["piecewise-cuda-graph-max-tokens"]
+                )
+                or 0
             )
             reserved_mem += piecewise_cuda_graph_max_tokens // 4
 
-        self._mem_fraction_static = (
+        _mem_fraction_static = (
             round((gpu_mem - reserved_mem) / gpu_mem, 3)
             if gpu_mem is not None
             else 0.88
@@ -945,7 +1081,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         vision_config = getattr(model_config, "vision_config", None)
         if vision_config is not None:
             # roughly reduce the mem_fraction_static base on params of Vit
-            original_server_arg_mem_fraction = self._mem_fraction_static
+            original_server_arg_mem_fraction = _mem_fraction_static
             # a base mem_fraction_static factor for regular Vit
             base_mem_fraction_reduction_ratio = 0.95
 
@@ -977,66 +1113,69 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             final_overall_factor = (
                 base_mem_fraction_reduction_ratio * dynamic_adjustment_factor
             )
-            self._mem_fraction_static = round(
+
+            _mem_fraction_static = round(
                 original_server_arg_mem_fraction * final_overall_factor, 3
             )
 
+        return _mem_fraction_static
 
-def _create_candidate(
-    model: Model,
-    selected_workers: List[Worker],
-    mem_fraction_static: float = 0.9,
-) -> ModelInstanceScheduleCandidate:
-    """Create a candidate with SGLang-specific parameters and primary node confirmation."""
-    if not selected_workers:
-        raise ValueError("No workers provided for candidate creation")
+    def _is_npu(self, workers: List[Worker]) -> bool:
+        """
+        Check if the selected GPU type is NPU
+        """
+        is_npu = self._gpu_type == 'cann' or any(
+            ((gpu.vendor or '').lower() == 'ascend')
+            or ((gpu.type or '').lower() == 'cann')
+            for w in workers
+            for gpu in ((w.status and w.status.gpu_devices) or [])
+        )
+        return is_npu
 
-    # Primary worker is the first one (with most GPUs)
-    primary_worker = selected_workers[0]
-    subordinate_workers = []
+    async def _get_min_gpu_sum(self, workers: List[Worker]) -> int:
+        """
+        Get the min GPU memory of input workers
+        """
+        use_manual = self._model.gpu_selector is not None
+        totals: List[int] = []
+        for worker in workers:
+            if not worker.status or not worker.status.gpu_devices:
+                continue
 
-    # Calculate primary worker resources
-    primary_gpu_indexes = []
-    primary_vram_claim = {}
+            # If gpus_per_replica is set, choose top-N GPUs by allocatable VRAM
+            selected = None
+            if use_manual:
+                # Pre-selected GPU indexes for this worker when manual selection is used
+                selected = self._selected_gpu_indexes_by_gpu_type_and_worker.get(
+                    self._gpu_type, {}
+                ).get(worker.name)
 
-    for gpu in primary_worker.status.gpu_devices:
-        primary_gpu_indexes.append(gpu.index)
-        primary_vram_claim[gpu.index] = int(gpu.memory.total * mem_fraction_static)
+                if self._model.gpu_selector.gpus_per_replica:
+                    allocatable = await get_worker_allocatable_resource(
+                        self._engine, worker, self._gpu_type
+                    )
+                    sorted_gpu_indexes = [
+                        idx
+                        for idx in sort_gpu_indexes_by_allocatable_rate(
+                            worker, allocatable.vram, gpu_type=self._gpu_type
+                        )
+                        if idx in selected
+                    ]
 
-    # Process subordinate workers if any
-    if len(selected_workers) > 1:
-        for worker in selected_workers[1:]:
-            gpu_indexes = []
-            vram_claim = {}
+                    selected = sorted_gpu_indexes[
+                        : self._model.gpu_selector.gpus_per_replica
+                    ]
 
-            if worker.status.gpu_devices:
-                for gpu in worker.status.gpu_devices:
-                    gpu_indexes.append(gpu.index)
-                    vram_claim[gpu.index] = int(gpu.memory.total * mem_fraction_static)
+            # Traverse GPUs for this worker and respect manual selection if present
+            for gpu in worker.status.gpu_devices:
+                if selected is not None and gpu.index not in selected:
+                    continue
+                total = gpu.memory.total if (gpu.memory and gpu.memory.total) else 0
+                totals.append(total)
+        return min(totals) if totals else 0
 
-            subordinate_worker = ModelInstanceSubordinateWorker(
-                worker_id=worker.id,
-                worker_name=worker.name,
-                worker_ip=worker.ip,
-                worker_ifname=worker.ifname,
-                total_gpus=len(gpu_indexes),
-                gpu_indexes=gpu_indexes,
-                computed_resource_claim=ComputedResourceClaim(
-                    vram=vram_claim,
-                    ram=get_computed_ram_claim(model, vram_claim),
-                    vram_utilization=mem_fraction_static,
-                ),
-            )
-            subordinate_workers.append(subordinate_worker)
-
-    computed_resource_claim = ComputedResourceClaim(
-        vram=primary_vram_claim,
-        ram=get_computed_ram_claim(model, primary_vram_claim),
-    )
-
-    return ModelInstanceScheduleCandidate(
-        worker=primary_worker,
-        gpu_indexes=primary_gpu_indexes,
-        computed_resource_claim=computed_resource_claim,
-        subordinate_workers=subordinate_workers if subordinate_workers else None,
-    )
+    def _get_max_tp_size(self) -> int:
+        cmp_list = [self._tp_size, self._select_tp_size]
+        if self._model.gpu_selector and self._model.gpu_selector.gpus_per_replica:
+            cmp_list.append(self._model.gpu_selector.gpus_per_replica)
+        return max(cmp_list)
