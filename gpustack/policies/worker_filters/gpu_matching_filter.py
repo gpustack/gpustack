@@ -30,12 +30,18 @@ class GPUMatchingFilter(WorkerFilter):
         seleted_workers = gpu_ids_by_worker.keys()
 
         candidates = []
+        found_workers = []
         for worker in workers:
             if worker.name not in seleted_workers:
                 continue
 
             candidates.append(worker)
+            found_workers.append(worker.name)
 
-        return candidates, [
-            f"Matched {len(candidates)} {'worker' if len(candidates) == 1 else 'workers'} by gpu selector."
-        ]
+        msg = f"Matched {len(candidates)} {'worker' if len(candidates) == 1 else 'workers'} by gpu selector."
+
+        if len(found_workers) < len(seleted_workers):
+            missing_workers = set(seleted_workers) - set(found_workers)
+            msg += f" Missing workers: {', '.join(missing_workers)}."
+
+        return candidates, [msg]

@@ -342,6 +342,7 @@ class Scheduler:
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim
                 )
+                model_instance.gpu_type = candidate.gpu_type
                 model_instance.gpu_indexes = candidate.gpu_indexes
                 model_instance.gpu_addresses = candidate.gpu_addresses
                 model_instance.distributed_servers = DistributedServers(
@@ -378,6 +379,8 @@ async def find_candidate(
                 - The schedule candidate.
                 - A list of messages for the scheduling process.
     """
+
+    # Filter workers.
     filters = [
         ClusterFilter(model),
         GPUMatchingFilter(model),
@@ -392,6 +395,7 @@ async def find_candidate(
     if filter_messages:
         messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
 
+    # Initialize candidate selector.
     try:
         if is_gguf_model(model):
             candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
@@ -410,13 +414,17 @@ async def find_candidate(
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
+    # Select candidates.
     candidates = await candidates_selector.select_candidates(workers)
 
+    # Score candidates.
     placement_scorer = PlacementScorer(model)
     candidates = await placement_scorer.score(candidates)
 
+    # Pick the highest score candidate.
     candidate = pick_highest_score_candidate(candidates)
 
+    # Collect messages.
     if candidate is None and len(workers) > 0:
         resource_fit_messages = candidates_selector.get_messages() or [
             "No workers meet the resource requirements."
@@ -425,6 +433,7 @@ async def find_candidate(
     elif candidate and candidate.overcommit:
         messages.extend(candidates_selector.get_messages())
 
+    # Return the candidate and messages.
     return candidate, messages
 
 
