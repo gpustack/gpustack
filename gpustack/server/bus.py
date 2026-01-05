@@ -37,6 +37,9 @@ class Event:
         if self.data is None:
             return None
 
+        if self.type in [EventType.DELETED, EventType.CREATED]:
+            return None
+
         # SQLModel
         if hasattr(self.data, "id"):
             return getattr(self.data, "id")
