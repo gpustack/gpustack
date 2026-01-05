@@ -228,29 +228,36 @@ class Scheduler:
         Args:
             instance: ModelInstance to check.
         """
-
+        newly_created = (instance.updated_at - instance.created_at) < timedelta(
+            seconds=1
+        )
+        update_delta = datetime.now(timezone.utc) - instance.updated_at.replace(
+            tzinfo=timezone.utc
+        )
         return (
             (
+                # When enqueueing pending state model instances, handle two cases:
+                # 1. Newly created model instances (updated_at - created_at < 1 second),
+                #    which will be updated to ANALYZING in _evaluate.
+                # 2. Existing PENDING model instances periodically enqueued by the scheduler job.
+                #    In this case, update_delta is longer than 90s, as the scheduler runs every 180s.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.PENDING
+                and (newly_created or update_delta > timedelta(seconds=90))
             )
             or (
                 # Reschedule while it stays in anayzing state for too long,
                 # maybe the server is restarted.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.ANALYZING
-                and datetime.now(timezone.utc)
-                - instance.updated_at.replace(tzinfo=timezone.utc)
-                > timedelta(minutes=3)
+                and update_delta > timedelta(minutes=3)
             )
             or (
                 # Reschedule while it stays in scheduled state for too long,
                 # maybe the worker is down.
                 instance.worker_id is not None
                 and instance.state == ModelInstanceStateEnum.SCHEDULED
-                and datetime.now(timezone.utc)
-                - instance.updated_at.replace(tzinfo=timezone.utc)
-                > timedelta(minutes=3)
+                and update_delta > timedelta(minutes=3)
             )
         )
 
