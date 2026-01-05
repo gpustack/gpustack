@@ -450,6 +450,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
 
     backend: Optional[str] = None
     backend_version: Optional[str] = None
+    api_detected_backend_version: Optional[str] = None
 
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None
