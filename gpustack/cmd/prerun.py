@@ -88,9 +88,11 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
 
     # gpustack server/worker
     gateway_disabled = cfg.gateway_mode == GatewayModeEnum.disabled
+    enabled_tls = cfg.ssl_certfile is not None and cfg.ssl_keyfile is not None
     if is_server:
         ports[cfg.port] = gpustack_service_name
-        ports[cfg.tls_port] = gpustack_service_name
+        if enabled_tls:
+            ports[cfg.tls_port] = gpustack_service_name
         if not cfg.disable_metrics:
             ports[cfg.metrics_port] = gpustack_service_name
     if is_worker:
