@@ -4,7 +4,7 @@ from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker
 from gpustack.server.db import get_engine
-from gpustack.utils.gpu import parse_gpu_ids_by_worker
+from gpustack.utils.gpu import group_gpu_ids_by_worker
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +26,22 @@ class GPUMatchingFilter(WorkerFilter):
         ):
             return workers, []
 
-        gpu_ids_by_worker = parse_gpu_ids_by_worker(self._model.gpu_selector.gpu_ids)
+        gpu_ids_by_worker = group_gpu_ids_by_worker(self._model.gpu_selector.gpu_ids)
         seleted_workers = gpu_ids_by_worker.keys()
 
         candidates = []
+        found_workers = []
         for worker in workers:
             if worker.name not in seleted_workers:
                 continue
 
             candidates.append(worker)
+            found_workers.append(worker.name)
 
-        return candidates, [
-            f"Matched {len(candidates)} {'worker' if len(candidates) == 1 else 'workers'} by gpu selector."
-        ]
+        msg = f"Matched {len(candidates)} {'worker' if len(candidates) == 1 else 'workers'} by gpu selector."
+
+        if len(found_workers) < len(seleted_workers):
+            missing_workers = set(seleted_workers) - set(found_workers)
+            msg += f" Missing workers: {', '.join(missing_workers)}."
+
+        return candidates, [msg]

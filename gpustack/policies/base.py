@@ -23,6 +23,7 @@ class ModelInstanceScheduleCandidate:
     worker: Worker
     gpu_indexes: Optional[List[int]]
     computed_resource_claim: ComputedResourceClaim
+    gpu_type: Optional[str] = None
     gpu_addresses: Optional[List[str]] = None
     score: Optional[float] = None
     overcommit: Optional[bool] = None

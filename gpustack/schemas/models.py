@@ -342,6 +342,7 @@ class ModelInstanceSubordinateWorker(BaseModel):
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     total_gpus: Optional[int] = None
+    gpu_type: Optional[str] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
@@ -442,6 +443,7 @@ class ModelInstanceBase(SQLModel, ModelSource):
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
     )
+    gpu_type: Optional[str] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
 
