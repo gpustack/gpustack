@@ -228,7 +228,10 @@ async def list_backend_configs(  # noqa: C901
                     ]
                     if filtered_frameworks:
                         is_deprecated = False
-                        if runner_versions.get(version):
+                        if (
+                            runner_versions.get(version)
+                            and runner_versions[version].deprecated is not None
+                        ):
                             is_deprecated = runner_versions[version].deprecated
                         versions.append(
                             VersionListItem(
