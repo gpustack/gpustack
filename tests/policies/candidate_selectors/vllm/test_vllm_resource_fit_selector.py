@@ -524,6 +524,10 @@ async def test_select_candidates(
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),

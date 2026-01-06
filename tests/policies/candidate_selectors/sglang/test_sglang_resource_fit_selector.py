@@ -259,6 +259,10 @@ async def test_select_candidates(
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
@@ -322,6 +326,10 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
             return_value=[],
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
         patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
@@ -407,6 +415,10 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
             return_value=[],
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
         patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
@@ -496,6 +508,10 @@ async def test_manual_schedule_to_3_workers_4_gpus(
             return_value=[],
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
         patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers(),
@@ -650,6 +666,10 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
+        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
@@ -735,6 +755,10 @@ async def test_auto_schedule_embedding_models(config):
             return_value=[],
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=True,
+        ),
         patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
