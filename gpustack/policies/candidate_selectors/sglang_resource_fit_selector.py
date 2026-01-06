@@ -793,6 +793,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         Args:
             workers: List of workers used to determine GPU memory characteristics.
         """
+        if find_parameter(self._model.backend_parameters, ["mem-fraction-static"]):
+            return
         has_npu = any(
             ((gpu.vendor or '').lower() == 'ascend')
             or ((gpu.type or '').lower() == 'cann')
