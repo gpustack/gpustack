@@ -36,6 +36,7 @@ ACCESS_LOG_PATH="${HIGRESS_LOG_DIR}/access.log"
 createDir "${HIGRESS_LOG_DIR}"
 touch "${ACCESS_LOG_PATH}"
 sed -i -E "s;^accessLogFile: .+$;accessLogFile: ${ACCESS_LOG_PATH};" /etc/istio/config/mesh
+sed -i "1s;.*;${ACCESS_LOG_PATH};" /etc/logrotate.d/higress-logrotate
 
 # copied from higress-proxy-start.sh
 if [ -n "$LITE_METRICS" ]; then
