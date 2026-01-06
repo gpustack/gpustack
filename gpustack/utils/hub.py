@@ -447,11 +447,10 @@ def get_pretrained_config_with_fallback(model: Model, **kwargs):
     try:
         pretrained_config = get_pretrained_config(model, **kwargs)
     except Exception as e:
-        logger.debug(
-            "Fallback to load config.json after AutoConfig.from_pretrained failed"
-        )
-
         if model.backend_version is not None or isinstance(e, ImportError):
+            logger.debug(
+                "Fallback to load config.json after AutoConfig.from_pretrained failed"
+            )
             # Fallback:
             # AutoConfig.from_pretrained performs strict architecture validation and may fail in several cases, like:
             #   1. Models using custom or backend-specific architectures not recognized by the current Transformers version.
@@ -479,12 +478,21 @@ def get_pretrained_config_with_fallback(model: Model, **kwargs):
             except Exception as ce:
                 logger.warning(f"Fallback to load config.json failed: {ce}")
 
-        if (
-            pretrained_config is None
-            and CategoryEnum.LLM in model.categories
-            and (not model.env or not model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"))
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+            # In GPUStack model evaluation skipping mode, an empty config is acceptable.
+            return pretrained_config
+
+        if any(
+            cat in model.categories
+            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
         ):
-            # For LLM models: empty config is unacceptable → raise original error
+            # For image models, an empty config is acceptable.
+            return pretrained_config
+
+        if pretrained_config is None and (
+            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
+        ):
+            # LLM models or ValueError: empty config is NOT acceptable, raise error
             raise e
 
     return pretrained_config
