@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
+from transformers import PretrainedConfig
 
 from gpustack_runner import list_backend_runners
 from gpustack_runner.runner import BackendVersionedRunner
@@ -215,7 +216,7 @@ class InferenceServer(ABC):
             )
         return deployment_metadata
 
-    def _get_pretrained_config(self) -> Optional[Dict]:
+    def _get_pretrained_config(self) -> Optional[PretrainedConfig]:
         """
         Get the pretrained model configuration, if available.
 
@@ -264,8 +265,8 @@ class InferenceServer(ABC):
         """
         try:
             pretrained_config = self._get_pretrained_config()
-            if pretrained_config and "architectures" in pretrained_config:
-                return pretrained_config["architectures"]
+            if pretrained_config and hasattr(pretrained_config, "architectures"):
+                return pretrained_config.architectures
         except Exception as e:
             logger.error(f"Failed to derive model architecture: {e}")
 
@@ -843,10 +844,9 @@ $@
                     self._model.id, ModelUpdate(**self._model.model_dump())
                 )
             if not self._model_instance.backend_version:
-                patch_dict = {
-                    "backend_version": service_version,
-                }
-                self._update_model_instance(self._model_instance.id, patch_dict)
+                self._update_model_instance(
+                    self._model_instance.id, backend_version=service_version
+                )
         except Exception as e:
             logger.error(
                 f"Failed to update model service version {service_version}: {e}"
