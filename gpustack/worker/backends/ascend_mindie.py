@@ -1482,6 +1482,12 @@ class AscendMindIEServer(InferenceServer):
         # Indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
 
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         command_script = self._get_serving_command_script(env)
 
         command_args = self.build_versioned_command_args(
@@ -1492,6 +1498,7 @@ class AscendMindIEServer(InferenceServer):
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -1502,6 +1509,7 @@ class AscendMindIEServer(InferenceServer):
     def _create_workload(
         self,
         deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
@@ -1512,6 +1520,12 @@ class AscendMindIEServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
+        # Command script will override the given command,
+        # so we need to prepend command to command args.
+        if command_script and command:
+            command_args = command + command_args
+            command = None
+
         resources = self._get_configured_resources(
             mount_all_devices=deployment_metadata.distributed,
         )
@@ -1520,13 +1534,6 @@ class AscendMindIEServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
-        # Get container entrypoint from inference backend configuration
-        container_entrypoint = None
-        if self.inference_backend:
-            container_entrypoint = self.inference_backend.get_container_entrypoint(
-                self._model.backend_version
-            )
-
         run_container = Container(
             image=image,
             name="default",
@@ -1534,7 +1541,7 @@ class AscendMindIEServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
-                command=container_entrypoint,
+                command=command,
                 command_script=command_script,
                 args=command_args,
                 working_dir=working_dir,
@@ -1557,7 +1564,7 @@ class AscendMindIEServer(InferenceServer):
         )
         logger.info(
             f"With image: {image}, "
-            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
+            f"command: [{' '.join(command) if command else ''}], "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -1570,7 +1577,6 @@ class AscendMindIEServer(InferenceServer):
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
-
         create_workload(self._transform_workload_plan(workload_plan))
 
         logger.info(
