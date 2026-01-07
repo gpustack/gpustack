@@ -130,10 +130,18 @@ class VLLMServer(InferenceServer):
 
         # Adjust run container for distributed follower.
         if deployment_metadata.distributed_follower:
-            ray_command_args, ray_ports = self._build_ray_configuration(
+            ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=False,
             )
 
+            # Command script will override the given command,
+            # so we need to prepend command to command args.
+            if command_script:
+                ray_command_args = ray_command + ray_command_args
+                ray_command = None
+
+            run_container.execution.command = ray_command
+            # run_container.execution.command_script = command_script # already set
             run_container.execution.args = ray_command_args
             run_container.ports = ray_ports
 
@@ -147,9 +155,15 @@ class VLLMServer(InferenceServer):
                 ),
             )
 
-            ray_command_args, ray_ports = self._build_ray_configuration(
+            ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=True,
             )
+
+            # Command script will override the given command,
+            # so we need to prepend command to command args.
+            if command_script:
+                ray_command_args = ray_command + ray_command_args
+                ray_command = None
 
             sidecar_container = Container(
                 image=image,
@@ -158,6 +172,8 @@ class VLLMServer(InferenceServer):
                 restart_policy=ContainerRestartPolicyEnum.NEVER,
                 execution=ContainerExecution(
                     privileged=True,
+                    command=ray_command,
+                    command_script=command_script,
                     args=ray_command_args,
                 ),
                 envs=run_container.envs,
@@ -441,7 +457,7 @@ class VLLMServer(InferenceServer):
     def _build_ray_configuration(
         self,
         is_leader: bool,
-    ) -> (List[str], Optional[List[ContainerPort]]):
+    ) -> (List[str], List[str], Optional[List[ContainerPort]]):
         # Parse the Ray port range from configuration,
         # assign ports in order as below:
         # 1.  GCS server port (the first port of the range)
@@ -471,9 +487,11 @@ class VLLMServer(InferenceServer):
         worker_port_min = start + 10
         worker_port_max = end
 
-        arguments = [
+        command = [
             "ray",
             "start",
+        ]
+        arguments = [
             "--block",
             "--disable-usage-stats",
             "--verbose",
@@ -527,7 +545,7 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
-        return arguments, ports
+        return command, arguments, ports
 
 
 def get_auto_parallelism_arguments(
