@@ -1,7 +1,7 @@
 import logging
 import os
 import shlex
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from gpustack.schemas.models import ModelInstanceDeploymentMetadata
 from gpustack.utils.envs import sanitize_env
@@ -53,22 +53,17 @@ class CustomServer(InferenceServer):
 
         env = self._get_configured_env()
 
-        command_args = []
-        command = self.inference_backend.replace_command_param(
-            version=self._model.backend_version,
-            model_path=self._model_path,
-            port=self._get_serving_port(),
-            worker_ip=self._worker.ip,
-            model_name=self._model.name,
-            command=self._model.run_command,
-        )
-        if command:
-            command_args.extend(shlex.split(command))
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
 
-        command_args.extend(self._flatten_backend_param())
+        command_args = self._build_command_args()
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
+            command=command,
             command_args=command_args,
             env=env,
         )
@@ -76,6 +71,7 @@ class CustomServer(InferenceServer):
     def _create_workload(
         self,
         deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_args: List[str],
         env: Dict[str, str],
     ):
@@ -89,13 +85,6 @@ class CustomServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
-        # Get container entrypoint from inference backend configuration
-        container_entrypoint = None
-        if self.inference_backend:
-            container_entrypoint = self.inference_backend.get_container_entrypoint(
-                self._model.backend_version
-            )
-
         run_container = Container(
             image=image,
             name="default",
@@ -103,7 +92,7 @@ class CustomServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
-                command=container_entrypoint,
+                command=command,
                 args=command_args,
             ),
             envs=[
@@ -123,7 +112,7 @@ class CustomServer(InferenceServer):
         )
         logger.info(
             f"With image: {image}, "
-            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
+            f"command: [{' '.join(command) if command else ''}], "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -141,3 +130,22 @@ class CustomServer(InferenceServer):
         logger.info(
             f"Created custom backend container workload: {deployment_metadata.name}"
         )
+
+    def _build_command_args(self) -> List[str]:
+        command_args = []
+
+        command_args_inline = self.inference_backend.replace_command_param(
+            version=self._model.backend_version,
+            model_path=self._model_path,
+            port=self._get_serving_port(),
+            worker_ip=self._worker.ip,
+            model_name=self._model.name,
+            command=self._model.run_command,
+        )
+        if command_args_inline:
+            command_args = shlex.split(command_args_inline)
+
+        # Add user-defined backend parameters
+        command_args.extend(self._flatten_backend_param())
+
+        return command_args
