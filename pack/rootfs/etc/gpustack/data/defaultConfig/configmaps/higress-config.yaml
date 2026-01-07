@@ -23,7 +23,7 @@ data:
         initialConnectionWindowSize: 1048576
         initialStreamWindowSize: 65535
         maxConcurrentStreams: 100
-      idleTimeout: 180
+      idleTimeout: 1800
       maxRequestHeadersKb: 60
       routeTimeout: 0
     upstream:
