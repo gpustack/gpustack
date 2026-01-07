@@ -464,7 +464,7 @@ class VLLMServer(InferenceServer):
         # Parse the Ray port range from configuration,
         # assign ports in order as below:
         # 1.  GCS server port (the first port of the range)
-        # 2.  Client port
+        # 2.  Client port (reserved for compatibility, not used anymore, see https://github.com/gpustack/gpustack/issues/4171)
         # 3.  Dashboard port
         # 4.  Dashboard gRPC port (no longer used, since Ray 2.45.0 kept for backward compatibility)
         # 5.  Dashboard agent gRPC port
@@ -478,7 +478,7 @@ class VLLMServer(InferenceServer):
 
         start, end = network.parse_port_range(self._config.ray_port_range)
         gcs_server_port = start
-        client_port = start + 1
+        # client_port = start + 1
         dashboard_port = start + 2
         dashboard_grpc_port = start + 3
         dashboard_agent_grpc_port = start + 4
@@ -528,7 +528,6 @@ class VLLMServer(InferenceServer):
                 [
                     "--head",
                     f"--port={gcs_server_port}",
-                    f"--ray-client-server-port={client_port}",
                     f"--dashboard-host={self._worker.ip}",
                     f"--dashboard-port={dashboard_port}",
                 ]
@@ -538,7 +537,7 @@ class VLLMServer(InferenceServer):
                     ContainerPort(
                         internal=port,
                     )
-                    for port in [gcs_server_port, client_port, dashboard_port]
+                    for port in [gcs_server_port, dashboard_port]
                 ]
             )
         else:
