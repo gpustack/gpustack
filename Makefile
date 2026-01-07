@@ -52,6 +52,8 @@ help:
 	#
 	#   * [dev] `make serve-docs`, serve docs, not supported on Windows.
 	#
+	#   * [ci]  `make package`, build container images, not supported on Windows.
+	#
 	#   * [ci]  `make ci`, execute `make install`, `make deps`, `make lint`, `make test`, `make build`.
 	#
 	@echo
