@@ -62,6 +62,7 @@ dependencies = [
     "kubernetes>=33.1.0",
     "kubernetes-asyncio>=33.1.0",
     "msgpack>=1.1.2",
+    "cachetools>=6.0.0",
     "gpustack-runner>=0.1.23.post4",
     "gpustack-runtime==0.1.39.post2",
 ]
