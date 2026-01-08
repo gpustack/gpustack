@@ -338,7 +338,7 @@ class SGLangServer(InferenceServer):
             and self._model_instance.computed_resource_claim.vram_utilization
         ):
             input_utilization = find_parameter(
-                self._model.backend_parameters, ["mem_fraction_static"]
+                self._model.backend_parameters, ["mem-fraction-static"]
             )
             if not input_utilization:
                 arguments.extend(
