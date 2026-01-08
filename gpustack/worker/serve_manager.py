@@ -715,13 +715,16 @@ class ServeManager:
             **kwargs: The fields to update, group by field name and value.
         """
 
-        m_public = self._clientset.models.get(id=id)
+        try:
+            m_public = self._clientset.models.get(id=id)
 
-        m = ModelUpdate(**m_public.model_dump())
-        for key, value in kwargs.items():
-            set_attr(m, key, value)
+            m = ModelUpdate(**m_public.model_dump())
+            for key, value in kwargs.items():
+                set_attr(m, key, value)
 
-        self._clientset.models.update(id=id, model_update=m)
+            self._clientset.models.update(id=id, model_update=m)
+        except NotFoundException:
+            logger.warning(f"Model with ID {id} not found when trying to update.")
 
     def _update_model_instance(self, id: int, **kwargs):
         """
@@ -732,13 +735,18 @@ class ServeManager:
             **kwargs: The fields to update, group by field name and value.
         """
 
-        mi_public = self._clientset.model_instances.get(id=id)
+        try:
+            mi_public = self._clientset.model_instances.get(id=id)
 
-        mi = ModelInstanceUpdate(**mi_public.model_dump())
-        for key, value in kwargs.items():
-            set_attr(mi, key, value)
+            mi = ModelInstanceUpdate(**mi_public.model_dump())
+            for key, value in kwargs.items():
+                set_attr(mi, key, value)
 
-        self._clientset.model_instances.update(id=id, model_update=mi)
+            self._clientset.model_instances.update(id=id, model_update=mi)
+        except NotFoundException:
+            logger.warning(
+                f"Model instance with ID {id} not found when trying to update."
+            )
 
     def _stop_model_instance(self, mi: ModelInstance):
         """
