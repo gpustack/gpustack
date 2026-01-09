@@ -295,12 +295,9 @@ class SGLangServer(InferenceServer):
             self._model.backend_parameters,
             ["context-length"],
         )
-        if (
-            specified_max_model_len is None
-            and derived_max_model_len
-            and derived_max_model_len > 8192
-        ):
-            arguments.extend(["--context-length", "8192"])
+        if specified_max_model_len is None and derived_max_model_len:
+            # max_len was calculated during deployment, we don't need to limit it under 8192 anymore
+            arguments.extend(["--context-length", str(derived_max_model_len)])
 
         # Add auto parallelism arguments if needed
         auto_parallelism_arguments = get_auto_parallelism_arguments(

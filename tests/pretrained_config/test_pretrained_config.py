@@ -18,5 +18,30 @@ def test_get_max_model_len():
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         pretrained_or_hf_text_config = get_hf_text_config(config)
         assert (
-            get_max_model_len(pretrained_or_hf_text_config) == expected_max_model_len
+            get_max_model_len(pretrained_or_hf_text_config).scaled
+            == expected_max_model_len
         ), f"max_model_len mismatch for {model_name}"
+
+
+def test_get_max_model_len_returns_native_and_scaled():
+    class DummyConfig:
+        max_position_embeddings = 4096
+        rope_scaling = {
+            "type": "yarn",
+            "original_max_position_embeddings": 2048,
+            "factor": 8,
+        }
+
+    lengths = get_max_model_len(DummyConfig())
+    assert lengths.native == 2048
+    assert lengths.scaled == 16384
+
+
+def test_get_max_model_len_llama3_no_scaling():
+    class DummyConfig:
+        max_position_embeddings = 8192
+        rope_scaling = {"type": "llama3", "factor": 8}
+
+    lengths = get_max_model_len(DummyConfig())
+    assert lengths.native == 8192
+    assert lengths.scaled == 8192
