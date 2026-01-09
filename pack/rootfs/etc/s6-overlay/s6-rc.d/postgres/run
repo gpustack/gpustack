@@ -18,7 +18,7 @@ PASS_FILE="${DATA_DIR}/postgres_root_pass"
 # Ensure data directory
 if [ ! -d "$PGDATA" ]; then
 	echo "[INFO] Creating Postgres data directory at $PGDATA."
-	mkdir -p "$PGDATA" \
+	createDir "$PGDATA" \
 		&& chown -R postgres:postgres "$PGDATA" \
 		&& chmod 0700 "$PGDATA"
 fi
@@ -26,7 +26,7 @@ fi
 # Ensure log directory
 if [ ! -d "$PGLOG" ]; then
 	echo "[INFO] Creating Postgres log directory at $PGLOG."
-	mkdir -p "$PGLOG" \
+	createDir "$PGLOG" \
 		&& chown -R postgres:postgres "$PGLOG" \
 		&& chmod 0755 "$PGLOG"
 fi

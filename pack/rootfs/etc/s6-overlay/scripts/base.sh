@@ -23,6 +23,7 @@ function readinessCheck() {
 
 function createDir() {
     mkdir -p "$1"
+    chmod 755 "$1"
 }
 
 function waitForConfig() {
