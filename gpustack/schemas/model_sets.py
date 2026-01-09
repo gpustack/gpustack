@@ -1,4 +1,5 @@
 from datetime import date
+from enum import Enum
 from typing import List, Optional, Union
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -32,6 +33,11 @@ class ModelSpec(ModelSpecBase):
     gpu_filters: Optional[GPUFilters] = None
 
 
+class SizeUnit(str, Enum):
+    MILLION = "M"
+    BILLION = "B"
+
+
 class ModelSetBase(BaseModel):
     name: str
     id: Optional[int] = None
@@ -43,6 +49,7 @@ class ModelSetBase(BaseModel):
     capabilities: Optional[List[str]] = None
     size: Optional[float] = None
     activated_size: Optional[float] = None
+    size_unit: Optional[SizeUnit] = None
     licenses: Optional[List[str]] = None
     release_date: Optional[date] = None
 
