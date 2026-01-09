@@ -64,7 +64,7 @@ dependencies = [
     "msgpack>=1.1.2",
     "cachetools>=6.0.0",
     "gpustack-runner==0.1.22.post6",
-    "gpustack-runtime==0.1.38.post3",
+    "gpustack-runtime==0.1.38.post4",
 ]
 
 [dependency-groups]
