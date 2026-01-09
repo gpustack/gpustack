@@ -9,6 +9,7 @@ from gpustack.schemas.inference_backend import (
 )
 from gpustack.server.db import get_engine
 from gpustack_runner import list_service_runners
+from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlmodel import select
@@ -52,6 +53,24 @@ class BackendFrameworkFilter(WorkerFilter):
         if not query_conditions:
             query_conditions.add(("cpu", None, self.model.backend_version, None))
         return list(query_conditions)
+
+    async def _has_lower_runners(self, **kwargs) -> bool:
+        backend_version = kwargs.get("backend_version")
+        if backend_version:
+            kwargs.pop("backend_version")
+        # Since backend versions are backward compatible,
+        # if an exact version match cannot be found, we can try to see if a lower version is available.
+        runners_list = list_service_runners(**kwargs)
+        for runner in runners_list:
+            if not runner.versions or len(runner.versions) == 0:
+                continue
+            try:
+                runner_version = runner.versions[0].backends[0].versions[0].version
+                if compare_versions(runner_version, backend_version) <= 0:
+                    return True
+            except Exception:
+                pass
+        return False
 
     async def _has_supported_runners(
         self,
@@ -121,6 +140,8 @@ class BackendFrameworkFilter(WorkerFilter):
         runners_list = list_service_runners(**kwargs)
         if runners_list and len(runners_list) > 0:
             return True
+
+        await self._has_lower_runners(**kwargs)
 
         return False
 
