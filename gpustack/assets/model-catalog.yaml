@@ -753,6 +753,120 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
+- name: BGE-M3
+  description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  size: 567
+  size_unit: M
+  licenses:
+    - mit
+  release_date: "2024-01-28"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-m3
+      categories:
+        - embedding
+      backend: vLLM
+- name: BGE-Large-ZH-V1.5
+  description: BGE is short for BAAI general embedding. This is a Chinese text embedding model with more reasonable similarity distribution.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/512
+  size: 335
+  size_unit: M
+  licenses:
+    - mit
+  release_date: "2023-09-12"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-large-zh-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+- name: BGE-Large-EN-V1.5
+  description: BGE is short for BAAI general embedding. This is an English text embedding model with more reasonable similarity distribution.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/512
+  size: 335
+  size_unit: M
+  licenses:
+    - mit
+  release_date: "2023-09-12"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-large-en-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+- name: Nomic-Embed-Text-V1.5
+  description: Nomic-embed-text is a large context length text encoder that surpasses OpenAI text-embedding-ada-002 and text-embedding-3-small performance on short and long context tasks.
+  home: https://nomic.ai
+  icon: /static/catalog_icons/nomic.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/768
+    - max_tokens/8192
+  size: 137
+  size_unit: M
+  licenses:
+    - apache-2.0
+  release_date: "2024-02-14"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: nomic-ai/nomic-embed-text-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+- name: Jina-Embeddings-V3
+  description: jina-embeddings-v3 is a multilingual multi-task text embedding model designed for a variety of NLP applications. Based on the Jina-XLM-RoBERTa architecture, this model supports Rotary Position Embeddings to handle long input sequences up to 8192 tokens.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  size: 570
+  size_unit: M
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2024-09-18"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: jinaai/jina-embeddings-v3
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
 # Reranker models
 - name: Qwen3-Reranker-0.6B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -822,6 +936,25 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: BGE-Reranker-V2-M3
+  description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - reranker
+  size: 568
+  size_unit: M
+  licenses:
+    - apache-2.0
+  release_date: "2024-03-19"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-reranker-v2-m3
+      categories:
+        - reranker
+      backend: vLLM
 # Image models
 - name: FLUX.1-dev
   description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
