@@ -654,5 +654,46 @@ async def test_cpu_worker_with_built_in_cpu_support():
                 assert len(messages) == 0
 
 
+@pytest.mark.asyncio
+async def test_cuda_version_incompatibility():
+    """
+    Test 14: Worker with CUDA 12.4 should be filtered out when runner only supports CUDA 12.8.
+    """
+    model = create_model(backend="vLLM", backend_version="0.13.0")
+
+    # Create a worker with CUDA 12.4 runtime
+    worker = linux_nvidia_4_4080_16gx4()
+    if worker.status and worker.status.gpu_devices:
+        for gpu in worker.status.gpu_devices:
+            gpu.runtime_version = "12.4"
+
+    workers = [worker]
+
+    filter_instance = BackendFrameworkFilter(model)
+
+    async def mock_session_exec(statement):
+        # Return None for backend (no version configs in database)
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        return mock_result
+
+    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
+        ) as mock_async_session:
+            mock_session = AsyncMock()
+            mock_session.exec = mock_session_exec
+            mock_async_session.return_value.__aenter__.return_value = mock_session
+
+            filtered_workers, messages = await filter_instance.filter(workers)
+
+            # Worker should be filtered out because available runners don't support CUDA 12.4
+            # (real list_service_runners will return runners with 12.4 and 12.8,
+            # but 12.8 > 12.4 means no backward compatible runner)
+            assert len(filtered_workers) == 0
+            assert len(messages) == 1
+            assert "host-4-4080" in messages[0]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
