@@ -56,6 +56,7 @@ class ModelStateFilterEnum(str, Enum):
     READY = "ready"
     NOT_READY = "not_ready"
     STOPPED = "stopped"
+    NOT_STOPPED = "not_stopped"
 
 
 @router.get("", response_model=ModelsPublic)
@@ -130,6 +131,8 @@ async def _get_models(
         )
     elif state == ModelStateFilterEnum.STOPPED:
         extra_conditions.append(target_class.replicas == 0)
+    elif state == ModelStateFilterEnum.NOT_STOPPED:
+        extra_conditions.append(target_class.replicas > 0)
 
     order_by = params.order_by
     if order_by:
