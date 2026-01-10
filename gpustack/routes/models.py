@@ -70,6 +70,7 @@ async def get_models(
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
+    backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
     return await _get_models(
         engine=engine,
@@ -79,6 +80,7 @@ async def get_models(
         search=search,
         categories=categories,
         cluster_id=cluster_id,
+        backend=backend,
     )
 
 
@@ -90,6 +92,7 @@ async def _get_models(
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
+    backend: Optional[str] = None,
     target_class: Union[Model, MyModel] = Model,
     user_id: Optional[int] = None,
 ):
@@ -100,6 +103,9 @@ async def _get_models(
     fields = {}
     if cluster_id:
         fields["cluster_id"] = cluster_id
+
+    if backend:
+        fields["backend"] = backend
 
     if user_id:
         fields["user_id"] = user_id
@@ -544,6 +550,7 @@ async def get_my_models(
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
+    backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
     user_id = None
     target_class = Model
@@ -559,6 +566,7 @@ async def get_my_models(
         search=search,
         categories=categories,
         cluster_id=cluster_id,
+        backend=backend,
         target_class=target_class,
         user_id=user_id,
     )
