@@ -16,7 +16,7 @@ function download_deps() {
     pip install uv
   fi
   # uv sync --all-extras to install all dependencies
-  uv sync
+  uv sync --locked
   if [[ "${DEPS_ONLY:-false}" == "false" ]]; then
     uv pip install pre-commit==3.7.1
     uv run pre-commit install
