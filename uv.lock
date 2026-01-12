@@ -7,6 +7,9 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[options]
+prerelease-mode = "allow"
+
 [[package]]
 name = "absl-py"
 version = "2.1.0"
@@ -2008,8 +2011,8 @@ requires-dist = [
     { name = "importlib-resources", specifier = ">=6.4.0" },
     { name = "inflection", specifier = ">=0.5.1" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "kubernetes", specifier = ">=33.1.0" },
-    { name = "kubernetes-asyncio", specifier = ">=33.1.0" },
+    { name = "kubernetes", specifier = ">=33.1.0,<34.0.0" },
+    { name = "kubernetes-asyncio", specifier = ">=33.1.0,<34.0.0" },
     { name = "lxml", specifier = "==5.2.1" },
     { name = "mistral-common", extras = ["opencv"], marker = "extra == 'all'", specifier = ">=1.4.3" },
     { name = "mistral-common", extras = ["opencv"], marker = "extra == 'vllm'", specifier = ">=1.4.3" },
@@ -2794,12 +2797,13 @@ wheels = [
 
 [[package]]
 name = "kubernetes"
-version = "34.1.0"
+version = "33.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
     { name = "durationpy" },
     { name = "google-auth" },
+    { name = "oauthlib" },
     { name = "python-dateutil" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -2808,9 +2812,9 @@ dependencies = [
     { name = "urllib3" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/55/3f880ef65f559cbed44a9aa20d3bdbc219a2c3a3bac4a30a513029b03ee9/kubernetes-34.1.0.tar.gz", hash = "sha256:8fe8edb0b5d290a2f3ac06596b23f87c658977d46b5f8df9d0f4ea83d0003912", size = 1083771, upload-time = "2025-09-29T20:23:49.283Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ae/52/19ebe8004c243fdfa78268a96727c71e08f00ff6fe69a301d0b7fcbce3c2/kubernetes-33.1.0.tar.gz", hash = "sha256:f64d829843a54c251061a8e7a14523b521f2dc5c896cf6d65ccf348648a88993", size = 1036779, upload-time = "2025-06-09T21:57:58.521Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/ec/65f7d563aa4a62dd58777e8f6aa882f15db53b14eb29aba0c28a20f7eb26/kubernetes-34.1.0-py2.py3-none-any.whl", hash = "sha256:bffba2272534e224e6a7a74d582deb0b545b7c9879d2cd9e4aae9481d1f2cc2a", size = 2008380, upload-time = "2025-09-29T20:23:47.684Z" },
+    { url = "https://files.pythonhosted.org/packages/89/43/d9bebfc3db7dea6ec80df5cb2aad8d274dd18ec2edd6c4f21f32c237cbbb/kubernetes-33.1.0-py2.py3-none-any.whl", hash = "sha256:544de42b24b64287f7e0aa9513c93cb503f7f40eea39b20f66810011a86eabc5", size = 1941335, upload-time = "2025-06-09T21:57:56.327Z" },
 ]
 
 [[package]]
