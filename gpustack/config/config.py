@@ -788,7 +788,7 @@ def get_image_name(
         return image_name_override
     version = __version__
     if version.removeprefix("v") == "0.0.0":
-        version = "main"
+        version = "dev"
     prefix = f"{registry}/" if registry else ""
     return f"{prefix}{image_repo}:{version}"
 
