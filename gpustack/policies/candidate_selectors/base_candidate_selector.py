@@ -17,7 +17,7 @@ from gpustack.schemas.workers import Worker
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
-    get_pretrained_config_with_fallback,
+    get_pretrained_config_with_fallback_sync,
 )
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
@@ -94,7 +94,7 @@ class ModelParameters:
         """
 
         try:
-            pretrained_config = get_pretrained_config_with_fallback(
+            pretrained_config = get_pretrained_config_with_fallback_sync(
                 model, trust_remote_code=True
             )
         except Exception as e:

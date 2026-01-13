@@ -45,7 +45,7 @@ from gpustack.server.bus import Event
 from gpustack.utils.hub import (
     get_hf_text_config,
     get_max_model_len,
-    get_pretrained_config_with_fallback,
+    get_pretrained_config_with_fallback_sync,
 )
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
@@ -225,7 +225,7 @@ class InferenceServer(ABC):
             return self._pretrained_config
 
         try:
-            pretrained_config = get_pretrained_config_with_fallback(self._model)
+            pretrained_config = get_pretrained_config_with_fallback_sync(self._model)
             self._pretrained_config = pretrained_config
             return pretrained_config
         except Exception as e:

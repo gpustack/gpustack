@@ -18,15 +18,19 @@ from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
 from gpustack.schemas.models import CategoryEnum, Model, SourceEnum, get_mmproj_filename
+from gpustack.schemas.workers import Worker
 from gpustack.utils.cache import is_cached, load_cache, save_cache
+from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 
 logger = logging.getLogger(__name__)
 
 LIST_REPO_CACHE_DIR = "repo-skeleton"
+
 
 MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN = [
     '*.json',
@@ -263,10 +267,12 @@ def match_model_scope_file_paths(
     return matching_paths
 
 
-def read_repo_file_content(
+async def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
 ) -> Optional[bytes]:
     """
     Read a file's raw bytes from the model's source.
@@ -334,6 +340,27 @@ def read_repo_file_content(
                 return None
             fp = os.path.join(local_path, file_path)
             if not os.path.exists(fp):
+
+                # Try to read from worker if session and workers are provided
+                if session is not None and workers is not None and len(workers) > 0:
+                    async with WorkerFilesystemClient() as filesystem_client:
+                        for worker in workers:
+                            try:
+                                logger.info(
+                                    f"Trying to read file {file_path} from worker {worker.id}"
+                                )
+                                content = await filesystem_client.read_file(worker, fp)
+                                if content:
+                                    logger.info(
+                                        f"Successfully read file {file_path} from worker {worker.id}"
+                                    )
+                                    return content
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to read file {file_path} from worker {worker.id}: {e}"
+                                )
+                                continue
+                    return None
                 return None
             with open(fp, "rb") as f:
                 return f.read()
@@ -376,7 +403,9 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     )
 
 
-def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -> int:
+async def get_diffusion_model_weight_size(
+    model: Model, token: Optional[str] = None
+) -> int:
     """
     Get the size of the diffusion model weights.
     This is the sum of all weight files with extensions .safetensors, .bin, .pt, or .pth located in the root directory
@@ -400,7 +429,7 @@ def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -
     # In different repositories, model files may be stored in different dir.
     # However, during runtime, the diffusers loads components from corresponding dir according to the pipeline defined in model_index.json.
     # We can follow the definition in model_index.json to determine which file weights should be included in the calculation.
-    pipeline_data = get_diffusers_model_index_json(model, token)
+    pipeline_data = await get_diffusers_model_index_json(model, token)
     if pipeline_data is None:
         raise ValueError(f"No model_index.json in repo {repo_id}")
     if isinstance(pipeline_data, list) and len(pipeline_data) > 0:
@@ -421,7 +450,12 @@ def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -
     return sum_size
 
 
-def get_pretrained_config(model: Model, **kwargs):
+async def get_pretrained_config(
+    model: Model,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+    **kwargs,
+):
     """
     Get the pretrained config of the model from Hugging Face or ModelScope.
     Args:
@@ -467,6 +501,31 @@ def get_pretrained_config(model: Model, **kwargs):
             )
     elif model.source == SourceEnum.LOCAL_PATH:
         if not os.path.exists(model.local_path):
+            # Try to read config from worker
+            async with WorkerFilesystemClient() as filesystem_client:
+                for worker in workers or []:
+                    try:
+                        logger.info(f"Trying to read config from worker {worker.id}")
+                        # Read config.json file
+                        config_path = os.path.join(model.local_path, "config.json")
+                        content = await filesystem_client.read_file(worker, config_path)
+                        if not content:
+                            continue
+
+                        logger.info(f"Successfully read config from worker {worker.id}")
+                        if isinstance(content, bytes):
+                            config_str = content.decode("utf-8")
+                        elif isinstance(content, str):
+                            config_str = content
+                        config_dict = json.loads(config_str)
+                        pretrained_config = PretrainedConfig.from_dict(config_dict)
+                        return pretrained_config
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to read config from worker {worker.id}: {e}"
+                        )
+                        continue
+
             logger.warning(
                 f"Local Path: {model.readable_source} is not local to the server node and may reside on a worker node."
             )
@@ -487,10 +546,17 @@ def get_pretrained_config(model: Model, **kwargs):
     return pretrained_config
 
 
-def get_pretrained_config_with_fallback(model: Model, **kwargs):
+async def get_pretrained_config_with_fallback(
+    model: Model,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+    **kwargs,
+):
     pretrained_config = None
     try:
-        pretrained_config = get_pretrained_config(model, **kwargs)
+        pretrained_config = await get_pretrained_config(
+            model, session=session, workers=workers, **kwargs
+        )
     except Exception as e:
         if model.backend_version is not None or isinstance(e, ImportError):
             logger.debug(
@@ -505,10 +571,12 @@ def get_pretrained_config_with_fallback(model: Model, **kwargs):
             # In all such cases, fallback to loading config.json directly to avoid blocking model startup.
             try:
                 # try to read config.json and ensure num_attention_heads not None.
-                config_content = read_repo_file_content(
+                config_content = await read_repo_file_content(
                     model,
                     "config.json",
                     token=get_global_config().huggingface_token,
+                    session=session,
+                    workers=workers,
                 )
                 if config_content:
                     try:
@@ -541,6 +609,33 @@ def get_pretrained_config_with_fallback(model: Model, **kwargs):
             raise e
 
     return pretrained_config
+
+
+def get_pretrained_config_with_fallback_sync(model: Model, **kwargs):
+    """
+    Synchronous wrapper for get_pretrained_config_with_fallback.
+    This is used in contexts where async is not available (e.g., worker backends).
+    """
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If there's already a running event loop, we need to run in a thread
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    get_pretrained_config_with_fallback(model, **kwargs),
+                )
+                return future.result()
+        else:
+            # No running event loop, we can use asyncio.run directly
+            return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
+    except RuntimeError:
+        # No event loop at all, create a new one
+        return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
 
 
 # Simplified from vllm.config._get_and_verify_max_len
@@ -704,11 +799,16 @@ def get_model_scope_model_min_gguf_path(
     return gguf_files[0]
 
 
-def get_diffusers_model_index_json(
-    model: Model, token: Optional[str] = None
+async def get_diffusers_model_index_json(
+    model: Model,
+    token: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
 ) -> Optional[Dict[str, Any] | List[Dict[str, Any]]]:
     # Read model_index.json content based on model source
-    content_bytes = read_repo_file_content(model, "model_index.json", token=token)
+    content_bytes = await read_repo_file_content(
+        model, "model_index.json", token=token, session=session, workers=workers
+    )
     if content_bytes is None:
         return None
 
@@ -726,8 +826,11 @@ def get_diffusers_model_index_json(
     return data
 
 
-def has_diffusers_model_index(  # noqa: C901
-    model: Model, token: Optional[str] = None
+async def has_diffusers_model_index(  # noqa: C901
+    model: Model,
+    token: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
 ) -> bool:
     """Check whether the model source contains a model_index.json with
     the key "_diffusers_version".
@@ -738,7 +841,9 @@ def has_diffusers_model_index(  # noqa: C901
     - Local Path: reads model_index.json in the provided directory
     """
     try:
-        data = get_diffusers_model_index_json(model, token=token)
+        data = await get_diffusers_model_index_json(
+            model, token=token, session=session, workers=workers
+        )
         if data is None:
             return False
 
