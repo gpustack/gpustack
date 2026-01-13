@@ -80,16 +80,17 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Worker and Model Configuration
 
-| Variable                                               | Description                                                                         | Default | Applies to |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.                                           | `150`   | Server     |
-| `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.                                  | `300`   | Server     |
-| `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                                             | `1000`  | Server     |
-| `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.                                           | `3600`  | Server     |
-| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds.                             | `300`   | Worker     |
-| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`   | Add debug log for slow worker status collection if it exceeds this time in seconds. | `180`   | Worker     |
-| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.                                    | `3`     | Worker     |
-| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                                               | `false` | Worker     |
+| Variable                                               | Description                                                                                               | Default | Applies to |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.                                                                 | `150`   | Server     |
+| `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.                                                        | `300`   | Server     |
+| `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                                                                   | `1000`  | Server     |
+| `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.                                                                 | `3600`  | Server     |
+| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds.                                                   | `300`   | Worker     |
+| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`   | Add debug log for slow worker status collection if it exceeds this time in seconds.                       | `180`   | Worker     |
+| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.                                                          | `3`     | Worker     |
+| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                                                                     | `false` | Worker     |
+| `GPUSTACK_AUTO_GENERATE_UUID`                          | If set to true, always generate a new worker UUID at startup instead of reading the UUID from the system. | `false` | Worker     |
 
 ### Model Deployment Configuration
 
@@ -166,7 +167,7 @@ They are only usable within workers. Please set the environment variables in the
 ### Deployer Variables
 
 | Variable                                                                                                                                    | Description                                                                                                                                                                                                                                                                                                                                               | Default                                         |
-|---------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `GPUSTACK_RUNTIME_DEPLOY`                                                                                                                   | Deployer to use. Options: Auto, Docker, Kubernetes.                                                                                                                                                                                                                                                                                                       | `Auto`                                          |
 | `GPUSTACK_RUNTIME_DEPLOY_API_CALL_ERROR_DETAIL`                                                                                             | Enable detailing the API call error during deployment.                                                                                                                                                                                                                                                                                                    | `1`                                             |
 | `GPUSTACK_RUNTIME_DEPLOY_ASYNC`                                                                                                             | Enable asynchronous deployment.                                                                                                                                                                                                                                                                                                                           | `1`                                             |
@@ -191,7 +192,7 @@ They are only usable within workers. Please set the environment variables in the
 #### Docker Deployer Specific Variables
 
 | Variable                                            | Description                                                                                                                                                                                                                                                                                                                                   | Default                            |
-|-----------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------|
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | `GPUSTACK_RUNTIME_DOCKER_HOST`                      | Host for Docker connection. Used to override the default Docker host.                                                                                                                                                                                                                                                                         | `http+unix:///var/run/docker.sock` |
 | `GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE`               | Container image used for the pause container in Docker.                                                                                                                                                                                                                                                                                       | `gpustack/runtime:pause`           |
 | `GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE`   | Container image used for unhealthy restart container in Docker.                                                                                                                                                                                                                                                                               | `gpustack/runtime:health`          |
@@ -200,7 +201,7 @@ They are only usable within workers. Please set the environment variables in the
 #### Kubernetes Deployer Specific Variables
 
 | Variable                                                | Description                                                                                    | Default         |
-|---------------------------------------------------------|------------------------------------------------------------------------------------------------|-----------------|
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------- |
 | `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME`                 | Name of the Kubernetes Node to deploy workloads to.                                            | (empty)         |
 | `GPUSTACK_RUNTIME_KUBERNETES_NAMESPACE`                 | Namespace of the Kubernetes to deploy workloads to.                                            | `default`       |
 | `GPUSTACK_RUNTIME_KUBERNETES_DOMAIN_SUFFIX`             | Domain suffix for Kubernetes services.                                                         | `cluster.local` |
@@ -214,8 +215,8 @@ They are only usable within workers. Please set the environment variables in the
 
     Podman deployer is experimental and needs version 4.9 or higher.
 
-| Variable                                          | Description                                                                                                                            | Default                               |
-|---------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------|
-| `GPUSTACK_RUNTIME_PODMAN_HOST`                    | Host for Podman connection. Used to override the default Podman host.                                                                  | `http+unix:///run/podman/podman.sock` |
-| `GPUSTACK_RUNTIME_PODMAN_PAUSE_IMAGE`             | Container image used for the pause container in Podman.  Default is same as `GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE`.                     | `gpustack/runtime:pause`              |
-| `GPUSTACK_RUNTIME_PODMAN_UNHEALTHY_RESTART_IMAGE` | Container image used for unhealthy restart container in Podman.  Default is same as `GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE`. | `gpustack/runtime:health`             |
+| Variable                                          | Description                                                                                                                           | Default                               |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `GPUSTACK_RUNTIME_PODMAN_HOST`                    | Host for Podman connection. Used to override the default Podman host.                                                                 | `http+unix:///run/podman/podman.sock` |
+| `GPUSTACK_RUNTIME_PODMAN_PAUSE_IMAGE`             | Container image used for the pause container in Podman. Default is same as `GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE`.                     | `gpustack/runtime:pause`              |
+| `GPUSTACK_RUNTIME_PODMAN_UNHEALTHY_RESTART_IMAGE` | Container image used for unhealthy restart container in Podman. Default is same as `GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE`. | `gpustack/runtime:health`             |
