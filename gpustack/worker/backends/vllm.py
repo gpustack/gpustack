@@ -215,13 +215,6 @@ class VLLMServer(InferenceServer):
         # Apply GPUStack's inference environment setup
         env = super()._get_configured_env()
 
-        # Fix numeric hostname issue for vLLM
-        # When hostname is a pure number (e.g., "189"), PyTorch's Gloo backend
-        # resolves it to an IP address (e.g., "0.0.0.189") which doesn't exist,
-        # causing "Unable to find interface" errors during distributed initialization.
-        # See: https://github.com/pytorch/gloo/blob/main/gloo/transport/tcp/device.cc
-        self._set_safe_hostname(env)
-
         # Optimize environment variables
         # -- Disable OpenMP parallelism to avoid resource contention, increases model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
@@ -239,6 +232,12 @@ class VLLMServer(InferenceServer):
 
         # Apply distributed environment variables
         if is_distributed:
+            # Fix numeric hostname issue for distributed vLLM
+            # When hostname is a pure number (e.g., "189"), PyTorch's Gloo backend
+            # resolves it to an IP address (e.g., "0.0.0.189") which doesn't exist,
+            # causing "Unable to find interface" errors during distributed initialization.
+            # See: https://github.com/pytorch/gloo/blob/main/gloo/transport/tcp/device.cc
+            self._set_safe_hostname(env)
             self._set_distributed_env(env)
 
         # Apply Ascend-specific environment variables
@@ -249,11 +248,12 @@ class VLLMServer(InferenceServer):
 
     def _set_safe_hostname(self, env: Dict[str, str]):
         """
-        Set a safe hostname in the environment to avoid numeric hostname issues.
+        Set a safe hostname in the environment to avoid numeric hostname issues in distributed mode.
 
         When hostname is a pure number (e.g., "189"), PyTorch's Gloo backend
-        resolves it to an IP address (e.g., "0.0.0.189") which doesn't exist,
-        causing "Unable to find interface" errors during distributed initialization.
+        (used in distributed vLLM) resolves it to an IP address (e.g., "0.0.0.189")
+        which doesn't exist, causing "Unable to find interface" errors during
+        distributed initialization.
 
         This method ensures the HOSTNAME environment variable is set to a value
         that won't be misinterpreted as an IP address.
