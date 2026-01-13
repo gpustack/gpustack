@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 import httpx
 import logging
 import jwt
@@ -531,6 +533,7 @@ async def logout(request: Request):
 
 @router.post("/update-password")
 async def update_password(
+    request: Request,
     session: SessionDep,
     user: CurrentUserDep,
     update_in: UpdatePassword,
@@ -541,3 +544,61 @@ async def update_password(
     hashed_password = get_secret_hash(update_in.new_password)
     patch = {"hashed_password": hashed_password, "require_password_change": False}
     await user.update(session, patch)
+
+    _remove_initial_password_file_if_exists(request.app.state.server_config)
+
+
+@router.get("/config")
+async def get_auth_config(request: Request):
+    req_dict = {}
+    config: Config = request.app.state.server_config
+
+    auth_type = (config.external_auth_type or "Local").lower()
+    if auth_type == "oidc":
+        req_dict = {"is_oidc": True, "is_saml": False}
+    elif auth_type == "saml":
+        req_dict = {"is_oidc": False, "is_saml": True}
+
+    initial_password_file = Path(config.data_dir) / "initial_admin_password"
+    if initial_password_file.exists():
+        req_dict["first_time_setup"] = True
+        req_dict["get_initial_password_command"] = _get_initial_password_command(
+            initial_password_file
+        )
+
+    return req_dict
+
+
+def _get_initial_password_command(initial_password_file: Path) -> str:
+    """
+    Get the command to retrieve the initial admin password.
+    """
+    if os.getenv("KUBERNETES_SERVICE_HOST") is not None:
+        # Kubernetes
+        pod_name = os.getenv("HOSTNAME", "<pod_name>")
+        namespace_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+        namespace = (
+            namespace_file.read_text().strip()
+            if namespace_file.exists()
+            else "<namespace>"
+        )
+        return f"kubectl exec {pod_name} -n {namespace} -- cat {initial_password_file}"
+    elif Path("/.dockerenv").exists():
+        # Docker
+        return f"docker exec <container_name_or_id> cat {initial_password_file}"
+    else:
+        # Non-containerized
+        return f"cat {initial_password_file}"
+
+
+def _remove_initial_password_file_if_exists(config: Config):
+    """
+    Remove the initial admin password file if it exists.
+    """
+    initial_password_file = Path(config.data_dir) / "initial_admin_password"
+    if initial_password_file.exists():
+        try:
+            initial_password_file.unlink()
+            logger.debug(f"Initial password file deleted: {initial_password_file}")
+        except Exception as e:
+            logger.warning(f"Failed to delete initial password file: {e}")
