@@ -71,3 +71,5 @@ GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
 DEFAULT_CLUSTER_KUBERNETES = (
     os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
 )
+
+AUTO_GENERATE_UUID = os.getenv("GPUSTACK_AUTO_GENERATE_UUID", "false").lower() == "true"
