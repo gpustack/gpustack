@@ -1118,7 +1118,7 @@ class MemFractionStaticCalculator:
 
         _mem_fraction_static = (
             round((gpu_mem - reserved_mem) / gpu_mem, 3)
-            if gpu_mem is not None
+            if gpu_mem is not None and gpu_mem > 0
             else 0.88
         )
 
