@@ -4,6 +4,8 @@ from typing import Any, Callable, Optional, Union
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from enum import Enum
+from sqlalchemy.orm import selectinload
+
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -269,7 +271,15 @@ async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
 
 @router.delete("/{id}")
 async def delete_cluster(session: SessionDep, id: int):
-    existing = await Cluster.one_by_id(session, id)
+    existing = await Cluster.one_by_id(
+        session,
+        id,
+        options=[
+            selectinload(Cluster.cluster_workers),
+            selectinload(Cluster.cluster_models),
+            selectinload(Cluster.cluster_model_instances),
+        ],
+    )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"cluster {id} not found")
     # check for workers, if any are present, prevent deletion

@@ -126,7 +126,7 @@ class Scheduler:
         Get the pending model instances.
         """
         try:
-            async with AsyncSession(self._engine) as session:
+            async with AsyncSession(self._engine, expire_on_commit=False) as session:
                 instances = await ModelInstance.all(session)
                 tasks = []
                 for instance in instances:
@@ -142,7 +142,7 @@ class Scheduler:
         """
         Evaluate the model instance's metadata.
         """
-        async with AsyncSession(self._engine) as session:
+        async with AsyncSession(self._engine, expire_on_commit=False) as session:
             try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
 
@@ -286,7 +286,7 @@ class Scheduler:
 
         state_message = ""
 
-        async with AsyncSession(self._engine) as session:
+        async with AsyncSession(self._engine, expire_on_commit=False) as session:
             workers = await Worker.all(session)
             if len(workers) == 0:
                 state_message = "No available workers"

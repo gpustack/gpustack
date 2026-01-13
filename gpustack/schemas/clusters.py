@@ -113,10 +113,10 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     cluster: Optional["Cluster"] = Relationship(
         back_populates="cluster_worker_pools",
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
     pool_workers: list["Worker"] = Relationship(
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
         back_populates="worker_pool",
     )
     _workers: int = 0
@@ -290,21 +290,21 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     hashed_suffix: str = Field(nullable=False, default=secrets.token_hex(6))
     registration_token: str = Field(nullable=False, default=secrets.token_hex(16))
     cluster_worker_pools: List[WorkerPool] = Relationship(
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="cluster",
     )
     cluster_models: List["Model"] = Relationship(
-        sa_relationship_kwargs={"lazy": "selectin"}, back_populates="cluster"
+        sa_relationship_kwargs={"lazy": "noload"}, back_populates="cluster"
     )
     cluster_model_instances: List["ModelInstance"] = Relationship(
-        sa_relationship_kwargs={"lazy": "selectin"}, back_populates="cluster"
+        sa_relationship_kwargs={"lazy": "noload"}, back_populates="cluster"
     )
     cluster_users: list["User"] = Relationship(
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="cluster",
     )
     cluster_workers: List["Worker"] = Relationship(
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="cluster",
     )
     _models: int = 0

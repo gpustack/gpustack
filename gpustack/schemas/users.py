@@ -136,18 +136,18 @@ class User(UserBase, BaseModelMixin, table=True):
     hashed_password: str
 
     cluster: Optional[Cluster] = Relationship(
-        back_populates="cluster_users", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="cluster_users", sa_relationship_kwargs={"lazy": "noload"}
     )
-    worker: Optional[Worker] = Relationship(sa_relationship_kwargs={"lazy": "selectin"})
+    worker: Optional[Worker] = Relationship(sa_relationship_kwargs={"lazy": "noload"})
 
     api_keys: List["ApiKey"] = Relationship(
         back_populates='user',
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
     )
     models: List["Model"] = Relationship(
         back_populates="users",
         link_model=ModelUserLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
 
 

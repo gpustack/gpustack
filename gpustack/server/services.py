@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Union, Set, Tuple
 from aiocache import Cache, BaseCache
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
-
+from sqlalchemy.orm import selectinload
 
 from gpustack.api.exceptions import InternalServerErrorException
 from gpustack.schemas.api_keys import ApiKey
@@ -96,7 +96,11 @@ class UserService:
 
     @locked_cached(ttl=60)
     async def get_by_id(self, user_id: int) -> Optional[User]:
-        result = await User.one_by_id(self.session, user_id)
+        result = await User.one_by_id(
+            self.session,
+            user_id,
+            options=[selectinload(User.worker), selectinload(User.cluster)],
+        )
         if result is None:
             return None
         if result.worker is not None:

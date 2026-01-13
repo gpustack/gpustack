@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlmodel import String, cast, func, or_
 from pathlib import Path
+from sqlalchemy.orm import selectinload
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -205,7 +206,9 @@ async def update_model_file(
 async def delete_model_file(
     session: SessionDep, id: int, cleanup: Optional[bool] = None
 ):
-    model_file = await ModelFile.one_by_id(session, id)
+    model_file = await ModelFile.one_by_id(
+        session, id, options=[selectinload(ModelFile.instances)]
+    )
     if not model_file:
         raise NotFoundException(message=f"Model file {id} not found")
 

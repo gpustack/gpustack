@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import selectinload
 
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -80,7 +81,9 @@ async def update(session: SessionDep, id: int, input: WorkerPoolUpdate):
 
 @router.delete("/{id}")
 async def delete(session: SessionDep, id: int):
-    existing = await WorkerPool.one_by_id(session, id)
+    existing = await WorkerPool.one_by_id(
+        session, id, options=[selectinload(WorkerPool.pool_workers)]
+    )
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"worker pool {id} not found")
     if len(existing.pool_workers) > 0:

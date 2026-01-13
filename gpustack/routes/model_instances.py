@@ -2,9 +2,10 @@ from typing import Optional
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from sqlalchemy.orm import selectinload
+
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
-
 from gpustack.server.services import ModelInstanceService
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.worker.logs import LogOptionsDep
@@ -76,7 +77,9 @@ async def get_model_instance(
 
 
 async def fetch_model_instance(session, id):
-    model_instance = await ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(
+        session, id, options=[selectinload(ModelInstance.model_files)]
+    )
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
     if not model_instance.worker_id:

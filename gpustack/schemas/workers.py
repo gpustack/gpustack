@@ -396,10 +396,10 @@ class Worker(WorkerBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     cluster: Cluster = Relationship(
-        back_populates="cluster_workers", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="cluster_workers", sa_relationship_kwargs={"lazy": "noload"}
     )
     worker_pool: Optional[WorkerPool] = Relationship(
-        back_populates="pool_workers", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="pool_workers", sa_relationship_kwargs={"lazy": "noload"}
     )
 
     # This field should be replaced by x509 credential if mTLS is supported.

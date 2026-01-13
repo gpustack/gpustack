@@ -1,6 +1,8 @@
 import asyncio
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.orm import selectinload
+
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.server.db import get_engine
 from gpustack.server.services import WorkerService
@@ -31,8 +33,14 @@ class WorkerSyncer:
         """
         Mark offline workers to not_ready state.
         """
-        async with AsyncSession(self._engine) as session:
-            workers = await Worker.all(session)
+        async with AsyncSession(self._engine, expire_on_commit=False) as session:
+            workers = await Worker.all(
+                session,
+                options=[
+                    selectinload(Worker.cluster),
+                    selectinload(Worker.worker_pool),
+                ],
+            )
             if not workers:
                 return
 
@@ -69,6 +77,11 @@ class WorkerSyncer:
 
         unreachable = not await self.is_worker_reachable(worker)
         worker = await Worker.one_by_id(session, worker.id)
+
+        # Worker might have been deleted during the check
+        if worker is None:
+            return None
+
         worker.unreachable = unreachable
         worker.compute_state()
 

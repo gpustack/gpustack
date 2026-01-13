@@ -4,7 +4,6 @@ import string
 import asyncio
 from typing import Any, Dict, List, Tuple, Optional, Set
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -341,7 +340,13 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
         return
 
     if len(instance.model_files) > 0:
-        instance = await ModelInstance.one_by_id(session, instance.id)
+        instance = await ModelInstance.one_by_id(
+            session,
+            instance.id,
+            options=[
+                selectinload(ModelInstance.model_files),
+            ],
+        )
         await sync_instance_files_state(session, instance, instance.model_files)
         return
 
@@ -557,7 +562,10 @@ async def get_cluster_registry(
     session: AsyncSession, cluster_id: int
 ) -> Optional[McpBridgeRegistry]:
     cluster_user = await User.one_by_field(
-        session=session, field="cluster_id", value=cluster_id
+        session=session,
+        field="cluster_id",
+        value=cluster_id,
+        options=[selectinload(User.cluster)],
     )
     if is_default_cluster_user(cluster_user):
         return None
@@ -772,12 +780,11 @@ class WorkerController:
             return
         async with AsyncSession(self._engine) as session:
             if worker.worker_pool_id is not None:
-                result = await session.exec(
-                    select(WorkerPool)
-                    .options(selectinload(WorkerPool.pool_workers))
-                    .where(WorkerPool.id == worker.worker_pool_id)
+                worker_pool = await WorkerPool.one_by_id(
+                    session,
+                    worker.worker_pool_id,
+                    options=[selectinload(WorkerPool.pool_workers)],
                 )
-                worker_pool = result.one_or_none()
                 if worker_pool is not None:
                     copied_pool = WorkerPool(**worker_pool.model_dump())
                     await event_bus.publish(
@@ -788,15 +795,14 @@ class WorkerController:
                         ),
                     )
             if worker.cluster_id is not None:
-                result = await session.exec(
-                    select(Cluster)
-                    .options(
+                cluster = await Cluster.one_by_id(
+                    session,
+                    worker.cluster_id,
+                    options=[
                         selectinload(Cluster.cluster_workers),
                         selectinload(Cluster.cluster_models),
-                    )
-                    .where(Cluster.id == worker.cluster_id)
+                    ],
                 )
-                cluster = result.one_or_none()
                 if cluster is not None:
                     copied_cluster = Cluster(**cluster.model_dump())
                     await event_bus.publish(
@@ -854,7 +860,14 @@ class ModelFileController:
         file: ModelFile = event.data
         try:
             async with AsyncSession(self._engine) as session:
-                file = await ModelFile.one_by_id(session, file.id)
+                file = await ModelFile.one_by_id(
+                    session,
+                    file.id,
+                    options=[
+                        selectinload(ModelFile.instances),
+                        selectinload(ModelFile.draft_instances),
+                    ],
+                )
 
             if not file:
                 # In case the file is deleted
@@ -1156,7 +1169,9 @@ class WorkerPoolController:
         """
         logger.info(f"Reconcile worker pool {event.data.id} with event {event.type}")
         async with AsyncSession(self._engine) as session:
-            pool = await WorkerPool.one_by_id(session, event.data.id)
+            pool = await WorkerPool.one_by_id(
+                session, event.data.id, options=[selectinload(WorkerPool.cluster)]
+            )
             if pool is None or pool.deleted_at is not None:
                 return
             # mark the data to avoid read after commit
@@ -1424,7 +1439,14 @@ class WorkerProvisioningController:
         )
         async with AsyncSession(self._engine, expire_on_commit=False) as session:
             # Fetch the worker from the database
-            worker: Worker = await Worker.one_by_id(session, worker.id)
+            worker: Worker = await Worker.one_by_id(
+                session,
+                worker.id,
+                options=[
+                    selectinload(Worker.cluster),
+                    selectinload(Worker.worker_pool),
+                ],
+            )
             if not worker:
                 return
             credential: CloudCredential = await CloudCredential.one_by_id(
@@ -1499,7 +1521,9 @@ class ClusterController:
         if not cluster:
             return
         async with AsyncSession(self._engine) as session:
-            cluster: Cluster = await Cluster.one_by_id(session, cluster.id)
+            cluster: Cluster = await Cluster.one_by_id(
+                session, cluster.id, options=[selectinload(Cluster.cluster_workers)]
+            )
             if not cluster or cluster.provider in [
                 ClusterProvider.Kubernetes,
                 ClusterProvider.Docker,
