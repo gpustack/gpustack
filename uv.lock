@@ -7,9 +7,6 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "absl-py"
 version = "2.1.0"
@@ -1950,6 +1947,7 @@ all = [
     { name = "vox-box" },
 ]
 audio = [
+    { name = "numba" },
     { name = "vox-box" },
 ]
 vllm = [
@@ -2018,6 +2016,7 @@ requires-dist = [
     { name = "mistral-common", extras = ["opencv"], marker = "extra == 'vllm'", specifier = ">=1.4.3" },
     { name = "modelscope", specifier = ">=1.28" },
     { name = "msgpack", specifier = ">=1.1.2" },
+    { name = "numba", marker = "extra == 'audio'", specifier = ">=0.56.0" },
     { name = "openai", specifier = ">=1.31.1" },
     { name = "packaging", specifier = ">=24.1" },
     { name = "pandas", specifier = ">=2.3.0" },
