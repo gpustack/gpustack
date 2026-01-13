@@ -63,7 +63,6 @@ from gpustack.utils.hub import (
     has_diffusers_model_index,
 )
 from gpustack.utils.math import largest_power_of_2_leq
-from gpustack.utils.task import run_in_thread
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -179,7 +178,9 @@ class Scheduler:
                         )
                     else:
                         should_update_model = await evaluate_pretrained_config(
-                            model, raise_raw=True
+                            model,
+                            session=session,
+                            raise_raw=True,
                         )
                 except Exception as e:
                     # Even if the evaluation failed, we still want to proceed to deployment.
@@ -567,8 +568,8 @@ async def evaluate_diffusion_model(model: Model):
         return False
 
     hf_token = get_global_config().huggingface_token
-    is_diffusers = await run_in_thread(
-        has_diffusers_model_index, timeout=10, model=model, token=hf_token
+    is_diffusers = await asyncio.wait_for(
+        has_diffusers_model_index(model, token=hf_token), timeout=10
     )
     if is_diffusers:
         model.categories = [CategoryEnum.IMAGE]
@@ -576,7 +577,12 @@ async def evaluate_diffusion_model(model: Model):
     return False
 
 
-async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> bool:
+async def evaluate_pretrained_config(
+    model: Model,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+    raise_raw: bool = False,
+) -> bool:
     """
     evaluate the model's pretrained config to determine its type.
     Args:
@@ -596,8 +602,10 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
-            pretrained_config = await run_in_thread(
-                get_pretrained_config_with_fallback, timeout=30, model=model
+            pretrained_config = await get_pretrained_config_with_fallback(
+                model,
+                session=session,
+                workers=workers,
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.

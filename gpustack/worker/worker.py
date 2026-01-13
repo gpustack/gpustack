@@ -26,7 +26,7 @@ from gpustack.schemas.config import (
 )
 from gpustack import envs
 from gpustack.routes import config as route_config, debug, probes
-from gpustack.routes.worker import logs, proxy
+from gpustack.routes.worker import logs, proxy, filesystem
 from gpustack.routes.token import worker_auth
 from gpustack.server import catalog
 from gpustack.utils.network import (
@@ -328,6 +328,7 @@ class Worker:
         app.include_router(probes.router)
         app.include_router(logs.router)
         app.include_router(proxy.router)
+        app.include_router(filesystem.router)
         app.add_api_route(
             path="/token-auth",
             endpoint=worker_auth,
