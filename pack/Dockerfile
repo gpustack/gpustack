@@ -451,7 +451,6 @@ RUN --mount=type=cache,target=/root/.cache \
     export POETRY_NO_CACHE=0
     export UV_NO_CACHE=0
     export UV_SYSTEM_PYTHON=1
-    export UV_PRERELEASE=allow
     export UV_LINK_MODE=copy
 
     # Build GPUStack

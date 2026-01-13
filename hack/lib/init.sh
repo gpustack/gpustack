@@ -21,5 +21,3 @@ done
 
 gpustack::log::install_errexit
 gpustack::version::get_version_vars
-
-export UV_PRERELEASE=allow

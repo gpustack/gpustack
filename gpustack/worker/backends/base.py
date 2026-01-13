@@ -530,7 +530,6 @@ class InferenceServer(ABC):
 if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
     if command -v uv >/dev/null 2>&1; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
-        export UV_PRERELEASE=allow
         export UV_HTTP_TIMEOUT=500
         export UV_NO_CACHE=1
         if [ -n "${PIP_INDEX_URL:-}" ]; then
@@ -547,7 +546,6 @@ if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
         export PIP_DISABLE_PIP_VERSION_CHECK=1
         export PIP_ROOT_USER_ACTION=ignore
-        export PIP_PRE=1
         export PIP_TIMEOUT=500
         export PIP_NO_CACHE_DIR=1
         pip install ${PYPI_PACKAGES_INSTALL}

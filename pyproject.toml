@@ -98,6 +98,7 @@ vllm = [
 ]
 audio = [
     "vox-box==0.0.19",
+    "numba>=0.56.0",
 ]
 all = [
     "vllm==0.10.1.1",
