@@ -62,7 +62,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self._event_collector = EventCollector(self._model, logger)
 
         self._param_mem_fraction_static = 0
-        self._mem_fraction_static_by_gpu_type = {}
+        self._mem_fraction_static_by_gpu_type = {"*": 0}
 
         self._tp_size = 1
         self._pp_size = 1
@@ -211,7 +211,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
     def _cal_effective_vram(self, gpu_type: str) -> float:
         """Calculate effective VRAM considering SGLang's memory management."""
-        if self._is_diffusion or self._mem_fraction_static_by_gpu_type.get(gpu_type) == 0:
+        if (
+            self._is_diffusion
+            or self._mem_fraction_static_by_gpu_type.get(gpu_type) == 0
+        ):
             return self._vram_claim
         return self._vram_claim / self._mem_fraction_static_by_gpu_type.get(gpu_type)
 
@@ -377,7 +380,7 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             request.vram = request.vram * self._gpu_count
         return await self._find_manual_gpu_selection_candidates(
             workers,
-            self._mem_fraction_static_by_gpu_type if not self._is_diffusion else 0,
+            self._mem_fraction_static_by_gpu_type,
             request,
             self._event_collector,
         )
@@ -434,9 +437,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if allocatable_vram > largest_single_gpu_vram:
                 largest_single_gpu_vram = allocatable_vram
                 largest_single_gpu_utilization = allocatable_gpu_utilization
-            exceeds_vram = (
-                self._vram_claim
-                > gpu.memory.total * (self._mem_fraction_static_by_gpu_type.get(gpu_type) if not self._is_diffusion else 1)
+            exceeds_vram = self._vram_claim > gpu.memory.total * (
+                self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                if not self._is_diffusion
+                else 1
             )
             exceeds_memory_utilization = (
                 not self._is_diffusion
@@ -454,7 +458,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             vram_claim = await self._get_worker_resource_claim(
                 worker,
                 [gpu_index],
-                self._mem_fraction_static_by_gpu_type.get(gpu_type) if not self._is_diffusion else 0,
+                (
+                    self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                    if not self._is_diffusion
+                    else 0
+                ),
                 request=request_usage,
                 gpu_type=gpu_type,
             )
@@ -475,7 +483,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         if not candidates:
             event_msg = f"The current available GPU only has {byte_to_gib(largest_single_gpu_vram)} GiB allocatable VRAM."
-            if self._mem_fraction_static_by_gpu_type.get(gpu_type) != 0 and not self._is_diffusion:
+            if (
+                self._mem_fraction_static_by_gpu_type.get(gpu_type) != 0
+                and not self._is_diffusion
+            ):
                 event_msg = (
                     event_msg.rstrip(".")
                     + f" ({(largest_single_gpu_utilization * 100):.2f}%)."
@@ -530,7 +541,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             ):
                 continue
             if self._is_diffusion and any(
-                gpu.allocatable_vram < self._cal_effective_vram(gpu_type) for gpu in gpu_list
+                gpu.allocatable_vram < self._cal_effective_vram(gpu_type)
+                for gpu in gpu_list
             ):
                 continue
             total_allocatable_vram = sum(gpu.allocatable_vram for gpu in gpu_list)
@@ -564,8 +576,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 vram_claim[gpu.index] = int(
                     gpu_device.allocatable_vram
                     if self._is_diffusion
-                    else int(gpu.memory.total
-                    * self._mem_fraction_static_by_gpu_type.get(gpu_type))
+                    else int(
+                        gpu.memory.total
+                        * self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                    )
                 )
                 gpu_sum += 1
                 vram_sum += vram_claim[gpu.index]
@@ -608,9 +622,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             event_msg = (
                 f"The largest available worker has {byte_to_gib(self._largest_multi_gpu_vram):.2f} GiB allocatable VRAM."
                 if not self._is_diffusion
-                else f"SGLang Diffusion requires each GPU to provide {byte_to_gib(self._effective_vram)} GiB of allocatable VRAM when running in parallel."
+                else f"SGLang Diffusion requires each GPU to provide {byte_to_gib(int(self._cal_effective_vram(gpu_type)))} GiB of allocatable VRAM when running in parallel."
             )
-            if self._mem_fraction_static_by_gpu_type.get(gpu_type) != 0 and not self._is_diffusion:
+            if (
+                self._mem_fraction_static_by_gpu_type.get(gpu_type) != 0
+                and not self._is_diffusion
+            ):
                 effective_vram = (
                     byte_to_gib(
                         int(
@@ -746,8 +763,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 gpu_sum += gpu_count
                 vram_sum += sum(
                     int(
-                        int(gpu.memory.total
-                        * self._mem_fraction_static_by_gpu_type.get(gpu_type))
+                        int(
+                            gpu.memory.total
+                            * self._mem_fraction_static_by_gpu_type.get(gpu_type)
+                        )
                         if not self._is_diffusion
                         else allocatable.vram.get(gpu.index, 0)
                     )
