@@ -121,6 +121,9 @@ artifacts = [
     "gpustack/third_party"
 ]
 
+[tool.uv]
+prerelease = "allow"
+
 [tool.black]
 line-length = 88
 target-version = ['py310']
