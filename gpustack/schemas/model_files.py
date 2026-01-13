@@ -40,7 +40,7 @@ class ModelFile(ModelFileBase, BaseModelMixin, table=True):
     source_index: Optional[str] = Field(index=True, unique=True, default=None)
 
     instances: list[ModelInstance] = Relationship(
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
         back_populates="model_files",
         link_model=ModelInstanceModelFileLink,
     )
@@ -48,7 +48,7 @@ class ModelFile(ModelFileBase, BaseModelMixin, table=True):
     draft_instances: list[ModelInstance] = Relationship(
         back_populates="draft_model_files",
         link_model=ModelInstanceDraftModelFileLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
 
 

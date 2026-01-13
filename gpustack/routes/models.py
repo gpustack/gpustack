@@ -6,6 +6,7 @@ from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy.orm import selectinload
 from sqlmodel import and_, col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from enum import Enum
@@ -236,7 +237,7 @@ async def _get_model(
 async def get_model_instances(
     engine: EngineDep, session: SessionDep, id: int, params: ListParamsDep
 ):
-    model = await Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -456,7 +457,7 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
-    model = await Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -482,7 +483,9 @@ def model_access_list(model: Model) -> List[ModelUserAccessExtended]:
 
 @router.get("/{id}/access", response_model=ModelAccessList)
 async def get_model_access(session: SessionDep, id: int):
-    model: Model = await Model.one_by_id(session, id)
+    model: Model = await Model.one_by_id(
+        session, id, options=[selectinload(Model.users)]
+    )
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -493,7 +496,7 @@ async def get_model_access(session: SessionDep, id: int):
 async def add_model_access(
     session: SessionDep, id: int, access_request: ModelAccessUpdate
 ):
-    model = await Model.one_by_id(session, id)
+    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
     if not model:
         raise NotFoundException(message="Model not found")
     extra_conditions = [

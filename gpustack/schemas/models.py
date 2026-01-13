@@ -245,13 +245,13 @@ class Model(ModelBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     instances: list["ModelInstance"] = Relationship(
-        sa_relationship_kwargs={"cascade": "delete", "lazy": "selectin"},
+        sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="model",
     )
     users: List["User"] = Relationship(
         back_populates="models",
         link_model=ModelUserLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
 
     cluster: "Cluster" = Relationship(
@@ -520,19 +520,19 @@ class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):
 
     model: Optional[Model] = Relationship(
         back_populates="instances",
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
 
     model_files: List["ModelFile"] = Relationship(
         back_populates="instances",
         link_model=ModelInstanceModelFileLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
 
     draft_model_files: List["ModelFile"] = Relationship(
         back_populates="draft_instances",
         link_model=ModelInstanceDraftModelFileLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+        sa_relationship_kwargs={"lazy": "noload"},
     )
 
     cluster: "Cluster" = Relationship(

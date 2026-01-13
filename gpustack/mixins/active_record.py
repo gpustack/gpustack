@@ -99,13 +99,20 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def one_by_id(cls, session: AsyncSession, id: int, for_update: bool = False):
+    async def one_by_id(
+        cls,
+        session: AsyncSession,
+        id: int,
+        for_update: bool = False,
+        options: Optional[List] = None,
+    ):
         """Return the object with the given id. Return None if not found.
 
         If `for_update` is True, the row will be locked until the end of the transaction.
+        If `options` is provided, it will be passed to the query for eager loading relationships.
         """
 
-        return await session.get(cls, id, with_for_update=for_update)
+        return await session.get(cls, id, with_for_update=for_update, options=options)
 
     @classmethod
     async def first_by_field(cls, session: AsyncSession, field: str, value: Any):
@@ -114,10 +121,16 @@ class ActiveRecordMixin:
         return await cls.first_by_fields(session, {field: value})
 
     @classmethod
-    async def one_by_field(cls, session: AsyncSession, field: str, value: Any):
+    async def one_by_field(
+        cls,
+        session: AsyncSession,
+        field: str,
+        value: Any,
+        options: Optional[List] = None,
+    ):
         """Return the object with the given field and value. Return None if not found."""
 
-        return await cls.one_by_fields(session, {field: value})
+        return await cls.one_by_fields(session, {field: value}, options=options)
 
     @classmethod
     async def first_by_fields(cls, session: AsyncSession, fields: dict):
@@ -134,12 +147,17 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def one_by_fields(cls, session: AsyncSession, fields: dict):
+    async def one_by_fields(
+        cls, session: AsyncSession, fields: dict, options: Optional[List] = None
+    ):
         """Return the object with the given fields and values. Return None if not found."""
 
         statement = select(cls)
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
+
+        if options:
+            statement = statement.options(*options)
 
         result = await session.exec(statement)
         return result.first()
@@ -599,10 +617,12 @@ class ActiveRecordMixin:
         return any(rel.cascade.delete for rel in self.__mapper__.relationships)
 
     @classmethod
-    async def all(cls, session: AsyncSession):
+    async def all(cls, session: AsyncSession, options: Optional[List] = None):
         """Return all objects of the model."""
-
-        result = await session.exec(select(cls))
+        statement = select(cls)
+        if options:
+            statement = statement.options(*options)
+        result = await session.exec(statement)
         return result.all()
 
     @classmethod
