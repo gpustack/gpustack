@@ -3,6 +3,7 @@ import types
 import pytest
 
 from gpustack.worker.backends.custom import CustomServer
+from gpustack.worker.backends.vllm import VLLMServer
 
 
 @pytest.mark.parametrize(
@@ -82,12 +83,12 @@ async def test_apply_registry_override(
             ["--served-model-name", "foo bar"],
         ),
         (
-            ['--arg1', '--arg2 "val with spaces"'],
-            ['--arg1', '--arg2', 'val with spaces'],
+            ["--arg1", '--arg2 "val with spaces"'],
+            ["--arg1", "--arg2", "val with spaces"],
         ),
         (
             ['--arg1 "val with spaces"', '--arg2="val with spaces"'],
-            ['--arg1', 'val with spaces', '--arg2="val with spaces"'],
+            ["--arg1", "val with spaces", '--arg2="val with spaces"'],
         ),
         (
             [
@@ -95,7 +96,7 @@ async def test_apply_registry_override(
                 """--hf-overrides={"architectures": ["NewModel"]}""",
             ],
             [
-                '--hf-overrides',
+                "--hf-overrides",
                 '{"architectures": ["NewModel"]}',
                 """--hf-overrides={"architectures": ["NewModel"]}""",
             ],
@@ -110,3 +111,33 @@ def test_flatten_backend_param(backend_parameters, expected):
     backend = CustomServer.__new__(CustomServer)
     backend._model = types.SimpleNamespace(backend_parameters=backend_parameters)
     assert backend._flatten_backend_param() == expected
+
+
+@pytest.mark.parametrize(
+    "hostname, expected_hostname",
+    [
+        ("189", "gpustack-worker-189"),  # Numeric hostname
+        ("123", "gpustack-worker-123"),  # Numeric hostname
+        ("host-189", None),  # Non-numeric hostname with dash
+        ("worker1", None),  # Alphanumeric hostname
+        ("server.example.com", None),  # FQDN hostname
+        ("my-host-123", None),  # Hostname with numbers but not purely numeric
+    ],
+)
+def test_set_safe_hostname(hostname, expected_hostname, monkeypatch):
+    """Test that numeric hostnames are prefixed to avoid resolution issues."""
+    backend = VLLMServer.__new__(VLLMServer)
+
+    # Mock socket.gethostname to return the test hostname
+    monkeypatch.setattr("socket.gethostname", lambda: hostname)
+
+    # Call _set_safe_hostname
+    env = {}
+    backend._set_safe_hostname(env)
+
+    # Check if HOSTNAME is set only for numeric hostnames
+    if expected_hostname:
+        assert "HOSTNAME" in env
+        assert env["HOSTNAME"] == expected_hostname
+    else:
+        assert "HOSTNAME" not in env

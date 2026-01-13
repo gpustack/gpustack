@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import socket
 from typing import Dict, List, Optional
 
 from gpustack_runtime.deployer import (
@@ -214,6 +215,13 @@ class VLLMServer(InferenceServer):
         # Apply GPUStack's inference environment setup
         env = super()._get_configured_env()
 
+        # Fix numeric hostname issue for vLLM
+        # When hostname is a pure number (e.g., "189"), PyTorch's Gloo backend
+        # resolves it to an IP address (e.g., "0.0.0.189") which doesn't exist,
+        # causing "Unable to find interface" errors during distributed initialization.
+        # See: https://github.com/pytorch/gloo/blob/main/gloo/transport/tcp/device.cc
+        self._set_safe_hostname(env)
+
         # Optimize environment variables
         # -- Disable OpenMP parallelism to avoid resource contention, increases model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
@@ -238,6 +246,32 @@ class VLLMServer(InferenceServer):
             self._set_ascend_env(env)
 
         return env
+
+    def _set_safe_hostname(self, env: Dict[str, str]):
+        """
+        Set a safe hostname in the environment to avoid numeric hostname issues.
+
+        When hostname is a pure number (e.g., "189"), PyTorch's Gloo backend
+        resolves it to an IP address (e.g., "0.0.0.189") which doesn't exist,
+        causing "Unable to find interface" errors during distributed initialization.
+
+        This method ensures the HOSTNAME environment variable is set to a value
+        that won't be misinterpreted as an IP address.
+        """
+        try:
+            hostname = socket.gethostname()
+            # Check if hostname is purely numeric (all digits)
+            if hostname.isdigit():
+                # Prefix numeric hostname with "gpustack-worker-" to avoid resolution issues
+                safe_hostname = f"gpustack-worker-{hostname}"
+                env["HOSTNAME"] = safe_hostname
+                logger.debug(
+                    f"Numeric hostname '{hostname}' detected. "
+                    f"Setting HOSTNAME to '{safe_hostname}' to avoid resolution issues."
+                )
+        except Exception as e:
+            # If we can't get hostname or set it, log but don't fail
+            logger.warning(f"Failed to set safe hostname: {e}")
 
     def _set_lmcache_env(self, env: Dict[str, str]):
         """
