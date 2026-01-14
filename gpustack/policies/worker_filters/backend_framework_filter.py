@@ -204,10 +204,11 @@ class BackendFrameworkFilter(WorkerFilter):
                         is_compatible = True
                         break
                     else:
-                        incompatible_reasons.append(
-                            f"GPU {gpu_type} (runtime: {runtime_version}, variant: {variant}) "
-                            f"has no available backend versions"
-                        )
+                        reason_text = f"GPU {gpu_type} (runtime: {runtime_version}, variant: {variant}) "
+                        if gpu_type == "cpu":
+                            reason_text = "CPU device "
+                        reason_text += "has no available backend versions"
+                        incompatible_reasons.append(reason_text)
 
             if is_compatible:
                 filtered_workers.append(worker)
