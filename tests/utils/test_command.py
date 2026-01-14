@@ -37,6 +37,20 @@ def test_is_command_available_false(monkeypatch):
         (['--foo'], ['foo'], None),
         # key not present
         (['--bar=1', '--baz', '2'], ['foo'], None),
+        (
+            [
+                '--hf-overrides \'{"rope_scaling": {"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}\''
+            ],
+            ['hf-overrides'],
+            '{"rope_scaling": {"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}',
+        ),
+        (
+            [
+                '--hf-overrides={"rope_scaling": {"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}'
+            ],
+            ['hf-overrides'],
+            '{"rope_scaling": {"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}',
+        ),
     ],
 )
 def test_find_parameter(parameters, param_names, expected):
