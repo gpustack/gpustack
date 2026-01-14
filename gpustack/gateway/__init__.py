@@ -363,7 +363,16 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                         }
                     ],
                     "operate": "rename",
-                }
+                },
+                {
+                    "headers": [
+                        {
+                            "key": "x-higress-llm-model",
+                            "strategy": "RETAIN_UNIQUE",
+                        }
+                    ],
+                    "operate": "dedupe",
+                },
             ],
         },
         defaultConfigDisable=False,
