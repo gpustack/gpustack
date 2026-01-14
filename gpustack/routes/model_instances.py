@@ -174,7 +174,7 @@ async def create_model_instance(
 async def update_model_instance(
     session: SessionDep, id: int, model_instance_in: ModelInstanceUpdate
 ):
-    model_instance = await ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 
@@ -189,7 +189,7 @@ async def update_model_instance(
 
 @router.delete("/{id}")
 async def delete_model_instance(session: SessionDep, id: int):
-    model_instance = await ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 
