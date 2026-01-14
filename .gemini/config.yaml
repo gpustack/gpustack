@@ -7,7 +7,7 @@ code_review:
   max_review_comments: -1
   pull_request_opened:
     help: false
-    summary: false
-    code_review: false
+    summary: true
+    code_review: true
     include_drafts: false
 ignore_patterns: []
