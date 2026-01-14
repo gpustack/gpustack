@@ -63,8 +63,6 @@ from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.common import PaginatedList
 from gpustack.schemas.filesystem import (
-    FileEntry,
-    FileListResponse,
     FileExistsResponse,
 )
 
@@ -130,7 +128,5 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
-    "FileEntry",
-    "FileListResponse",
     "FileExistsResponse",
 ]

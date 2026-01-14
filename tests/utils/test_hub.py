@@ -1,5 +1,3 @@
-import json
-
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.utils.hub import (
@@ -197,19 +195,17 @@ def test_get_ms_min_gguf_file():
             ),
             "config.json",
             None,
-            lambda content: "Qwen3ForCausalLM"
-            in json.loads(content).get("architectures", []),
+            lambda content: "Qwen3ForCausalLM" in content.get("architectures", []),
         ),
         (
             new_model(id=2, name="test_name2", model_scope_model_id="Qwen/Qwen3-0.6B"),
             "config.json",
             None,
-            lambda content: "Qwen3ForCausalLM"
-            in json.loads(content).get("architectures", []),
+            lambda content: "Qwen3ForCausalLM" in content.get("architectures", []),
         ),
     ],
 )
 @pytest.mark.asyncio
 async def test_read_repo_file_content(m, file, token, predicate):
-    content = await read_repo_file_content(m, file, token)
-    assert predicate(content)
+    config_dict = await read_repo_file_content(m, file, token)
+    assert predicate(config_dict)

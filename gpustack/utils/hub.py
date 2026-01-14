@@ -273,9 +273,9 @@ async def read_repo_file_content(  # noqa: C901
     token: Optional[str] = None,
     session: Optional[AsyncSession] = None,
     workers: Optional[List[Worker]] = None,
-) -> Optional[bytes]:
+) -> Optional[Dict[str, Any]]:
     """
-    Read a file's raw bytes from the model's source.
+    Read a JSON config file from the model's source.
 
     - Hugging Face: uses HfFileSystem to open `{repo_id}/{file_path}`.
     - ModelScope: downloads a snapshot matching `file_path` and cleaned automatically after reading locally.
@@ -300,7 +300,7 @@ async def read_repo_file_content(  # noqa: C901
                         logger.warning(
                             f"Failed to decompress gzip content for {file_path}: {e}"
                         )
-                return content
+                return json.loads(content)
 
         elif model.source == SourceEnum.MODEL_SCOPE:
             _cfg = get_global_config()
@@ -331,8 +331,8 @@ async def read_repo_file_content(  # noqa: C901
                             break
                 if not fp:
                     return None
-                with open(fp, "rb") as f:
-                    return f.read()
+                with open(fp, "r", encoding="utf-8") as f:
+                    return json.load(f)
 
         elif model.source == SourceEnum.LOCAL_PATH:
             local_path = model.local_path or ""
@@ -349,12 +349,14 @@ async def read_repo_file_content(  # noqa: C901
                                 logger.info(
                                     f"Trying to read file {file_path} from worker {worker.id}"
                                 )
-                                content = await filesystem_client.read_file(worker, fp)
-                                if content:
+                                config_dict = await filesystem_client.read_file(
+                                    worker, fp
+                                )
+                                if config_dict:
                                     logger.info(
                                         f"Successfully read file {file_path} from worker {worker.id}"
                                     )
-                                    return content
+                                    return config_dict
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to read file {file_path} from worker {worker.id}: {e}"
@@ -362,8 +364,8 @@ async def read_repo_file_content(  # noqa: C901
                                 continue
                     return None
                 return None
-            with open(fp, "rb") as f:
-                return f.read()
+            with open(fp, "r", encoding="utf-8") as f:
+                return json.load(f)
 
         else:
             return None
@@ -429,7 +431,7 @@ async def get_diffusion_model_weight_size(
     # In different repositories, model files may be stored in different dir.
     # However, during runtime, the diffusers loads components from corresponding dir according to the pipeline defined in model_index.json.
     # We can follow the definition in model_index.json to determine which file weights should be included in the calculation.
-    pipeline_data = await get_diffusers_model_index_json(model, token)
+    pipeline_data = await read_repo_file_content(model, "model_index.json", token=token)
     if pipeline_data is None:
         raise ValueError(f"No model_index.json in repo {repo_id}")
     if isinstance(pipeline_data, list) and len(pipeline_data) > 0:
@@ -571,20 +573,15 @@ async def get_pretrained_config_with_fallback(
             # In all such cases, fallback to loading config.json directly to avoid blocking model startup.
             try:
                 # try to read config.json and ensure num_attention_heads not None.
-                config_content = await read_repo_file_content(
+                config_dict = await read_repo_file_content(
                     model,
                     "config.json",
                     token=get_global_config().huggingface_token,
                     session=session,
                     workers=workers,
                 )
-                if config_content:
+                if config_dict:
                     try:
-                        try:
-                            content = (config_content or b"").decode("utf-8")
-                        except Exception:
-                            content = (config_content or b"").decode()
-                        config_dict = json.loads(content)
                         pretrained_config = PretrainedConfig.from_dict(config_dict)
                     except Exception as ce:
                         logger.warning(f"read_repo_file_content failed: {ce}")
@@ -799,33 +796,6 @@ def get_model_scope_model_min_gguf_path(
     return gguf_files[0]
 
 
-async def get_diffusers_model_index_json(
-    model: Model,
-    token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-) -> Optional[Dict[str, Any] | List[Dict[str, Any]]]:
-    # Read model_index.json content based on model source
-    content_bytes = await read_repo_file_content(
-        model, "model_index.json", token=token, session=session, workers=workers
-    )
-    if content_bytes is None:
-        return None
-
-    # Decode and parse JSON
-    try:
-        content = (content_bytes or b"").decode("utf-8")
-    except Exception:
-        content = (content_bytes or b"").decode()
-
-    try:
-        data = json.loads(content)
-    except Exception:
-        return None
-
-    return data
-
-
 async def has_diffusers_model_index(  # noqa: C901
     model: Model,
     token: Optional[str] = None,
@@ -841,8 +811,8 @@ async def has_diffusers_model_index(  # noqa: C901
     - Local Path: reads model_index.json in the provided directory
     """
     try:
-        data = await get_diffusers_model_index_json(
-            model, token=token, session=session, workers=workers
+        data = await read_repo_file_content(
+            model, "model_index.json", token=token, session=session, workers=workers
         )
         if data is None:
             return False
