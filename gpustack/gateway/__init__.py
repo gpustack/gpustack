@@ -4,6 +4,7 @@ import base64
 import os
 import logging
 import yaml
+import copy
 from typing import Any, Dict, Tuple, List, Optional
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
@@ -205,6 +206,19 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
         else:
             raise
     registry = get_gpustack_higress_registry(cfg=cfg)
+    expected_rule = k8s_client.V1IngressRule(
+        http=k8s_client.V1HTTPIngressRuleValue(
+            paths=[
+                k8s_client.V1HTTPIngressPath(
+                    path="/",
+                    path_type="Prefix",
+                    backend=k8s_client.V1IngressBackend(
+                        resource=get_default_mcpbridge_ref()
+                    ),
+                )
+            ]
+        ),
+    )
 
     expected_ingress = k8s_client.V1Ingress(
         metadata=k8s_client.V1ObjectMeta(
@@ -218,21 +232,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
         ),
         spec=k8s_client.V1IngressSpec(
             ingress_class_name='higress',
-            rules=[
-                k8s_client.V1IngressRule(
-                    http=k8s_client.V1HTTPIngressRuleValue(
-                        paths=[
-                            k8s_client.V1HTTPIngressPath(
-                                path="/",
-                                path_type="Prefix",
-                                backend=k8s_client.V1IngressBackend(
-                                    resource=get_default_mcpbridge_ref()
-                                ),
-                            )
-                        ]
-                    ),
-                )
-            ],
+            rules=[expected_rule],
         ),
     )
     if tls_secret_name is not None:
@@ -242,6 +242,11 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
                 secret_name=tls_secret_name,
             )
         ]
+    if hostname is not None:
+        host_rule = copy.deepcopy(expected_rule)
+        host_rule.host = hostname
+        expected_ingress.spec.rules.append(host_rule)
+
     if not ingress:
         await network_v1_client.create_namespaced_ingress(
             namespace=gateway_namespace, body=expected_ingress
