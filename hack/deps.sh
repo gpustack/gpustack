@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "${ROOT_DIR}/hack/lib/init.sh"
 
 function deps() {
-  uv sync --all-packages --locked
+  uv sync --all-packages
   uv lock
   uv tree
 }
