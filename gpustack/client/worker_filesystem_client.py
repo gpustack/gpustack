@@ -1,8 +1,8 @@
 import logging
-from typing import List, Optional
+from typing import Dict
 
 import aiohttp
-from gpustack.schemas.filesystem import FileEntry, FileListResponse, FileExistsResponse
+from gpustack.schemas.filesystem import FileExistsResponse
 from gpustack.schemas.workers import Worker
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack import envs
@@ -41,84 +41,26 @@ class WorkerFilesystemClient:
         if self._connector:
             await self._connector.close()
 
-    async def list_files(
-        self,
-        worker: Worker,
-        path: str,
-    ) -> List[FileEntry]:
-        """
-        List files and directories in the specified path on a worker.
-
-        Args:
-            worker: The worker to query
-            path: The directory path to list
-
-        Returns:
-            List of file entries
-
-        Raises:
-            aiohttp.ClientError: If the request fails
-        """
-        url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/list"
-        params = {"path": path}
-        headers = {"Authorization": f"Bearer {worker.token}"}
-
-        use_proxy_env = use_proxy_env_for_url(url)
-        client = self._http_client if use_proxy_env else self._http_client_no_proxy
-
-        timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
-
-        try:
-            async with client.get(
-                url, params=params, headers=headers, timeout=timeout
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(
-                        f"Failed to list files on worker {worker.id}: "
-                        f"status={resp.status}, error={error_text}"
-                    )
-                    raise aiohttp.ClientError(
-                        f"Failed to list files: status={resp.status}, error={error_text}"
-                    )
-
-                data = await resp.json()
-                response = FileListResponse.model_validate(data)
-                return response.files
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Error listing files on worker {worker.id}: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error listing files on worker {worker.id}: {e}")
-            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
-
     async def read_file(
         self,
         worker: Worker,
         path: str,
-        offset: int = 0,
-        length: Optional[int] = None,
-    ) -> bytes:
+    ) -> Dict:
         """
-        Read content of a file on a worker.
+        Read and parse a config file on a worker.
 
         Args:
             worker: The worker to query
             path: The file path to read
-            offset: Offset in bytes
-            length: Length in bytes to read
 
         Returns:
-            File content as bytes
+            Parsed config as dict
 
         Raises:
             aiohttp.ClientError: If the request fails
         """
         url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/read"
-        params = {"path": path, "offset": offset}
-        if length is not None:
-            params["length"] = length
+        params = {"path": path}
         headers = {"Authorization": f"Bearer {worker.token}"}
 
         use_proxy_env = use_proxy_env_for_url(url)
@@ -140,8 +82,8 @@ class WorkerFilesystemClient:
                         f"Failed to read file: status={resp.status}, error={error_text}"
                     )
 
-                data = await resp.json()
-                return data["content"]
+                config_data = await resp.json()
+                return config_data
 
         except aiohttp.ClientError as e:
             logger.error(f"Error reading file on worker {worker.id}: {e}")
