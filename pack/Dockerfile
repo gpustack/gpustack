@@ -668,6 +668,21 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
+## Active all T-Head devices detection,
+## works with (default) T-Head container runtime and privileged mode.
+## See https://help.aliyun.com/document_detail/2996754.html.
+## Runs:
+## - With container runtime installed:
+##   [TODO, TBD]
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e GPUSTACK_RUNTIME_DOCKER_RESOURCE_INJECTION_POLICY=CDI -v /var/run/cdi:/var/run/cdi --privileged -v /usr/local/PPU_SDK:/usr/local/PPU_SDK:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e GPUSTACK_RUNTIME_DOCKER_RESOURCE_INJECTION_POLICY=CDI -v /var/run/cdi:/var/run/cdi --security-opt seccomp=unconfined -v /dev:/dev:ro -v /usr/local/PPU_SDK:/usr/local/PPU_SDK:ro ...
+ENV PPU_HOME="/usr/local/PPU_SDK" \
+    LD_LIBRARY_PATH="/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/PPU_SDK/lib:${LD_LIBRARY_PATH}" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/usr/local/PPU_SDK;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
+
 ## Active GPUStack runtime mirrored deployment mode,
 ## if getting an error like, "Found multiple Containers with the same hostname ...",
 ## please use `--env GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME=...` to specify the exact container name.
@@ -675,13 +690,16 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 
 ## GPUSTACK_RUNTIME_LOG_EXCEPTION=false: Disable logging exceptions from gpustack-runtime.
+## GPUSTACK_RUNTIME_DEPLOY_CDI_SPECS_DIRECTORY=/var/run/cdi: Set CDI specs directory.
 ## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT=true: Enable mirrored deployment mode.
 ## GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=false: Disable auto correction of runner images.
 ## GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION=true: Disable visualizating image pull progress, instead using simple logs.
 ## GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS: Configure filter labels for mirrored deployment.
 ## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES: Declare volumes to be ignored during mirrored deployment.
 ENV GPUSTACK_RUNTIME_LOG_EXCEPTION="false" \
+    GPUSTACK_RUNTIME_DEPLOY_CDI_SPECS_DIRECTORY="/var/run/cdi" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/var/run/cdi;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}" \
     GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE="false" \
     GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION="true" \
     GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS="${GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS}"

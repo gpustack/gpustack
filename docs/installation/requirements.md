@@ -23,6 +23,7 @@ GPUStack supports a variety of General-Purpose Accelerators as inference backend
 - [x] Iluvatar GPU (Experimental)
 - [x] MetaX GPU (Experimental)
 - [x] Cambricon MLU (Experimental)
+- [x] T-Head PPU (Experimental)
 
 Ensure all required drivers and toolkits are installed before running GPUStack.
 
@@ -205,6 +206,25 @@ sudo cnmon
 
 #### Supported Inference Backends
 
+- [x] Custom
+
+### T-Head PPU
+
+#### Requirements
+
+- T-Head PPU Driver
+- T-Head PPU SDK
+
+Run the following commands to verify:
+
+```bash
+sudo ppu-smi
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
 - [x] Custom
 
 ## Networking Requirements
