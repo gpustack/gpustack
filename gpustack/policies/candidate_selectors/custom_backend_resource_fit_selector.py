@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Dict, List, Optional
 
 from gpustack.policies.base import (
@@ -39,7 +38,7 @@ EVENT_ACTION_CPU_ONLY = "backend_cpu_only_scheduling_msg"
 
 
 async def estimate_custom_backend_vram(
-    model: Model, token: Optional[str] = None
+    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
 ) -> int:
     """
     Estimate the VRAM requirement in bytes for custom backends.
@@ -73,8 +72,8 @@ async def estimate_custom_backend_vram(
                 asyncio.to_thread(get_model_weight_size, model, token),
                 timeout=timeout_in_seconds,
             )
-        elif model.source == SourceEnum.LOCAL_PATH and os.path.exists(model.local_path):
-            weight_size = get_local_model_weight_size(model.local_path)
+        elif model.source == SourceEnum.LOCAL_PATH:
+            weight_size = await get_local_model_weight_size(model.local_path, workers)
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -150,7 +149,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         """
         # Estimate VRAM requirements using actual model weight
         self._vram_claim = await estimate_custom_backend_vram(
-            self._model, self._config.huggingface_token
+            self._model, self._config.huggingface_token, workers
         )
 
         # Estimate RAM requirements (conservative estimate)

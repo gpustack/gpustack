@@ -141,9 +141,7 @@ class BackendFrameworkFilter(WorkerFilter):
         if runners_list and len(runners_list) > 0:
             return True
 
-        await self._has_lower_runners(**kwargs)
-
-        return False
+        return await self._has_lower_runners(**kwargs)
 
     async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """

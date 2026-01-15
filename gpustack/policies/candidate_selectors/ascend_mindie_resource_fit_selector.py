@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Dict, List, Optional, Tuple
 
 from gpustack_runtime.deployer.__utils__ import compare_versions
@@ -140,7 +139,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         """
 
         # Estimate resource usage.
-        estimated_usage = await self._estimate_usage()
+        estimated_usage = await self._estimate_usage(workers)
 
         # Filter workers based on estimated usage.
         candidates = await self._construct_candidates(estimated_usage, workers)
@@ -155,7 +154,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def _estimate_usage(self) -> RequestEstimateUsage:  # noqa: C901
+    async def _estimate_usage(  # noqa: C901
+        self, workers: Optional[List[Worker]] = None
+    ) -> RequestEstimateUsage:
         """
         Estimate the resource usage of the model instance.
 
@@ -215,8 +216,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 )
             elif source == SourceEnum.LOCAL_PATH:
                 local_path = self._model.local_path
-                if os.path.exists(local_path):
-                    vram_weight = get_local_model_weight_size(local_path)
+                vram_weight = await get_local_model_weight_size(local_path, workers)
         except asyncio.TimeoutError:
             logger.warning(
                 f"Timeout when getting weight size for model {self._model.name}"
