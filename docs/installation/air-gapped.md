@@ -60,8 +60,6 @@ sudo docker run --rm -it --entrypoint "" gpustack/gpustack \
 
 The displayed image list includes all supported accelerators, inference backends, versions, and architectures. If you only need a subset, see the [CLI Reference](../cli-reference/list-images.md) for filtering options.
 
-- **Save Images**
-
 ## Installation
 
 After preparing the internal container registry with the required images, you can install GPUStack in the air-gapped environment. Port 80 is the primary server endpoint, while port 10161 is used to expose metrics for observability.

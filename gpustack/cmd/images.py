@@ -6,6 +6,7 @@ from gpustack_runtime.cmds import (
     CopyImagesSubCommand,
     ListImagesSubCommand,
     SaveImagesSubCommand,
+    LoadImagesSubCommand,
     append_images,
 )
 
@@ -19,3 +20,4 @@ def setup_images_cmd(subparsers: argparse._SubParsersAction):
     ListImagesSubCommand.register(subparsers)
     SaveImagesSubCommand.register(subparsers)
     CopyImagesSubCommand.register(subparsers)
+    LoadImagesSubCommand.register(subparsers)
