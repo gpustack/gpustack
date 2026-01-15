@@ -9,6 +9,8 @@ from gpustack import envs
 
 logger = logging.getLogger(__name__)
 
+_TIMEOUT = 15
+
 
 class WorkerFilesystemClient:
     """Client for interacting with worker filesystem APIs."""
@@ -52,20 +54,15 @@ class WorkerFilesystemClient:
 
         Returns:
             Parsed config as dict
-
-        Raises:
-            aiohttp.ClientError: If the request fails
         """
-        url = (
-            f"http://{worker.advertise_address or worker.ip}:{worker.port}/model-config"
-        )
+        url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/model-config"
         params = {"path": path}
         headers = {"Authorization": f"Bearer {worker.token}"}
 
         use_proxy_env = use_proxy_env_for_url(url)
         client = self._http_client if use_proxy_env else self._http_client_no_proxy
 
-        timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+        timeout = aiohttp.ClientTimeout(total=_TIMEOUT, sock_connect=5)
 
         try:
             async with client.get(
@@ -83,13 +80,9 @@ class WorkerFilesystemClient:
 
                 config_data = await resp.json()
                 return config_data
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Error reading file on worker {worker.id}: {e}")
-            raise
         except Exception as e:
-            logger.error(f"Unexpected error reading file on worker {worker.id}: {e}")
-            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+            logger.error(f"Error reading config file on worker {worker.name}: {e}")
+            raise
 
     async def path_exists(
         self,
@@ -105,20 +98,15 @@ class WorkerFilesystemClient:
 
         Returns:
             FileExistsResponse indicating if the path exists
-
-        Raises:
-            aiohttp.ClientError: If the request fails
         """
-        url = (
-            f"http://{worker.advertise_address or worker.ip}:{worker.port}/file-exists"
-        )
+        url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/file-exists"
         params = {"path": path}
         headers = {"Authorization": f"Bearer {worker.token}"}
 
         use_proxy_env = use_proxy_env_for_url(url)
         client = self._http_client if use_proxy_env else self._http_client_no_proxy
 
-        timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+        timeout = aiohttp.ClientTimeout(total=_TIMEOUT, sock_connect=5)
 
         try:
             async with client.get(
@@ -136,10 +124,52 @@ class WorkerFilesystemClient:
 
                 data = await resp.json()
                 return FileExistsResponse.model_validate(data)
-
-        except aiohttp.ClientError as e:
-            logger.error(f"Error checking path on worker {worker.id}: {e}")
-            raise
         except Exception as e:
-            logger.error(f"Unexpected error checking path on worker {worker.id}: {e}")
-            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+            logger.error(f"Error checking path on worker {worker.name}: {e}")
+            raise
+
+    async def get_model_weight_size(
+        self,
+        worker: Worker,
+        path: str,
+    ) -> int:
+        """
+        Get the size of model weight files in a directory on a worker.
+
+        Args:
+            worker: The worker to query
+            path: The directory path to scan
+
+        Returns:
+            The total size in bytes
+        """
+        url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/model-weight-size"
+        params = {"path": path}
+        headers = {"Authorization": f"Bearer {worker.token}"}
+
+        use_proxy_env = use_proxy_env_for_url(url)
+        client = self._http_client if use_proxy_env else self._http_client_no_proxy
+
+        timeout = aiohttp.ClientTimeout(total=_TIMEOUT, sock_connect=5)
+
+        try:
+            async with client.get(
+                url, params=params, headers=headers, timeout=timeout
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(
+                        f"Failed to get model weight size on worker {worker.id}: "
+                        f"status={resp.status}, error={error_text}"
+                    )
+                    raise aiohttp.ClientError(
+                        f"Failed to get model weight size: status={resp.status}, error={error_text}"
+                    )
+
+                data = await resp.json()
+                return data.get("size", 0)
+        except Exception as e:
+            logger.error(
+                f"Error getting model weight size on worker {worker.name}: {e}"
+            )
+            raise

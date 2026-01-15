@@ -261,12 +261,12 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         """
         if self._is_diffusion:
             self._vram_claim = await estimate_diffusion_model_vram(
-                self._model, self._config.huggingface_token
+                self._model, self._config.huggingface_token, workers
             )
         else:
             await self.cal_mem_fraction_static(workers)
             self._vram_claim = await estimate_model_vram(
-                self._model, self._config.huggingface_token
+                self._model, self._config.huggingface_token, workers
             )
         self._ram_claim = get_model_ram_claim(self._model)
 

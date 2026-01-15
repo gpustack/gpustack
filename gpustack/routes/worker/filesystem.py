@@ -28,7 +28,7 @@ def is_config_file(filename: str) -> bool:
     return filename in ALLOWED_CONFIG_FILES
 
 
-@router.get("/model-config")
+@router.get("/files/model-config")
 async def read_model_config(path: str = Query(..., description="File path to read")):
     """
     Read and parse a model config file.
@@ -79,7 +79,7 @@ async def read_model_config(path: str = Query(..., description="File path to rea
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
 
-@router.get("/file-exists", response_model=FileExistsResponse)
+@router.get("/files/file-exists", response_model=FileExistsResponse)
 async def file_exists(path: str = Query(..., description="Path to check")):
     """
     Check if a path exists.
@@ -100,3 +100,36 @@ async def file_exists(path: str = Query(..., description="Path to check")):
     except Exception as e:
         logger.error(f"Error checking path {path}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to check path: {str(e)}")
+
+
+@router.get("/files/model-weight-size")
+async def get_model_weight_size(
+    path: str = Query(..., description="Directory path to scan")
+):
+    """
+    Calculate the total size of model weight files in a directory.
+    """
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+    try:
+        normalized_path = os.path.normpath(path)
+        if not os.path.exists(normalized_path):
+            raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
+
+        if not os.path.isdir(normalized_path):
+            raise HTTPException(
+                status_code=400, detail=f"Path is not a directory: {path}"
+            )
+
+        total_size = 0
+        with os.scandir(normalized_path) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.endswith(weight_file_extensions):
+                    total_size += entry.stat().st_size
+        return {"size": total_size}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error calculating model weight size for {path}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to calculate size: {str(e)}"
+        )
