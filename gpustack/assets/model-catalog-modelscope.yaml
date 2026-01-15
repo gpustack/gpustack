@@ -101,6 +101,27 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
+- name: Falcon-H1R-7B
+  description: Falcon-H1R-7B is a reasoning-specialized language model built on top of Falcon-H1-7B-Base, featuring a Hybrid-Head Language Model (Transformer-SSM) architecture that delivers outstanding performance in mathematics, programming, and instruction following.
+  home: https://huggingface.co/tiiuae
+  icon: /static/catalog_icons/tii.png
+  size: 7
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+  licenses:
+    - falcon-llm-license
+  release_date: "2026-01-05"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: tiiuae/Falcon-H1R-7B
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=deepseek_r1
+        - --max-model-len=65536
 - name: Qwen3-14B
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
