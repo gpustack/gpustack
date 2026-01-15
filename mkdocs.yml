@@ -145,6 +145,7 @@ nav:
           - Reload Config: cli-reference/reload-config.md
           - List Images: cli-reference/list-images.md
           - Save Images: cli-reference/save-images.md
+          - Load Images: cli-reference/load-images.md
           - Copy Images: cli-reference/copy-images.md
       - Environment Variables: environment-variables.md
   - Inference Performance Lab:
