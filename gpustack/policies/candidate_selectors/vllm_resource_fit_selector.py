@@ -152,6 +152,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         NON_LLM_GMU_EXCEPTIONS = {
             "Qwen3ForCausalLM",
             "Qwen3ForSequenceClassification",  # Qwen3-Embedding & Qwen3-Reranker
+            "Qwen3VLForConditionalGeneration",  # Qwen3-VL-Embedding & Qwen3-VL-Reranker
         }
 
         if CategoryEnum.LLM not in self._model.categories:
