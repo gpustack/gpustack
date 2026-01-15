@@ -844,6 +844,54 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
+- name: Qwen3-VL-Embedding-2B
+  description: Qwen3-VL-Embedding is a multimodal embedding model series optimized for multimodal retrieval, clustering, and classification. It supports image-text retrieval and unified multimodal representation learning with 30+ languages support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - embedding
+  capabilities:
+    - vision
+    - dimensions/2048
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Embedding-2B
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --runner=pooling
+- name: Qwen3-VL-Embedding-8B
+  description: Qwen3-VL-Embedding is a multimodal embedding model series optimized for multimodal retrieval, clustering, and classification. It supports image-text retrieval and unified multimodal representation learning with 30+ languages support.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - embedding
+  capabilities:
+    - vision
+    - dimensions/4096
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Embedding-8B
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --runner=pooling
 - name: BGE-M3
   description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
   home: https://bge-model.com
@@ -1025,6 +1073,52 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: Qwen3-VL-Reranker-2B
+  description: Qwen3-VL-Reranker is a multimodal text reranking model series optimized for multimodal retrieval, clustering, classification, and bitext mining. It consistently outperforms the base embedding model and baseline rerankers.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 2
+  categories:
+    - reranker
+  capabilities:
+    - vision
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Reranker-2B
+      categories:
+        - reranker
+      backend: vLLM
+      backend_parameters:
+        - '--hf_overrides={"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: Qwen3-VL-Reranker-8B
+  description: Qwen3-VL-Reranker is a multimodal text reranking model series optimized for multimodal retrieval, clustering, classification, and bitext mining. It consistently outperforms the base embedding model and baseline rerankers, with the 8B model showing particularly strong results.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - reranker
+  capabilities:
+    - vision
+    - max_tokens/32K
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-08"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-VL-Reranker-8B
+      categories:
+        - reranker
+      backend: vLLM
+      backend_parameters:
+        - '--hf_overrides={"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
 - name: BGE-Reranker-V2-M3
   description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
   home: https://bge-model.com
