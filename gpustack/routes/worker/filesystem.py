@@ -28,8 +28,8 @@ def is_config_file(filename: str) -> bool:
     return filename in ALLOWED_CONFIG_FILES
 
 
-@router.get("/files/read")
-async def read_file(path: str = Query(..., description="File path to read")):
+@router.get("/model-config")
+async def read_model_config(path: str = Query(..., description="File path to read")):
     """
     Read and parse a model config file.
     Only model config files (config.json, model_index.json, etc.) can be read for security.
@@ -79,7 +79,7 @@ async def read_file(path: str = Query(..., description="File path to read")):
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
 
-@router.get("/files/exists", response_model=FileExistsResponse)
+@router.get("/file-exists", response_model=FileExistsResponse)
 async def file_exists(path: str = Query(..., description="Path to check")):
     """
     Check if a path exists.

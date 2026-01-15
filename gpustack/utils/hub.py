@@ -340,29 +340,26 @@ async def read_repo_file_content(  # noqa: C901
                 return None
             fp = os.path.join(local_path, file_path)
             if not os.path.exists(fp):
-
                 # Try to read from worker if session and workers are provided
-                if session is not None and workers is not None and len(workers) > 0:
-                    async with WorkerFilesystemClient() as filesystem_client:
-                        for worker in workers:
-                            try:
+                async with WorkerFilesystemClient() as filesystem_client:
+                    for worker in workers or []:
+                        try:
+                            logger.info(
+                                f"Trying to read file {file_path} from worker {worker.id}"
+                            )
+                            config_dict = await filesystem_client.read_model_config(
+                                worker, fp
+                            )
+                            if config_dict:
                                 logger.info(
-                                    f"Trying to read file {file_path} from worker {worker.id}"
+                                    f"Successfully read file {file_path} from worker {worker.id}"
                                 )
-                                config_dict = await filesystem_client.read_file(
-                                    worker, fp
-                                )
-                                if config_dict:
-                                    logger.info(
-                                        f"Successfully read file {file_path} from worker {worker.id}"
-                                    )
-                                    return config_dict
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to read file {file_path} from worker {worker.id}: {e}"
-                                )
-                                continue
-                    return None
+                                return config_dict
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to read file {file_path} from worker {worker.id}: {e}"
+                            )
+                            continue
                 return None
             with open(fp, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -510,16 +507,13 @@ async def get_pretrained_config(
                         logger.info(f"Trying to read config from worker {worker.id}")
                         # Read config.json file
                         config_path = os.path.join(model.local_path, "config.json")
-                        content = await filesystem_client.read_file(worker, config_path)
-                        if not content:
+                        config_dict = await filesystem_client.read_model_config(
+                            worker, config_path
+                        )
+                        if not config_dict:
                             continue
 
                         logger.info(f"Successfully read config from worker {worker.id}")
-                        if isinstance(content, bytes):
-                            config_str = content.decode("utf-8")
-                        elif isinstance(content, str):
-                            config_str = content
-                        config_dict = json.loads(config_str)
                         pretrained_config = PretrainedConfig.from_dict(config_dict)
                         return pretrained_config
                     except Exception as e:
