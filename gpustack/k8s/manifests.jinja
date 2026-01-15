@@ -181,13 +181,17 @@ spec:
           volumeMounts:
             - name: gpustack-data-dir
               mountPath: /var/lib/gpustack
+            - name: cdi
+              mountPath: /var/run/cdi
             #
             # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
             #
             - name: gpustack-ascend-driver
               mountPath: /usr/local/Ascend/driver
+              readOnly: true
             - name: gpustack-ascend-toolkit
               mountPath: /usr/local/Ascend/ascend-toolkit
+              readOnly: true
           ports:
             - name: api
               containerPort: 10150
@@ -217,6 +221,10 @@ spec:
         - name: gpustack-data-dir
           hostPath:
             path: /var/lib/gpustack
+            type: DirectoryOrCreate
+        - name: cdi
+          hostPath:
+            path: /var/run/cdi
             type: DirectoryOrCreate
         #
         # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
