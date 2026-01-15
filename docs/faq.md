@@ -130,7 +130,9 @@ sudo docker run -d --name gpustack \
 
 ### How can I deploy the model from Local Path?
 
-When deploying models from Local Path, it is recommended to **upload the model files to each node** and **maintain the same absolute path**.
+When deploying models from Local Path, ensure the model path is accessible on the target workers.
+
+If the model is stored on a specific worker, you can use the worker selector to deploy the model to that worker.
 
 Another option is to mount a shared storage across multiple nodes.
 
