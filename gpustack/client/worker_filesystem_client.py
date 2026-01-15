@@ -34,14 +34,11 @@ class WorkerFilesystemClient:
 
     async def close(self):
         """Close all HTTP clients and connector."""
-        if self._http_client:
-            await self._http_client.close()
-        if self._http_client_no_proxy:
-            await self._http_client_no_proxy.close()
-        if self._connector:
-            await self._connector.close()
+        await self._http_client.close()
+        await self._http_client_no_proxy.close()
+        await self._connector.close()
 
-    async def read_file(
+    async def read_model_config(
         self,
         worker: Worker,
         path: str,
@@ -59,7 +56,9 @@ class WorkerFilesystemClient:
         Raises:
             aiohttp.ClientError: If the request fails
         """
-        url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/read"
+        url = (
+            f"http://{worker.advertise_address or worker.ip}:{worker.port}/model-config"
+        )
         params = {"path": path}
         headers = {"Authorization": f"Bearer {worker.token}"}
 
@@ -111,7 +110,7 @@ class WorkerFilesystemClient:
             aiohttp.ClientError: If the request fails
         """
         url = (
-            f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/exists"
+            f"http://{worker.advertise_address or worker.ip}:{worker.port}/file-exists"
         )
         params = {"path": path}
         headers = {"Authorization": f"Bearer {worker.token}"}
