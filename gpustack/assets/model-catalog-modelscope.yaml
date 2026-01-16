@@ -732,6 +732,32 @@ model_sets:
         - --max-model-len=65536
         - --tokenizer-mode=deepseek_v32
         - --reasoning-parser=deepseek_v3
+- name: MiniMax-M2.1
+  description: MiniMax-M2.1 is a high-performance agentic model, optimized for robustness in coding, tool use, instruction following, and long-horizon planning. It excels in multilingual software development and complex multi-step workflows.
+  home: https://www.minimax.io
+  icon: /static/catalog_icons/minimax.png
+  size: 230
+  activated_size: 10
+  categories:
+    - llm
+  capabilities:
+    - context/192K
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2025-12-23"
+  specs:
+    - mode: standard
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: MiniMax/MiniMax-M2.1
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=minimax_m2_append_think
+        - --tool-call-parser=minimax_m2
+        - --enable-auto-tool-choice
+        - --trust-remote-code
 # Embedding models
 - name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
