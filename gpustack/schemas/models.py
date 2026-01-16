@@ -209,6 +209,7 @@ class ModelSpecBase(SQLModel, ModelSource):
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
     distributable: Optional[bool] = False
+    max_context_len: Optional[int] = Field(default=0)
 
     # Extended KV Cache configuration. Currently maps to LMCache config in vLLM and SGLang.
     extended_kv_cache: Optional[ExtendedKVCacheConfig] = Field(
@@ -562,6 +563,16 @@ class ModelInstancePublic(
 
 
 ModelInstancesPublic = PaginatedList[ModelInstancePublic]
+
+
+@dataclass
+class ModelContextLengths:
+    native: int
+    scaled: int
+
+
+class ModelContextLengthRequest(BaseModel):
+    model: ModelSource
 
 
 def is_gguf_model(model: Union[Model, ModelSource]):

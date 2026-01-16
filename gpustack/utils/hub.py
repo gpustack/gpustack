@@ -21,7 +21,14 @@ from requests.exceptions import HTTPError
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
-from gpustack.schemas.models import CategoryEnum, Model, SourceEnum, get_mmproj_filename
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    ModelSource,
+    SourceEnum,
+    get_mmproj_filename,
+    ModelContextLengths,
+)
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 
 logger = logging.getLogger(__name__)
@@ -264,7 +271,7 @@ def match_model_scope_file_paths(
 
 
 def read_repo_file_content(
-    model: Model,
+    model: ModelSource,
     file_path: str,
     token: Optional[str] = None,
 ) -> Optional[bytes]:
@@ -547,8 +554,18 @@ def get_pretrained_config_with_fallback(model: Model, **kwargs):
 # Keep in our codebase to avoid dependency on vllm's internal
 # APIs which may change unexpectedly.
 # https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/config.py#L2453
-def get_max_model_len(pretrained_config) -> int:  # noqa: C901
-    """Get the model's maximum length."""
+def get_max_model_len(pretrained_config) -> ModelContextLengths:  # noqa: C901
+    """
+    Get the model's maximum context length.
+
+    Args:
+        pretrained_config: The pretrained configuration object of the model
+
+    Returns:
+        ModelContextLengths:
+            - native: The original maximum context length as defined in the model config
+            - scaled: The potentially scaled maximum context length after applying rope_scaling
+    """
     derived_max_model_len = float("inf")
     possible_keys = [
         # OPT
@@ -589,6 +606,9 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
         )
         derived_max_model_len = default_max_len
 
+    native_max_model_len = int(derived_max_model_len)
+    scaled_max_model_len = int(derived_max_model_len)
+
     rope_scaling = getattr(pretrained_config, "rope_scaling", None)
     if rope_scaling is not None:
         if "type" in rope_scaling:
@@ -605,11 +625,16 @@ def get_max_model_len(pretrained_config) -> int:  # noqa: C901
             if "factor" in rope_scaling:
                 scaling_factor = rope_scaling["factor"]
             if rope_type == "yarn":
-                derived_max_model_len = rope_scaling["original_max_position_embeddings"]
-            derived_max_model_len *= scaling_factor
+                native_max_model_len = int(
+                    rope_scaling["original_max_position_embeddings"]
+                )
+                scaled_max_model_len = native_max_model_len
+            scaled_max_model_len = int(scaled_max_model_len * scaling_factor)
 
-    logger.debug(f"Derived max model length: {derived_max_model_len}")
-    return int(derived_max_model_len)
+    logger.debug(
+        f"Derived max model length(native={native_max_model_len}, scaled={scaled_max_model_len})"
+    )
+    return ModelContextLengths(native=native_max_model_len, scaled=scaled_max_model_len)
 
 
 # Similar to https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/transformers_utils/config.py#L700,

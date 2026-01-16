@@ -120,7 +120,7 @@ class ModelParameters:
                 pass
 
         # Default
-        self.derived_max_seq_len = get_max_model_len(pretrained_config)
+        self.derived_max_seq_len = get_max_model_len(pretrained_config).scaled
         if not self.num_attention_heads:
             # For backward compatibility, try to get num_attention_heads from llm_config.
             self.num_attention_heads = get_model_num_attention_heads(pretrained_config)

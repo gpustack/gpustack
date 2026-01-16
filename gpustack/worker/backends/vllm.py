@@ -396,12 +396,9 @@ class VLLMServer(InferenceServer):
             self._model.backend_parameters,
             ["max-model-len"],
         )
-        if (
-            specified_max_model_len is None
-            and derived_max_model_len
-            and derived_max_model_len > 8192
-        ):
-            arguments.extend(["--max-model-len", "8192"])
+        if specified_max_model_len is None and derived_max_model_len:
+            # max_len was calculated during deployment, we don't need to limit it under 8192 anymore
+            arguments.extend(["--max-model-len", str(derived_max_model_len)])
 
         auto_parallelism_arguments = get_auto_parallelism_arguments(
             self._model.backend_parameters,

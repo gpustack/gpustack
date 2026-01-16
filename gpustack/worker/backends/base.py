@@ -245,10 +245,13 @@ class InferenceServer(ABC):
         Returns:
             The derived max model length, or the default value if derivation fails.
         """
+        if self._model.max_context_len:
+            return self._model.max_context_len
         try:
             pretrained_config = self._get_pretrained_config()
             pretrained_or_hf_text_config = get_hf_text_config(pretrained_config)
-            return get_max_model_len(pretrained_or_hf_text_config)
+            lengths = get_max_model_len(pretrained_or_hf_text_config)
+            return lengths.scaled if lengths else 8192
         except Exception as e:
             logger.error(f"Failed to derive max model length: {e}")
 
