@@ -57,7 +57,7 @@ from gpustack.scheduler.calculator import (
 )
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
-from gpustack.utils.gpu import parse_gpu_ids_by_worker
+from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import (
     get_pretrained_config_with_fallback,
     has_diffusers_model_index,
@@ -212,7 +212,7 @@ class Scheduler:
             and model.gpu_selector
             and model.gpu_selector.gpu_ids
         ):
-            worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+            worker_gpu_ids = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
             if len(worker_gpu_ids) > 1:
                 instance.state = ModelInstanceStateEnum.ERROR
                 instance.state_message = (
@@ -228,29 +228,36 @@ class Scheduler:
         Args:
             instance: ModelInstance to check.
         """
-
+        newly_created = (instance.updated_at - instance.created_at) < timedelta(
+            seconds=1
+        )
+        update_delta = datetime.now(timezone.utc) - instance.updated_at.replace(
+            tzinfo=timezone.utc
+        )
         return (
             (
+                # When enqueueing pending state model instances, handle two cases:
+                # 1. Newly created model instances (updated_at - created_at < 1 second),
+                #    which will be updated to ANALYZING in _evaluate.
+                # 2. Existing PENDING model instances periodically enqueued by the scheduler job.
+                #    In this case, update_delta is longer than 90s, as the scheduler runs every 180s.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.PENDING
+                and (newly_created or update_delta > timedelta(seconds=90))
             )
             or (
                 # Reschedule while it stays in anayzing state for too long,
                 # maybe the server is restarted.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.ANALYZING
-                and datetime.now(timezone.utc)
-                - instance.updated_at.replace(tzinfo=timezone.utc)
-                > timedelta(minutes=3)
+                and update_delta > timedelta(minutes=3)
             )
             or (
                 # Reschedule while it stays in scheduled state for too long,
                 # maybe the worker is down.
                 instance.worker_id is not None
                 and instance.state == ModelInstanceStateEnum.SCHEDULED
-                and datetime.now(timezone.utc)
-                - instance.updated_at.replace(tzinfo=timezone.utc)
-                > timedelta(minutes=3)
+                and update_delta > timedelta(minutes=3)
             )
         )
 
@@ -335,6 +342,7 @@ class Scheduler:
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim
                 )
+                model_instance.gpu_type = candidate.gpu_type
                 model_instance.gpu_indexes = candidate.gpu_indexes
                 model_instance.gpu_addresses = candidate.gpu_addresses
                 model_instance.distributed_servers = DistributedServers(
@@ -371,6 +379,8 @@ async def find_candidate(
                 - The schedule candidate.
                 - A list of messages for the scheduling process.
     """
+
+    # Filter workers.
     filters = [
         ClusterFilter(model),
         GPUMatchingFilter(model),
@@ -385,6 +395,7 @@ async def find_candidate(
     if filter_messages:
         messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
 
+    # Initialize candidate selector.
     try:
         if is_gguf_model(model):
             candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
@@ -403,13 +414,17 @@ async def find_candidate(
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
+    # Select candidates.
     candidates = await candidates_selector.select_candidates(workers)
 
+    # Score candidates.
     placement_scorer = PlacementScorer(model)
     candidates = await placement_scorer.score(candidates)
 
+    # Pick the highest score candidate.
     candidate = pick_highest_score_candidate(candidates)
 
+    # Collect messages.
     if candidate is None and len(workers) > 0:
         resource_fit_messages = candidates_selector.get_messages() or [
             "No workers meet the resource requirements."
@@ -418,6 +433,7 @@ async def find_candidate(
     elif candidate and candidate.overcommit:
         messages.extend(candidates_selector.get_messages())
 
+    # Return the candidate and messages.
     return candidate, messages
 
 
@@ -481,7 +497,7 @@ async def evaluate_gguf_model(
         model.distributable = True
 
     if model.gpu_selector and model.gpu_selector.gpu_ids:
-        worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+        worker_gpu_ids = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
         if (
             len(worker_gpu_ids) > 1
             and model.distributable

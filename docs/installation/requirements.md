@@ -23,6 +23,7 @@ GPUStack supports a variety of General-Purpose Accelerators as inference backend
 - [x] Iluvatar GPU (Experimental)
 - [x] MetaX GPU (Experimental)
 - [x] Cambricon MLU (Experimental)
+- [x] T-Head PPU (Experimental)
 
 Ensure all required drivers and toolkits are installed before running GPUStack.
 
@@ -207,6 +208,25 @@ sudo cnmon
 
 - [x] Custom
 
+### T-Head PPU
+
+#### Requirements
+
+- T-Head PPU Driver
+- T-Head PPU SDK
+
+Run the following commands to verify:
+
+```bash
+sudo ppu-smi
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] Custom
+
 ## Networking Requirements
 
 ### Connectivity Requirements
@@ -248,7 +268,7 @@ When using distributed vLLM, GPUStack will parse the above port range for Ray se
 and assign them in order as below:
 
 1. GCS server port (the first port of the range)
-2. Client Server port
+2. Client Server port (reserved for compatibility, not used anymore, see https://github.com/gpustack/gpustack/issues/4171)
 3. Dashboard port
 4. Dashboard gRPC port (no longer used since Ray 2.45.0, kept for backward compatibility)
 5. Dashboard agent gRPC port

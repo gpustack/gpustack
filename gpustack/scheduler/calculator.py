@@ -238,6 +238,7 @@ class GGUFParserCommandMutableParameters:
     skip_proxy: Optional[bool] = None
     skip_range_download_detect: Optional[bool] = None
     skip_tls_verify: Optional[bool] = None
+    header: Optional[List[str]] = None
 
     def from_args(self, args: List[str]):
         parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
@@ -469,6 +470,11 @@ class GGUFParserCommandMutableParameters:
         parser.add_argument(
             "--skip-tls-verify",
             action='store_true',
+            required=False,
+        )
+        parser.add_argument(
+            "--header",
+            action='append',
             required=False,
         )
 

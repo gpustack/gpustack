@@ -1,9 +1,11 @@
 import logging
+from copy import deepcopy
 from typing import List, Tuple, Optional, Dict
 
 import yaml
 from fastapi import APIRouter, Body
-from gpustack_runner.runner import ServiceVersionedRunner
+from gpustack_runner.runner import ServiceVersionedRunner, ServiceRunner
+from gpustack_runtime.deployer.__utils__ import compare_versions
 from sqlalchemy import or_, func
 from starlette.responses import StreamingResponse
 
@@ -113,15 +115,62 @@ async def check_backend_in_use(
         return False, []
 
 
+def get_lower_version_runners(
+    runners: list[ServiceRunner], backend_version: str
+) -> list[ServiceRunner]:
+    """
+    Filter runners whose version is less than or equal to the given backend_version.
+    Rebuilds the list[ServiceRunner] structure with only the matching elements.
+
+    Args:
+        runners: List of ServiceRunner objects to filter
+        backend_version: The version to compare against (only runners with versions <= this will be kept)
+
+    Returns:
+        List of ServiceRunner objects with filtered versions/backends
+    """
+    filtered_runners = []
+    for runner in runners:
+        # Create a new runner with filtered structure
+        new_runner = deepcopy(runner)
+
+        # Filter versions in backends
+        for version in new_runner.versions:
+            for backend in version.backends:
+                # Filter backend versions that are <= backend_version
+                backend.versions = [
+                    bv
+                    for bv in backend.versions
+                    if compare_versions(bv.version, backend_version) <= 0
+                ]
+
+        # Remove backends with no matching versions
+        for version in new_runner.versions:
+            version.backends = [
+                backend for backend in version.backends if backend.versions
+            ]
+
+        # Remove versions with no matching backends
+        new_runner.versions = [
+            version for version in new_runner.versions if version.backends
+        ]
+
+        # Only add runner if it has matching versions
+        if new_runner.versions:
+            filtered_runners.append(new_runner)
+
+    return filtered_runners
+
+
 def get_runner_versions_and_configs(
-    backend_name: str, variant: Optional[str] = None
+    backend_name: str, backend_version: Optional[str], **kwargs
 ) -> Tuple[Dict[str, ServiceVersionedRunner], VersionConfigDict, Optional[str]]:
     """
     Get runner versions and version configs for a given backend.
 
     Args:
         backend_name: The name of the backend service
-        variant: The variant of the backend service
+        kwargs: Others keyword arguments to pass to list_service_runners()
 
     Returns:
         A tuple containing:
@@ -130,8 +179,11 @@ def get_runner_versions_and_configs(
         - Default version (first available version or None)
     """
     runners_list = list_service_runners(
-        service=backend_name.lower(), backend_variant=variant
+        service=backend_name.lower(),
+        **kwargs,
     )
+    if backend_version:
+        runners_list = get_lower_version_runners(runners_list, backend_version)
     runner_versions: Dict[str, ServiceVersionedRunner] = {}
     version_configs = VersionConfigDict()
     default_version = None
@@ -165,6 +217,108 @@ def deduplicate_versions(versions: List[VersionListItem]) -> List[VersionListIte
     return result
 
 
+def get_runner_deprecate(runners: List[ServiceVersionedRunner]) -> bool:
+    """
+    Check if all runners are deprecated.
+
+    Args:
+        runners: List of ServiceVersionedRunner objects
+
+    Returns:
+        True if all runners are deprecated, False otherwise.
+        Returns False if the list is empty.
+    """
+    if not runners:
+        return False
+    return all(
+        runner.backends[0].versions[0].variants[0].deprecated for runner in runners
+    )
+
+
+def merge_list_runners(
+    backend_name: str, workers: List[Worker]
+) -> Tuple[Dict[str, List[ServiceVersionedRunner]], VersionConfigDict, Optional[str]]:
+    """
+    Merge runner versions and configs from multiple workers.
+
+    Extracts gpu.type and gpu.runtime_version from each worker's GPU devices
+    and uses them as query conditions for list_service_runners.
+
+    Args:
+        backend_name: The name of the backend service
+        workers: List of workers to extract GPU information from
+
+    Returns:
+        A tuple containing:
+        - Dict[str, List[ServiceVersionedRunner]]: Merged runner versions, grouped by version
+        - VersionConfigDict: Merged version configurations
+        - Optional[str]: Default version (from first query)
+    """
+    # Collect unique query conditions from all workers
+    query_conditions = set()
+    for worker in workers:
+        if worker.status and worker.status.gpu_devices:
+            for gpu in worker.status.gpu_devices:
+                # Extract variant for Ascend GPUs
+                variant = None
+                if gpu.vendor == ManufacturerEnum.ASCEND and gpu.arch_family:
+                    variant = get_ascend_cann_variant(gpu.arch_family).lower()
+
+                # Add (type, runtime_version, variant) tuple to set
+                # Use None for runtime_version if not available
+                query_conditions.add((gpu.type, gpu.runtime_version, variant))
+
+    merged_runner_versions: Dict[str, List[ServiceVersionedRunner]] = {}
+    merged_version_configs = VersionConfigDict()
+    merged_default_version = None
+
+    # Loop through each unique query condition
+    for idx, (gpu_type, runtime_version, variant) in enumerate(query_conditions):
+        # Build kwargs for get_runner_versions_and_configs
+        kwargs = {"backend": gpu_type}
+        if variant:
+            kwargs["backend_variant"] = variant
+
+        # Get runner versions and configs for this condition
+        runner_versions, version_configs, default_version = (
+            get_runner_versions_and_configs(backend_name, runtime_version, **kwargs)
+        )
+
+        # For the first condition, use its results as base
+        if idx == 0:
+            # Convert Dict[str, ServiceVersionedRunner] to Dict[str, List[ServiceVersionedRunner]]
+            merged_runner_versions = {
+                version: [runner] for version, runner in runner_versions.items()
+            }
+            merged_version_configs = version_configs
+            merged_default_version = default_version
+        else:
+            # Merge runner versions (append to list if exists)
+            for version, runner in runner_versions.items():
+                if version in merged_runner_versions:
+                    merged_runner_versions[version].append(runner)
+                else:
+                    merged_runner_versions[version] = [runner]
+
+            # Merge version configs
+            for version, config in version_configs.root.items():
+                if version not in merged_version_configs.root:
+                    # Add new version
+                    merged_version_configs.root[version] = config
+                else:
+                    # Merge built_in_frameworks (deduplicate)
+                    existing_frameworks = (
+                        merged_version_configs.root[version].built_in_frameworks or []
+                    )
+                    new_frameworks = config.built_in_frameworks or []
+                    merged_frameworks = list(set(existing_frameworks + new_frameworks))
+                    merged_version_configs.root[version].built_in_frameworks = (
+                        merged_frameworks
+                    )
+
+    return merged_runner_versions, merged_version_configs, merged_default_version
+
+
 @router.get("/list", response_model=InferenceBackendResponse)
 async def list_backend_configs(  # noqa: C901
     session: SessionDep, cluster_id: Optional[int] = None
@@ -182,23 +336,6 @@ async def list_backend_configs(  # noqa: C901
         workers = await Worker.all_by_field(session, "cluster_id", cluster_id)
     else:
         workers = await Worker.all(session)
-    framework_list = set()
-    variants = set()
-    for worker in workers:
-        if worker.status and worker.status.gpu_devices:
-            for gpu in worker.status.gpu_devices:
-                framework_list.add(gpu.type)
-                if (
-                    gpu.vendor == ManufacturerEnum.ASCEND
-                    and gpu.arch_family is not None
-                ):
-                    if variant := get_ascend_cann_variant(gpu.arch_family).lower():
-                        variants.add(variant)
-
-    target_variant = None
-    if variants and len(variants) == 1:
-        # Only apply variant filtering when all GPUs have the same variant
-        target_variant = list(variants)[0]
 
     # Process all backends from database (includes both built-in and custom backends)
     try:
@@ -214,22 +351,18 @@ async def list_backend_configs(  # noqa: C901
 
             if backend.is_built_in:
                 # For built-in backends, add runner versions and use special show name
-                runner_versions, version_configs, default_version = (
-                    get_runner_versions_and_configs(
-                        backend.backend_name, target_variant
-                    )
+                runner_versions, version_configs, default_version = merge_list_runners(
+                    backend.backend_name,
+                    workers,
                 )
                 # Merge runner versions with existing versions
                 for version, config in version_configs.root.items():
-                    filtered_frameworks = [
-                        framework
-                        for framework in config.built_in_frameworks
-                        if framework in framework_list
-                    ]
-                    if filtered_frameworks:
-                        is_deprecated = False
-                        if runner_versions.get(version):
-                            is_deprecated = runner_versions[version].deprecated
+                    # Check if this version has any built-in frameworks
+                    if config.built_in_frameworks:
+                        # Versions are only marked deprecated when no worker is compatible with them.
+                        is_deprecated = get_runner_deprecate(
+                            runner_versions.get(version, [])
+                        )
                         versions.append(
                             VersionListItem(
                                 version=version, is_deprecated=is_deprecated
@@ -302,7 +435,7 @@ async def merge_runner_versions_to_db(
 
         # Get versions from list_service_runners using the common function
         _, runner_versions, default_version = get_runner_versions_and_configs(
-            built_in_backend.backend_name
+            built_in_backend.backend_name, backend_version=None
         )
 
         if default_version and not built_in_backend.default_version:

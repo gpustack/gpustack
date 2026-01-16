@@ -161,6 +161,12 @@ class UserService:
         if user.is_admin:
             all_models = await Model.all_by_field(self.session, "deleted_at", None)
             model_names = {model.name for model in all_models}
+        elif user.is_system and user.cluster_id is not None:
+            # the system user must have cluster_id
+            all_models = await Model.all_by_fields(
+                self.session, {"deleted_at": None, "cluster_id": user.cluster_id}
+            )
+            model_names = {model.name for model in all_models}
         else:
             allowed_models = await MyModel.all_by_fields(
                 self.session, {"user_id": user.id, "deleted_at": None}

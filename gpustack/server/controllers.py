@@ -47,6 +47,7 @@ from gpustack.schemas.clusters import (
     CredentialType,
     ClusterStateEnum,
     SSHKeyOptions,
+    ClusterProvider,
 )
 
 from gpustack.schemas.users import (
@@ -167,6 +168,7 @@ class ModelInstanceController:
                 model = await Model.one_by_id(session, model_instance.model_id)
                 if not model:
                     return
+                model_deleting = model.deleted_at is not None
 
                 if not self._disable_gateway:
                     await mcp_handler.ensure_model_instance_mcp_bridge(
@@ -188,6 +190,9 @@ class ModelInstanceController:
                     )
                 elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
+                    return
+
+                if model_deleting:
                     return
 
                 await model.refresh(session)
@@ -620,12 +625,16 @@ async def sync_gateway(
     model: Model,
     networking_api: k8s_client.NetworkingV1Api,
 ):
+    event_type = event.type
+    model_from_db = await Model.one_by_id(session, model.id)
+    if not model_from_db:
+        event_type = EventType.DELETED
     if event.type != EventType.DELETED:
         destinations = await calculate_destinations(session, model)
     else:
         destinations = []
     await mcp_handler.ensure_model_ingress(
-        event_type=event.type,
+        event_type=event_type,
         namespace=cfg.get_namespace(),
         model=model,
         destinations=destinations,
@@ -1203,6 +1212,7 @@ class WorkerPoolController:
                 return
             # mark the data to avoid read after commit
             cluster_name = pool.cluster.name
+            cluster = pool.cluster
             pool_id = pool.id
             workers = await new_workers_from_pool(session, pool)
             if len(workers) == 0:
@@ -1213,6 +1223,10 @@ class WorkerPoolController:
                     session=session, source=worker, auto_commit=False
                 )
                 ids.append(created_worker.id)
+            if cluster.state == ClusterStateEnum.PENDING:
+                cluster.state = ClusterStateEnum.PROVISIONING
+                cluster.state_message = None
+                await cluster.update(session=session, auto_commit=False)
             await session.commit()
             logger.info(
                 f"Created {len(ids)} new workers {ids} for cluster {cluster_name} worker pool {pool_id}"
@@ -1516,11 +1530,38 @@ class ClusterController:
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
-                if self._disable_gateway:
-                    return
-                await self._ensure_worker_mcp_bridge(event)
+                await self._reconcile(event)
             except Exception as e:
                 logger.error(f"Failed to reconcile cluster: {e}")
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the cluster state.
+        """
+        await self._sync_cluster_state(event)
+        if self._disable_gateway:
+            return
+        await self._ensure_worker_mcp_bridge(event)
+
+    async def _sync_cluster_state(self, event: Event):
+        if event.type == EventType.DELETED:
+            return
+        cluster: Cluster = event.data
+        if not cluster:
+            return
+        async with AsyncSession(self._engine) as session:
+            cluster: Cluster = await Cluster.one_by_id(session, cluster.id)
+            if not cluster or cluster.provider in [
+                ClusterProvider.Kubernetes,
+                ClusterProvider.Docker,
+            ]:
+                return
+            if cluster.workers == 0 and cluster.state != ClusterStateEnum.PENDING:
+                cluster.state = ClusterStateEnum.PENDING
+                cluster.state_message = (
+                    "No workers have been provisioned for this cluster yet."
+                )
+                await cluster.update(session=session, auto_commit=True)
 
     async def _get_worker_registries(
         self, session: AsyncSession, cluster_id: int

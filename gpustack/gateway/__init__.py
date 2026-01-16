@@ -2,6 +2,9 @@ import time
 import asyncio
 import base64
 import os
+import logging
+import yaml
+import copy
 from typing import Any, Dict, Tuple, List, Optional
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
@@ -34,7 +37,7 @@ from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
 )
 
-from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
+logger = logging.getLogger(__name__)
 
 mcp_registry_port = 80
 
@@ -192,7 +195,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
     hostname = cfg.get_external_hostname()
     tls_secret_name = cfg.get_tls_secret_name()
     network_v1_client = k8s_client.NetworkingV1Api(api_client=api_client)
-    ingress_name = GATEWAY_MIRROR_INGRESS_NAME
+    ingress_name = envs.GATEWAY_MIRROR_INGRESS_NAME
     try:
         ingress: k8s_client.V1Ingress = await network_v1_client.read_namespaced_ingress(
             name=ingress_name, namespace=gateway_namespace
@@ -203,6 +206,19 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
         else:
             raise
     registry = get_gpustack_higress_registry(cfg=cfg)
+    expected_rule = k8s_client.V1IngressRule(
+        http=k8s_client.V1HTTPIngressRuleValue(
+            paths=[
+                k8s_client.V1HTTPIngressPath(
+                    path="/",
+                    path_type="Prefix",
+                    backend=k8s_client.V1IngressBackend(
+                        resource=get_default_mcpbridge_ref()
+                    ),
+                )
+            ]
+        ),
+    )
 
     expected_ingress = k8s_client.V1Ingress(
         metadata=k8s_client.V1ObjectMeta(
@@ -216,21 +232,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
         ),
         spec=k8s_client.V1IngressSpec(
             ingress_class_name='higress',
-            rules=[
-                k8s_client.V1IngressRule(
-                    http=k8s_client.V1HTTPIngressRuleValue(
-                        paths=[
-                            k8s_client.V1HTTPIngressPath(
-                                path="/",
-                                path_type="Prefix",
-                                backend=k8s_client.V1IngressBackend(
-                                    resource=get_default_mcpbridge_ref()
-                                ),
-                            )
-                        ]
-                    ),
-                )
-            ],
+            rules=[expected_rule],
         ),
     )
     if tls_secret_name is not None:
@@ -240,6 +242,11 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
                 secret_name=tls_secret_name,
             )
         ]
+    if hostname is not None:
+        host_rule = copy.deepcopy(expected_rule)
+        host_rule.host = hostname
+        expected_ingress.spec.rules.append(host_rule)
+
     if not ingress:
         await network_v1_client.create_namespaced_ingress(
             namespace=gateway_namespace, body=expected_ingress
@@ -361,7 +368,16 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                         }
                     ],
                     "operate": "rename",
-                }
+                },
+                {
+                    "headers": [
+                        {
+                            "key": "x-higress-llm-model",
+                            "strategy": "RETAIN_UNIQUE",
+                        }
+                    ],
+                    "operate": "dedupe",
+                },
             ],
         },
         defaultConfigDisable=False,
@@ -454,6 +470,36 @@ async def ensure_tls_secret(cfg: Config, api_client: k8s_client.ApiClient):
             )
 
 
+async def ensure_gateway_timeout(cfg: Config, api_client: k8s_client.ApiClient):
+    namespace = cfg.gateway_namespace
+    higress_config_name = "higress-config"
+    core_v1_client = k8s_client.CoreV1Api(api_client=api_client)
+    try:
+        higress_config: k8s_client.V1ConfigMap = (
+            await core_v1_client.read_namespaced_config_map(
+                name=higress_config_name, namespace=namespace
+            )
+        )
+        config_data: str = higress_config.data["higress"]
+        config = yaml.safe_load(config_data)
+        idle_timeout = (
+            config.get("downstream", {}).get("idleTimeout")
+            if isinstance(config, dict)
+            else None
+        )
+        if idle_timeout is None or str(idle_timeout) != f"{envs.PROXY_TIMEOUT}":
+            config.setdefault("downstream", {})["idleTimeout"] = envs.PROXY_TIMEOUT
+            higress_config.data["higress"] = yaml.safe_dump(config)
+            await core_v1_client.replace_namespaced_config_map(
+                name=higress_config_name,
+                namespace=namespace,
+                body=higress_config,
+            )
+    except Exception as e:
+        logger.error(f"Failed to read or parse Higress config map: {e}")
+        raise
+
+
 def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
     if cfg.gateway_mode == GatewayModeEnum.disabled:
         return
@@ -476,6 +522,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             api_client = k8s_client.ApiClient(
                 configuration=get_async_k8s_config(cfg=cfg)
             )
+            await ensure_gateway_timeout(cfg=cfg, api_client=api_client)
             await ensure_tls_secret(cfg=cfg, api_client=api_client)
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)

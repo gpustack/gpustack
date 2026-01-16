@@ -22,6 +22,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    ModelInstanceUpdate,
     get_backend,
     is_audio_model,
     is_image_model,
@@ -89,16 +90,15 @@ class RuntimeMetricsAggregator:
         # 4. Unified and raw aggregation
         unified_metrics = {}
         raw_metrics = {}
-        model_runtime_version = {}
         for ep, metrics in endpoint_metrics.items():
             if not metrics:
                 continue
             mi = endpoint_to_instance[ep]
             m = instance_id_to_model.get(mi.id)
+
             runtime = get_backend(m)
-            runtime_version = self._get_model_runtime_version(
-                m, ep, model_runtime_version
-            )
+            runtime_version = self.fetch_and_update_api_backend_version(mi, ep)
+
             base_labels = self._build_base_labels(mi, m, runtime)
             self._process_endpoint_metrics(
                 metrics,
@@ -114,24 +114,28 @@ class RuntimeMetricsAggregator:
         self._cache["raw"] = raw_metrics
         logger.trace(f"trace_id: {trace_id}, completed fetching runtime metrics.")
 
-    def _get_model_runtime_version(
-        self, model: Model, endpoint: str, model_runtime_version: dict
+    def fetch_and_update_api_backend_version(
+        self,
+        model_instance: ModelInstance,
+        endpoint: str,
     ) -> Optional[str]:
-        if model.id in model_runtime_version:
-            return model_runtime_version[model.id]
+        if model_instance.api_detected_backend_version is not None:
+            return model_instance.api_detected_backend_version
 
         version = self._metrics_client.fetch_runtime_version_from_endpoint(
-            endpoint, model.backend
+            endpoint, model_instance.backend
         )
         if version is not None:
-            model_runtime_version[model.id] = version
+            self._update_model_instance(
+                model_instance.id, api_detected_backend_version=version
+            )
             return version
-        elif model.backend_version is not None:
-            model_runtime_version[model.id] = model.backend_version
-            return model.backend_version
-        return None
 
-    def _find_active_model_endpoints(self, worker_id: int, metrics_config: dict):
+        return model_instance.backend_version
+
+    def _find_active_model_endpoints(
+        self, worker_id: int, metrics_config: dict
+    ) -> tuple[set, dict[str, ModelInstance], dict[int, Model]]:
         """
         Get all endpoints and related mappings for RUNNING model instances on this worker.
         Returns: (endpoints, endpoint->instance, instance_id->model)
@@ -171,6 +175,18 @@ class RuntimeMetricsAggregator:
         )
         models = self._clientset.models.list()
         return model_instances, models
+
+    def _update_model_instance(self, id: int, **kwargs):
+        try:
+            mi_public = self._clientset.model_instances.get(id=id)
+
+            mi = ModelInstanceUpdate(**mi_public.model_dump())
+            for key, value in kwargs.items():
+                setattr(mi, key, value)
+
+            self._clientset.model_instances.update(id=id, model_update=mi)
+        except Exception as e:
+            logger.error(f"Failed to update model instance {id}: {e}")
 
     def _build_base_labels(self, mi, m, runtime):
         """

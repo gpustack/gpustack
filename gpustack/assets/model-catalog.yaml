@@ -90,6 +90,27 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
+- name: Falcon-H1R-7B
+  description: Falcon-H1R-7B is a reasoning-specialized language model built on top of Falcon-H1-7B-Base, featuring a Hybrid-Head Language Model (Transformer-SSM) architecture that delivers outstanding performance in mathematics, programming, and instruction following.
+  home: https://huggingface.co/tiiuae
+  icon: /static/catalog_icons/tii.png
+  size: 7
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+  licenses:
+    - falcon-llm-license
+  release_date: "2026-01-05"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: tiiuae/Falcon-H1R-7B
+      backend: vLLM
+      backend_parameters:
+        - --reasoning-parser=deepseek_r1
+        - --max-model-len=65536
 - name: Qwen3-14B
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
@@ -651,7 +672,7 @@ model_sets:
         - --max-model-len=65536
         - --tokenizer-mode=deepseek_v32
         - --reasoning-parser=deepseek_v3
-        - --tool-call-parser=deepseek_v32 
+        - --tool-call-parser=deepseek_v32
         - --enable-auto-tool-choice
 - name: Deepseek-V3.2-Speciale
   description: This model is the high-compute variant of DeepSeek-V3.2, surpasses GPT-5 and matches Gemini-3.0-Pro in reasoning, achieving gold-medal level performance in the 2025 IMO and IOI competitions. 
@@ -689,6 +710,32 @@ model_sets:
         - --max-model-len=65536
         - --tokenizer-mode=deepseek_v32
         - --reasoning-parser=deepseek_v3
+- name: MiniMax-M2.1
+  description: MiniMax-M2.1 is a high-performance agentic model, optimized for robustness in coding, tool use, instruction following, and long-horizon planning. It excels in multilingual software development and complex multi-step workflows.
+  home: https://www.minimax.io
+  icon: /static/catalog_icons/minimax.png
+  size: 230
+  activated_size: 10
+  categories:
+    - llm
+  capabilities:
+    - context/192K
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2025-12-23"
+  specs:
+    - mode: standard
+      quantization: FP8
+      source: huggingface
+      huggingface_repo_id: MiniMaxAI/MiniMax-M2.1
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --reasoning-parser=minimax_m2_append_think
+        - --tool-call-parser=minimax_m2
+        - --enable-auto-tool-choice
+        - --trust-remote-code
 # Embedding models
 - name: Qwen3-Embedding-0.6B
   description: Qwen3-Embedding is a multilingual embedding model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -753,6 +800,120 @@ model_sets:
       categories:
         - embedding
       backend: vLLM
+- name: BGE-M3
+  description: BGE-M3 is a new model from BAAI distinguished for its versatility in Multi-Functionality, Multi-Linguality, and Multi-Granularity.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  size: 567
+  size_unit: M
+  licenses:
+    - mit
+  release_date: "2024-01-28"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-m3
+      categories:
+        - embedding
+      backend: vLLM
+- name: BGE-Large-ZH-V1.5
+  description: BGE is short for BAAI general embedding. This is a Chinese text embedding model with more reasonable similarity distribution.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/512
+  size: 335
+  size_unit: M
+  licenses:
+    - mit
+  release_date: "2023-09-12"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-large-zh-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+- name: BGE-Large-EN-V1.5
+  description: BGE is short for BAAI general embedding. This is an English text embedding model with more reasonable similarity distribution.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/512
+  size: 335
+  size_unit: M
+  licenses:
+    - mit
+  release_date: "2023-09-12"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-large-en-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+- name: Nomic-Embed-Text-V1.5
+  description: Nomic-embed-text is a large context length text encoder that surpasses OpenAI text-embedding-ada-002 and text-embedding-3-small performance on short and long context tasks.
+  home: https://nomic.ai
+  icon: /static/catalog_icons/nomic.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/768
+    - max_tokens/8192
+  size: 137
+  size_unit: M
+  licenses:
+    - apache-2.0
+  release_date: "2024-02-14"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: nomic-ai/nomic-embed-text-v1.5
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+- name: Jina-Embeddings-V3
+  description: jina-embeddings-v3 is a multilingual multi-task text embedding model designed for a variety of NLP applications. Based on the Jina-XLM-RoBERTa architecture, this model supports Rotary Position Embeddings to handle long input sequences up to 8192 tokens.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  categories:
+    - embedding
+  capabilities:
+    - dimensions/1024
+    - max_tokens/8192
+  size: 570
+  size_unit: M
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2024-09-18"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: jinaai/jina-embeddings-v3
+      categories:
+        - embedding
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
 # Reranker models
 - name: Qwen3-Reranker-0.6B
   description: Qwen3-Reranker is a multilingual text reranking model series optimized for retrieval, clustering, classification, and bitext mining. It supports 100+ languages, with flexible vector dimensions and instruction tuning.
@@ -822,6 +983,25 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - '--hf_overrides={"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+- name: BGE-Reranker-V2-M3
+  description: BGE-Reranker-V2-M3 is a reranker model from BAAI.
+  home: https://bge-model.com
+  icon: /static/catalog_icons/bge_logo.jpeg
+  categories:
+    - reranker
+  size: 568
+  size_unit: M
+  licenses:
+    - apache-2.0
+  release_date: "2024-03-19"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: BAAI/bge-reranker-v2-m3
+      categories:
+        - reranker
+      backend: vLLM
 # Image models
 - name: FLUX.1-dev
   description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
@@ -863,9 +1043,6 @@ model_sets:
       huggingface_repo_id: Qwen/Qwen-Image
       backend: SGLang
       backend_version: 0.5.6.post2
-      env:
-        # Miss the weight files in sub-directories at the moment, claim empirical value here.
-        GPUSTACK_MODEL_VRAM_CLAIM: "53687091200" # 50 GiB
 - name: Qwen-Image-Edit
   description: Built upon our 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image’s unique text rendering capabilities to image editing tasks, enabling precise text editing.
   home: https://qwen.ai
@@ -885,8 +1062,6 @@ model_sets:
       huggingface_repo_id: Qwen/Qwen-Image-Edit
       backend: SGLang
       backend_version: 0.5.6.post2
-      env:
-        GPUSTACK_MODEL_VRAM_CLAIM: "64424509440" # 60 GiB, observed empirically
 - name: Z-Image-Turbo
   description: Z-Image is a powerful and highly efficient image generation model with 6B parameters.
   home: https://qwen.ai
@@ -906,5 +1081,324 @@ model_sets:
       huggingface_repo_id: Tongyi-MAI/Z-Image-Turbo
       backend: SGLang
       backend_version: 0.5.6.post2
-      env:
-        GPUSTACK_MODEL_VRAM_CLAIM: "35433480192" # 33 GiB, observed empirically
+- name: Qwen3-VL-8B-Instruct
+  description: Qwen3-VL-8B-Instruct is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-10-15"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-8B-Instruct
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-8B-Thinking
+  description: Qwen3-VL-8B-Thinking is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding with thinking mode.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 8
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-10-15"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-8B-Thinking
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-32B-Instruct
+  description: Qwen3-VL-32B-Instruct is a vision-language model featuring superior visual intelligence, enhanced spatial awareness capabilities, and OCR functionality.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-10-21"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-32B-Instruct
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-32B-Thinking
+  description: Qwen3-VL-32B-Thinking is a vision-language model featuring superior visual intelligence, enhanced spatial awareness capabilities, and OCR functionality with thinking mode.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-10-21"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-32B-Thinking
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-30B-A3B-Instruct
+  description: Qwen3-VL-30B-A3B-Instruct is a mixture-of-experts vision-language model with 30B total parameters and 3B active parameters, featuring advanced spatial perception, 2D and 3D grounding.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 30
+  activated_size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-10-05"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-30B-A3B-Instruct
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-30B-A3B-Thinking
+  description: Qwen3-VL-30B-A3B-Thinking is a mixture-of-experts vision-language model with 30B total parameters and 3B active parameters, featuring advanced spatial perception, 2D and 3D grounding with thinking mode.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 30
+  activated_size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-10-05"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-30B-A3B-Thinking
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-235B-A22B-Instruct
+  description: Qwen3-VL-235B-A22B-Instruct is the largest vision-language model in the Qwen3-VL series with 235B total parameters and 22B active parameters, featuring state-of-the-art visual understanding and reasoning capabilities.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 235
+  activated_size: 22
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-09-23"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-235B-A22B-Instruct
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+- name: Qwen3-VL-235B-A22B-Thinking
+  description: Qwen3-VL-235B-A22B-Thinking is the largest vision-language model in the Qwen3-VL series with 235B total parameters and 22B active parameters, featuring state-of-the-art visual understanding and reasoning capabilities with thinking mode.
+  home: https://qwen.ai
+  icon: /static/catalog_icons/qwen.png
+  size: 235
+  activated_size: 22
+  categories:
+    - llm
+  capabilities:
+    - context/1M
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2025-09-23"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: Qwen/Qwen3-VL-235B-A22B-Thinking
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+# Audio models
+- name: CosyVoice2-0.5B
+  description: CosyVoice2-0.5B is a speech generation model. It supports multilingual speech synthesis with high naturalness and expressiveness.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 0.5
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-12-01"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice2-0.5B
+      backend: VoxBox
+- name: CosyVoice-300M
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 300
+  size_unit: M
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice-300M
+      backend: VoxBox
+- name: CosyVoice-300M-SFT
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 300
+  size_unit: M
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice-300M-SFT
+      backend: VoxBox
+- name: CosyVoice-300M-Instruct
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 300
+  size_unit: M
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice-300M-Instruct
+      backend: VoxBox
+- name: Faster-Whisper-Large-V3
+  description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  size: 1.55
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-11-23"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-large-v3
+      backend: VoxBox
+- name: Faster-Whisper-Medium
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-medium to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  size: 769
+  size_unit: M
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-medium
+      backend: VoxBox
+- name: Faster-Whisper-Small
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-small to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  size: 244
+  size_unit: M
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-small
+      backend: VoxBox
+- name: Dia-1.6B
+  description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
+  home: https://narilabs.org
+  icon: /static/catalog_icons/narilabs.png
+  size: 1.6
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2025-04-21"
+  specs:
+    - mode: standard
+      quantization: FP32
+      source: huggingface
+      huggingface_repo_id: nari-labs/Dia-1.6B
+      backend: VoxBox
+- name: SenseVoice-Small
+  description: SenseVoice is a speech foundation model with multiple speech understanding capabilities, including automatic speech recognition (ASR), spoken language identification (LID), speech emotion recognition (SER), and audio event detection (AED).
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-31"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: FunAudioLLM/SenseVoiceSmall
+      backend: VoxBox

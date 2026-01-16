@@ -16,14 +16,14 @@ if [ -z "$EMBEDDED_KUBECONFIG_PATH" ]; then
     echo "  Missing required variable EMBEDDED_KUBECONFIG_PATH in apiserver configuration."
     exit 255
 fi
-mkdir -p "$APISERVER_DATA_DIR"
+createDir "$APISERVER_DATA_DIR"
 
 # prepare default data
 cp -rn /etc/gpustack/data/defaultConfig/* "${APISERVER_DATA_DIR}/"
 
 # prepare mesh config
 MESH_CONFIG_DIR='/etc/istio/config'
-mkdir -p "$MESH_CONFIG_DIR"
+createDir "$MESH_CONFIG_DIR"
 HIGRESS_CONFIG_FILE="${APISERVER_DATA_DIR}/configmaps/higress-config.yaml"
 MESH_CONFIG_FILES=$(yq -r '.data | keys | .[]' "$HIGRESS_CONFIG_FILE")
 if [ -z "$MESH_CONFIG_FILES" ]; then

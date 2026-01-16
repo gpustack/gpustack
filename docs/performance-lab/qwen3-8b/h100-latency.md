@@ -46,7 +46,7 @@ Qwen/Qwen3-8B
 
 ### Hardware
 
-NVIDIA H100 GPUs
+A single NVIDIA H100 SXM GPU.
 
 ### Engine Version
 

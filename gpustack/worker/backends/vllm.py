@@ -60,6 +60,12 @@ class VLLMServer(InferenceServer):
             is_distributed=deployment_metadata.distributed,
         )
 
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         command_script = self._get_serving_command_script(env)
 
         command_args = self._build_command_args(
@@ -69,6 +75,7 @@ class VLLMServer(InferenceServer):
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -77,6 +84,7 @@ class VLLMServer(InferenceServer):
     def _create_workload(
         self,
         deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
@@ -85,18 +93,17 @@ class VLLMServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get vLLM backend image")
 
+        # Command script will override the given command,
+        # so we need to prepend command to command args.
+        if command_script and command:
+            command_args = command + command_args
+            command = None
+
         resources = self._get_configured_resources()
 
         mounts = self._get_configured_mounts()
 
         ports = self._get_configured_ports()
-
-        # Get container entrypoint from inference backend configuration
-        container_entrypoint = None
-        if self.inference_backend:
-            container_entrypoint = self.inference_backend.get_container_entrypoint(
-                self._model.backend_version
-            )
 
         run_container = Container(
             image=image,
@@ -105,7 +112,7 @@ class VLLMServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
-                command=container_entrypoint,
+                command=command,
                 command_script=command_script,
                 args=command_args,
             ),
@@ -123,10 +130,18 @@ class VLLMServer(InferenceServer):
 
         # Adjust run container for distributed follower.
         if deployment_metadata.distributed_follower:
-            ray_command_args, ray_ports = self._build_ray_configuration(
+            ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=False,
             )
 
+            # Command script will override the given command,
+            # so we need to prepend command to command args.
+            if command_script:
+                ray_command_args = ray_command + ray_command_args
+                ray_command = None
+
+            run_container.execution.command = ray_command
+            # run_container.execution.command_script = command_script # already set
             run_container.execution.args = ray_command_args
             run_container.ports = ray_ports
 
@@ -140,9 +155,15 @@ class VLLMServer(InferenceServer):
                 ),
             )
 
-            ray_command_args, ray_ports = self._build_ray_configuration(
+            ray_command, ray_command_args, ray_ports = self._build_ray_configuration(
                 is_leader=True,
             )
+
+            # Command script will override the given command,
+            # so we need to prepend command to command args.
+            if command_script:
+                ray_command_args = ray_command + ray_command_args
+                ray_command = None
 
             sidecar_container = Container(
                 image=image,
@@ -151,6 +172,8 @@ class VLLMServer(InferenceServer):
                 restart_policy=ContainerRestartPolicyEnum.NEVER,
                 execution=ContainerExecution(
                     privileged=True,
+                    command=ray_command,
+                    command_script=command_script,
                     args=ray_command_args,
                 ),
                 envs=run_container.envs,
@@ -162,7 +185,7 @@ class VLLMServer(InferenceServer):
         logger.info(f"Creating vLLM container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
-            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
+            f"command: [{' '.join(command) if command else ''}], "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -247,6 +270,9 @@ class VLLMServer(InferenceServer):
         # we must get more than one port here,
         # so we use ports[1] for distributed initialization.
         env["VLLM_PORT"] = str(self._model_instance.ports[1])
+
+        # Redirect Ray logs to stderr for easier debugging.
+        env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "1")
 
         if is_ascend(self._get_selected_gpu_devices()):
             # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
@@ -434,11 +460,11 @@ class VLLMServer(InferenceServer):
     def _build_ray_configuration(
         self,
         is_leader: bool,
-    ) -> (List[str], Optional[List[ContainerPort]]):
+    ) -> (List[str], List[str], Optional[List[ContainerPort]]):
         # Parse the Ray port range from configuration,
         # assign ports in order as below:
         # 1.  GCS server port (the first port of the range)
-        # 2.  Client port
+        # 2.  Client port (reserved for compatibility, not used anymore, see https://github.com/gpustack/gpustack/issues/4171)
         # 3.  Dashboard port
         # 4.  Dashboard gRPC port (no longer used, since Ray 2.45.0 kept for backward compatibility)
         # 5.  Dashboard agent gRPC port
@@ -452,7 +478,7 @@ class VLLMServer(InferenceServer):
 
         start, end = network.parse_port_range(self._config.ray_port_range)
         gcs_server_port = start
-        client_port = start + 1
+        # client_port = start + 1
         dashboard_port = start + 2
         dashboard_grpc_port = start + 3
         dashboard_agent_grpc_port = start + 4
@@ -464,9 +490,11 @@ class VLLMServer(InferenceServer):
         worker_port_min = start + 10
         worker_port_max = end
 
-        arguments = [
+        command = [
             "ray",
             "start",
+        ]
+        arguments = [
             "--block",
             "--disable-usage-stats",
             "--verbose",
@@ -500,7 +528,6 @@ class VLLMServer(InferenceServer):
                 [
                     "--head",
                     f"--port={gcs_server_port}",
-                    f"--ray-client-server-port={client_port}",
                     f"--dashboard-host={self._worker.ip}",
                     f"--dashboard-port={dashboard_port}",
                 ]
@@ -510,7 +537,7 @@ class VLLMServer(InferenceServer):
                     ContainerPort(
                         internal=port,
                     )
-                    for port in [gcs_server_port, client_port, dashboard_port]
+                    for port in [gcs_server_port, dashboard_port]
                 ]
             )
         else:
@@ -520,7 +547,7 @@ class VLLMServer(InferenceServer):
                 ]
             )
 
-        return arguments, ports
+        return command, arguments, ports
 
 
 def get_auto_parallelism_arguments(

@@ -66,6 +66,12 @@ class SGLangServer(InferenceServer):
             is_distributed=deployment_metadata.distributed,
         )
 
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         command_script = self._get_serving_command_script(env)
 
         # Build SGLang command arguments
@@ -77,6 +83,7 @@ class SGLangServer(InferenceServer):
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -94,13 +101,21 @@ class SGLangServer(InferenceServer):
             is_distributed=False,
         )
 
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         command_script = self._get_serving_command_script(env)
 
-        # Build SGLang command arguments
-        command_args = self._build_diffusion_args(port=self._get_serving_port())
+        command_args = self._build_command_args_for_diffusion(
+            port=self._get_serving_port(),
+        )
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -109,17 +124,11 @@ class SGLangServer(InferenceServer):
     def _create_workload(
         self,
         deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
     ):
-        # Get resources configuration
-        resources = self._get_configured_resources()
-
-        # Setup container mounts
-        mounts = self._get_configured_mounts()
-
-        # Get SGLang image name
         image = self._get_configured_image()
         if not image:
             raise ValueError("Can't find compatible SGLang image")
@@ -132,14 +141,17 @@ class SGLangServer(InferenceServer):
                 "SGLang versions <= 0.5.5 do not support Diffusion models."
             )
 
-        ports = self._get_configured_ports()
+        # Command script will override the given command,
+        # so we need to prepend command to command args.
+        if command_script and command:
+            command_args = command + command_args
+            command = None
 
-        # Get container entrypoint from inference backend configuration
-        container_entrypoint = None
-        if self.inference_backend:
-            container_entrypoint = self.inference_backend.get_container_entrypoint(
-                self._model.backend_version
-            )
+        resources = self._get_configured_resources()
+
+        mounts = self._get_configured_mounts()
+
+        ports = self._get_configured_ports()
 
         # Create container configuration
         run_container = Container(
@@ -149,7 +161,7 @@ class SGLangServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
-                command=container_entrypoint,
+                command=command,
                 command_script=command_script,
                 args=command_args,
             ),
@@ -165,21 +177,21 @@ class SGLangServer(InferenceServer):
             ports=ports,
         )
 
+        logger.info(f"Creating SGLang container workload: {deployment_metadata.name}")
+        logger.info(
+            f"With image: {image}, "
+            f"command: [{' '.join(command) if command else ''}], "
+            f"arguments: [{' '.join(command_args)}], "
+            f"ports: [{','.join([str(port.internal) for port in ports])}], "
+            f"envs(inconsistent input items mean unchangeable):{os.linesep}"
+            f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
+        )
+
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
-        )
-
-        logger.info(f"Creating SGLang container workload: {deployment_metadata.name}")
-        logger.info(
-            f"With image: {image}, "
-            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
-            f"arguments: [{' '.join(command_args)}], "
-            f"ports: [{','.join([str(port.internal) for port in ports])}], "
-            f"envs(inconsistent input items mean unchangeable):{os.linesep}"
-            f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
         )
         create_workload(self._transform_workload_plan(workload_plan))
 
@@ -326,7 +338,7 @@ class SGLangServer(InferenceServer):
             and self._model_instance.computed_resource_claim.vram_utilization
         ):
             input_utilization = find_parameter(
-                self._model.backend_parameters, ["mem_fraction_static"]
+                self._model.backend_parameters, ["mem-fraction-static"]
             )
             if not input_utilization:
                 arguments.extend(
@@ -370,7 +382,7 @@ class SGLangServer(InferenceServer):
 
         return arguments
 
-    def _build_diffusion_args(self, port: int):
+    def _build_command_args_for_diffusion(self, port: int):
         arguments = [
             "sglang",
             "serve",

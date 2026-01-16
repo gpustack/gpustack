@@ -174,7 +174,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--truncation",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Truncate the input token length, "
             "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len` - 1.",
@@ -294,7 +293,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--support-select-batch",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable batch selecting. "
             "According to `--prefill-time-ms-per-req` and `--decode-time-ms-per-req`, "
@@ -326,7 +324,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-memory-decoding",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable memory decoding speculation. "
             "Use `--no-enable-memory-decoding` to disable explicitly.",
@@ -344,7 +341,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-lookahead",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable lookahead speculation. "
             "Use `--no-enable-lookahead` to disable explicitly.",
@@ -369,7 +365,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-buffer-response",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable buffer response. "
             "Use `--no-enable-buffer-response` to disable explicitly.",
@@ -388,7 +383,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-split",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable split fuse, something like chunked prefill. "
             "Use `--no-enable-split` to disable explicitly.",
@@ -419,7 +413,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-multi-token-prediction",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable multi-token prediction. "
             "Use `--no-enable-multi-token-prediction` to disable explicitly.",
@@ -433,7 +426,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-prefix-caching",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable prefix caching. "
             "Use `--no-enable-prefix-caching` to disable explicitly.",
@@ -1490,6 +1482,12 @@ class AscendMindIEServer(InferenceServer):
         # Indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
 
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         command_script = self._get_serving_command_script(env)
 
         command_args = self.build_versioned_command_args(
@@ -1500,6 +1498,7 @@ class AscendMindIEServer(InferenceServer):
 
         self._create_workload(
             deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -1510,6 +1509,7 @@ class AscendMindIEServer(InferenceServer):
     def _create_workload(
         self,
         deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
@@ -1520,6 +1520,12 @@ class AscendMindIEServer(InferenceServer):
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
+        # Command script will override the given command,
+        # so we need to prepend command to command args.
+        if command_script and command:
+            command_args = command + command_args
+            command = None
+
         resources = self._get_configured_resources(
             mount_all_devices=deployment_metadata.distributed,
         )
@@ -1528,13 +1534,6 @@ class AscendMindIEServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
-        # Get container entrypoint from inference backend configuration
-        container_entrypoint = None
-        if self.inference_backend:
-            container_entrypoint = self.inference_backend.get_container_entrypoint(
-                self._model.backend_version
-            )
-
         run_container = Container(
             image=image,
             name="default",
@@ -1542,7 +1541,7 @@ class AscendMindIEServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
-                command=container_entrypoint,
+                command=command,
                 command_script=command_script,
                 args=command_args,
                 working_dir=working_dir,
@@ -1565,7 +1564,7 @@ class AscendMindIEServer(InferenceServer):
         )
         logger.info(
             f"With image: {image}, "
-            f"{('entrypoint: ' + str(container_entrypoint) + ', ') if container_entrypoint else ''}"
+            f"command: [{' '.join(command) if command else ''}], "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -1578,7 +1577,6 @@ class AscendMindIEServer(InferenceServer):
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
-
         create_workload(self._transform_workload_plan(workload_plan))
 
         logger.info(
@@ -1606,7 +1604,6 @@ class AscendMindIEServer(InferenceServer):
 if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
     if command -v uv >/dev/null 2>&1; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
-        export UV_PRERELEASE=allow
         export UV_HTTP_TIMEOUT=500
         export UV_NO_CACHE=1
         if [ -n "${PIP_INDEX_URL:-}" ]; then
@@ -1623,7 +1620,6 @@ if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
         export PIP_DISABLE_PIP_VERSION_CHECK=1
         export PIP_ROOT_USER_ACTION=ignore
-        export PIP_PRE=1
         export PIP_TIMEOUT=500
         export PIP_NO_CACHE_DIR=1
         pip install ${PYPI_PACKAGES_INSTALL}

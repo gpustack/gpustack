@@ -1,4 +1,5 @@
 import logging
+import copy
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union, Dict, Any
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -321,9 +322,11 @@ def generate_model_ingress(
                 ),
             )
         )
-
-    expected_rule.host = hostname
     spec = k8s_client.V1IngressSpec(ingress_class_name="higress", rules=[expected_rule])
+    if hostname is not None:
+        hostname_rule = copy.deepcopy(expected_rule)
+        hostname_rule.host = hostname
+        spec.rules.append(hostname_rule)
     spec.tls = tls
     ingress = k8s_client.V1Ingress(
         api_version="networking.k8s.io/v1",
@@ -675,5 +678,9 @@ async def mirror_hostname_tls_from_ingress(
             raise
 
     tls = getattr(ingress.spec, 'tls', None)
-    hostname = ingress.spec.rules[0].host if ingress.spec.rules else None
+    hostname = None
+    for rule in ingress.spec.rules or []:
+        if rule.host:
+            hostname = rule.host
+            break
     return hostname, tls

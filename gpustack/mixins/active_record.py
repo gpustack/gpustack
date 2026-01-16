@@ -99,10 +99,13 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def one_by_id(cls, session: AsyncSession, id: int):
-        """Return the object with the given id. Return None if not found."""
+    async def one_by_id(cls, session: AsyncSession, id: int, for_update: bool = False):
+        """Return the object with the given id. Return None if not found.
 
-        return await session.get(cls, id)
+        If `for_update` is True, the row will be locked until the end of the transaction.
+        """
+
+        return await session.get(cls, id, with_for_update=for_update)
 
     @classmethod
     async def first_by_field(cls, session: AsyncSession, field: str, value: Any):

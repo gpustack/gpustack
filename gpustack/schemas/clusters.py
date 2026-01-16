@@ -226,6 +226,7 @@ CloudCredentialsPublic = PaginatedList[CloudCredentialPublic]
 
 
 class ClusterStateEnum(str, Enum):
+    PENDING = 'pending'
     PROVISIONING = 'provisioning'
     PROVISIONED = 'provisioned'
     READY = 'ready'
