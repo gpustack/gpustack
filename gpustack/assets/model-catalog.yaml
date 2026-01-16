@@ -1253,3 +1253,152 @@ model_sets:
       backend: vLLM
       backend_parameters:
         - --max-model-len=65536
+# Audio models
+- name: CosyVoice2-0.5B
+  description: CosyVoice2-0.5B is a speech generation model. It supports multilingual speech synthesis with high naturalness and expressiveness.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 0.5
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-12-01"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice2-0.5B
+      backend: VoxBox
+- name: CosyVoice-300M
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 300
+  size_unit: M
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice-300M
+      backend: VoxBox
+- name: CosyVoice-300M-SFT
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 300
+  size_unit: M
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice-300M-SFT
+      backend: VoxBox
+- name: CosyVoice-300M-Instruct
+  description: CosyVoice is a multi-lingual large voice generation model developed by Alibaba.
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  size: 300
+  size_unit: M
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-05"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: gpustack/CosyVoice-300M-Instruct
+      backend: VoxBox
+- name: Faster-Whisper-Large-V3
+  description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation, proposed in the paper Robust Speech Recognition via Large-Scale Weak Supervision by Alec Radford et al. from OpenAI. Trained on >5M hours of labeled data, Whisper demonstrates a strong ability to generalise to many datasets and domains in a zero-shot setting. This is the conversion of openai/whisper-large-v3 to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  size: 1.55
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-11-23"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-large-v3
+      backend: VoxBox
+- name: Faster-Whisper-Medium
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-medium to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  size: 769
+  size_unit: M
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-medium
+      backend: VoxBox
+- name: Faster-Whisper-Small
+  description: Whisper is a pre-trained model for automatic speech recognition (ASR) and speech translation. Trained on 680k hours of labelled data, Whisper models demonstrate a strong ability to generalise to many datasets and domains without the need for fine-tuning. This is the conversion of openai/whisper-small to the CTranslate2 model format.
+  home: https://huggingface.co/Systran
+  icon: /static/catalog_icons/systran.png
+  size: 244
+  size_unit: M
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-03-23"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: Systran/faster-whisper-small
+      backend: VoxBox
+- name: Dia-1.6B
+  description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
+  home: https://narilabs.org
+  icon: /static/catalog_icons/narilabs.png
+  size: 1.6
+  categories:
+    - text_to_speech
+  licenses:
+    - apache-2.0
+  release_date: "2025-04-21"
+  specs:
+    - mode: standard
+      quantization: FP32
+      source: huggingface
+      huggingface_repo_id: nari-labs/Dia-1.6B
+      backend: VoxBox
+- name: SenseVoice-Small
+  description: SenseVoice is a speech foundation model with multiple speech understanding capabilities, including automatic speech recognition (ASR), spoken language identification (LID), speech emotion recognition (SER), and audio event detection (AED).
+  home: https://github.com/FunAudioLLM
+  icon: /static/catalog_icons/FunAudioLLM.png
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2024-07-31"
+  specs:
+    - mode: standard
+      quantization: FP16
+      source: huggingface
+      huggingface_repo_id: FunAudioLLM/SenseVoiceSmall
+      backend: VoxBox
