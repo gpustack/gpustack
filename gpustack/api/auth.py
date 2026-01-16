@@ -237,15 +237,15 @@ async def get_user_from_bearer_token(
         access_key = hashlib.md5(bearer_token.credentials.encode()).hexdigest()
         api_key = await APIKeyService(session).get_by_access_key(access_key)
         if (
-                api_key is not None
-                and api_key.is_custom
-                and verify_hashed_secret(
-            api_key.hashed_secret_key, bearer_token.credentials
-        )
-                and (
+            api_key is not None
+            and api_key.is_custom
+            and verify_hashed_secret(
+                api_key.hashed_secret_key, bearer_token.credentials
+            )
+            and (
                 api_key.expires_at is None
                 or api_key.expires_at > datetime.now(timezone.utc)
-        )
+            )
         ):
             user: Optional[User] = await UserService(session).get_by_id(
                 user_id=api_key.user_id,

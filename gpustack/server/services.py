@@ -187,7 +187,6 @@ class APIKeyService:
         self.session.expunge(result)
         return result
 
-
     async def get_by_user_id(self, user_id: int) -> List[ApiKey]:
         results = await ApiKey.all_by_field(self.session, "user_id", user_id)
         if results is None:
