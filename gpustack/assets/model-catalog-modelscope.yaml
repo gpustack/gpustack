@@ -1022,6 +1022,25 @@ model_sets:
       categories:
         - reranker
       backend: vLLM
+- name: Jina-Reranker-M0
+  description: Jina-Reranker-M0 is a multilingual multimodal document reranker model with 2.4B parameters. It accepts a query alongside visually rich documents and outputs ranked documents by relevance. Supports 29 languages and multimodal content including text, figures, tables, and infographics.
+  home: https://jina.ai
+  icon: /static/catalog_icons/jina.png
+  size: 2.4
+  categories:
+    - reranker
+  capabilities:
+    - max_tokens/10K
+    - vision
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2025-04-08"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: jinaai/jina-reranker-m0
+      backend: vLLM
 # Image models
 - name: FLUX.1-dev
   description: FLUX.1 [dev] is a 12 billion parameter rectified flow transformer capable of generating images from text descriptions.
