@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timezone
 import logging
@@ -231,12 +232,10 @@ async def get_user_from_bearer_token(
                 return user, api_key
 
         # If the standard format doesn't work, try to match as a custom API key
-        # For custom API keys, we need to check against all possible keys for the user
-        # Since custom keys don't follow the standard format, we'll need to check the hashed values
-        # This is less efficient but necessary for custom keys
-        api_key = await APIKeyService(session).get_by_custom_key(
-            bearer_token.credentials
-        )
+        # For custom API keys, we use the MD5 hash of the key as the access_key
+        # So we compute the MD5 hash of the provided key and look it up by access_key
+        access_key = hashlib.md5(bearer_token.credentials.encode()).hexdigest()
+        api_key = await APIKeyService(session).get_by_access_key(access_key)
         if (
                 api_key is not None
                 and api_key.is_custom

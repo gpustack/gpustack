@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import secrets
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -75,8 +76,8 @@ async def create_api_key(
         if key_in.custom_key is not None and key_in.custom_key.strip() != "":
             # Custom API key
             custom_key = key_in.custom_key.strip()
-            # Still need an access key for internal tracking
-            access_key = secrets.token_hex(8)
+            # Use MD5 hash of custom key as access_key to prevent duplicates
+            access_key = hashlib.md5(custom_key.encode()).hexdigest()
             secret_key = custom_key  # Use custom key as secret key
             is_custom = True
             hashed_secret_key = get_secret_hash(secret_key)

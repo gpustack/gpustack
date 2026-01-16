@@ -187,15 +187,6 @@ class APIKeyService:
         self.session.expunge(result)
         return result
 
-    @locked_cached(ttl=60)
-    async def get_by_custom_key(self, custom_key: str) -> Optional[ApiKey]:
-        # Query for custom API keys by custom_key field
-        # We need to find the API key where the custom_key matches and is_custom is True
-        result = await ApiKey.one_by_field(self.session, "custom_key", custom_key)
-        if result is None or not result.is_custom:
-            return None
-        self.session.expunge(result)
-        return result
 
     async def get_by_user_id(self, user_id: int) -> List[ApiKey]:
         results = await ApiKey.all_by_field(self.session, "user_id", user_id)
@@ -208,8 +199,6 @@ class APIKeyService:
     async def delete(self, api_key: ApiKey):
         result = await api_key.delete(self.session)
         await delete_cache_by_key(self.get_by_access_key, api_key.access_key)
-        if api_key.is_custom and api_key.custom_key:
-            await delete_cache_by_key(self.get_by_custom_key, api_key.custom_key)
         return result
 
 
