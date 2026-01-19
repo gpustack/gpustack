@@ -136,7 +136,7 @@ async def test_schedule_to_single_worker_single_gpu(config):
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
     ):
 
@@ -223,7 +223,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
     ):
 
@@ -290,7 +290,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
     ):
 
@@ -406,7 +406,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
     ):
 
@@ -555,7 +555,7 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
     ):
 
@@ -666,7 +666,7 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
         ),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
     ):
 
@@ -759,7 +759,7 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -851,7 +851,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -948,7 +948,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',
@@ -1083,7 +1083,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
-            return_value=True,
+            return_value=(True, []),
         ),
         patch(
             'gpustack.schemas.workers.Worker.all',

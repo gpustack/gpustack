@@ -54,23 +54,26 @@ class BackendFrameworkFilter(WorkerFilter):
             query_conditions.add(("cpu", None, self.model.backend_version, None))
         return list(query_conditions)
 
-    async def _has_lower_runners(self, **kwargs) -> bool:
+    async def _has_lower_runners(self, **kwargs) -> Tuple[bool, List[str]]:
         backend_version = kwargs.get("backend_version")
         if backend_version:
             kwargs.pop("backend_version")
         # Since backend versions are backward compatible,
         # if an exact version match cannot be found, we can try to see if a lower version is available.
         runners_list = list_service_runners(**kwargs)
+        supported_runtime_versions = []
         for runner in runners_list:
             if not runner.versions or len(runner.versions) == 0:
                 continue
             try:
                 runner_version = runner.versions[0].backends[0].versions[0].version
                 if compare_versions(runner_version, backend_version) <= 0:
-                    return True
+                    return True, []
+                supported_runtime_versions.append(runner_version)
             except Exception:
                 pass
-        return False
+
+        return False, supported_runtime_versions
 
     async def _has_supported_runners(
         self,
@@ -78,7 +81,7 @@ class BackendFrameworkFilter(WorkerFilter):
         runtime_version: Optional[str],
         backend_version: Optional[str],
         variant: Optional[str],
-    ) -> bool:
+    ) -> Tuple[bool, List[str]]:
         """
         Get supported runner versions for given GPU configuration.
 
@@ -89,7 +92,7 @@ class BackendFrameworkFilter(WorkerFilter):
             variant: Variant for Ascend GPUs (CANN version)
 
         Returns:
-            True if any runner is compatible with given GPU configuration, False otherwise
+            Tuple of (is_supported, supported_runtime_versions)
         """
 
         async with AsyncSession(self._engine) as session:
@@ -118,7 +121,7 @@ class BackendFrameworkFilter(WorkerFilter):
 
                     # GPU is supported if either custom or built-in framework supports it
                     if is_custom_supported or is_built_in_supported:
-                        return True
+                        return True, []
 
         kwargs = {
             "backend": gpu_type,
@@ -139,7 +142,7 @@ class BackendFrameworkFilter(WorkerFilter):
 
         runners_list = list_service_runners(**kwargs)
         if runners_list and len(runners_list) > 0:
-            return True
+            return True, []
 
         return await self._has_lower_runners(**kwargs)
 
@@ -181,7 +184,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 # Check framework compatibility
 
                 # Get supported runners for this GPU configuration
-                is_supported = await self._has_supported_runners(
+                is_supported, supported_versions = await self._has_supported_runners(
                     gpu_type, runtime_version, backend_version, variant
                 )
 
@@ -204,12 +207,18 @@ class BackendFrameworkFilter(WorkerFilter):
                         is_compatible = True
                         break
                     else:
-                        reason_text = (
-                            f"GPU device ({gpu_type} {runtime_version or ''}) "
-                        )
+                        reason_text = "No backend versions are available for "
                         if gpu_type == "cpu":
-                            reason_text = "CPU device "
-                        reason_text += "has no available backend versions"
+                            reason_text += "CPU device"
+                        else:
+                            reason_text += (
+                                f"GPU device ({gpu_type} {runtime_version or ''})"
+                            )
+                        reason_text += (
+                            f", The supported runtimes are {gpu_type} {', '.join(supported_versions)}"
+                            if supported_versions
+                            else ""
+                        )
                         incompatible_reasons.append(reason_text)
 
             if is_compatible:
