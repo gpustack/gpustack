@@ -204,7 +204,9 @@ class BackendFrameworkFilter(WorkerFilter):
                         is_compatible = True
                         break
                     else:
-                        reason_text = f"GPU {gpu_type} (runtime: {runtime_version}, variant: {variant}) "
+                        reason_text = (
+                            f"GPU device ({gpu_type} {runtime_version or ''}) "
+                        )
                         if gpu_type == "cpu":
                             reason_text = "CPU device "
                         reason_text += "has no available backend versions"
