@@ -8,7 +8,7 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
     NotFoundException,
 )
-from gpustack.server.deps import SessionDep, EngineDep
+from gpustack.server.deps import SessionDep
 from gpustack.schemas.clusters import (
     CloudCredentialCreate,
     CloudCredentialListParams,
@@ -26,7 +26,6 @@ router = APIRouter()
 
 @router.get("", response_model=CloudCredentialsPublic)
 async def list(
-    engine: EngineDep,
     session: SessionDep,
     params: CloudCredentialListParams = Depends(),
     name: str = None,
@@ -42,7 +41,7 @@ async def list(
 
     if params.watch:
         return StreamingResponse(
-            CloudCredential.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
+            CloudCredential.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

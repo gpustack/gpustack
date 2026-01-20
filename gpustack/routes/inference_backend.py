@@ -31,7 +31,7 @@ from gpustack.schemas.inference_backend import (
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
@@ -505,7 +505,6 @@ def _generate_framework_index_map(
 
 @router.get("", response_model=InferenceBackendsPublic)
 async def get_inference_backends(  # noqa: C901
-    engine: EngineDep,
     session: SessionDep,
     params: ListParamsDep,
     search: str = None,
@@ -528,10 +527,7 @@ async def get_inference_backends(  # noqa: C901
 
     if params.watch:
         return StreamingResponse(
-            InferenceBackend.streaming(
-                engine,
-                fields=fields,
-            ),
+            InferenceBackend.streaming(fields=fields),
             media_type="text/event-stream",
         )
 

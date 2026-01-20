@@ -3,14 +3,12 @@ from typing import List, Tuple
 
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.db import get_engine
 
 logger = logging.getLogger(__name__)
 
 
 class StatusFilter:
     def __init__(self, model: Model):
-        self._engine = get_engine()
         self._model = model
 
     async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:

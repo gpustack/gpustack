@@ -4,8 +4,7 @@ import logging
 from gpustack import envs
 from gpustack.schemas.models import ModelInstance
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.db import get_engine
-from sqlmodel.ext.asyncio.session import AsyncSession
+from gpustack.server.db import async_session
 
 from gpustack.server.services import ModelInstanceService
 from gpustack.utils.network import is_offline
@@ -23,7 +22,6 @@ class WorkerInstanceCleaner:
         """
         :param interval: loop interval in seconds
         """
-        self._engine = get_engine()
         self._interval = interval
 
     async def start(self):
@@ -38,7 +36,7 @@ class WorkerInstanceCleaner:
         """
         Delete model instances assigned to offline workers.
         """
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             workers = await Worker.all(session)
             if not workers:
                 return

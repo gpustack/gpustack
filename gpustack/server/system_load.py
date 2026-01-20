@@ -2,10 +2,9 @@ import asyncio
 import logging
 
 from typing import Tuple, Dict, List
-from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.system_load import SystemLoad
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +130,12 @@ def compute_system_load(workers: List[Worker]) -> List[SystemLoad]:
 class SystemLoadCollector:
     def __init__(self, interval=60):
         self.interval = interval
-        self._engine = get_engine()
 
     async def start(self):
         while True:
             await asyncio.sleep(self.interval)
             try:
-                async with AsyncSession(self._engine) as session:
+                async with async_session() as session:
                     workers = await Worker.all(session=session)
                     system_loads = compute_system_load(workers)
                     for system_load in system_loads:

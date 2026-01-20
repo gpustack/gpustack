@@ -9,7 +9,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
 )
 from gpustack.security import API_KEY_PREFIX, get_secret_hash
-from gpustack.server.deps import CurrentUserDep, SessionDep, EngineDep
+from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.schemas.api_keys import (
     ApiKey,
     ApiKeyCreate,
@@ -26,7 +26,6 @@ router = APIRouter()
 
 @router.get("", response_model=ApiKeysPublic)
 async def get_api_keys(
-    engine: EngineDep,
     session: SessionDep,
     user: CurrentUserDep,
     params: ApiKeyListParams = Depends(),
@@ -40,7 +39,7 @@ async def get_api_keys(
 
     if params.watch:
         return StreamingResponse(
-            ApiKey.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
+            ApiKey.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

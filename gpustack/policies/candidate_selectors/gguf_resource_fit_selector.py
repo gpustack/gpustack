@@ -29,7 +29,6 @@ from gpustack.schemas.models import (
     is_image_model,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.server.db import get_engine
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id, group_gpu_ids_by_worker
@@ -91,7 +90,6 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         cache_dir: Optional[str],
     ):
         """Initialize basic data."""
-        self._engine = get_engine()
         self._model = model
         self._model_instances = model_instances
         self._cache_dir = cache_dir

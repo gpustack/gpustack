@@ -7,7 +7,7 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ForbiddenException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.clusters import (
     WorkerPoolPublic,
     WorkerPoolsPublic,
@@ -20,7 +20,6 @@ router = APIRouter()
 
 @router.get("", response_model=WorkerPoolsPublic)
 async def list(
-    engine: EngineDep,
     session: SessionDep,
     params: ListParamsDep,
     name: str = None,
@@ -41,7 +40,7 @@ async def list(
 
     if params.watch:
         return StreamingResponse(
-            WorkerPool.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
+            WorkerPool.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

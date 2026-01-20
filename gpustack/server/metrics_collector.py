@@ -9,9 +9,8 @@ from typing import Optional, Dict, List
 from dataclasses import dataclass
 from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.samples import Sample
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
@@ -136,7 +135,6 @@ async def create_or_update_model_usage(
 
 class GatewayMetricsCollector:
     _interval: int
-    _engine: AsyncEngine
     _config: Config
     _disabled_collection: bool = False
     _client: aiohttp_client
@@ -147,7 +145,6 @@ class GatewayMetricsCollector:
 
     def __init__(self, cfg: Config, interval=60):
         self._interval = interval
-        self._engine = get_engine()
         self._config = cfg
         self._disabled_collection = cfg.gateway_mode != GatewayModeEnum.embedded
         self._client = aiohttp_client(timeout=ClientTimeout(total=10))
@@ -208,7 +205,7 @@ class GatewayMetricsCollector:
     async def _store_metrics(self, metrics: List[ModelUsageMetrics]):
         dedup_model_names = {m.model for m in metrics}
         dedup_user_ids = {m.user_id for m in metrics if m.user_id is not None}
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             try:
                 models = await Model.all_by_fields(
                     session=session,

@@ -1,10 +1,9 @@
 import asyncio
 import logging
 from typing import Dict
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.model_usage import ModelUsage
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ async def flush_usage_to_db():
         usage_flush_buffer.clear()
 
         try:
-            async with AsyncSession(get_engine()) as session:
+            async with async_session() as session:
                 for key, usage in local_buffer.items():
                     to_update = await ModelUsage.one_by_id(session, usage.id)
                     to_update.prompt_token_count = usage.prompt_token_count

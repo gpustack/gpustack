@@ -41,7 +41,8 @@ from gpustack.server.controllers import (
     WorkerPoolController,
     InferenceBackendController,
 )
-from gpustack.server.db import get_engine, init_db
+from gpustack.server.db import async_session
+from gpustack.server.init_db import init_db
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
@@ -193,8 +194,7 @@ class Server:
 
         await init_db(self._config.get_database_url())
 
-        engine = get_engine()
-        async with AsyncSession(engine, expire_on_commit=False) as session:
+        async with async_session() as session:
             await self._init_data(session)
 
         logger.debug("Data initialization completed.")

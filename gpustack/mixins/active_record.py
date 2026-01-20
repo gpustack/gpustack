@@ -14,9 +14,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import FlushError
 from sqlalchemy.orm.state import InstanceState
-from sqlalchemy.ext.asyncio import AsyncEngine
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
+from gpustack.server.db import async_session
 
 
 logger = logging.getLogger(__name__)
@@ -651,9 +651,7 @@ class ActiveRecordMixin:
         )
 
     @classmethod
-    async def subscribe(
-        cls, engine: AsyncEngine, source: str
-    ) -> AsyncGenerator[Event, None]:
+    async def subscribe(cls, source: str) -> AsyncGenerator[Event, None]:
         topic = cls.__name__.lower()
         subscriber = event_bus.subscribe(cls.__name__.lower())
         logger.info(
@@ -662,7 +660,7 @@ class ActiveRecordMixin:
             topic,
             id(subscriber),
         )
-        async with AsyncSession(engine) as session:
+        async with async_session() as session:
             items = await cls.all(session)
             for item in items:
                 yield Event(type=EventType.CREATED, data=item)
@@ -690,14 +688,13 @@ class ActiveRecordMixin:
     @classmethod
     async def streaming(
         cls,
-        engine: AsyncEngine,
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream events matching the given criteria as JSON strings."""
         try:
-            async for event in cls.subscribe(engine, source="streaming"):
+            async for event in cls.subscribe(source="streaming"):
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue

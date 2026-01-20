@@ -8,7 +8,7 @@ from gpustack.api.exceptions import (
     ConflictException,
 )
 from gpustack.security import get_secret_hash
-from gpustack.server.deps import CurrentUserDep, SessionDep, EngineDep
+from gpustack.server.deps import CurrentUserDep, SessionDep
 from gpustack.schemas.users import (
     User,
     UserActivationUpdate,
@@ -26,7 +26,6 @@ router = APIRouter()
 
 @router.get("", response_model=UsersPublic)
 async def get_users(
-    engine: EngineDep,
     session: SessionDep,
     params: UserListParams = Depends(),
     search: str = None,
@@ -37,7 +36,7 @@ async def get_users(
 
     if params.watch:
         return StreamingResponse(
-            User.streaming(engine, fuzzy_fields=fuzzy_fields),
+            User.streaming(fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

@@ -4,7 +4,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from gpustack.server.services import WorkerService
 from gpustack.utils.network import is_url_reachable
 
@@ -17,7 +17,6 @@ class WorkerSyncer:
     """
 
     def __init__(self, interval=15, worker_unreachable_timeout=20):
-        self._engine = get_engine()
         self._interval = interval
         self._worker_unreachable_timeout = worker_unreachable_timeout
 
@@ -33,7 +32,7 @@ class WorkerSyncer:
         """
         Mark offline workers to not_ready state.
         """
-        async with AsyncSession(self._engine, expire_on_commit=False) as session:
+        async with async_session() as session:
             workers = await Worker.all(
                 session,
                 options=[
