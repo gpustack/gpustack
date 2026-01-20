@@ -12,7 +12,6 @@ from gpustack_runner import list_service_runners
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
-from sqlmodel import select
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +75,7 @@ class BackendFrameworkFilter(WorkerFilter):
 
     async def _has_supported_runners(
         self,
+        inference_backends: List[InferenceBackend],
         gpu_type: str,
         runtime_version: Optional[str],
         backend_version: Optional[str],
@@ -93,34 +93,31 @@ class BackendFrameworkFilter(WorkerFilter):
         Returns:
             Tuple of (is_supported, supported_runtime_versions)
         """
+        backend = next(
+            (b for b in inference_backends if b.backend_name == self.backend_name),
+            None,
+        )
 
-        async with async_session() as session:
-            statement = select(InferenceBackend).where(
-                InferenceBackend.backend_name == self.backend_name
-            )
-            result = await session.exec(statement)
-            backend = result.first()
+        if backend and backend.version_configs and backend.version_configs.root:
+            for version, version_config in backend.version_configs.root.items():
+                if backend_version and backend_version != version:
+                    continue
 
-            if backend and backend.version_configs and backend.version_configs.root:
-                for version, version_config in backend.version_configs.root.items():
-                    if backend_version and backend_version != version:
-                        continue
+                # Check if gpu_type is supported by custom_framework
+                is_custom_supported = version_config.custom_framework and (
+                    version_config.custom_framework == "cpu"
+                    or gpu_type == version_config.custom_framework
+                )
 
-                    # Check if gpu_type is supported by custom_framework
-                    is_custom_supported = version_config.custom_framework and (
-                        version_config.custom_framework == "cpu"
-                        or gpu_type == version_config.custom_framework
-                    )
+                # Check if gpu_type is supported by built_in_frameworks
+                is_built_in_supported = version_config.built_in_frameworks and (
+                    "cpu" in version_config.built_in_frameworks
+                    and gpu_type in version_config.built_in_frameworks
+                )
 
-                    # Check if gpu_type is supported by built_in_frameworks
-                    is_built_in_supported = version_config.built_in_frameworks and (
-                        "cpu" in version_config.built_in_frameworks
-                        and gpu_type in version_config.built_in_frameworks
-                    )
-
-                    # GPU is supported if either custom or built-in framework supports it
-                    if is_custom_supported or is_built_in_supported:
-                        return True, []
+                # GPU is supported if either custom or built-in framework supports it
+                if is_custom_supported or is_built_in_supported:
+                    return True, []
 
         kwargs = {
             "backend": gpu_type,
@@ -165,6 +162,9 @@ class BackendFrameworkFilter(WorkerFilter):
         if self.model.backend == BackendEnum.CUSTOM:
             return workers, []
 
+        async with async_session() as session:
+            inference_backends = await InferenceBackend.all(session)
+
         filtered_workers = []
         filtered_messages = []
 
@@ -184,7 +184,11 @@ class BackendFrameworkFilter(WorkerFilter):
 
                 # Get supported runners for this GPU configuration
                 is_supported, supported_versions = await self._has_supported_runners(
-                    gpu_type, runtime_version, backend_version, variant
+                    inference_backends,
+                    gpu_type,
+                    runtime_version,
+                    backend_version,
+                    variant,
                 )
 
                 # Check version compatibility
