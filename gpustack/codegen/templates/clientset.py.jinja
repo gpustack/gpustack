@@ -18,6 +18,7 @@ class ClientSet:
         password: Optional[str] = None,
         headers: Optional[dict] = None,
         timeout: Optional[float] = 60.0,
+        enable_cache: bool = True,
     ):
         if headers is None:
             headers = {}
@@ -50,5 +51,8 @@ class ClientSet:
         )
         self.http_client = http_client
 {% for class_name in class_names %}
-        self.{{ class_name | to_underscore_plural }} = {{ class_name }}Client(http_client)
+        self.{{ class_name | to_underscore_plural }} = {{ class_name }}Client(
+            http_client,
+            enable_cache=enable_cache,
+        )
 {%- endfor %}{{ "\n" }}
