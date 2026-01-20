@@ -6,6 +6,7 @@ import os
 import queue
 from typing import List, Tuple, Optional
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -302,12 +303,16 @@ class Scheduler:
                 )
                 return
 
+            model_instances = await ModelInstance.all(
+                session, options=[selectinload(ModelInstance.model)]
+            )
+
             candidate = None
             messages = []
             if workers and model:
                 try:
                     candidate, messages = await find_candidate(
-                        self._config, model, workers
+                        self._config, model, workers, model_instances
                     )
                 except Exception as e:
                     state_message = f"Failed to find candidate: {e}"
@@ -370,6 +375,7 @@ async def find_candidate(
     config: Config,
     model: Model,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
 ) -> Tuple[Optional[ModelInstanceScheduleCandidate], List[str]]:
     """
     Find a schedule candidate for the model instance.
@@ -399,19 +405,29 @@ async def find_candidate(
     # Initialize candidate selector.
     try:
         if is_gguf_model(model):
-            candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
+            candidates_selector = GGUFResourceFitSelector(
+                model, model_instances, config.cache_dir
+            )
         elif model.backend == BackendEnum.VOX_BOX:
             candidates_selector = VoxBoxResourceFitSelector(
                 config, model, config.cache_dir
             )
         elif model.backend == BackendEnum.ASCEND_MINDIE:
-            candidates_selector = AscendMindIEResourceFitSelector(config, model)
+            candidates_selector = AscendMindIEResourceFitSelector(
+                config, model, model_instances
+            )
         elif model.backend == BackendEnum.VLLM:
-            candidates_selector = VLLMResourceFitSelector(config, model)
+            candidates_selector = VLLMResourceFitSelector(
+                config, model, model_instances
+            )
         elif model.backend == BackendEnum.SGLANG:
-            candidates_selector = SGLangResourceFitSelector(config, model)
+            candidates_selector = SGLangResourceFitSelector(
+                config, model, model_instances
+            )
         else:
-            candidates_selector = CustomBackendResourceFitSelector(config, model)
+            candidates_selector = CustomBackendResourceFitSelector(
+                config, model, model_instances
+            )
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
@@ -419,7 +435,7 @@ async def find_candidate(
     candidates = await candidates_selector.select_candidates(workers)
 
     # Score candidates.
-    placement_scorer = PlacementScorer(model)
+    placement_scorer = PlacementScorer(model, model_instances)
     candidates = await placement_scorer.score(candidates)
 
     # Pick the highest score candidate.

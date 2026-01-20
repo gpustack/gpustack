@@ -15,8 +15,6 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.schemas.workers import Worker, GPUDevicesInfo, GPUDeviceInfo
-from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.ext.asyncio import AsyncEngine
 from pydantic import BaseModel
 
 from gpustack.utils.hub import get_model_weight_size, get_diffusion_model_weight_size
@@ -36,7 +34,7 @@ class WorkerGPUInfo(BaseModel):
 
 
 async def get_worker_allocatable_resource(  # noqa: C901
-    engine: AsyncEngine,
+    all_model_instances: List[ModelInstance],
     worker: Worker,
     gpu_type: Optional[str] = None,
 ) -> Allocatable:
@@ -49,7 +47,7 @@ async def get_worker_allocatable_resource(  # noqa: C901
             allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
 
     is_unified_memory = worker.status.memory.is_unified_memory
-    model_instances = await get_worker_model_instances(engine, worker)
+    model_instances = await get_worker_model_instances(all_model_instances, worker)
     allocated = Allocated(ram=0, vram={})
 
     for model_instance in model_instances:
@@ -318,38 +316,34 @@ async def estimate_diffusion_model_vram(
 
 
 async def get_worker_model_instances(
-    engine: AsyncEngine, worker: Worker
+    all_model_instances: List[ModelInstance], worker: Worker
 ) -> List[ModelInstance]:
     """
     Get all model instances related to the worker, including:
     1. Model instances assigned to this worker (main worker)
     2. Model instances that use this worker as a subordinate worker in distributed inference
     """
-    async with AsyncSession(engine) as session:
-        # Get all model instances from the database
-        all_model_instances = await ModelInstance.all(session)
+    # Filter to get only the relevant instances:
+    # 1. Instances assigned to this worker (main worker)
+    # 2. Instances that use this worker as a subordinate worker
+    relevant_instances = []
+    for model_instance in all_model_instances:
+        # Check if this is a main worker instance
+        if model_instance.worker_id == worker.id:
+            relevant_instances.append(model_instance)
+        # Check if this worker is used as a subordinate worker
+        elif (
+            model_instance.distributed_servers
+            and model_instance.distributed_servers.subordinate_workers
+        ):
+            for (
+                subordinate_worker
+            ) in model_instance.distributed_servers.subordinate_workers:
+                if subordinate_worker.worker_id == worker.id:
+                    relevant_instances.append(model_instance)
+                    break
 
-        # Filter to get only the relevant instances:
-        # 1. Instances assigned to this worker (main worker)
-        # 2. Instances that use this worker as a subordinate worker
-        relevant_instances = []
-        for model_instance in all_model_instances:
-            # Check if this is a main worker instance
-            if model_instance.worker_id == worker.id:
-                relevant_instances.append(model_instance)
-            # Check if this worker is used as a subordinate worker
-            elif (
-                model_instance.distributed_servers
-                and model_instance.distributed_servers.subordinate_workers
-            ):
-                for (
-                    subordinate_worker
-                ) in model_instance.distributed_servers.subordinate_workers:
-                    if subordinate_worker.worker_id == worker.id:
-                        relevant_instances.append(model_instance)
-                        break
-
-        return relevant_instances
+    return relevant_instances
 
 
 class ListMessageBuilder:
@@ -465,8 +459,8 @@ async def get_local_model_weight_size(
 
 
 async def group_worker_gpu_by_memory(
-    engine: AsyncEngine,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
     ram_claim: int = 0,
     gpu_type: Optional[str] = None,
 ) -> List[List[WorkerGPUInfo]]:
@@ -502,7 +496,9 @@ async def group_worker_gpu_by_memory(
             continue
 
         # Get allocatable resources for this worker
-        allocatable = await get_worker_allocatable_resource(engine, worker, gpu_type)
+        allocatable = await get_worker_allocatable_resource(
+            model_instances, worker, gpu_type
+        )
 
         if ram_not_enough(ram_claim, allocatable):
             continue

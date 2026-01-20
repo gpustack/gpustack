@@ -504,7 +504,9 @@ async def find_scale_down_candidates(
     instances: List[ModelInstance], model: Model
 ) -> List[ModelInstanceScore]:
     try:
-        placement_scorer = PlacementScorer(model, scale_type=ScaleTypeEnum.SCALE_DOWN)
+        placement_scorer = PlacementScorer(
+            model, instances, scale_type=ScaleTypeEnum.SCALE_DOWN
+        )
         placement_candidates = await placement_scorer.score_instances(instances)
 
         offload_layer_scorer = OffloadLayerScorer(model)

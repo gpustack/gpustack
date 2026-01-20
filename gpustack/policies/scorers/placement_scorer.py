@@ -58,10 +58,12 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
     def __init__(
         self,
         model: Model,
+        model_instances: List[ModelInstance],
         scale_type: ScaleTypeEnum = ScaleTypeEnum.SCALE_UP,
     ):
         self._engine = get_engine()
         self._model = model
+        self._model_instances = model_instances
         self._resource_weight = ResourceWeight()
         self._model_weight = ModelWeight()
         self._inference_server_type_weight = InferenceServerTypeWeight()
@@ -119,7 +121,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         """
         for candidate in candidates:
             allocatable = await get_worker_allocatable_resource(
-                self._engine, candidate.worker
+                self._model_instances, candidate.worker
             )
 
             final_score = 0
@@ -172,7 +174,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 )
                 continue
 
-            allocatable = await get_worker_allocatable_resource(self._engine, worker)
+            allocatable = await get_worker_allocatable_resource(
+                self._model_instances, worker
+            )
 
             final_score = 0
             score = await self._score_binpack_item(
@@ -478,7 +482,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             score = 0
             for subordinate_worker in subordinate_workers:
                 allocatable = await get_worker_allocatable_resource(
-                    self._engine,
+                    self._model_instances,
                     worker_map.get(subordinate_worker.worker_id),
                 )
 
@@ -520,7 +524,6 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             return {}
 
         model_id = self._model.id
-        model_instances = await get_model_instances(self._engine)
 
         worker_model_instances_count_map = defaultdict(
             lambda: {
@@ -529,7 +532,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             }
         )
 
-        for model_instance in model_instances:
+        for model_instance in self._model_instances:
             if model_instance.worker_id is None:
                 continue
 
@@ -577,9 +580,3 @@ def update_count(
 
     key = "current" if is_current_model else "others"
     worker_model_instances_count_map[worker_id]["total"][key] += 1
-
-
-async def get_model_instances(engine: AsyncEngine) -> List[ModelInstance]:
-    async with AsyncSession(engine) as session:
-        model_instances = await ModelInstance.all(session)
-        return model_instances
