@@ -310,19 +310,6 @@ async def test_select_candidates(
 ):
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
         ),
@@ -330,14 +317,23 @@ async def test_select_candidates(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
         m.backend = BackendEnum.SGLANG
-        resource_fit_selector = SGLangResourceFitSelector(config, m)
-        placement_scorer = PlacementScorer(m)
+        mis = []
+        resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+        placement_scorer = PlacementScorer(m, mis)
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await placement_scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers)
+        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         try:
             assert len(actual_candidates) == len(expected_candidates)
@@ -372,21 +368,9 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
         backend_parameters=[],
     )
     m.backend = BackendEnum.SGLANG
+    mis = []
 
     with (
-        patch(
-            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
@@ -395,9 +379,17 @@ async def test_manual_schedule_to_2_worker_2_gpu(config):
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers)
+        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -454,21 +446,9 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
         backend_parameters=[],
     )
     m.backend = BackendEnum.SGLANG
+    mis = []
 
     with (
-        patch(
-            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
@@ -477,9 +457,17 @@ async def test_manual_schedule_to_2_worker_4_gpu_select_main_with_most_gpus(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers)
+        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -540,21 +528,9 @@ async def test_manual_schedule_to_3_workers_4_gpus(
         backend_parameters=[],
     )
     m.backend = BackendEnum.SGLANG
+    mis = []
 
     with (
-        patch(
-            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
@@ -563,9 +539,17 @@ async def test_manual_schedule_to_3_workers_4_gpus(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers(),
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers())
+        candidate, _ = await scheduler.find_candidate(config, m, workers(), mis)
 
         expected_candidates = [
             {
@@ -623,22 +607,23 @@ async def test_auto_schedule_to_2_worker_2_gpu(config):
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -695,16 +680,9 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
     )
     m.backend = BackendEnum.SGLANG
 
+    mis = []
+
     with (
-        patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
@@ -713,9 +691,17 @@ async def test_auto_schedule_to_2_worker_16_gpu_deepseek_r1(config):
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers)
+        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -778,16 +764,9 @@ async def test_auto_schedule_embedding_models(config):
     )
     m.backend = BackendEnum.SGLANG
 
+    mis = []
+
     with (
-        patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
@@ -796,9 +775,17 @@ async def test_auto_schedule_embedding_models(config):
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
 
-        candidate, _ = await scheduler.find_candidate(config, m, workers)
+        candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         expected_candidates = [
             {
@@ -831,38 +818,39 @@ async def test_auto_schedule_single_work_single_gpu(config):
         backend_parameters=[],
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = [
+        new_model_instance(
+            10,
+            "test-1",
+            1,
+            2,
+            ModelInstanceStateEnum.RUNNING,
+            [2],
+            ComputedResourceClaim(
+                is_unified_memory=False,
+                offload_layers=10,
+                total_layers=10,
+                ram=0,
+                vram={2: 500 * 1024 * 1024},
+            ),
+        ),
+    ]
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[
-                new_model_instance(
-                    10,
-                    "test-1",
-                    1,
-                    2,
-                    ModelInstanceStateEnum.RUNNING,
-                    [2],
-                    ComputedResourceClaim(
-                        is_unified_memory=False,
-                        offload_layers=10,
-                        total_layers=10,
-                        ram=0,
-                        vram={2: 500 * 1024 * 1024},
-                    ),
-                ),
-            ],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -959,8 +947,10 @@ async def test_auto_schedule_single_work_multi_gpu(
     """Test automatic scheduling with single worker and multiple GPUs"""
     m = model
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     if index == 1:
         # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
@@ -970,17 +960,16 @@ async def test_auto_schedule_single_work_multi_gpu(
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1007,22 +996,23 @@ async def test_auto_schedule_multi_work_multi_gpu(config):
     )
     m.backend = BackendEnum.SGLANG
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1062,22 +1052,23 @@ async def test_sglang_backend_parameters(config):
         ],
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1109,22 +1100,23 @@ async def test_sglang_tensor_parallel_size(config):
         ],
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1158,22 +1150,23 @@ async def test_sglang_data_parallel_size(config):
         ],
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1203,22 +1196,23 @@ async def test_sglang_memory_fraction_static(config):
         ],
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1247,22 +1241,23 @@ async def test_auto_schedule_extended_kv_cache_ram_size(config):
         ),
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1304,22 +1299,23 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
         ),
     )
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1388,22 +1384,23 @@ async def test_auto_schedule_extended_kv_cache_ram_ratio(config):
 async def test_output_schedule_msg(config, index, workers, model, expect_msg):
     m = model
 
-    resource_fit_selector = SGLangResourceFitSelector(config, m)
-    placement_scorer = PlacementScorer(m)
+    mis = []
+
+    resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+    placement_scorer = PlacementScorer(m, mis)
 
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
@@ -1623,19 +1620,6 @@ async def test_select_candidates_from_different_gpu_types(
 ):
     with (
         patch(
-            'gpustack.policies.utils.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
-            return_value=[],
-        ),
-        patch(
-            'gpustack.policies.scorers.placement_scorer.get_model_instances',
-            return_value=[],
-        ),
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
-        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
@@ -1643,14 +1627,25 @@ async def test_select_candidates_from_different_gpu_types(
             'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
             return_value=(True, []),
         ),
+        patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
     ):
         m.backend = BackendEnum.SGLANG.value
-        resource_fit_selector = SGLangResourceFitSelector(config, m)
-        scorer = PlacementScorer(m)
+
+        mis = []
+
+        resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
+        scorer = PlacementScorer(m, mis)
 
         actual_candidates = await resource_fit_selector.select_candidates(workers)
         actual_candidates = await scorer.score(actual_candidates)
-        actual_candidate, _ = await scheduler.find_candidate(config, m, workers)
+        actual_candidate, _ = await scheduler.find_candidate(config, m, workers, mis)
 
         try:
             assert len(actual_candidates) == len(expected_candidates)

@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 from tests.utils.model import new_model
 from gpustack.policies.candidate_selectors import AscendMindIEResourceFitSelector
@@ -259,10 +259,9 @@ async def test_select_candidates_3x_64gx1_1x_64gx0(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -385,9 +384,8 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -504,10 +502,9 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -1045,10 +1042,9 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -1515,10 +1511,9 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -1649,12 +1644,11 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
         for device in workers[0].status.gpu_devices:
             device.type = "unknown"
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
     resource_fit_selector._serving_params.npu_memory_fraction = 0.2
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -1857,19 +1851,24 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
     ]
 
     if index == 1:
-        resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+        resource_fit_selector = AscendMindIEResourceFitSelector(
+            config, m, model_instances
+        )
         resource_fit_selector._serving_params.npu_memory_fraction = 0.9
     elif index == 2:
-        resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+        resource_fit_selector = AscendMindIEResourceFitSelector(
+            config, m, model_instances
+        )
         resource_fit_selector._serving_params.npu_memory_fraction = 0.1
     elif index == 3:
-        resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+        resource_fit_selector = AscendMindIEResourceFitSelector(
+            config, m, model_instances
+        )
         resource_fit_selector._serving_params.npu_memory_fraction = 0.9
         for worker in workers:
             worker.system_reserved.ram = worker.status.memory.total - 500
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,
@@ -1970,10 +1969,9 @@ async def test_select_candidates(config, case_name, m, workers, expected_candida
         if gpu.memory.allocated
     ]
 
-    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
     with (
-        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
             return_value=model_instances,

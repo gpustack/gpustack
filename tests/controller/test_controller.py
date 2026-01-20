@@ -78,7 +78,6 @@ async def test_find_scale_down_candidates():
     ]
 
     with (
-        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
             'gpustack.schemas.models.ModelInstance.all_by_field',
             return_value=mis,
@@ -90,6 +89,14 @@ async def test_find_scale_down_candidates():
         patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.async_session',
+            return_value=AsyncMock(),
+        ),
+        patch(
+            'gpustack.policies.scorers.status_scorer.async_session',
+            return_value=AsyncMock(),
         ),
     ):
 
