@@ -87,20 +87,19 @@ async def test_cuda_gpu_worker_passes():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            # Create a mock session that returns the backend
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        # Create a mock session that returns the backend
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
-            filtered_workers, messages = await filter_instance.filter(workers)
+        filtered_workers, messages = await filter_instance.filter(workers)
 
-            assert len(filtered_workers) == 1
-            assert filtered_workers[0].name == "host-4-4080"
-            assert len(messages) == 0
+        assert len(filtered_workers) == 1
+        assert filtered_workers[0].name == "host-4-4080"
+        assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -130,19 +129,18 @@ async def test_cuda_gpu_worker_with_specified_version_passes():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
-            filtered_workers, messages = await filter_instance.filter(workers)
+        filtered_workers, messages = await filter_instance.filter(workers)
 
-            assert len(filtered_workers) == 1
-            assert filtered_workers[0].name == "host-4-4080"
-            assert len(messages) == 0
+        assert len(filtered_workers) == 1
+        assert filtered_workers[0].name == "host-4-4080"
+        assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -172,25 +170,24 @@ async def test_cpu_only_worker_filtered_out():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
 
-            with patch(
-                'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
-                return_value=[],
-            ):
-                filtered_workers, messages = await filter_instance.filter(workers)
-
-                # CPU worker should be filtered out since CPU is not in supported frameworks
-                assert len(filtered_workers) == 0
-                assert len(messages) == 1
-                assert "host-cpu-1" in messages[0]
-                assert "filtered out" in messages[0]
+            # CPU worker should be filtered out since CPU is not in supported frameworks
+            assert len(filtered_workers) == 0
+            assert len(messages) == 1
+            assert "host-cpu-1" in messages[0]
+            assert "filtered out" in messages[0]
 
 
 @pytest.mark.asyncio
@@ -218,25 +215,25 @@ async def test_custom_backend_with_cpu_support():
     async def mock_session_exec(statement):
         mock_result = MagicMock()
         mock_result.first.return_value = backend
+        mock_result.all.return_value = [backend]
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
 
-            with patch(
-                'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
-                return_value=[],
-            ):
-                filtered_workers, messages = await filter_instance.filter(workers)
-
-                assert len(filtered_workers) == 1
-                assert filtered_workers[0].name == "host-cpu-1"
-                assert len(messages) == 0
+            assert len(filtered_workers) == 1
+            assert filtered_workers[0].name == "host-cpu-1"
+            assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -274,18 +271,17 @@ async def test_mixed_gpu_types():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
-            filtered_workers, messages = await filter_instance.filter(workers)
+        filtered_workers, messages = await filter_instance.filter(workers)
 
-            assert len(filtered_workers) == 1
-            assert len(messages) == 0
+        assert len(filtered_workers) == 1
+        assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -315,24 +311,23 @@ async def test_version_mismatch():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
 
-            with patch(
-                'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
-                return_value=[],
-            ):
-                filtered_workers, messages = await filter_instance.filter(workers)
-
-                assert len(filtered_workers) == 0
-                assert len(messages) == 1
-                assert "host-4-4080" in messages[0]
-                assert "11.8" in messages[0] or "backend version" in messages[0]
+            assert len(filtered_workers) == 0
+            assert len(messages) == 1
+            assert "host-4-4080" in messages[0]
+            assert "11.8" in messages[0] or "backend version" in messages[0]
 
 
 @pytest.mark.asyncio
@@ -362,19 +357,18 @@ async def test_ascend_gpu_variant_handling():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
-            filtered_workers, messages = await filter_instance.filter(workers)
+        filtered_workers, messages = await filter_instance.filter(workers)
 
-            assert len(filtered_workers) == 1
-            assert filtered_workers[0].name == "ascend_0"
-            assert len(messages) == 0
+        assert len(filtered_workers) == 1
+        assert filtered_workers[0].name == "ascend_0"
+        assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -409,23 +403,22 @@ async def test_empty_gpu_list_treated_as_cpu():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
 
-            with patch(
-                'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
-                return_value=[],
-            ):
-                filtered_workers, messages = await filter_instance.filter(workers)
-
-                # CPU worker should be filtered out since CPU is not in supported frameworks
-                assert len(filtered_workers) == 0
-                assert len(messages) == 1
+            # CPU worker should be filtered out since CPU is not in supported frameworks
+            assert len(filtered_workers) == 0
+            assert len(messages) == 1
 
 
 @pytest.mark.asyncio
@@ -477,21 +470,20 @@ async def test_multiple_workers_filtering():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
-            filtered_workers, messages = await filter_instance.filter(workers)
+        filtered_workers, messages = await filter_instance.filter(workers)
 
-            # Only CUDA worker should pass
-            assert len(filtered_workers) == 2
-            assert filtered_workers[0].name == "host-4-4080"
-            # CPU and Ascend workers should be filtered out
-            assert len(messages) == 1
+        # Only CUDA worker should pass
+        assert len(filtered_workers) == 2
+        assert filtered_workers[0].name == "host-4-4080"
+        # CPU and Ascend workers should be filtered out
+        assert len(messages) == 1
 
 
 @pytest.mark.asyncio
@@ -544,18 +536,17 @@ async def test_auto_matching_mode():
         mock_result.first.return_value = backend
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
-            filtered_workers, messages = await filter_instance.filter(workers)
+        filtered_workers, messages = await filter_instance.filter(workers)
 
-            assert len(filtered_workers) == 1
-            assert len(messages) == 0
+        assert len(filtered_workers) == 1
+        assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -574,38 +565,37 @@ async def test_has_supported_runners_with_list_service_runners():
         mock_result.first.return_value = None
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
+        # Mock list_service_runners to return a runner
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners'
+        ) as mock_list:
+            mock_list.return_value = [
+                {
+                    "version": "0.11.0",
+                    "backend": "cuda",
+                }
+            ]
 
-            # Mock list_service_runners to return a runner
-            with patch(
-                'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners'
-            ) as mock_list:
-                mock_list.return_value = [
-                    {
-                        "version": "0.11.0",
-                        "backend": "cuda",
-                    }
-                ]
+            filtered_workers, messages = await filter_instance.filter(workers)
 
-                filtered_workers, messages = await filter_instance.filter(workers)
+            # Worker should pass because list_service_runners returned a runner
+            assert len(filtered_workers) == 1
+            assert filtered_workers[0].name == "host-4-4080"
+            assert len(messages) == 0
 
-                # Worker should pass because list_service_runners returned a runner
-                assert len(filtered_workers) == 1
-                assert filtered_workers[0].name == "host-4-4080"
-                assert len(messages) == 0
-
-                # Verify list_service_runners was called with correct parameters
-                mock_list.assert_called_once()
-                call_kwargs = mock_list.call_args[1]
-                assert call_kwargs["backend"] == "cuda"
-                assert call_kwargs["service"] == "vllm"
-                assert call_kwargs["with_deprecated"] is False
+            # Verify list_service_runners was called with correct parameters
+            mock_list.assert_called_once()
+            call_kwargs = mock_list.call_args[1]
+            assert call_kwargs["backend"] == "cuda"
+            assert call_kwargs["service"] == "vllm"
+            assert call_kwargs["with_deprecated"] is False
 
 
 @pytest.mark.asyncio
@@ -632,26 +622,26 @@ async def test_cpu_worker_with_built_in_cpu_support():
     async def mock_session_exec(statement):
         mock_result = MagicMock()
         mock_result.first.return_value = backend
+        mock_result.all.return_value = [backend]
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
+
         with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
+            filtered_workers, messages = await filter_instance.filter(workers)
 
-            with patch(
-                'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
-                return_value=[],
-            ):
-                filtered_workers, messages = await filter_instance.filter(workers)
-
-                # CPU worker should pass since CPU is in built_in_frameworks
-                assert len(filtered_workers) == 1
-                assert filtered_workers[0].name == "host-4-4080"
-                assert len(messages) == 0
+            # CPU worker should pass since CPU is in built_in_frameworks
+            assert len(filtered_workers) == 1
+            assert filtered_workers[0].name == "host-4-4080"
+            assert len(messages) == 0
 
 
 @pytest.mark.asyncio
@@ -677,22 +667,25 @@ async def test_cuda_version_incompatibility():
         mock_result.first.return_value = None
         return mock_result
 
-    with patch('gpustack.policies.worker_filters.backend_framework_filter.get_engine'):
-        with patch(
-            'gpustack.policies.worker_filters.backend_framework_filter.AsyncSession'
-        ) as mock_async_session:
-            mock_session = AsyncMock()
-            mock_session.exec = mock_session_exec
-            mock_async_session.return_value.__aenter__.return_value = mock_session
+    with patch(
+        'gpustack.policies.worker_filters.backend_framework_filter.async_session'
+    ) as mock_async_session:
+        mock_session = AsyncMock()
+        mock_session.exec = mock_session_exec
+        mock_async_session.return_value.__aenter__.return_value = mock_session
 
+        with patch(
+            'gpustack.policies.worker_filters.backend_framework_filter.list_service_runners',
+            return_value=[],
+        ):
             filtered_workers, messages = await filter_instance.filter(workers)
 
-            # Worker should be filtered out because available runners don't support CUDA 12.4
-            # (real list_service_runners will return runners with 12.4 and 12.8,
-            # but 12.8 > 12.4 means no backward compatible runner)
-            assert len(filtered_workers) == 0
-            assert len(messages) == 1
-            assert "host-4-4080" in messages[0]
+        # Worker should be filtered out because available runners don't support CUDA 12.4
+        # (real list_service_runners will return runners with 12.4 and 12.8,
+        # but 12.8 > 12.4 means no backward compatible runner)
+        assert len(filtered_workers) == 0
+        assert len(messages) == 1
+        assert "host-4-4080" in messages[0]
 
 
 if __name__ == "__main__":
