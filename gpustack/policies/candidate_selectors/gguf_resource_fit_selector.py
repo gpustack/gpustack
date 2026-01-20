@@ -24,6 +24,7 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
     is_image_model,
 )
@@ -75,17 +76,24 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     def __init__(
         self,
         model: Model,
+        model_instances: List[ModelInstance],
         cache_dir: Optional[str] = None,
     ):
-        self._initialize_basic_data(model, cache_dir)
+        self._initialize_basic_data(model, model_instances, cache_dir)
         self._initialize_cached_claim_data()
         self._initialize_model_parameters(model)
         self._initialize_selected_gpu_ids()
 
-    def _initialize_basic_data(self, model: Model, cache_dir: Optional[str]):
+    def _initialize_basic_data(
+        self,
+        model: Model,
+        model_instances: List[ModelInstance],
+        cache_dir: Optional[str],
+    ):
         """Initialize basic data."""
         self._engine = get_engine()
         self._model = model
+        self._model_instances = model_instances
         self._cache_dir = cache_dir
 
         self._workers_allocatable_resource = {}
@@ -170,7 +178,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         if self._workers_allocatable_resource.get(worker.id):
             return self._workers_allocatable_resource.get(worker.id)
 
-        return await get_worker_allocatable_resource(self._engine, worker)
+        return await get_worker_allocatable_resource(self._model_instances, worker)
 
     def _get_claim_with_layers(
         self, layers: int, is_uma: bool = False

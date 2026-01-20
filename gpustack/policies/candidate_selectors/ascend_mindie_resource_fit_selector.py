@@ -23,6 +23,7 @@ from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     SourceEnum,
     ModelInstanceSubordinateWorker,
 )
@@ -48,8 +49,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         self,
         config: Config,
         model: Model,
+        model_instances: List[ModelInstance],
     ):
-        super().__init__(config, model)
+        super().__init__(config, model, model_instances)
 
         # Diagnostic message to be set to the model instance.
         self._diagnostic_messages: List[str] = []
@@ -128,7 +130,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         return self._diagnostic_messages
 
     async def select_candidates(
-        self, workers: List[Worker]
+        self,
+        workers: List[Worker],
     ) -> List[ModelInstanceScheduleCandidate]:
         """
         Select available deployment candidates based on the resource requirements.
@@ -920,7 +923,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if worker.id in self.__worker_alloc_idx:
             return self.__worker_alloc_idx[worker.id]
 
-        worker_alloc = await get_worker_allocatable_resource(self._engine, worker)
+        worker_alloc = await get_worker_allocatable_resource(
+            self._model_instances, worker
+        )
         if not worker_alloc:
             logger.warning(f"Worker {worker.name} has no allocatable resources.")
             worker_alloc = Allocatable(ram=0, vram={0: 0})

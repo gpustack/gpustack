@@ -2,7 +2,6 @@ import logging
 from collections import defaultdict
 from typing import List, Optional, Dict, Tuple
 from transformers.utils import strtobool
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 from gpustack.policies.base import ModelInstanceScheduleCandidate
 from gpustack.policies.candidate_selectors.base_candidate_selector import (
@@ -33,6 +32,7 @@ from gpustack.policies.utils import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
     CategoryEnum,
 )
@@ -53,8 +53,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         self,
         cfg: Config,
         model: Model,
+        model_instances: List[ModelInstance],
     ):
-        super().__init__(cfg, model)
+        super().__init__(cfg, model, model_instances)
 
         self._vram_claim = 0
         self._ram_claim = 0
@@ -335,10 +336,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
                 if self._param_mem_fraction_static > 0
                 else await MemFractionStaticCalculator(
                     self._model,
+                    self._model_instances,
                     self._model_params,
                     gpu_type,
                     self._selected_gpu_indexes_by_gpu_type_and_worker,
-                    self._engine,
                 )._cal_mem_fraction_static(workers_of_type)
             )
             for gpu_type, workers_of_type in workers_by_gpu_type.items()
@@ -529,7 +530,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
 
         # SGLang performs VRAM balancing checks. We group all GPUs based on available VRAM capacity
         gpu_group = await group_worker_gpu_by_memory(
-            self._engine, [worker], ram_claim=self._ram_claim, gpu_type=gpu_type
+            [worker],
+            model_instances=self._model_instances,
+            ram_claim=self._ram_claim,
+            gpu_type=gpu_type,
         )
 
         for info in gpu_group:
@@ -667,8 +671,8 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         workers_by_gpu_type = group_workers_by_gpu_type(workers)
         for gpu_type, workers_of_type in workers_by_gpu_type.items():
             gpu_group = await group_worker_gpu_by_memory(
-                self._engine,
                 workers_of_type,
+                model_instances=self._model_instances,
                 ram_claim=self._ram_claim,
                 gpu_type=gpu_type,
             )
@@ -884,6 +888,7 @@ def _create_candidate(
 
 class MemFractionStaticCalculator:
     _model: Model
+    _model_instances: List[ModelInstance]
     _gpu_type: Optional[str]
     _chunked_prefill_size: Optional[int]
     _cuda_graph_max_bs: Optional[int]
@@ -896,26 +901,24 @@ class MemFractionStaticCalculator:
 
     # Model hyperparameters.
     _model_params: ModelParameters
-    # Database engine.
-    _engine: AsyncEngine
 
     _selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]] = {}
 
     def __init__(
         self,
         model: Model,
+        model_instances: List[ModelInstance],
         model_params: ModelParameters,
         gpu_type: str,
         selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[int, List[int]]],
-        engine: AsyncEngine,
     ) -> None:
         self._model = model
+        self._model_instances = model_instances
         self._model_params = model_params
         self._gpu_type = gpu_type
         self._selected_gpu_indexes_by_gpu_type_and_worker = (
             selected_gpu_indexes_by_gpu_type_and_worker
         )
-        self._engine = engine
 
         self._chunked_prefill_size = find_int_parameter(
             self._model.backend_parameters, ["chunked-prefill-size"]
@@ -1200,7 +1203,7 @@ class MemFractionStaticCalculator:
 
                 if self._model.gpu_selector.gpus_per_replica:
                     allocatable = await get_worker_allocatable_resource(
-                        self._engine, worker, self._gpu_type
+                        self._model_instances, worker, self._gpu_type
                     )
                     sorted_gpu_indexes = [
                         idx

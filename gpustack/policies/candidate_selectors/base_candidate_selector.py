@@ -11,6 +11,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import Worker
@@ -193,10 +194,12 @@ class ScheduleCandidatesSelector(ABC):
         self,
         config: Config,
         model: Model,
+        model_instances: List[ModelInstance],
         parse_model_params: bool = True,
     ):
         self._config = config
         self._model = model
+        self._model_instances = model_instances
         self._engine = get_engine()
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
@@ -287,7 +290,7 @@ class ScheduleCandidatesSelector(ABC):
             return allocatable
 
         allocatable = await get_worker_allocatable_resource(
-            self._engine, worker, gpu_type
+            self._model_instances, worker, gpu_type
         )
         self._workers_allocatable_resource_by_gpu_type.setdefault(
             gpu_type, {}
@@ -962,7 +965,7 @@ class ScheduleCandidatesSelector(ABC):
         """
         Validate that there is no more than one distributed vLLM instance per worker.
         """
-        instances = await get_worker_model_instances(self._engine, worker)
+        instances = await get_worker_model_instances(self._model_instances, worker)
         for instance in instances:
             if (
                 instance.distributed_servers

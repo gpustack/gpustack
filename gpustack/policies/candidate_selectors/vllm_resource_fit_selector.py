@@ -30,6 +30,7 @@ from gpustack.schemas.models import (
     CategoryEnum,
     ComputedResourceClaim,
     Model,
+    ModelInstance,
     ModelInstanceSubordinateWorker,
 )
 from gpustack.schemas.workers import GPUDevicesInfo, Worker
@@ -57,8 +58,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self,
         cfg: Config,
         model: Model,
+        model_instances: List[ModelInstance],
     ):
-        super().__init__(cfg, model)
+        super().__init__(cfg, model, model_instances)
 
         self._vram_claim = 0
         self._ram_claim = 0
