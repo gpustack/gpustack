@@ -268,6 +268,7 @@ class Worker:
             self._serve_manager.cleanup_orphan_workloads, 120, 15
         )
 
+        self._create_async_task(self._serve_manager.watch_models())
         self._create_async_task(self._serve_manager.watch_model_instances_event())
         self._create_async_task(self._serve_manager.watch_model_instances())
 
