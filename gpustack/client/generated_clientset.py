@@ -22,6 +22,7 @@ class ClientSet:
         password: Optional[str] = None,
         headers: Optional[dict] = None,
         timeout: Optional[float] = 60.0,
+        enable_cache: bool = True,
     ):
         if headers is None:
             headers = {}
@@ -54,9 +55,27 @@ class ClientSet:
         )
         self.http_client = http_client
 
-        self.workers = WorkerClient(http_client)
-        self.models = ModelClient(http_client)
-        self.model_instances = ModelInstanceClient(http_client)
-        self.model_files = ModelFileClient(http_client)
-        self.users = UserClient(http_client)
-        self.inference_backends = InferenceBackendClient(http_client)
+        self.workers = WorkerClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
+        self.models = ModelClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
+        self.model_instances = ModelInstanceClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
+        self.model_files = ModelFileClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
+        self.users = UserClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
+        self.inference_backends = InferenceBackendClient(
+            http_client,
+            enable_cache=enable_cache,
+        )
