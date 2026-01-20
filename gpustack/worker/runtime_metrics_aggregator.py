@@ -341,7 +341,7 @@ class RuntimeMetricsAggregator:
     def _get_online_metrics_config(self):
         try:
             resp = self._clientset.http_client.get_httpx_client().get(
-                f"{self._clientset.base_url}/metrics/config", timeout=5
+                f"{self._clientset.base_url}/v2/metrics/config", timeout=5
             )
             if resp.status_code == 404:
                 return None
