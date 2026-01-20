@@ -22,9 +22,7 @@ from gpustack.schemas.models import (
     PlacementStrategyEnum,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.server.db import get_engine
-from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.ext.asyncio import AsyncEngine
+from gpustack.server.db import async_session
 
 MaxScore = 100
 
@@ -61,7 +59,6 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         model_instances: List[ModelInstance],
         scale_type: ScaleTypeEnum = ScaleTypeEnum.SCALE_UP,
     ):
-        self._engine = get_engine()
         self._model = model
         self._model_instances = model_instances
         self._resource_weight = ResourceWeight()
@@ -100,7 +97,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             f"model {self._model.name}, score instances with {self._scale_type} placement policy"
         )
 
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             workers = await Worker.all(session)
             worker_map = {worker.id: worker for worker in workers}
 
@@ -475,7 +472,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         if subordinate_workers is None:
             return 0
 
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             workers = await Worker.all(session)
             worker_map = {worker.id: worker for worker in workers}
 

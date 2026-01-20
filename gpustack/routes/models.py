@@ -26,7 +26,7 @@ from gpustack.schemas.models import (
     ModelListParams,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
+from gpustack.server.deps import ListParamsDep, SessionDep, CurrentUserDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -61,7 +61,6 @@ class ModelStateFilterEnum(str, Enum):
 
 @router.get("", response_model=ModelsPublic)
 async def get_models(
-    engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
@@ -74,7 +73,6 @@ async def get_models(
     backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
     return await _get_models(
-        engine=engine,
         session=session,
         params=params,
         state=state,
@@ -86,7 +84,6 @@ async def get_models(
 
 
 async def _get_models(
-    engine: EngineDep,
     session: SessionDep,
     params: ModelListParams,
     state: Optional[ModelStateFilterEnum] = None,
@@ -114,7 +111,6 @@ async def _get_models(
     if params.watch:
         return StreamingResponse(
             target_class.streaming(
-                engine,
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
@@ -234,9 +230,7 @@ async def _get_model(
 
 
 @router.get("/{id}/instances", response_model=ModelInstancesPublic)
-async def get_model_instances(
-    engine: EngineDep, session: SessionDep, id: int, params: ListParamsDep
-):
+async def get_model_instances(session: SessionDep, id: int, params: ListParamsDep):
     model = await Model.one_by_id(session, id, options=[selectinload(Model.instances)])
     if not model:
         raise NotFoundException(message="Model not found")
@@ -244,7 +238,7 @@ async def get_model_instances(
     if params.watch:
         fields = {"model_id": id}
         return StreamingResponse(
-            ModelInstance.streaming(engine, fields=fields),
+            ModelInstance.streaming(fields=fields),
             media_type="text/event-stream",
         )
 
@@ -543,7 +537,6 @@ my_models_router = APIRouter()
 @my_models_router.get("", response_model=ModelsPublic)
 async def get_my_models(
     user: CurrentUserDep,
-    engine: EngineDep,
     session: SessionDep,
     params: ModelListParams = Depends(),
     state: Optional[ModelStateFilterEnum] = Query(
@@ -562,7 +555,6 @@ async def get_my_models(
         user_id = user.id
 
     return await _get_models(
-        engine=engine,
         session=session,
         params=params,
         state=state,

@@ -51,7 +51,7 @@ from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
 )
 from gpustack.server.bus import EventType
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_model_resource_claim,
@@ -78,7 +78,6 @@ class Scheduler:
         self._id = "model-instance-scheduler"
         self._config = cfg
         self._check_interval = check_interval
-        self._engine = get_engine()
         self._queue = AsyncUniqueQueue()
         self._cache_dir = None
 
@@ -116,7 +115,7 @@ class Scheduler:
         logger.info("Scheduler started.")
 
         # scheduler job trigger by event.
-        async for event in ModelInstance.subscribe(self._engine, source="scheduler"):
+        async for event in ModelInstance.subscribe(source="scheduler"):
             if event.type != EventType.CREATED:
                 continue
 
@@ -127,7 +126,7 @@ class Scheduler:
         Get the pending model instances.
         """
         try:
-            async with AsyncSession(self._engine, expire_on_commit=False) as session:
+            async with async_session() as session:
                 instances = await ModelInstance.all(session)
                 tasks = []
                 for instance in instances:
@@ -143,7 +142,7 @@ class Scheduler:
         """
         Evaluate the model instance's metadata.
         """
-        async with AsyncSession(self._engine, expire_on_commit=False) as session:
+        async with async_session() as session:
             try:
                 instance = await ModelInstance.one_by_id(session, instance.id)
 
@@ -287,7 +286,7 @@ class Scheduler:
 
         state_message = ""
 
-        async with AsyncSession(self._engine, expire_on_commit=False) as session:
+        async with async_session() as session:
             workers = await Worker.all(session)
             if len(workers) == 0:
                 state_message = "No available workers"

@@ -15,7 +15,7 @@ from gpustack.api.exceptions import (
 )
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
-from gpustack.server.deps import SessionDep, EngineDep
+from gpustack.server.deps import SessionDep
 from gpustack.schemas.clusters import (
     ClusterListParams,
     ClusterUpdate,
@@ -55,7 +55,6 @@ def get_server_url(request: Request, cluster_override: Optional[str]) -> str:
 
 @router.get("", response_model=ClustersPublic, response_model_exclude_none=True)
 async def get_clusters(
-    engine: EngineDep,
     session: SessionDep,
     params: ClusterListParams = Depends(),
     name: str = None,
@@ -71,7 +70,7 @@ async def get_clusters(
 
     if params.watch:
         return StreamingResponse(
-            Cluster.streaming(engine, fields=fields, fuzzy_fields=fuzzy_fields),
+            Cluster.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
             media_type="text/event-stream",
         )
 

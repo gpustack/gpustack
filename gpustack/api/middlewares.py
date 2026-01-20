@@ -24,8 +24,7 @@ from gpustack.schemas.users import User
 from gpustack.security import JWTManager
 from gpustack import envs
 from gpustack.api.auth import SESSION_COOKIE_NAME
-from gpustack.server.db import get_engine
-from sqlmodel.ext.asyncio.session import AsyncSession
+from gpustack.server.db import async_session
 
 from gpustack.server.services import ModelUsageService
 from gpustack.api.types.openai_ext import CreateEmbeddingResponseExt, CompletionExt
@@ -184,7 +183,7 @@ async def record_model_usage(
         prompt_token_count=prompt_tokens,
         request_count=1,
     )
-    async with AsyncSession(get_engine()) as session:
+    async with async_session() as session:
         model_usage_service = ModelUsageService(session)
         current_model_usage = await model_usage_service.get_by_fields(fields)
         if current_model_usage:

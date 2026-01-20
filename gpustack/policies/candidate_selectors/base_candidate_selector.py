@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 import enum
 import logging
-from sqlalchemy.ext.asyncio import AsyncEngine
 from typing import Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
@@ -25,7 +24,6 @@ from gpustack.utils.gpu import (
     group_gpu_ids_by_worker,
     group_gpu_indexes_by_gpu_type_and_worker,
 )
-from gpustack.server.db import get_engine
 from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
 from gpustack.policies.utils import (
     ListMessageBuilder,
@@ -170,8 +168,6 @@ class ScheduleCandidatesSelector(ABC):
     _config: Config
     # Model to be scheduled.
     _model: Model
-    # Database engine.
-    _engine: AsyncEngine
     # Model hyperparameters.
     _model_params: ModelParameters
     # Frequently used model parameter in selectors.
@@ -200,7 +196,6 @@ class ScheduleCandidatesSelector(ABC):
         self._config = config
         self._model = model
         self._model_instances = model_instances
-        self._engine = get_engine()
         self._model_params = ModelParameters()
         self._num_attention_heads = 0
         self._gpu_count = 0

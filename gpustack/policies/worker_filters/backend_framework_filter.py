@@ -7,13 +7,13 @@ from gpustack.schemas.workers import Worker
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
 )
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from gpustack_runner import list_service_runners
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,6 @@ class BackendFrameworkFilter(WorkerFilter):
     def __init__(self, model: Model):
         self.model = model
         self.backend_name = get_backend(model)
-        self._engine = get_engine()
 
     def _get_gpu_query_conditions(
         self, worker: Worker
@@ -95,7 +94,7 @@ class BackendFrameworkFilter(WorkerFilter):
             Tuple of (is_supported, supported_runtime_versions)
         """
 
-        async with AsyncSession(self._engine) as session:
+        async with async_session() as session:
             statement = select(InferenceBackend).where(
                 InferenceBackend.backend_name == self.backend_name
             )

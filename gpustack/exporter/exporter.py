@@ -12,7 +12,7 @@ from gpustack.logging import setup_logging
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker, WorkerStateEnum
-from gpustack.server.db import get_engine
+from gpustack.server.db import async_session
 from gpustack.server.deps import SessionDep
 from gpustack.utils.name import metric_name
 import logging
@@ -31,7 +31,6 @@ label_name_pattern = r'^[a-zA-Z_:][a-zA-Z0-9_:]*$'
 class MetricExporter(Collector):
 
     def __init__(self, cfg: Config):
-        self._engine = get_engine()
         self._cache_metrics = []
         self._port = cfg.metrics_port
 
@@ -41,7 +40,7 @@ class MetricExporter(Collector):
 
     async def generate_metrics_cache(self):
         while True:
-            async with AsyncSession(self._engine) as session:
+            async with async_session() as session:
                 self._cache_metrics = await self._collect_metrics(session)
             await asyncio.sleep(3)
 

@@ -3,7 +3,6 @@ from typing import Dict, List, Tuple
 from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import BackendEnum, Model, get_backend
 from gpustack.schemas.workers import Worker
-from gpustack.server.db import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +10,6 @@ logger = logging.getLogger(__name__)
 class LabelMatchingFilter(WorkerFilter):
     def __init__(self, model: Model):
         self._model = model
-        self._engine = get_engine()
 
     async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """

@@ -3,7 +3,6 @@ from typing import List, Tuple
 from gpustack.policies.base import WorkerFilter
 from gpustack.schemas.models import Model
 from gpustack.schemas.workers import Worker
-from gpustack.server.db import get_engine
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 
 logger = logging.getLogger(__name__)
@@ -12,7 +11,6 @@ logger = logging.getLogger(__name__)
 class GPUMatchingFilter(WorkerFilter):
     def __init__(self, model: Model):
         self._model = model
-        self._engine = get_engine()
 
     async def filter(self, workers: List[Worker]) -> Tuple[List[Worker], List[str]]:
         """
