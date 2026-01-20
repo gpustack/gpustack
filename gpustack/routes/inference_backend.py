@@ -413,7 +413,7 @@ async def list_backend_configs(  # noqa: C901
 
 
 async def merge_runner_versions_to_db(
-    session: SessionDep,
+    session: SessionDep, with_deprecated: bool = True
 ) -> List[InferenceBackendPublic]:
     # Get database backends first
     db_result = await InferenceBackend.all(session)
@@ -435,7 +435,9 @@ async def merge_runner_versions_to_db(
 
         # Get versions from list_service_runners using the common function
         _, runner_versions, default_version = get_runner_versions_and_configs(
-            built_in_backend.backend_name, backend_version=None
+            built_in_backend.backend_name,
+            backend_version=None,
+            with_deprecated=with_deprecated,
         )
 
         if default_version and not built_in_backend.default_version:
@@ -502,11 +504,12 @@ def _generate_framework_index_map(
 
 
 @router.get("", response_model=InferenceBackendsPublic)
-async def get_inference_backends(
+async def get_inference_backends(  # noqa: C901
     engine: EngineDep,
     session: SessionDep,
     params: ListParamsDep,
     search: str = None,
+    include_deprecated: bool = False,
 ):
     """
     Get paginated list of inference backends with optional search.
@@ -532,7 +535,9 @@ async def get_inference_backends(
             media_type="text/event-stream",
         )
 
-    merged_backends = await merge_runner_versions_to_db(session)
+    merged_backends = await merge_runner_versions_to_db(
+        session, with_deprecated=include_deprecated
+    )
     filter_backends = []
     workers = await Worker.all(session)
     framework_list = set()
