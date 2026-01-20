@@ -128,6 +128,24 @@ class ServeManager:
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
+    async def watch_models(self):
+        """
+        Loop to watch models to keep the cache updated.
+
+        """
+
+        logger.debug("Watching models.")
+
+        while True:
+            try:
+                # Watch models without callback to keep the cache updated.
+                await self._clientset.models.awatch(callback=None)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error watching models: {e}")
+                await asyncio.sleep(5)
+
     async def watch_model_instances_event(self):
         """
         Loop to watch model instances' event and handle.
