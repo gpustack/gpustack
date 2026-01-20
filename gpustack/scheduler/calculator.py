@@ -191,6 +191,11 @@ def _gguf_parser_env(model: Model) -> dict:
     return env
 
 
+class NoExitArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise argparse.ArgumentError(None, message)
+
+
 @dataclass
 class GGUFParserCommandMutableParameters:
     # NB(thxCode): Partial options are not applied to backend, but to the parser.
@@ -241,7 +246,7 @@ class GGUFParserCommandMutableParameters:
     header: Optional[List[str]] = None
 
     def from_args(self, args: List[str]):
-        parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
+        parser = NoExitArgumentParser(exit_on_error=False, allow_abbrev=False)
 
         # Default any True arguments here,
         # so that they can be set to False later.
