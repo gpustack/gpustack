@@ -2,7 +2,8 @@ import uuid
 from datetime import datetime, timezone
 import logging
 from fastapi import Depends, Request
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server.db import get_session
 from typing import Annotated, Optional, Tuple
 from fastapi.security import (
@@ -30,6 +31,8 @@ from gpustack.server.services import APIKeyService, UserService
 logger = logging.getLogger(__name__)
 
 SESSION_COOKIE_NAME = "gpustack_session"
+OIDC_ID_TOKEN_COOKIE_NAME = "gpustack_oidc_id_token"
+SSO_LOGIN_COOKIE_NAME = "gpustack_sso_login"
 SYSTEM_USER_PREFIX = "system/"
 SYSTEM_WORKER_USER_PREFIX = "system/worker/"
 basic_auth = HTTPBasic(auto_error=False)
@@ -71,7 +74,7 @@ async def get_current_user(
     server_config: Config = request.app.state.server_config
 
     def client_ip_getter() -> str:
-        if server_config.gateway_mode != GatewayModeEnum.disabled:
+        if server_config.gateway_mode == GatewayModeEnum.embedded:
             return request.headers.get("X-GPUStack-Real-IP", "")
         else:
             return request.client.host
@@ -86,12 +89,8 @@ async def get_current_user(
         if not user.is_active:
             raise UnauthorizedException(message="User account is deactivated")
         request.state.user = user
-        access_key = None if api_key is None else api_key.access_key
         if api_key is not None:
             request.state.api_key = api_key
-        request.state.user_allow_model_names = await UserService(
-            session
-        ).get_user_accessible_model_names(user.id, access_key)
         return user
 
     raise credentials_exception
@@ -178,7 +177,7 @@ async def get_user_from_jwt_token(
         payload = jwt_manager.decode_jwt_token(access_token)
         username = payload.get("sub")
     except Exception:
-        logger.error("Failed to decode JWT token")
+        logger.debug("Failed to decode JWT token")
         return None
 
     if username is None:
@@ -204,7 +203,9 @@ async def get_user_from_bearer_token(
     session: AsyncSession, bearer_token: HTTPAuthorizationCredentials
 ) -> Tuple[Optional[User], Optional[ApiKey]]:
     try:
-        parts = bearer_token.credentials.split("_")
+        access_key = ""
+        secret_key = bearer_token.credentials
+        parts = bearer_token.credentials.split("_", maxsplit=2)
         if len(parts) == 3 and parts[0] == API_KEY_PREFIX:
             access_key = parts[1]
             secret_key = parts[2]
@@ -213,20 +214,20 @@ async def get_user_from_bearer_token(
             if worker_uuid is not None:
                 access_key = ""
 
-            api_key = await APIKeyService(session).get_by_access_key(access_key)
-            if (
-                api_key is not None
-                and verify_hashed_secret(api_key.hashed_secret_key, secret_key)
-                and (
-                    api_key.expires_at is None
-                    or api_key.expires_at > datetime.now(timezone.utc)
-                )
-            ):
-                user: Optional[User] = await UserService(session).get_by_id(
-                    user_id=api_key.user_id,
-                )
-                if user is not None:
-                    return user, api_key
+        api_key = await APIKeyService(session).get_by_access_key(access_key)
+        if (
+            api_key is not None
+            and verify_hashed_secret(api_key.hashed_secret_key, secret_key)
+            and (
+                api_key.expires_at is None
+                or api_key.expires_at > datetime.now(timezone.utc)
+            )
+        ):
+            user: Optional[User] = await UserService(session).get_by_id(
+                user_id=api_key.user_id,
+            )
+            if user is not None:
+                return user, api_key
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to get user: {e}")
 
@@ -257,6 +258,7 @@ async def worker_auth(
 ):
     if not bearer_token:
         raise UnauthorizedException(message="Invalid authentication credentials")
-
-    if bearer_token.credentials != request.app.state.token:
+    token = request.app.state.token
+    registration_token = request.app.state.config.token
+    if bearer_token.credentials not in [token, registration_token]:
         raise UnauthorizedException(message="Invalid authentication credentials")

@@ -6,6 +6,7 @@ from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 
 from gpustack.server.services import ModelInstanceService
+from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.worker.logs import LogOptionsDep
 from gpustack.api.exceptions import (
     InternalServerErrorException,
@@ -98,7 +99,7 @@ async def get_serving_logs(  # noqa: C901
     worker = await fetch_worker(session, model_instance.worker_id)
 
     model_instance_log_url = (
-        f"http://{worker.ip}:{worker.port}/serveLogs"
+        f"http://{worker.advertise_address}:{worker.port}/serveLogs"
         f"/{model_instance.id}?{log_options.url_encode()}"
         f"&model_instance_name={model_instance.name}"
     )
@@ -112,7 +113,12 @@ async def get_serving_logs(  # noqa: C901
 
     timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
 
-    client: aiohttp.ClientSession = request.app.state.http_client
+    use_proxy_env = use_proxy_env_for_url(model_instance_log_url)
+    client: aiohttp.ClientSession = (
+        request.app.state.http_client
+        if use_proxy_env
+        else request.app.state.http_client_no_proxy
+    )
 
     if log_options.follow:
 
@@ -168,7 +174,7 @@ async def create_model_instance(
 async def update_model_instance(
     session: SessionDep, id: int, model_instance_in: ModelInstanceUpdate
 ):
-    model_instance = await ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 
@@ -183,7 +189,7 @@ async def update_model_instance(
 
 @router.delete("/{id}")
 async def delete_model_instance(session: SessionDep, id: int):
-    model_instance = await ModelInstance.one_by_id(session, id)
+    model_instance = await ModelInstance.one_by_id(session, id, for_update=True)
     if not model_instance:
         raise NotFoundException(message="Model instance not found")
 

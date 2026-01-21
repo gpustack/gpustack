@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator, Callable, List, Optional, Union, Tuple
 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, event as sa_event, inspect
-from sqlmodel import SQLModel, and_, asc, col, desc, or_, select
+from sqlmodel import SQLModel, and_, asc, col, desc, or_, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -99,10 +99,13 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def one_by_id(cls, session: AsyncSession, id: int):
-        """Return the object with the given id. Return None if not found."""
+    async def one_by_id(cls, session: AsyncSession, id: int, for_update: bool = False):
+        """Return the object with the given id. Return None if not found.
 
-        return await session.get(cls, id)
+        If `for_update` is True, the row will be locked until the end of the transaction.
+        """
+
+        return await session.get(cls, id, with_for_update=for_update)
 
     @classmethod
     async def first_by_field(cls, session: AsyncSession, field: str, value: Any):
@@ -142,12 +145,17 @@ class ActiveRecordMixin:
         return result.first()
 
     @classmethod
-    async def all_by_field(cls, session: AsyncSession, field: str, value: Any):
+    async def all_by_field(
+        cls, session: AsyncSession, field: str, value: Any, for_update: bool = False
+    ):
         """
         Return all objects with the given field and value.
         Return an empty list if not found.
         """
         statement = select(cls).where(getattr(cls, field) == value)
+        if for_update:
+            statement = statement.with_for_update()
+
         result = await session.exec(statement)
         return result.all()
 
@@ -156,6 +164,7 @@ class ActiveRecordMixin:
         cls,
         session: AsyncSession,
         fields: dict = {},
+        fuzzy_fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
     ):
         """
@@ -166,6 +175,13 @@ class ActiveRecordMixin:
         statement = select(cls)
         for key, value in fields.items():
             statement = statement.where(getattr(cls, key) == value)
+
+        if fuzzy_fields:
+            fuzzy_conditions = [
+                func.lower(getattr(cls, key)).like(f"%{str(value).lower()}%")
+                for key, value in fuzzy_fields.items()
+            ]
+            statement = statement.where(or_(*fuzzy_conditions))
 
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
@@ -182,7 +198,7 @@ class ActiveRecordMixin:
         extra_conditions: Optional[List] = None,
         page: int = 1,
         per_page: int = 100,
-        order_by: Optional[List[Tuple[str, str]]] = None,
+        order_by: Optional[List[Tuple[Union[str, Any], str]]] = None,
     ) -> PaginatedList[SQLModel]:
         """
         Return a paginated and optionally sorted list of objects matching the given query criteria.
@@ -191,10 +207,11 @@ class ActiveRecordMixin:
             session (AsyncSession): The SQLAlchemy async session used to interact with the database.
             fields (Optional[dict]): Exact match filters as key-value pairs.
             fuzzy_fields (Optional[dict]): Fuzzy match filters using the SQL `LIKE` operator.
+            extra_conditions (Optional[List]): Additional SQLAlchemy conditions to apply to the query.
             page (int): Page number for pagination, starting from 1. Default is 1.
             per_page (int): Number of items per page. Default is 100.
-            order_by (Optional[List[Tuple[str, str]]]): Sorting criteria as a list of tuples,
-                each containing a field name and sort direction ("asc" or "desc").
+            order_by (Optional[List[Tuple[Union[str, Any], str]]]): List of tuples specifying the
+                fields or expressions to sort by and their respective directions ('asc' or 'desc').
                 If not provided, defaults to `created_at DESC`.
 
         Returns:
@@ -221,11 +238,27 @@ class ActiveRecordMixin:
         if not order_by:
             order_by = [("created_at", "desc")]
 
-        for field, direction in order_by:
-            column = col(getattr(cls, field))
-            statement = statement.order_by(
-                asc(column) if direction.lower() == "asc" else desc(column)
-            )
+        for field_expression, direction in order_by:
+            if isinstance(field_expression, str):
+                if '.' in str(field_expression):
+                    # Nested fields for JSON columns
+                    expr = cls._parse_nested_field_expression(session, field_expression)
+                    statement = statement.order_by(
+                        asc(expr) if direction.lower() == "asc" else desc(expr)
+                    )
+                else:
+                    # Regular fields
+                    column = col(getattr(cls, field_expression))
+                    statement = statement.order_by(
+                        asc(column) if direction.lower() == "asc" else desc(column)
+                    )
+            else:
+                # Expression
+                statement = statement.order_by(
+                    asc(field_expression)
+                    if direction.lower() == "asc"
+                    else desc(field_expression)
+                )
 
         if page is not None and page > 0 and per_page is not None:
             statement = statement.offset((page - 1) * per_page).limit(per_page)
@@ -258,6 +291,95 @@ class ActiveRecordMixin:
         )
 
         return PaginatedList[cls](items=items, pagination=pagination)
+
+    @classmethod
+    def _parse_nested_field_expression(
+        cls, session: AsyncSession, field_expression: Union[str, Any]
+    ) -> Any:
+        """
+        Parse dot-separated nested field expressions and generate appropriate
+        database expressions for sorting.
+
+        Supports JSON field sorting with dot notation, e.g., "memory.utilization_rate".
+        Supports casting using "::type" suffix, e.g., "status.memory.utilization_rate::numeric".
+        Supported casting types include: numeric, boolean, text, date, datetime.
+        Supports getting the length of JSON arrays using "[]" suffix.
+        Compatible with both PostgreSQL and MySQL databases.
+
+        Args:
+            cls: SQLModel class
+            session: Database session (used to detect database dialect)
+            field_expression: Field or expression, e.g., "memory.utilization_rate"
+
+        Returns:
+            SQLAlchemy expression object suitable for use in ORDER BY clause
+
+        Raises:
+            AttributeError: If the base column doesn't exist in the model
+        """
+        if not isinstance(field_expression, str):
+            # Already an expression
+            return field_expression
+
+        cast_type = None
+        if "::" in field_expression:
+            field_expression, cast_type = field_expression.rsplit("::", 1)
+            ALLOWED_CASTS = {'numeric', 'boolean', 'text', 'date', 'datetime'}
+            if cast_type and cast_type not in ALLOWED_CASTS:
+                raise ValueError(f"Invalid cast type: {cast_type}")
+
+        is_array_length = False
+        if field_expression.endswith("[]"):
+            is_array_length = True
+            field_expression = field_expression[:-2]
+
+        parts = field_expression.split('.')
+
+        if len(parts) < 2:
+            # Regular fields
+            return getattr(cls, field_expression)
+
+        # The first part is the column name in the database table
+        column_name = parts[0]
+        json_path_parts = parts[1:]
+
+        dialect = None
+        if session.bind and hasattr(session.bind, 'dialect'):
+            dialect = session.bind.dialect.name
+
+        if dialect == 'postgresql':
+            if is_array_length:
+                # Build PGSQL JSON path length expression like jsonb_array_length(status->'gpus')
+                json_path_str = "->".join([f"'{part}'" for part in json_path_parts])
+                json_expr = text(
+                    f"COALESCE(jsonb_array_length(({column_name}->{json_path_str})::jsonb), 0)"
+                )
+            else:
+                # Build PGSQL JSON path like '(status#>>{"memory","utilization_rate"})::numeric'
+                json_path_str = ",".join([f'"{part}"' for part in json_path_parts])
+                if not cast_type:
+                    cast_type = "numeric"
+                json_expr = text(
+                    f"({column_name}#>>'{{{json_path_str}}}')::{cast_type}"
+                )
+
+        elif dialect == 'mysql':
+            if is_array_length:
+                # Build MySQL JSON path length expression like JSON_LENGTH(status, '$.gpus')
+                json_path = '.'.join(json_path_parts)
+                json_expr = text(
+                    f"COALESCE(JSON_LENGTH({column_name}, '$.{json_path}'), 0)"
+                )
+            else:
+                # Build MySQL JSON path like '$.utilization_rate' or '$.memory.utilization_rate'
+                json_path = '.'.join(json_path_parts)
+                json_expr = text(f"JSON_VALUE({column_name}, '$.{json_path}')")
+
+        else:
+            # Should not reach
+            raise RuntimeError(f"Unsupported database dialect: {dialect}")
+
+        return json_expr
 
     @classmethod
     def convert_without_saving(
@@ -308,6 +430,9 @@ class ActiveRecordMixin:
             if not attr.history.has_changes():
                 continue
             for obj in attr.value:
+                if obj in dirty_objs:
+                    rtn.append(obj)
+            for obj in attr.history.deleted:
                 if obj in dirty_objs:
                     rtn.append(obj)
         return rtn
@@ -506,8 +631,17 @@ class ActiveRecordMixin:
         )
 
     @classmethod
-    async def subscribe(cls, engine: AsyncEngine) -> AsyncGenerator[Event, None]:
+    async def subscribe(
+        cls, engine: AsyncEngine, source: str
+    ) -> AsyncGenerator[Event, None]:
+        topic = cls.__name__.lower()
         subscriber = event_bus.subscribe(cls.__name__.lower())
+        logger.info(
+            "subscribed, source=%s topic=%s subscriber=%s",
+            source,
+            topic,
+            id(subscriber),
+        )
         async with AsyncSession(engine) as session:
             items = await cls.all(session)
             for item in items:
@@ -543,7 +677,7 @@ class ActiveRecordMixin:
     ) -> AsyncGenerator[str, None]:
         """Stream events matching the given criteria as JSON strings."""
         try:
-            async for event in cls.subscribe(engine):
+            async for event in cls.subscribe(engine, source="streaming"):
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue

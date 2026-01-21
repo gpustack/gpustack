@@ -3,6 +3,7 @@ import sys
 import subprocess
 import logging
 from typing import Optional
+from gpustack.envs import AUTO_GENERATE_UUID
 
 logger = logging.getLogger(__name__)
 legacy_uuid_filename = "worker_uuid"
@@ -13,6 +14,8 @@ def get_legacy_uuid(data_dir: str) -> Optional[str]:
     if os.path.exists(legacy_uuid_path):
         with open(legacy_uuid_path, "r") as file:
             return file.read().strip()
+    if AUTO_GENERATE_UUID:
+        return write_legacy_uuid(data_dir)
     return None
 
 

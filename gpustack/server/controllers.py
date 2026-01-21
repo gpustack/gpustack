@@ -8,7 +8,10 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import (
+    Config,
+    get_cluster_image_name,
+)
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
@@ -26,6 +29,11 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_backend,
 )
+from gpustack.schemas.config import (
+    GatewayModeEnum,
+    ModelInstanceProxyModeEnum,
+    SensitivePredefinedConfig,
+)
 from gpustack.schemas.workers import (
     Worker,
     WorkerStateEnum,
@@ -39,9 +47,13 @@ from gpustack.schemas.clusters import (
     CredentialType,
     ClusterStateEnum,
     SSHKeyOptions,
+    ClusterProvider,
 )
 
-from gpustack.schemas.users import User
+from gpustack.schemas.users import (
+    User,
+    is_default_cluster_user,
+)
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.catalog import get_catalog_draft_models
 from gpustack.server.db import get_engine
@@ -67,6 +79,7 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
     McpBridgeRegistry,
 )
 from gpustack.gateway import utils as mcp_handler
+from gpustack.gateway import get_async_k8s_config
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +89,7 @@ class ModelController:
         self._engine = get_engine()
         self._config = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
-        self._k8s_config = cfg.get_async_k8s_config()
-        self.instance_ip = cfg.get_advertise_address()
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
 
         pass
 
@@ -90,7 +102,7 @@ class ModelController:
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
             self._networking_api = k8s_client.NetworkingV1Api(api_client=base_client)
 
-        async for event in Model.subscribe(self._engine):
+        async for event in Model.subscribe(self._engine, source="model_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -114,7 +126,6 @@ class ModelController:
                     event,
                     self._config,
                     model,
-                    self.instance_ip,
                     self._networking_api,
                 )
         except Exception as e:
@@ -125,6 +136,8 @@ class ModelInstanceController:
     def __init__(self, cfg: Config):
         self._engine = get_engine()
         self._config = cfg
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
+        self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
 
         pass
 
@@ -132,8 +145,13 @@ class ModelInstanceController:
         """
         Start the controller.
         """
+        if not self._disable_gateway:
+            base_client = k8s_client.ApiClient(configuration=self._k8s_config)
+            self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in ModelInstance.subscribe(self._engine):
+        async for event in ModelInstance.subscribe(
+            self._engine, source="model_instance_controller"
+        ):
             if event.type == EventType.HEARTBEAT:
                 continue
 
@@ -150,16 +168,35 @@ class ModelInstanceController:
                 model = await Model.one_by_id(session, model_instance.model_id)
                 if not model:
                     return
+                model_deleting = model.deleted_at is not None
+
+                if not self._disable_gateway:
+                    await mcp_handler.ensure_model_instance_mcp_bridge(
+                        event_type=event.type,
+                        model_instance=model_instance,
+                        networking_higress_api=self._higress_network_api,
+                        namespace=self._config.gateway_namespace,
+                        cluster_id=model.cluster_id,
+                    )
 
                 if event.type == EventType.DELETED:
-                    await sync_replicas(session, model, self._config)
-
-                if model_instance.state == ModelInstanceStateEnum.INITIALIZING:
+                    # trigger model replica sync
+                    copied_model = Model.model_validate(model.model_dump())
+                    asyncio.create_task(
+                        event_bus.publish(
+                            Model.__name__.lower(),
+                            Event(type=EventType.UPDATED, data=copied_model),
+                        )
+                    )
+                elif model_instance.state == ModelInstanceStateEnum.INITIALIZING:
                     await ensure_instance_model_file(session, model_instance)
+                    return
+
+                if model_deleting:
+                    return
 
                 await model.refresh(session)
                 await sync_ready_replicas(session, model)
-
         except Exception as e:
             logger.error(
                 f"Failed to reconcile model instance {model_instance.name}: {e}"
@@ -259,12 +296,18 @@ async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
                 state=ModelInstanceStateEnum.PENDING,
                 cluster_id=model.cluster_id,
                 draft_model_source=get_draft_model_source(model),
+                backend=get_backend(model),
+                backend_version=model.backend_version,
             )
 
             await ModelInstanceService(session).create(instance)
             logger.debug(f"Created model instance for model {model.name}")
 
     elif len(instances) > model.replicas:
+        # Get instances for update lock, to avoid race condition with scheduler
+        instances = await ModelInstance.all_by_field(
+            session, "model_id", model.id, for_update=True
+        )
         candidates = await find_scale_down_candidates(instances, model)
 
         scale_down_count = len(candidates) - model.replicas
@@ -562,18 +605,17 @@ async def sync_ready_replicas(session: AsyncSession, model: Model):
 
 
 async def get_cluster_registry(
-    session: AsyncSession, server_ip: str, cluster_id: int
+    session: AsyncSession, cluster_id: int
 ) -> Optional[McpBridgeRegistry]:
-    worker: Worker = await Worker.one_by_field(session, "ip", server_ip)
-    model_cluster: Cluster = await Cluster.one_by_id(session, cluster_id)
-    is_default_cluster = False
-    if worker is not None and worker.cluster_id == model_cluster.id:
-        is_default_cluster = True
-    if not is_default_cluster:
-        cluster_registry = mcp_handler.cluster_registry(model_cluster)
-        if cluster_registry is not None:
-            return {100: cluster_registry}
-    return None
+    cluster_user = await User.one_by_field(
+        session=session, field="cluster_id", value=cluster_id
+    )
+    if is_default_cluster_user(cluster_user):
+        return None
+    cluster_registry = mcp_handler.cluster_registry(cluster_user.cluster)
+    if cluster_registry is None:
+        return None
+    return {100: cluster_registry}
 
 
 async def sync_gateway(
@@ -581,21 +623,22 @@ async def sync_gateway(
     event: Event,
     cfg: Config,
     model: Model,
-    instance_ip: str,
     networking_api: k8s_client.NetworkingV1Api,
 ):
+    event_type = event.type
+    model_from_db = await Model.one_by_id(session, model.id)
+    if not model_from_db:
+        event_type = EventType.DELETED
     if event.type != EventType.DELETED:
-        destinations = await calculate_destinations(session, instance_ip, model)
+        destinations = await calculate_destinations(session, model)
     else:
         destinations = []
     await mcp_handler.ensure_model_ingress(
-        event_type=event.type,
-        namespace=cfg.get_gateway_namespace(),
+        event_type=event_type,
+        namespace=cfg.get_namespace(),
         model=model,
         destinations=destinations,
         networking_api=networking_api,
-        hostname=cfg.get_external_hostname(),
-        tls_secret_name=cfg.get_tls_secret_name(),
         included_generic_route=False,
         included_proxy_route=model.generic_proxy,
     )
@@ -603,14 +646,13 @@ async def sync_gateway(
 
 async def calculate_destinations(
     session: AsyncSession,
-    server_ip: str,
     model: Model,
 ) -> List[Tuple[int, McpBridgeRegistry]]:
     """
     return persentage dict for each registry
     """
     # find out is handling default cluster's model
-    cluster_registry = await get_cluster_registry(session, server_ip, model.cluster_id)
+    cluster_registry = await get_cluster_registry(session, model.cluster_id)
     if cluster_registry is not None:
         return cluster_registry
 
@@ -622,6 +664,7 @@ async def calculate_destinations(
             instance.worker_ip is None
             or instance.worker_ip == ""
             or instance.port is None
+            or instance.state != ModelInstanceStateEnum.RUNNING
         ):
             continue
         if instance.worker_id not in instances_by_worker_id:
@@ -636,7 +679,10 @@ async def calculate_destinations(
     registry_list: List[Tuple[int, McpBridgeRegistry]] = []
     for worker in instances_related_workers:
         instances = instances_by_worker_id.get(worker.id, [])
-        if worker.ip != server_ip:
+        if (
+            worker.proxy_mode is None
+            or worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER
+        ):
             registry = mcp_handler.worker_registry(worker)
             if registry is not None:
                 registry_list.append((len(instances), registry))
@@ -658,7 +704,9 @@ class WorkerController:
         Start the controller.
         """
 
-        async for event in Worker.subscribe(self._engine):
+        async for event in Worker.subscribe(self._engine, source="worker_controller"):
+            if event.type == EventType.HEARTBEAT:
+                continue
             try:
                 await self._reconcile(event)
                 await self._provisioning._reconcile(event)
@@ -666,7 +714,7 @@ class WorkerController:
             except Exception as e:
                 logger.error(f"Failed to reconcile worker: {e}")
 
-    async def _reconcile(self, event):
+    async def _reconcile(self, event: Event):
         """
         Delete instances base on the worker state and event type.
         """
@@ -688,7 +736,17 @@ class WorkerController:
             if not instances:
                 return
 
-            instance_names = []
+            if event.type == EventType.DELETED:
+                instance_names = await ModelInstanceService(session).batch_delete(
+                    instances
+                )
+                if instance_names:
+                    logger.info(
+                        f"Delete instance {', '.join(instance_names)} "
+                        f"since worker {worker.name} is deleted"
+                    )
+                return
+
             if (
                 worker.unreachable
                 or worker.state == WorkerStateEnum.UNREACHABLE
@@ -703,16 +761,6 @@ class WorkerController:
                     "worker is unreachable from the server",
                 )
                 return
-
-            if event.type == EventType.DELETED:
-                instance_names = await ModelInstanceService(session).batch_delete(
-                    instances
-                )
-                if instance_names:
-                    logger.info(
-                        f"Delete instance {', '.join(instance_names)} "
-                        f"since worker {worker.name} is deleted"
-                    )
 
             if worker.state == WorkerStateEnum.READY:
                 await self.update_instance_states(
@@ -763,7 +811,14 @@ class WorkerController:
         state_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
             "state", None
         )
-        should_notify = state_changed is not None or event.type == EventType.DELETED
+        proxy_mode_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
+            "proxy_mode", None
+        )
+        should_notify = (
+            state_changed is not None
+            or proxy_mode_changed is not None
+            or event.type == EventType.DELETED
+        )
         if not should_notify:
             return
         async with AsyncSession(self._engine) as session:
@@ -836,7 +891,9 @@ class ModelFileController:
         Start the controller.
         """
 
-        async for event in ModelFile.subscribe(self._engine):
+        async for event in ModelFile.subscribe(
+            self._engine, source="model_file_controller"
+        ):
             if event.type == EventType.CREATED or event.type == EventType.UPDATED:
                 await self._reconcile(event)
 
@@ -866,10 +923,8 @@ async def sync_instance_files_state(
 ):
     for file in files:
         if file.worker_id == instance.worker_id:
-            if (
-                instance.draft_model_source
-                and file.source_index == instance.draft_model_source.model_source_index
-            ):
+            is_draft_model = _is_draft_model_file(file, instance)
+            if is_draft_model:
                 await sync_main_worker_model_file_state(
                     session, file, instance, is_draft_model=True
                 )
@@ -877,6 +932,28 @@ async def sync_instance_files_state(
                 await sync_main_worker_model_file_state(session, file, instance)
         else:
             await sync_distributed_model_file_state(session, file, instance)
+
+
+def _is_draft_model_file(file: ModelFile, instance: ModelInstance) -> bool:
+    """
+    Check if the model file is the draft model file for the given model instance.
+    """
+    if not instance.draft_model_source:
+        return False
+
+    if file.model_source_index == instance.draft_model_source.model_source_index:
+        return True
+
+    # The model uses a local path as its draft source, but the model file may come from a remote source.
+    # Match by resolved path.
+    if (
+        instance.draft_model_source.source == SourceEnum.LOCAL_PATH
+        and file.resolved_paths
+        and file.resolved_paths[0] == instance.draft_model_source.local_path
+    ):
+        return True
+
+    return False
 
 
 async def sync_main_worker_model_file_state(
@@ -1114,7 +1191,9 @@ class WorkerPoolController:
         pass
 
     async def start(self):
-        async for event in WorkerPool.subscribe(self._engine):
+        async for event in WorkerPool.subscribe(
+            self._engine, source="worker_pool_controller"
+        ):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
@@ -1133,6 +1212,7 @@ class WorkerPoolController:
                 return
             # mark the data to avoid read after commit
             cluster_name = pool.cluster.name
+            cluster = pool.cluster
             pool_id = pool.id
             workers = await new_workers_from_pool(session, pool)
             if len(workers) == 0:
@@ -1143,6 +1223,10 @@ class WorkerPoolController:
                     session=session, source=worker, auto_commit=False
                 )
                 ids.append(created_worker.id)
+            if cluster.state == ClusterStateEnum.PENDING:
+                cluster.state = ClusterStateEnum.PROVISIONING
+                cluster.state_message = None
+                await cluster.update(session=session, auto_commit=False)
             await session.commit()
             logger.info(
                 f"Created {len(ids)} new workers {ids} for cluster {cluster_name} worker pool {pool_id}"
@@ -1190,11 +1274,18 @@ class WorkerProvisioningController:
         worker: Worker,
         cfg: Config,
     ) -> str:
+        secret_fields = set(SensitivePredefinedConfig.model_fields.keys())
+        secret_configs = (
+            worker.cluster.worker_config.model_dump(include=secret_fields)
+            if worker.cluster.worker_config
+            else {}
+        )
         user_data = await client.construct_user_data(
-            server_url=cfg.server_external_url,
+            server_url=worker.cluster.server_url or cfg.server_external_url,
             token=worker.cluster.registration_token,
-            image_name=cfg.get_image_name(),
+            image_name=get_cluster_image_name(worker.cluster.worker_config),
             os_image=worker.worker_pool.os_image,
+            secret_configs=secret_configs,
         )
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
@@ -1218,10 +1309,12 @@ class WorkerProvisioningController:
             (getattr(worker.worker_pool.cloud_options, "volumes", None) or [])
         )
         volume_ids = provider_config.get("volume_ids", [])
-        if worker.ip is None or worker.ip == "":
+        if worker.advertise_address is None or worker.advertise_address == "":
             try:
                 instance = await client.wait_for_public_ip(worker.external_id)
-                worker.ip = instance.ip_address if instance.ip_address else ""
+                worker.advertise_address = (
+                    instance.ip_address if instance.ip_address else ""
+                )
                 worker.state_message = "Waiting for volumes to attach"
             except Exception as e:
                 logger.warning(
@@ -1337,13 +1430,16 @@ class WorkerProvisioningController:
         if worker.deleted_at is not None:
             await WorkerService(session).delete(worker, auto_commit=False)
 
-    async def check_server_external_url(self):
-        if self._cfg.server_external_url is None or self._cfg.server_external_url == "":
-            raise ValueError("External server url is not configured")
+    async def check_server_external_url(self, cluster_server_url: Optional[str] = None):
+        server_url = cluster_server_url or self._cfg.server_external_url
+        if server_url is None or server_url == "":
+            raise ValueError(
+                "Cluster's server_url is not configured, Please edit cluster first."
+            )
         import aiohttp
         from yarl import URL
 
-        healthz_url = str(URL(self._cfg.server_external_url) / "healthz")
+        healthz_url = str(URL(server_url) / "healthz")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(healthz_url, timeout=10) as resp:
@@ -1391,7 +1487,7 @@ class WorkerProvisioningController:
             )
             try:
                 if worker.state == WorkerStateEnum.PENDING:
-                    await self.check_server_external_url()
+                    await self.check_server_external_url(worker.cluster.server_url)
                 if worker.state in [
                     WorkerStateEnum.PENDING,
                     WorkerStateEnum.PROVISIONING,
@@ -1419,8 +1515,7 @@ class ClusterController:
         self._engine = get_engine()
         self._cfg = cfg
         self._disable_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
-        self._namespace = cfg.get_gateway_namespace()
-        self._k8s_config = cfg.get_async_k8s_config()
+        self._k8s_config = get_async_k8s_config(cfg=cfg)
         pass
 
     async def start(self):
@@ -1431,15 +1526,42 @@ class ClusterController:
             base_client = k8s_client.ApiClient(configuration=self._k8s_config)
             self._higress_network_api = NetworkingHigressIoV1Api(base_client)
 
-        async for event in Cluster.subscribe(self._engine):
+        async for event in Cluster.subscribe(self._engine, source="cluster_controller"):
             if event.type == EventType.HEARTBEAT:
                 continue
             try:
-                if self._disable_gateway:
-                    return
-                await self._ensure_worker_mcp_bridge(event)
+                await self._reconcile(event)
             except Exception as e:
                 logger.error(f"Failed to reconcile cluster: {e}")
+
+    async def _reconcile(self, event: Event):
+        """
+        Reconcile the cluster state.
+        """
+        await self._sync_cluster_state(event)
+        if self._disable_gateway:
+            return
+        await self._ensure_worker_mcp_bridge(event)
+
+    async def _sync_cluster_state(self, event: Event):
+        if event.type == EventType.DELETED:
+            return
+        cluster: Cluster = event.data
+        if not cluster:
+            return
+        async with AsyncSession(self._engine) as session:
+            cluster: Cluster = await Cluster.one_by_id(session, cluster.id)
+            if not cluster or cluster.provider in [
+                ClusterProvider.Kubernetes,
+                ClusterProvider.Docker,
+            ]:
+                return
+            if cluster.workers == 0 and cluster.state != ClusterStateEnum.PENDING:
+                cluster.state = ClusterStateEnum.PENDING
+                cluster.state_message = (
+                    "No workers have been provisioned for this cluster yet."
+                )
+                await cluster.update(session=session, auto_commit=True)
 
     async def _get_worker_registries(
         self, session: AsyncSession, cluster_id: int
@@ -1453,8 +1575,7 @@ class ClusterController:
             worker
             for worker in workers
             if worker.deleted_at is None
-            and worker.ip != ""
-            and worker.ip != self._cfg.get_advertise_address()
+            and (worker.advertise_address or worker.ip) != ""
             and worker.port is not None
         ]
         worker_registry_list = [
@@ -1477,7 +1598,7 @@ class ClusterController:
         try:
             await mcp_handler.ensure_mcp_bridge(
                 client=self._higress_network_api,
-                namespace=self._namespace,
+                namespace=self._cfg.gateway_namespace,
                 mcp_bridge_name=mcp_resource_name,
                 desired_registries=desired_registries,
                 to_delete_prefix=to_delete_prefix,

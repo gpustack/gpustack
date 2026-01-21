@@ -6,7 +6,7 @@ import multiprocessing
 import requests
 import setproctitle
 import os
-from typing import Dict, Optional, Set, List
+from typing import Dict, Optional, Set, List, Callable
 import logging
 
 from gpustack_runtime.deployer import (
@@ -62,7 +62,10 @@ _SERVER_CLASS_MAPPING = {
 
 
 class ServeManager:
-    _worker_id: int
+    @property
+    def _worker_id(self) -> int:
+        return self._worker_id_getter()
+
     """
     The ID of current worker.
     """
@@ -74,7 +77,11 @@ class ServeManager:
     """
     The directory to store logs of serving model instances(in subprocess).
     """
-    _clientset: ClientSet
+
+    @property
+    def _clientset(self) -> ClientSet:
+        return self._clientset_getter()
+
     """
     The clientset to access the API server.
     """
@@ -103,19 +110,21 @@ class ServeManager:
     The cache of models by model instance ID.
     Used to avoid redundant API calls to get model information.
     """
+    _model_instance_by_instance_id: Dict[int, ModelInstance] = {}
+
+    _clientset_getter: Callable[[], ClientSet]
+    _worker_id_getter: Callable[[], int]
 
     def __init__(
         self,
-        worker_id: int,
-        clientset: ClientSet,
+        worker_id_getter: Callable[[], int],
+        clientset_getter: Callable[[], ClientSet],
         cfg: Config,
-        inference_backend_manager: InferenceBackendManager,
     ):
-        self._worker_id = worker_id
+        self._worker_id_getter = worker_id_getter
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
-        self._clientset = clientset
-        self._inference_backend_manager = inference_backend_manager
+        self._clientset_getter = clientset_getter
 
         os.makedirs(self._serve_log_dir, exist_ok=True)
 
@@ -261,6 +270,11 @@ class ServeManager:
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
+            if not model.backend_version:
+                # backend version may be empty on initialization.
+                # try to refresh to get updated model info on syncs.
+                model = self._refresh_model(model_instance)
+
             backend = get_backend(model)
             health_check_path = self._get_health_check_path(backend)
             if model.env and 'GPUSTACK_MODEL_HEALTH_CHECK_PATH' in model.env:
@@ -346,17 +360,11 @@ class ServeManager:
         model_instances_page = self._clientset.model_instances.list()
         if model_instances_page.items:
             for model_instance in model_instances_page.items:
-                if model_instance.worker_id == self._worker_id:
-                    current_instance_names.add(model_instance.name)
-
-                if (
-                    model_instance.distributed_servers
-                    and model_instance.distributed_servers.subordinate_workers
-                ):
-                    for sw in model_instance.distributed_servers.subordinate_workers:
-                        if sw.worker_id == self._worker_id:
-                            current_instance_names.add(model_instance.name)
-                            break
+                deployment_metadata = model_instance.get_deployment_metadata(
+                    self._worker_id,
+                )
+                if deployment_metadata:
+                    current_instance_names.add(deployment_metadata.name)
 
         workloads = list_workloads()
         for w in workloads:
@@ -442,6 +450,7 @@ class ServeManager:
         is_main_worker = mi.worker_id == self._worker_id
 
         if is_main_worker:
+            self._model_instance_by_instance_id[mi.id] = mi
             # Return if all subordinate workers aren't running.
             if (
                 mi.distributed_servers
@@ -706,13 +715,16 @@ class ServeManager:
             **kwargs: The fields to update, group by field name and value.
         """
 
-        m_public = self._clientset.models.get(id=id)
+        try:
+            m_public = self._clientset.models.get(id=id)
 
-        m = ModelUpdate(**m_public.model_dump())
-        for key, value in kwargs.items():
-            set_attr(m, key, value)
+            m = ModelUpdate(**m_public.model_dump())
+            for key, value in kwargs.items():
+                set_attr(m, key, value)
 
-        self._clientset.models.update(id=id, model_update=m)
+            self._clientset.models.update(id=id, model_update=m)
+        except NotFoundException:
+            logger.warning(f"Model with ID {id} not found when trying to update.")
 
     def _update_model_instance(self, id: int, **kwargs):
         """
@@ -723,13 +735,18 @@ class ServeManager:
             **kwargs: The fields to update, group by field name and value.
         """
 
-        mi_public = self._clientset.model_instances.get(id=id)
+        try:
+            mi_public = self._clientset.model_instances.get(id=id)
 
-        mi = ModelInstanceUpdate(**mi_public.model_dump())
-        for key, value in kwargs.items():
-            set_attr(mi, key, value)
+            mi = ModelInstanceUpdate(**mi_public.model_dump())
+            for key, value in kwargs.items():
+                set_attr(mi, key, value)
 
-        self._clientset.model_instances.update(id=id, model_update=mi)
+            self._clientset.model_instances.update(id=id, model_update=mi)
+        except NotFoundException:
+            logger.warning(
+                f"Model instance with ID {id} not found when trying to update."
+            )
 
     def _stop_model_instance(self, mi: ModelInstance):
         """
@@ -746,13 +763,16 @@ class ServeManager:
             terminate_process_tree(self._provisioning_processes[mi.id].pid)
 
         # Delete workload.
-        delete_workload(mi.name)
+        deployment_metadata = mi.get_deployment_metadata(self._worker_id)
+        if deployment_metadata:
+            delete_workload(deployment_metadata.name)
 
         # Cleanup internal states.
         self._provisioning_processes.pop(mi.id, None)
         self._assigned_ports.pop(mi.id, None)
         self._error_model_instances.pop(mi.id, None)
         self._model_cache_by_instance.pop(mi.id, None)
+        self._model_instance_by_instance_id.pop(mi.id, None)
 
         logger.info(f"Stopped model instance {mi.name or mi.id}")
 
@@ -815,6 +835,21 @@ class ServeManager:
         self._model_cache_by_instance[mi.id] = model
         return model
 
+    def _refresh_model(self, mi: ModelInstance) -> Model:
+        """
+        Refresh the model information from the server.
+
+        Args:
+            mi: The model instance whose model to refresh.
+
+        Returns:
+            The refreshed model.
+        """
+        logger.debug(f"Refreshing model {mi.model_name} information from server.")
+        refreshed_model = self._clientset.models.get(mi.model_id)
+        self._model_cache_by_instance[mi.id] = refreshed_model
+        return refreshed_model
+
     def _is_provisioning(self, mi: ModelInstance) -> bool:
         """
         Check if the model instance is still provisioning.
@@ -865,10 +900,14 @@ def is_ready(
         and model
         and CategoryEnum.IMAGE in model.categories
     ):
-        # SGLang Diffusion supported health check path at v0.5.5.post3
-        if compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+        if not model.backend_version:
+            # version may be empty at initialization, consider it not ready.
+            return False
+        elif compare_versions(model.backend_version, "0.5.5.post3") >= 0:
+            # SGLang Diffusion supported health check path at v0.5.5.post3
             health_check_path = "/health"
         else:
+            # Older versions do not support health check, consider it always ready.
             return True
     elif is_built_in and backend != BackendEnum.CUSTOM and not health_check_path:
         # Built-in backends (vLLM, SGLang, vox-box) except (Custom, MindIE) use /v1/models as health check path.

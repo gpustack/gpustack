@@ -1,10 +1,11 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from gpustack.routes.openai import proxy_request_by_model
+from gpustack.server.deps import SessionDep, CurrentUserDep
 
 router = APIRouter()
 
@@ -42,5 +43,9 @@ class RerankResponse(BaseModel):
 
 
 @router.post("/rerank", response_model=RerankResponse)
-async def rerank(request: Request, input_model: RerankRequest = Body(...)):
-    return await proxy_request_by_model(request, "rerank")
+async def rerank(
+    request: Request,
+    user: CurrentUserDep,
+    session: SessionDep,
+):
+    return await proxy_request_by_model(request, user, session)

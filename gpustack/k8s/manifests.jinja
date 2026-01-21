@@ -2,17 +2,19 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: gpustack-system-{{ config.cluster_suffix }}
+  name: {{ config.namespace }}
 ---
 # Secret
 apiVersion: v1
 kind: Secret
 metadata:
   name: registration-token
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
 type: Opaque
 data:
-  token: {{ config.token | b64encode }}
+  {%- for k, v in config.env.items() %}
+  {{ k }}: {{ v | b64encode }}
+  {%- endfor %}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -33,7 +35,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: gpustack-worker
-    namespace: gpustack-system-{{ config.cluster_suffix }}
+    namespace: {{ config.namespace }}
 roleRef:
   kind: ClusterRole
   name: ingressclass-viewer
@@ -49,27 +51,42 @@ rules:
     resources:
       - "pods"
       - "configmaps"
+      - "secrets"
       - "services"
       - "pods/log"
       - "pods/exec"
     verbs:
       - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources: 
+      - "events"
+    verbs: 
+      - "create"
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
   name: gpustack-worker
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
   name: pod-cm-creator
 subjects:
 - kind: ServiceAccount
   name: gpustack-worker
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
 roleRef:
   kind: ClusterRole
   name: pod-cm-creator
@@ -80,7 +97,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: worker
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "10151"
@@ -90,9 +107,6 @@ spec:
   selector:
     app: gpustack-worker
   ports:
-    - name: gateway
-      port: 8080
-      targetPort: 8080
     - name: api
       port: 10150
       targetPort: 10150
@@ -107,7 +121,7 @@ metadata:
   labels:
     app: gpustack-worker
   name: gpustack-worker
-  namespace: gpustack-system-{{ config.cluster_suffix }}
+  namespace: {{ config.namespace }}
 spec:
   revisionHistoryLimit: 10
   selector:
@@ -120,17 +134,12 @@ spec:
     spec:
       containers:
         - env:
-            - name: GPUSTACK_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  key: token
-                  name: registration-token
             - name: GPUSTACK_SERVER_URL
               value: {{ config.server_url }}
-            - name: GPUSTACK_PORT
-              value: '8080'
-            - name: GPUSTACK_GATEWAY_MODE
-              value: 'embedded'
+            - name: GPUSTACK_WORKER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: GPUSTACK_RUNTIME_DEPLOY
               value: "Kubernetes"
             - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
@@ -147,6 +156,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          envFrom:
+            - secretRef:
+                name: registration-token
+                optional: false
+          {% if config.args and config.args|length > 0 -%}
+          args:
+          {%- for arg in config.args %}
+            - {{ arg }}
+          {%- endfor %}
+          {%- endif %}
           image: {{ config.image }}
           imagePullPolicy: IfNotPresent
           name: gpustack-worker
@@ -162,17 +181,18 @@ spec:
           volumeMounts:
             - name: gpustack-data-dir
               mountPath: /var/lib/gpustack
+            - name: cdi
+              mountPath: /var/run/cdi
             #
             # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
             #
             - name: gpustack-ascend-driver
               mountPath: /usr/local/Ascend/driver
+              readOnly: true
             - name: gpustack-ascend-toolkit
               mountPath: /usr/local/Ascend/ascend-toolkit
+              readOnly: true
           ports:
-            - name: gateway
-              containerPort: 8080
-              protocol: TCP
             - name: api
               containerPort: 10150
               protocol: TCP
@@ -202,6 +222,10 @@ spec:
           hostPath:
             path: /var/lib/gpustack
             type: DirectoryOrCreate
+        - name: cdi
+          hostPath:
+            path: /var/run/cdi
+            type: DirectoryOrCreate
         #
         # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
         #
@@ -215,6 +239,7 @@ spec:
             type: DirectoryOrCreate
       hostNetwork: true
       hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: gpustack-worker
   updateStrategy:
     rollingUpdate:

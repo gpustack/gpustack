@@ -20,6 +20,8 @@ from gpustack.cmd.start import get_gpustack_env
 from gpustack import envs
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler(sys.stdout))
 
 revision = "d19176de3b74"  # 0.7.1
 
@@ -74,6 +76,8 @@ async def _run(args):
         sqlite_db_url, postgres_db_url, old_engine, new_engine = await prepare_env(args)
         await upgrade_schema(sqlite_db_url, postgres_db_url, old_engine)
         await migrate_all_data(old_engine, new_engine)
+        await old_engine.dispose()
+        await new_engine.dispose()
         clean_env(args)
         logger.info("Migration completed successfully.")
 
@@ -158,6 +162,7 @@ def _run_schema_upgrade(db_url: str, revision: str = "head"):
     pkg_path = spec.submodule_search_locations[0]
     alembic_cfg = AlembicConfig()
     alembic_cfg.set_main_option("script_location", os.path.join(pkg_path, "migrations"))
+    alembic_cfg.set_main_option("called_by_db_migration", "true")
 
     db_url_escaped = db_url.replace("%", "%%")
     alembic_cfg.set_main_option("sqlalchemy.url", db_url_escaped)

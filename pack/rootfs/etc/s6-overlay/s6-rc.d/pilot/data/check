@@ -1,0 +1,12 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
+source "$GPUSTACK_GATEWAY_CONFIG"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+set -e
+
+readinessCheck "Higress Pilot" "$GATEWAY_PILOT_TLS_GRPC_PORT" 2

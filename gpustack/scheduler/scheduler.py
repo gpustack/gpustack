@@ -32,11 +32,7 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
-from gpustack.scheduler.model_registry import (
-    vllm_supported_embedding_architectures,
-    vllm_supported_llm_architectures,
-    vllm_supported_reranker_architectures,
-)
+from gpustack.scheduler.model_registry import detect_model_type
 from gpustack.scheduler.queue import AsyncUniqueQueue
 from gpustack.policies.worker_filters.status_filter import StatusFilter
 from gpustack.schemas.inference_backend import is_built_in_backend
@@ -61,10 +57,12 @@ from gpustack.scheduler.calculator import (
 )
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
-from gpustack.utils.gpu import parse_gpu_ids_by_worker
-from gpustack.utils.hub import get_pretrained_config, has_diffusers_model_index
+from gpustack.utils.gpu import group_gpu_ids_by_worker
+from gpustack.utils.hub import (
+    get_pretrained_config_with_fallback,
+    has_diffusers_model_index,
+)
 from gpustack.utils.math import largest_power_of_2_leq
-from gpustack.utils.task import run_in_thread
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -117,7 +115,7 @@ class Scheduler:
         logger.info("Scheduler started.")
 
         # scheduler job trigger by event.
-        async for event in ModelInstance.subscribe(self._engine):
+        async for event in ModelInstance.subscribe(self._engine, source="scheduler"):
             if event.type != EventType.CREATED:
                 continue
 
@@ -180,7 +178,9 @@ class Scheduler:
                         )
                     else:
                         should_update_model = await evaluate_pretrained_config(
-                            model, raise_raw=True
+                            model,
+                            session=session,
+                            raise_raw=True,
                         )
                 except Exception as e:
                     # Even if the evaluation failed, we still want to proceed to deployment.
@@ -213,7 +213,7 @@ class Scheduler:
             and model.gpu_selector
             and model.gpu_selector.gpu_ids
         ):
-            worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+            worker_gpu_ids = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
             if len(worker_gpu_ids) > 1:
                 instance.state = ModelInstanceStateEnum.ERROR
                 instance.state_message = (
@@ -229,29 +229,36 @@ class Scheduler:
         Args:
             instance: ModelInstance to check.
         """
-
+        newly_created = (instance.updated_at - instance.created_at) < timedelta(
+            seconds=1
+        )
+        update_delta = datetime.now(timezone.utc) - instance.updated_at.replace(
+            tzinfo=timezone.utc
+        )
         return (
             (
+                # When enqueueing pending state model instances, handle two cases:
+                # 1. Newly created model instances (updated_at - created_at < 1 second),
+                #    which will be updated to ANALYZING in _evaluate.
+                # 2. Existing PENDING model instances periodically enqueued by the scheduler job.
+                #    In this case, update_delta is longer than 90s, as the scheduler runs every 180s.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.PENDING
+                and (newly_created or update_delta > timedelta(seconds=90))
             )
             or (
                 # Reschedule while it stays in anayzing state for too long,
                 # maybe the server is restarted.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.ANALYZING
-                and datetime.now(timezone.utc)
-                - instance.updated_at.replace(tzinfo=timezone.utc)
-                > timedelta(minutes=3)
+                and update_delta > timedelta(minutes=3)
             )
             or (
                 # Reschedule while it stays in scheduled state for too long,
                 # maybe the worker is down.
                 instance.worker_id is not None
                 and instance.state == ModelInstanceStateEnum.SCHEDULED
-                and datetime.now(timezone.utc)
-                - instance.updated_at.replace(tzinfo=timezone.utc)
-                > timedelta(minutes=3)
+                and update_delta > timedelta(minutes=3)
             )
         )
 
@@ -329,10 +336,14 @@ class Scheduler:
                 model_instance.worker_id = candidate.worker.id
                 model_instance.worker_name = candidate.worker.name
                 model_instance.worker_ip = candidate.worker.ip
+                model_instance.worker_advertise_address = (
+                    candidate.worker.advertise_address
+                )
                 model_instance.worker_ifname = candidate.worker.ifname
                 model_instance.computed_resource_claim = (
                     candidate.computed_resource_claim
                 )
+                model_instance.gpu_type = candidate.gpu_type
                 model_instance.gpu_indexes = candidate.gpu_indexes
                 model_instance.gpu_addresses = candidate.gpu_addresses
                 model_instance.distributed_servers = DistributedServers(
@@ -369,6 +380,8 @@ async def find_candidate(
                 - The schedule candidate.
                 - A list of messages for the scheduling process.
     """
+
+    # Filter workers.
     filters = [
         ClusterFilter(model),
         GPUMatchingFilter(model),
@@ -383,6 +396,7 @@ async def find_candidate(
     if filter_messages:
         messages.append(str(ListMessageBuilder(filter_messages)) + "\n")
 
+    # Initialize candidate selector.
     try:
         if is_gguf_model(model):
             candidates_selector = GGUFResourceFitSelector(model, config.cache_dir)
@@ -401,13 +415,17 @@ async def find_candidate(
     except Exception as e:
         return None, [f"Failed to initialize {model.backend} candidates selector: {e}"]
 
+    # Select candidates.
     candidates = await candidates_selector.select_candidates(workers)
 
+    # Score candidates.
     placement_scorer = PlacementScorer(model)
     candidates = await placement_scorer.score(candidates)
 
+    # Pick the highest score candidate.
     candidate = pick_highest_score_candidate(candidates)
 
+    # Collect messages.
     if candidate is None and len(workers) > 0:
         resource_fit_messages = candidates_selector.get_messages() or [
             "No workers meet the resource requirements."
@@ -416,6 +434,7 @@ async def find_candidate(
     elif candidate and candidate.overcommit:
         messages.extend(candidates_selector.get_messages())
 
+    # Return the candidate and messages.
     return candidate, messages
 
 
@@ -479,7 +498,7 @@ async def evaluate_gguf_model(
         model.distributable = True
 
     if model.gpu_selector and model.gpu_selector.gpu_ids:
-        worker_gpu_ids = parse_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
+        worker_gpu_ids = group_gpu_ids_by_worker(model.gpu_selector.gpu_ids)
         if (
             len(worker_gpu_ids) > 1
             and model.distributable
@@ -543,12 +562,14 @@ async def evaluate_diffusion_model(model: Model):
     # SGLang now supports Diffusers (image) models.
     # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
     # classify as IMAGE directly.
-    if model.backend != BackendEnum.SGLANG or model.categories:
+    if model.backend != BackendEnum.SGLANG or (
+        model.categories and CategoryEnum.IMAGE not in model.categories
+    ):
         return False
 
     hf_token = get_global_config().huggingface_token
-    is_diffusers = await run_in_thread(
-        has_diffusers_model_index, timeout=10, model=model, token=hf_token
+    is_diffusers = await asyncio.wait_for(
+        has_diffusers_model_index(model, token=hf_token), timeout=10
     )
     if is_diffusers:
         model.categories = [CategoryEnum.IMAGE]
@@ -556,7 +577,12 @@ async def evaluate_diffusion_model(model: Model):
     return False
 
 
-async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> bool:
+async def evaluate_pretrained_config(
+    model: Model,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+    raise_raw: bool = False,
+) -> bool:
     """
     evaluate the model's pretrained config to determine its type.
     Args:
@@ -576,8 +602,10 @@ async def evaluate_pretrained_config(model: Model, raise_raw: bool = False) -> b
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
-            pretrained_config = await run_in_thread(
-                get_pretrained_config, timeout=30, model=model
+            pretrained_config = await get_pretrained_config_with_fallback(
+                model,
+                session=session,
+                workers=workers,
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.
@@ -756,17 +784,3 @@ def set_model_gpus_per_replica(model: Model) -> bool:
         # Ignore if the given model is not a SQLModel instance.
         pass
     return True
-
-
-def detect_model_type(architectures: List[str]) -> CategoryEnum:
-    """
-    Detect the model type based on the architectures.
-    """
-    for architecture in architectures:
-        if architecture in vllm_supported_embedding_architectures:
-            return CategoryEnum.EMBEDDING
-        if architecture in vllm_supported_reranker_architectures:
-            return CategoryEnum.RERANKER
-        if architecture in vllm_supported_llm_architectures:
-            return CategoryEnum.LLM
-    return CategoryEnum.UNKNOWN

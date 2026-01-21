@@ -6,8 +6,8 @@ The procedure for deploying and interacting with these models in GPUStack is sim
 
 In this guide, we will cover the deployment of the following models:
 
+- **Qwen3-VL**
 - **Llama3.2-Vision**
-- **Qwen2-VL**
 - **Pixtral**
 - **Phi3.5-Vision**
 
@@ -25,22 +25,7 @@ Before you begin, ensure that you have the following:
 
 ## Step 1: Install GPUStack
 
-Please ensure [Docker](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are installed on your system. Then, run the following command to start the GPUStack server.
-
-```bash
-docker run -d --name gpustack \
-      --restart=unless-stopped \
-      --gpus all \
-      --network=host \
-      --ipc=host \
-      -v gpustack-data:/var/lib/gpustack \
-      gpustack/gpustack \
-      --huggingface-token <Hugging Face API Key>
-```
-
-Replace `<Hugging Face API Key>` with your [Hugging Face API key](https://huggingface.co/settings/tokens). GPUStack will use this key to download the model files.
-
-For more details on the installation or other GPU hardware platforms, please refer to the [Installation Documentation](../installation/requirements.md).
+Please follow the [Installation Documentation](../installation/requirements.md) to install GPUStack.
 
 ## Step 2: Log in to GPUStack UI
 
@@ -52,29 +37,16 @@ docker exec gpustack cat /var/lib/gpustack/initial_admin_password
 
 Open your browser and navigate to `http://your_host_ip` to access the GPUStack UI. Use the default username `admin` and the password you retrieved above to log in.
 
-## Step 3: Deploy Vision Language Models
+## Step 3: Deploy Vision Language Models with vLLM
 
-### Deoloy from Catalog
+### Deploy Qwen3-VL
 
-Vision language models in the catalog are marked with the `vision` capability. When you select a vision language model from the catalog, the default configurations should work as long as you have enough GPU resources and the backend is compatible with your setup(e.g., vLLM backend requires an amd64 Linux worker).
+1. Navigate to the `Deployments` page in the GPUStack UI.
+2. Click on the `Deploy Model` button, then select `Hugging Face` in the dropdown.
+3. Search for `Qwen/Qwen3-VL-4B-Instruct` in the search bar.
+4. Click the `Save` button. The default configurations should work as long as you have enough GPU resources.
 
-![catalog-vlm](../assets/using-models/using-vision-language-models/catalog-vlm.png)
-
-### Example of Custom Deployment Using llama-box
-
-When deploying GGUF VLM models with llama-box, GPUStack automatically handles the multi-modal projector file and it should work out of the box.
-
-1. Navigate to the `Deployments` page in the GPUStack UI and click the `Deploy Model` button. In the dropdown, select `Hugging Face` as the source for your model.
-2. Enable the `GGUF` checkbox to filter models by GGUF format.
-3. Use the search bar to find the `bartowski/Qwen2-VL-2B-Instruct-GGUF` model.
-4. Use the GGUF `Q4_K_M` quantization format.
-5. Click the `Save` button to deploy the model.
-
-![Deploy GGUF Model](../assets/using-models/using-vision-language-models/deploy-model-gguf.png)
-
-### Example of Custom Deployment Using vLLM
-
-#### Deploy Llama3.2-Vision
+### Deploy Llama3.2-Vision
 
 1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click on the `Deploy Model` button, then select `Hugging Face` in the dropdown.
@@ -88,16 +60,7 @@ When deploying GGUF VLM models with llama-box, GPUStack automatically handles th
 
 6. Click the `Save` button.
 
-![llama3.2-vl](../assets/using-models/using-vision-language-models/llama3.2-vl.png)
-
-#### Deploy Qwen2-VL
-
-1. Navigate to the `Deployments` page in the GPUStack UI.
-2. Click on the `Deploy Model` button, then select `Hugging Face` in the dropdown.
-3. Search for `Qwen/Qwen2-VL-7B-Instruct` in the search bar.
-4. Click the `Save` button. The default configurations should work as long as you have enough GPU resources.
-
-#### Deploy Pixtral
+### Deploy Pixtral
 
 1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click on the `Deploy Model` button, then select `Hugging Face` in the dropdown.
@@ -110,7 +73,7 @@ When deploying GGUF VLM models with llama-box, GPUStack automatically handles th
 
 6. Click the `Save` button.
 
-#### Deploy Phi3.5-Vision
+### Deploy Phi3.5-Vision
 
 1. Navigate to the `Deployments` page in the GPUStack UI.
 2. Click on the `Deploy Model` button, then select `Hugging Face` in the dropdown.

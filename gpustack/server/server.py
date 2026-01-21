@@ -3,18 +3,23 @@ from multiprocessing import Process
 import os
 import re
 import aiohttp
-from typing import List
 
 import uvicorn
 import logging
 import secrets
+import tenacity
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.logging import setup_logging
-from gpustack.schemas.users import User, UserRole
+from gpustack.schemas.users import (
+    User,
+    UserRole,
+    get_default_cluster_user,
+    default_cluster_user_name,
+)
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
-from gpustack.schemas.clusters import Cluster
+from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.models import Model
 from gpustack.security import (
     JWTManager,
@@ -23,7 +28,8 @@ from gpustack.security import (
     API_KEY_PREFIX,
 )
 from gpustack.server.app import create_app
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
 from gpustack.server.catalog import init_model_catalog
 from gpustack.server.controllers import (
@@ -47,17 +53,22 @@ from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
 from gpustack.exporter.exporter import MetricExporter
 from gpustack.gateway.utils import cleanup_orphaned_model_ingresses
+from gpustack.gateway import get_async_k8s_config
+from gpustack.envs import (
+    GATEWAY_PORT_CHECK_INTERVAL,
+    GATEWAY_PORT_CHECK_RETRY_COUNT,
+    DEFAULT_CLUSTER_KUBERNETES,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class Server:
-    def __init__(self, config: Config, sub_processes: List[Process] = None):
-        if sub_processes is None:
-            sub_processes = []
+    def __init__(self, config: Config, worker_process: Process):
         self._config: Config = config
-        self._sub_processes = sub_processes
+        self._sub_processes = []
         self._async_tasks = []
+        self._worker_process = worker_process
 
     @property
     def all_processes(self):
@@ -79,6 +90,9 @@ class Server:
         await self._prepare_data()
 
         init_model_catalog(self._config.model_catalog_file)
+        # it's safe to determine server_role after migration
+        if self._config.server_role() == Config.ServerRole.BOTH:
+            self._sub_processes.append(self._worker_process)
 
         self._start_sub_processes()
         self._start_scheduler()
@@ -105,11 +119,6 @@ class Server:
                 allow_methods=self._config.allow_methods,
                 allow_headers=self._config.allow_headers,
             )
-        ssl_keyfile = None
-        ssl_certfile = None
-        if self._config.gateway_mode == GatewayModeEnum.disabled:
-            ssl_keyfile = self._config.ssl_keyfile
-            ssl_certfile = self._config.ssl_certfile
 
         serving_host = (
             "127.0.0.1"
@@ -123,8 +132,6 @@ class Server:
             port=self._config.get_api_port(),
             access_log=False,
             log_level="error",
-            ssl_certfile=ssl_certfile,
-            ssl_keyfile=ssl_keyfile,
         )
 
         setup_logging()
@@ -133,10 +140,12 @@ class Server:
         if self._config.gateway_mode == GatewayModeEnum.embedded:
             logger.debug(serving_api_message)
             logger.info(
-                f"Serving GPUStack on 0.0.0.0:{self._config.get_gateway_port()}."
+                f"GPUStack Server will serve on 0.0.0.0:{self._config.get_gateway_port()}."
             )
             if self._config.get_tls_secret_name() is not None:
-                logger.info(f"TLS Serving GPUStack on {self._config.tls_port}.")
+                logger.info(
+                    f"GPUStack Server will serve TLS on 0.0.0.0:{self._config.tls_port}."
+                )
         else:
             logger.info(serving_api_message)
 
@@ -167,7 +176,7 @@ class Server:
             "script_location", os.path.join(pkg_path, "migrations")
         )
 
-        db_url = self._config.database_url
+        db_url = self._config.get_database_url()
         # Use the pymysql driver to execute migrations to avoid compatibility issues between asynchronous drivers and Alembic.
         if db_url.startswith("mysql://"):
             db_url = re.sub(r'^mysql://', 'mysql+pymysql://', db_url)
@@ -182,7 +191,7 @@ class Server:
     async def _prepare_data(self):
         self._setup_data_dir(self._config.data_dir)
 
-        await init_db(self._config.database_url)
+        await init_db(self._config.get_database_url())
 
         engine = get_engine()
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -248,8 +257,12 @@ class Server:
             return
         collector = GatewayMetricsCollector(cfg=self._config)
 
-        self._create_async_task(collector.start())
-        logger.debug("Gateway metrics collector started.")
+        async def _start_collector_after_port_ready():
+            await self._wait_for_gateway_ready()
+            await collector.start()
+            logger.debug("Gateway metrics collector started.")
+
+        self._create_async_task(_start_collector_after_port_ready())
 
     def _start_update_checker(self):
         if self._config.disable_update_check:
@@ -282,6 +295,35 @@ class Server:
             return
         self._create_async_task(start_process_after_api_ready())
 
+    async def _wait_for_gateway_ready(self):
+        if self._config.gateway_mode != GatewayModeEnum.embedded:
+            return
+        # http port is always started
+        ports = [self._config.port]
+        if self._config.get_tls_secret_name() is not None:
+            ports.append(self._config.tls_port)
+        logger.info(f"Waiting for ports {ports} of GPUStack to be ready...")
+        # wait for gateway ready for about 60s
+        await self._check_ports_ready(*ports)
+        logger.info("GPUStack Server is ready.")
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(GATEWAY_PORT_CHECK_RETRY_COUNT),
+        wait=tenacity.wait_fixed(GATEWAY_PORT_CHECK_INTERVAL),
+        reraise=True,
+        before_sleep=lambda retry_state: logger.debug(
+            f"Waiting for ports {retry_state.args[1]} to be healthy (attempt {retry_state.attempt_number}) due to: {retry_state.outcome.exception()}"
+        ),
+    )
+    async def _check_ports_ready(self, *ports: int):
+        for port in ports:
+            try:
+                _, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                raise RuntimeError(f"Port {port} is not healthy or not listening")
+
     def _start_metrics_exporter(self):
         if self._config.disable_metrics:
             return
@@ -298,6 +340,7 @@ class Server:
     async def _init_data(self, session: AsyncSession):
         init_data_funcs = [
             self._init_user,
+            self._init_default_cluster,
             self._migrate_legacy_token,
             self._migrate_legacy_workers,
             self._ensure_registration_token,
@@ -336,13 +379,17 @@ class Server:
             await User.create(session, user)
 
     async def _migrate_legacy_token(self, session: AsyncSession):
-        """
-        Migrate legacy tokens to the new format.
-        This is a placeholder for future migration logic.
-        """
-        if not self._config.token or self._config.token.startswith(API_KEY_PREFIX):
+        if not self._config.token:
             return
-        default_cluster = await Cluster.one_by_id(session=session, id=1)
+        # this should be created from sql migration script.
+        cluster_user = await get_default_cluster_user(session)
+        if cluster_user is None or cluster_user.cluster is None:
+            logger.debug(
+                "Default cluster user not exist, skipping legacy token migration."
+            )
+            return
+
+        default_cluster = cluster_user.cluster
         if not default_cluster:
             logger.debug(
                 "Default cluster does not exist, skipping legacy token migration."
@@ -384,6 +431,7 @@ class Server:
             raise e
 
     async def _migrate_legacy_workers(self, session: AsyncSession):
+        # Use hardcode cluster 1 to make sure the cluster is created in migration step
         default_cluster = await Cluster.one_by_id(session=session, id=1)
         if not default_cluster:
             logger.debug(
@@ -452,11 +500,11 @@ class Server:
                 raise e
 
     async def _ensure_registration_token(self, session: AsyncSession):
-        cluster_user = await User.first_by_field(
-            session=session, field="username", value="system/cluster-1"
-        )
-        if not cluster_user or not cluster_user.cluster:
-            logger.info("Cluster doesn't exist, skipping writing registration token.")
+        cluster_user = await get_default_cluster_user(session)
+        if cluster_user is None or cluster_user.cluster is None:
+            logger.debug(
+                "Default cluster user not exist, skipping registration token generation."
+            )
             return
         token = cluster_user.cluster.registration_token
         if token == "":
@@ -497,9 +545,63 @@ class Server:
             session=session, field="deleted_at", value=None
         )
         model_ids = [model.id for model in models]
-        k8s_config = self.config.get_async_k8s_config()
+        k8s_config = get_async_k8s_config(cfg=self.config)
         await cleanup_orphaned_model_ingresses(
-            namespace=self.config.get_gateway_namespace(),
+            namespace=self.config.get_namespace(),
             existing_model_ids=model_ids,
             config=k8s_config,
         )
+
+    def _should_create_default_cluster(self) -> bool:
+        # only server or both will get into this logic
+        if self._config.server_role() == Config.ServerRole.BOTH:
+            return True
+        if self._config.token:
+            return True
+        return False
+
+    async def _init_default_cluster(self, session: AsyncSession):
+        if not self._should_create_default_cluster():
+            return
+        default_cluster_user = await get_default_cluster_user(session)
+        if default_cluster_user:
+            return
+        user_defined_default_cluster = await self.user_defined_default_cluster(session)
+        set_default = user_defined_default_cluster is None
+        logger.info("Creating default cluster...")
+        provider = ClusterProvider.Docker
+        if DEFAULT_CLUSTER_KUBERNETES:
+            provider = ClusterProvider.Kubernetes
+        hashed_suffix = secrets.token_hex(6)
+        default_cluster = Cluster(
+            name="Default Cluster",
+            description="The default cluster for GPUStack",
+            provider=provider,
+            state=ClusterStateEnum.READY,
+            hashed_suffix=hashed_suffix,
+            registration_token="",
+            is_default=set_default,
+        )
+        default_cluster = await Cluster.create(
+            session, default_cluster, auto_commit=False
+        )
+
+        default_cluster_user = User(
+            username=default_cluster_user_name,
+            is_system=True,
+            is_admin=False,
+            require_password_change=False,
+            role=UserRole.Cluster,
+            hashed_password="",
+            cluster=default_cluster,
+        )
+        await User.create(session, default_cluster_user, auto_commit=False)
+
+        await session.commit()
+        logger.debug("Default cluster created.")
+
+    async def user_defined_default_cluster(self, session: AsyncSession) -> Cluster:
+        cluster = await Cluster.first_by_field(
+            session=session, field="is_default", value=True
+        )
+        return cluster

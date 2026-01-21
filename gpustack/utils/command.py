@@ -3,6 +3,7 @@ import sysconfig
 from os.path import dirname, abspath, join
 import shutil
 from typing import List, Optional
+import shlex
 
 
 def is_command_available(command_name):
@@ -31,6 +32,13 @@ def find_parameter(parameters: List[str], param_names: List[str]) -> Optional[st
         if '=' in param:
             key, value = param.split('=', 1)
             if key.lstrip('-') in param_names:
+                return value
+        elif ' ' in param:
+            key, value = param.split(' ', 1)
+            if key.lstrip('-') in param_names:
+                split_values = shlex.split(value)
+                if len(split_values) == 1:
+                    return split_values[0]
                 return value
         else:
             if param.lstrip('-') in param_names:

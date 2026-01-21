@@ -11,18 +11,6 @@ GPUStack supports most modern Linux distributions on **AMD64** and **ARM64** arc
     - GPUStack is not recommended for direct installation via PyPi. For best compatibility, use the provided Docker images.
     - The Network Time Protocol (NTP) package must be installed to ensure consistent state synchronization between nodes.
 
-GPUStack has been tested and verified on the following operating systems:
-
-| OS        | Versions        |
-| --------- | --------------- |
-| Ubuntu    | \>= 20.04       |
-| Debian    | \>= 11          |
-| RHEL      | \>= 8           |
-| Rocky     | \>= 8           |
-| Fedora    | \>= 36          |
-| OpenSUSE  | \>= 15.3 (Leap) |
-| OpenEuler | \>= 22.03       |
-
 ## Accelerator Runtime Requirements
 
 GPUStack supports a variety of General-Purpose Accelerators as inference backends, including:
@@ -30,77 +18,216 @@ GPUStack supports a variety of General-Purpose Accelerators as inference backend
 - [x] NVIDIA GPU
 - [x] AMD GPU
 - [x] Ascend NPU
-- [x] Hygon DCU (Experimental)
+- [x] Hygon DCU
 - [x] MThreads GPU (Experimental)
 - [x] Iluvatar GPU (Experimental)
 - [x] MetaX GPU (Experimental)
 - [x] Cambricon MLU (Experimental)
+- [x] T-Head PPU (Experimental)
 
 Ensure all required drivers and toolkits are installed before running GPUStack.
 
 ### NVIDIA GPU
 
-To use NVIDIA GPU, install:
+#### Requirements
 
-- [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/)
+- [NVIDIA GPU Driver](https://www.nvidia.com/en-us/drivers/) that supports NVIDIA CUDA 12.4 or higher.
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit)
+
+Run the following commands to verify:
+
+```bash
+sudo nvidia-smi
+
+# If using Docker
+sudo docker info 2>/dev/null | grep -q "nvidia" \
+    && echo "NVIDIA Container Toolkit OK" \
+    || (echo "NVIDIA Container Toolkit not configured"; exit 1)
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] [VoxBox](https://github.com/gpustack/vox-box)
+- [x] Custom
 
 ### AMD GPU
 
-To use AMD GPU, install:
+#### Requirements
 
-- [AMD GPU Driver](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/)
+- [AMD GPU Driver](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/) that supports AMD ROCm 6.4 or higher.
 - [AMD Container Runtime](https://instinct.docs.amd.com/projects/container-toolkit/en/latest/container-runtime/overview.html)
+
+Run the following commands to verify:
+
+```bash
+sudo amd-smi static
+
+# If using Docker
+sudo docker info 2>/dev/null | grep -q "amd" \
+    && echo "AMD Container Toolkit OK" \
+    || (echo "AMD Container Toolkit not configured"; exit 1)
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang) (requires gfx9 series GPUs)
+- [x] Custom
 
 ### Ascend NPU
 
-For Ascend NPU, install:
+#### Requirements
 
 - [Ascend NPU Driver](https://www.hiascend.com/hardware/firmware-drivers/community)
 - [Ascend Docker Runtime](https://www.hiascend.com/document/detail/zh/mindcluster/72rc1/clustersched/dlug/dlug_installation_017.html)
 
+Run the following commands to verify:
+
+```bash
+sudo npu-smi info
+
+# If using Docker
+sudo docker info 2>/dev/null | grep -q "ascend" \
+    && echo "Ascend Container Toolkit OK" \
+    || (echo "Ascend Container Toolkit not configured"; exit 1)
+```
+
+#### Supported Devices
+
+- [x] Ascend NPU 910C series
+- [x] Ascend NPU 910B series (910B1 ~ 910B4)
+- [x] Ascend NPU 310P3
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] [MindIE](https://www.hiascend.com/document/detail/zh/mindie/21RC2/index/index.html)
+- [x] Custom
+
 ### Hygon DCU
 
-To use Hygon DCU, install:
+#### Requirements
 
 - [Hygon DCU Driver](https://developer.sourcefind.cn/tool/)
 - [Hygon DTK Toolkit](https://developer.sourcefind.cn/tool/)
 
+Run the following commands to verify:
+
+```bash
+sudo hy-smi
+```
+
+#### Supported Devices
+
+- [x] Hygon DCUs (K100_AI (Verified), Z100/Z100L/K100(Not Verified))
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] Custom
+
 ### MThreads GPU
 
-To use MThreads GPU, install:
+#### Requirements
 
 - [MThreads GPU Driver](https://docs.mthreads.com/)
 - [MThreads Container Toolkit](https://developer.mthreads.com/sdk/download/CloudNative)
 
+Run the following commands to verify:
+
+```bash
+sudo mthreads-gmi
+
+# If using Docker
+sudo docker info 2>/dev/null | grep -q "mthreads" \
+    && echo "MThreads Container Toolkit OK" \
+    || (echo "MThreads Container Toolkit not configured"; exit 1)
+```
+
+#### Supported Inference Backends
+
+- [x] Custom
+
 ### Iluvatar GPU
 
-To use Iluvatar GPU, install:
+#### Requirements
 
 - [Iluvatar GPU Driver](https://support.iluvatar.com/#/login)
 - [Iluvatar Container Toolkit](https://github.com/Deep-Spark/ix-container-toolkit)
 
+Run the following commands to verify:
+
+```bash
+sudo ixsmi
+
+# If using Docker
+sudo docker info 2>/dev/null | grep -q "iluvatar" \
+    && echo "Iluvatar Container Toolkit OK" \
+    || (echo "Iluvatar Container Toolkit not configured"; exit 1)
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] Custom
+
 ### MetaX GPU
 
-To use MetaX GPU, install:
+#### Requirements
 
 - [MetaX GPU Driver](https://developer.metax-tech.com/softnova/download?package_kind=Driver)
 - [MetaX MACA SDK](https://developer.metax-tech.com/softnova/download?package_kind=SDK)
 
+Run the following commands to verify:
+
+```bash
+sudo mx-smi
+```
+
+#### Supported Inference Backends
+
+- [x] Custom
+
 ### Cambricon MLU
 
-To use Cambricon MLU, install:
+#### Requirements
 
 - Cambricon MLU Driver
 - Cambricon NeuWare Toolkit
 
+Run the following commands to verify:
+
+```bash
+sudo cnmon
+```
+
+#### Supported Inference Backends
+
+- [x] Custom
+
+### T-Head PPU
+
+#### Requirements
+
+- T-Head PPU Driver
+- T-Head PPU SDK
+
+Run the following commands to verify:
+
+```bash
+sudo ppu-smi
+```
+
+#### Supported Inference Backends
+
+- [x] [vLLM](https://github.com/vllm-project/vllm)
+- [x] [SGLang](https://github.com/sgl-project/sglang)
+- [x] Custom
+
 ## Networking Requirements
-
-### Network Architecture
-
-The following diagram illustrates the GPUStack network architecture:
-
-![gpustack-network-architecture](../assets/gpustack-network-architecture.png)
 
 ### Connectivity Requirements
 
@@ -123,18 +250,37 @@ GPUStack uses these ports for communication:
 | TCP 80    | Default port for GPUStack UI and API endpoints               |
 | TCP 443   | Default port for GPUStack UI and API endpoints (TLS enabled) |
 | TCP 10161 | Default port for server metrics endpoint                     |
-| TCP 8080  | Default port for GPUStack server internal API                |
+| TCP 30080 | Default port for GPUStack server internal API                |
 | TCP 5432  | Default port for embedded Postgres Database                  |
 
 #### Worker Ports
 
-| Port            | Description                                   |
-| --------------- | --------------------------------------------- |
-| TCP 10150       | Default port for GPUStack worker              |
-| TCP 10151       | Default port for worker metrics endpoint      |
-| TCP 8080        | Default port for GPUStack worker internal API |
-| TCP 40000-40063 | Port range for inference services             |
+| Port            | Description                                                    |
+| --------------- | -------------------------------------------------------------- |
+| TCP 10150       | Default port for GPUStack worker                               |
+| TCP 10151       | Default port for worker metrics endpoint                       |
+| TCP 40000-40063 | Port range for inference services                              |
 | TCP 41000-41999 | Port range for Ray services(vLLM distributed deployment using) |
+
+##### Distributed vLLM with Ray Ports
+
+When using distributed vLLM, GPUStack will parse the above port range for Ray services,
+and assign them in order as below:
+
+1. GCS server port (the first port of the range)
+2. Client Server port (reserved for compatibility, not used anymore, see https://github.com/gpustack/gpustack/issues/4171)
+3. Dashboard port
+4. Dashboard gRPC port (no longer used since Ray 2.45.0, kept for backward compatibility)
+5. Dashboard agent gRPC port
+6. Dashboard agent listen port
+7. Metrics export port
+8. Node Manager port
+9. Object Manager port
+10. Raylet runtime env agent port
+11. Minimum port number for the worker
+12. Maximum port number for the worker (the last port of the range)
+
+For more details on Ray ports, see the [Ray documentation](https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations).
 
 #### Embedded Gateway Ports
 
@@ -152,23 +298,3 @@ The embedded gateway for both server and worker uses the following ports for int
 | TCP 15020 | 0.0.0.0   | Metrics port for Pilot-agent                         |
 | TCP 8888  | 127.0.0.1 | Port for Controller serving XDS via HTTP             |
 | TCP 15051 | 127.0.0.1 | Port for Controller serving XDS via gRPC             |
-
-##### Distributed vLLM with Ray Ports
-
-When using distributed vLLM, GPUStack will parse the above port range for Ray services,
-and assign them in order as below:
-
-1. GCS server port (the first port of the range)
-2. Client Server port
-3. Dashboard port
-4. Dashboard gRPC port (no longer used since Ray 2.45.0, kept for backward compatibility)
-5. Dashboard agent gRPC port
-6. Dashboard agent listen port
-7. Metrics export port
-8. Node Manager port
-9. Object Manager port
-10. Raylet runtime env agent port
-11. Minimum port number for the worker
-12. Maximum port number for the worker (the last port of the range)
-
-For more details on Ray ports, see the [Ray documentation](https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations).

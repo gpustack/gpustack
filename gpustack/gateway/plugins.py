@@ -2,7 +2,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional, List
 from fastapi import FastAPI
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.utils.network import get_first_non_loopback_ip
 from fastapi.staticfiles import StaticFiles
 
@@ -57,7 +58,7 @@ supported_plugins: List[HigressPlugin] = [
     HigressPlugin(
         name="gpustack-token-usage",
         version="1.0.0",
-        digest="sha256:b1f57e48a3d43c043b2850f2f74b1ee5f804e364bfbe424b3eb94a973ad3ab8c",
+        digest="sha256:82928ef0b70f1e7b83e8dfafb5f9fe3f2047e6a109928c0676d8eb8701dc2e62",
         registry_prefix="oci://docker.io/gpustack/higress-plugin-",
     ),
 ]
@@ -92,7 +93,7 @@ def get_plugin_url_prefix(cfg: Optional[Config] = None):
     address: Optional[str] = None
     if cfg is not None and plugin_dir is not None and os.path.isdir(plugin_dir):
         if cfg.gateway_mode == GatewayModeEnum.embedded:
-            address = "localhost"
+            address = "127.0.0.1"
         elif cfg.gateway_mode == GatewayModeEnum.incluster:
             address = get_first_non_loopback_ip()
         elif cfg.gateway_mode == GatewayModeEnum.external:

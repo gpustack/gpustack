@@ -18,6 +18,7 @@ from gpustack.schemas.models import (
     BackendEnum,
 )
 from tests.fixtures.workers.fixtures import (
+    linux_mix_1_nvidia_4080_16gx1_rocm_7800_16gx1,
     linux_nvidia_0_4090_24gx1,
     linux_nvidia_1_4090_24gx1,
     linux_nvidia_22_H100_80gx8,
@@ -31,12 +32,15 @@ from tests.fixtures.workers.fixtures import (
     linux_nvidia_7_a100_80gx2,
     linux_nvidia_2_4080_16gx2,
     linux_ascend_1_910b_64gx8,
+    linux_rocm_1_7800_16gx1,
+    linux_rocm_2_7800_16gx2,
+    linux_nvidia_26_H200_141gx8,
 )
 from tests.utils.scheduler import compare_candidates
 
 
 def expected_candidate(
-    worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
+    worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None, score=None
 ):
     candidate = {
         "worker_id": worker_id,
@@ -45,7 +49,12 @@ def expected_candidate(
         "is_unified_memory": False,
         "vram": vram,
         "subordinate_workers": subworkers or [],
+        "vram_utilization": 0.9,
     }
+
+    if score is not None:
+        candidate["score"] = score
+
     if ram is not None:
         candidate["ram"] = ram
     return candidate
@@ -79,6 +88,7 @@ def expected_candidate(
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23181498777},
+                                vram_utilization=0.9,
                             ),
                         )
                     ],
@@ -140,6 +150,7 @@ def expected_candidate(
                             gpu_indexes=[0],
                             computed_resource_claim=ComputedResourceClaim(
                                 vram={0: 23413653504},
+                                vram_utilization=0.9,
                             ),
                         )
                     ],
@@ -214,6 +225,7 @@ def expected_candidate(
                             gpu_indexes=[0],
                             computed_resource_claim=ComputedResourceClaim(
                                 vram={0: 77309411328},
+                                vram_utilization=0.9,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -223,6 +235,7 @@ def expected_candidate(
                             gpu_indexes=[0],
                             computed_resource_claim=ComputedResourceClaim(
                                 vram={0: 77309411328},
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -368,6 +381,7 @@ def expected_candidate(
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23413653504},
+                                vram_utilization=0.9,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -378,6 +392,7 @@ def expected_candidate(
                             computed_resource_claim=ComputedResourceClaim(
                                 is_unified_memory=False,
                                 vram={0: 23181498777},
+                                vram_utilization=0.9,
                             ),
                         ),
                     ],
@@ -465,6 +480,36 @@ def expected_candidate(
             [expected_candidate(2, "host4090", [0], {0: 23413653504}, ram=46827307008)],
             0,
         ),
+        # Auto schedule DeepSeekV32
+        (
+            "auto_schedule_deepseekv32",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="deepseek-ai/DeepSeek-V3.2",
+                backend_version="0.11.0",
+            ),
+            [linux_nvidia_26_H200_141gx8()],
+            [
+                expected_candidate(
+                    26,
+                    "host26-h200",
+                    [0, 1, 2, 3, 4, 5, 6, 7],
+                    {
+                        0: 136360009728,
+                        1: 136360009728,
+                        2: 136360009728,
+                        3: 136360009728,
+                        4: 136360009728,
+                        5: 136360009728,
+                        6: 136360009728,
+                        7: 136360009728,
+                    },
+                )
+            ],
+            0,
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -486,6 +531,10 @@ async def test_select_candidates(
         ),
         patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
         patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=(True, []),
+        ),
+        patch(
             'gpustack.schemas.workers.Worker.all',
             return_value=workers,
         ),
@@ -504,6 +553,256 @@ async def test_select_candidates(
             compare_candidates(
                 [actual_candidate], [expected_candidates[final_candidate_index]]
             )
+        except AssertionError as e:
+            raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
+
+
+@pytest.mark.parametrize(
+    "case_name, m, workers, expected_candidates, final_candidate_index",
+    [
+        # Manually select 1 cuda gpu and 1 amd rocm gpu.
+        # Check point:
+        # - Candidate selection correctness, final candidate should be the cuda gpu.
+        (
+            "manual_select_1_cuda+1_rocm",
+            make_model(1, ["host4090:cuda:0", "host01-7800:rocm:0"], "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_1_4090_24gx1(),
+                linux_rocm_1_7800_16gx1(),
+            ],
+            [
+                {
+                    "worker_id": 2,
+                    "worker_name": "host4090",
+                    "gpu_indexes": [0],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 23413653504,
+                    },
+                    "score": 60.0,
+                },
+                {
+                    "worker_id": 13,
+                    "worker_name": "host01-7800",
+                    "gpu_indexes": [0],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                    },
+                    "score": 59.9999,
+                },
+            ],
+            0,
+        ),
+        # Manually select 1 cuda gpu and 1 amd rocm gpu with gpus_per_replica=2.
+        # Check point:
+        # - No candidates.
+        (
+            "manual_select_1_cuda+1_rocm_with_gpus_per_replica_2",
+            make_model(2, ["host4090:cuda:0", "host01-7800:rocm:0"], "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_1_4090_24gx1(),
+                linux_rocm_1_7800_16gx1(),
+            ],
+            [],
+            None,
+        ),
+        # Manually select 2 cuda GPUs + 2 rocm GPUs and set gpus_per_replica=2.
+        # Check point:
+        # - Candidate should use 2 cuda GPUs.
+        (
+            "manual_select_2_cuda+2_rocm_with_gpus_per_replica_2",
+            make_model(
+                2,
+                [
+                    "host4080:cuda:0",
+                    "host4080:cuda:1",
+                    "host02-7800:rocm:0",
+                    "host02-7800:rocm:1",
+                ],
+                "Qwen/Qwen3-0.6B",
+            ),
+            [
+                linux_nvidia_2_4080_16gx2(),
+                linux_rocm_2_7800_16gx2(),
+            ],
+            [
+                {
+                    "worker_id": 3,
+                    "worker_name": "host4080",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 15454332518,
+                        1: 15454332518,
+                    },
+                    "score": 59.99999999844704,
+                },
+                {
+                    "worker_id": 28,
+                    "worker_name": "host02-7800",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                        1: 15446782771,
+                    },
+                    "score": 59.99999999922314,
+                },
+            ],
+            1,
+        ),
+        # Manually select 1 cuda GPUs from mixed gpu worker + 1 cuda GPUs from cuda gpu worker and set gpus_per_replica=2.
+        # Check point:
+        # - Candidate should use 2 cuda GPUs.
+        (
+            "manual_select_1_cuda_from_mix+1_cuda_with_gpus_per_replica_2",
+            make_model(2, ["host4080:cuda:0", "host-mix-01:cuda:0"], "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_2_4080_16gx2(),
+                linux_mix_1_nvidia_4080_16gx1_rocm_7800_16gx1(),
+            ],
+            [
+                {
+                    "worker_id": 3,
+                    "worker_name": "host4080",
+                    "gpu_indexes": [0],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 15454332518,
+                    },
+                    "score": 59.9999,
+                    "subordinate_workers": [
+                        ModelInstanceSubordinateWorker(
+                            worker_id=29,
+                            worker_ip="192.168.50.31",
+                            total_gpus=1,
+                            gpu_type="cuda",
+                            gpu_indexes=[0],
+                            computed_resource_claim=ComputedResourceClaim(
+                                vram={0: 15454332518},
+                                vram_utilization=0.9,
+                            ),
+                        )
+                    ],
+                },
+            ],
+            0,
+        ),
+        # Auto select use single gpu from nvidia and amd workers.
+        # Check point:
+        # - Candidate selection correctness, final candidate should be the cuda gpu.
+        (
+            "auto_select_single_gpu_from_cuda+rocm",
+            make_model(1, None, "Qwen/Qwen3-0.6B"),
+            [
+                linux_nvidia_1_4090_24gx1(),
+                linux_rocm_1_7800_16gx1(),
+            ],
+            [
+                {
+                    "worker_id": 2,
+                    "worker_name": "host4090",
+                    "gpu_indexes": [0],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 23413653504,
+                    },
+                    "score": 60.0,
+                },
+                {
+                    "worker_id": 13,
+                    "worker_name": "host01-7800",
+                    "gpu_indexes": [0],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                    },
+                    "score": 59.9999,
+                },
+            ],
+            0,
+        ),
+        # Auto select single worker multi gpu from nvidia and amd workers.
+        # Check point:
+        # - Candidate selection correctness, final candidate should be the cuda gpu.
+        (
+            "auto_select_single_worker_multi_gpu_from_2_cuda+2_rocm_with_gpus_per_replica_2",
+            make_model(2, None, "Qwen/Qwen3-8B"),
+            [
+                linux_nvidia_2_4080_16gx2(),
+                linux_rocm_2_7800_16gx2(),
+            ],
+            [
+                {
+                    "worker_id": 3,
+                    "worker_name": "host4080",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "cuda",
+                    "vram": {
+                        0: 15454332518,
+                        1: 15454332518,
+                    },
+                    "score": 59.99999999844704,
+                },
+                {
+                    "worker_id": 28,
+                    "worker_name": "host02-7800",
+                    "gpu_indexes": [0, 1],
+                    "gpu_type": "rocm",
+                    "vram": {
+                        0: 15446782771,
+                        1: 15446782771,
+                    },
+                    "score": 59.99999999922314,
+                },
+            ],
+            1,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates_from_different_gpu_types(
+    config, case_name, m, workers, expected_candidates, final_candidate_index
+):
+    with (
+        patch(
+            'gpustack.policies.utils.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=[],
+        ),
+        patch(
+            'gpustack.scheduler.scheduler.BackendFrameworkFilter._has_supported_runners',
+            return_value=(True, []),
+        ),
+        patch(
+            'gpustack.policies.scorers.placement_scorer.get_model_instances',
+            return_value=[],
+        ),
+        patch('sqlmodel.ext.asyncio.session.AsyncSession', AsyncMock()),
+        patch(
+            'gpustack.schemas.workers.Worker.all',
+            return_value=workers,
+        ),
+    ):
+        m.backend = BackendEnum.VLLM.value
+        resource_fit_selector = VLLMResourceFitSelector(config, m)
+        scorer = PlacementScorer(m)
+
+        actual_candidates = await resource_fit_selector.select_candidates(workers)
+        actual_candidates = await scorer.score(actual_candidates)
+        actual_candidate, _ = await scheduler.find_candidate(config, m, workers)
+
+        try:
+            assert len(actual_candidates) == len(expected_candidates)
+            compare_candidates(actual_candidates, expected_candidates)
+            if final_candidate_index is not None:
+                compare_candidates(
+                    [actual_candidate], [expected_candidates[final_candidate_index]]
+                )
         except AssertionError as e:
             raise AssertionError(f"Test case '{case_name}' failed: {str(e)}") from e
 
@@ -572,7 +871,7 @@ async def test_auto_schedule_single_work_single_gpu(config):
                 '- The model requires approximately 26.99 GiB of VRAM.\n'
                 '- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at '
                 'least 29.99 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.\n'
-                '- Total number of attention heads (25) must be divisible by gpu count (4).\n'
+                '- Total number of attention heads (25) must be divisible by tensor parallel size (4).\n'
                 '- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs '
                 'meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM.'
             ],
@@ -585,6 +884,19 @@ async def test_auto_schedule_single_work_single_gpu(config):
                 """- The model requires approximately 75.23 GiB of VRAM.
 - With --gpu-memory-utilization=0.9, all GPUs combined need to provide at least 83.59 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM."""
+            ],
+        ),
+        (
+            3,
+            [linux_nvidia_4_4080_16gx4()],
+            make_model(1, None, "Qwen/Qwen2.5-Omni-7B"),
+            [
+                '- The model requires approximately 26.99 GiB of VRAM.\n'
+                '- With --gpu-memory-utilization=0.9, all GPUs combined need to provide at '
+                'least 29.99 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.\n'
+                '- Vocabulary size (10001) must be divisible by tensor parallel size (4).\n'
+                '- The largest available worker has 63.97 GiB allocatable VRAM, 4/4 of GPUs '
+                'meet the VRAM utilization ratio, providing 57.57 GiB of allocatable VRAM.'
             ],
         ),
     ],
@@ -601,6 +913,8 @@ async def test_auto_schedule_single_work_multi_gpu(
     if index == 1:
         # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
         resource_fit_selector._num_attention_heads = 25
+    if index == 3:
+        resource_fit_selector._model_params.vocab_size = 10001
 
     with (
         patch(

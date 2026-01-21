@@ -12,8 +12,10 @@ from cachetools import TTLCache
 from aiolimiter import AsyncLimiter
 
 from gpustack.api.exceptions import HTTPException
+from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import Config
 from gpustack.policies.base import ModelInstanceScheduleCandidate
+from gpustack import envs
 from gpustack.routes.models import validate_model_in
 from gpustack.scheduler import scheduler
 from gpustack.server.catalog import model_set_specs_by_key
@@ -30,8 +32,14 @@ from gpustack.schemas.models import (
     is_gguf_model,
 )
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.server.worker_selector import WorkerSelector
 
-from gpustack.utils.gpu import any_gpu_match
+from gpustack.utils.gpu import (
+    all_gpu_match,
+    any_gpu_match,
+    find_one_gpu,
+    compare_compute_capability,
+)
 from gpustack.utils.hub import (
     auth_check,
     get_hugging_face_model_min_gguf_path,
@@ -43,11 +51,9 @@ from gpustack.utils.profiling import time_decorator
 
 logger = logging.getLogger(__name__)
 
-EVALUATION_CACHE_MAX_SIZE = int(
-    os.environ.get("GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE", 1000)
+evaluate_cache = TTLCache(
+    maxsize=envs.MODEL_EVALUATION_CACHE_MAX_SIZE, ttl=envs.MODEL_EVALUATION_CACHE_TTL
 )
-EVALUATION_CACHE_TTL = int(os.environ.get("GPUSTACK_MODEL_EVALUATION_CACHE_TTL", 3600))
-evaluate_cache = TTLCache(maxsize=EVALUATION_CACHE_MAX_SIZE, ttl=EVALUATION_CACHE_TTL)
 
 # To reduce the likelihood of hitting the Hugging Face API rate limit (600 RPM)
 # Limit the number of concurrent evaluations to 50 per 10 seconds
@@ -173,7 +179,7 @@ async def evaluate_model(
 
     evaluations = [
         (evaluate_model_input, (session, model)),
-        (evaluate_model_metadata, (config, model)),
+        (evaluate_model_metadata, (config, session, model, workers)),
         (evaluate_environment, (model, workers)),
     ]
     for evaluation, args in evaluations:
@@ -292,22 +298,71 @@ async def evaluate_environment(
             "The Ascend MindIE backend requires Ascend NPUs but none are available."
         ]
 
+    if (
+        backend == BackendEnum.SGLANG
+        and all_gpu_match(
+            workers, lambda gpu: gpu.vendor == ManufacturerEnum.NVIDIA.value
+        )
+        and not any_gpu_match(
+            workers,
+            lambda gpu: compare_compute_capability(gpu.compute_capability, "8.0") >= 0,
+        )
+    ):
+        # Ref: https://github.com/sgl-project/sglang/issues/6006
+        gpu = find_one_gpu(workers)
+        return False, [
+            "The SGLang backend requires NVIDIA GPUs with compute capability 8.0 or higher "
+            "(e.g., A100/SM80, H100/SM90, RTX 3090/SM86). "
+            + (
+                f"Available GPU: {gpu.name} (compute capability: {gpu.compute_capability})"
+                if gpu
+                else ""
+            )
+        ]
+
     return True, []
 
 
 async def evaluate_model_metadata(
     config: Config,
+    session: AsyncSession,
     model: ModelSpec,
+    workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
     try:
-        if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
-            model.local_path
-        ):
-            # The local path model is not accessible from the server.
-            return False, [
-                "The model file path you specified does not exist on the server. "
-                "It's recommended to place the model file at the same path on both the server and the worker. This helps GPUStack make better decisions."
-            ]
+        if model.source == SourceEnum.LOCAL_PATH:
+            # Check if local path exists on server
+            path_exists_on_server = os.path.exists(model.local_path)
+
+            if not path_exists_on_server:
+                # Try to check if path exists on any worker
+                try:
+                    async with WorkerFilesystemClient() as filesystem_client:
+                        selector = WorkerSelector(filesystem_client)
+
+                        found_worker = await selector.find_worker_with_path(
+                            workers, path=model.local_path
+                        )
+
+                        if found_worker:
+                            logger.info(
+                                f"Found path {model.local_path} on worker {found_worker.id}"
+                            )
+                        else:
+                            # Path not found on any worker
+                            return False, [
+                                "The model file path you specified does not exist on the GPUStack server or any worker. "
+                                "Please ensure the model file is accessible from at least one worker."
+                            ]
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to check path on workers: {e}, falling back to local check"
+                    )
+                    # Fallback to original warning
+                    return False, [
+                        "The model file path you specified does not exist on the GPUStack server. "
+                        "It's recommended to place the model file at the same path on both the GPUStack server and GPUStack workers. This helps GPUStack make better decisions."
+                    ]
 
         if model.source in [
             SourceEnum.HUGGING_FACE,
@@ -329,10 +384,16 @@ async def evaluate_model_metadata(
         elif model.backend == BackendEnum.VOX_BOX:
             await scheduler.evaluate_vox_box_model(config, model)
         else:
-            await scheduler.evaluate_pretrained_config(model)
+            await scheduler.evaluate_pretrained_config(
+                model, session=session, workers=workers
+            )
 
         set_default_worker_selector(model)
-    except ValueError as e:
+    except Exception as e:
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+            logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
+            return True, []
+
         return False, [str(e)]
 
     return True, []

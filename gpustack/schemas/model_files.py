@@ -1,10 +1,10 @@
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 from sqlmodel import JSON, BigInteger, Column, Field, Relationship, SQLModel, Text
 
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import PaginatedList
+from gpustack.schemas.common import ListParams, PaginatedList
 from gpustack.schemas.links import (
     ModelInstanceDraftModelFileLink,
     ModelInstanceModelFileLink,
@@ -50,6 +50,17 @@ class ModelFile(ModelFileBase, BaseModelMixin, table=True):
         link_model=ModelInstanceDraftModelFileLink,
         sa_relationship_kwargs={"lazy": "selectin"},
     )
+
+
+class ModelFileListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "source",
+        "worker_id",
+        "state",
+        "resolved_paths",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class ModelFileCreate(ModelFileBase):

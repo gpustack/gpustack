@@ -13,14 +13,11 @@ Before you begin, ensure that you have the following:
 
 ## Step 1: Deploy the Model
 
-Follow these steps to deploy the model from Hugging Face:
+Follow these steps to deploy the model from Catalog:
 
-1. Navigate to the `Deployments` page in the GPUStack UI.
-2. Click the `Deploy Model` button.
-3. In the dropdown, select `Hugging Face` as the source for your model.
-4. Enable the `GGUF` checkbox to filter models by GGUF format.
-5. Use the search bar in the top left to search for the model name `CompendiumLabs/bge-small-en-v1.5-gguf`.
-6. Leave everything as default and click the `Save` button to deploy the model.
+1. Navigate to the `Catalog` page in the GPUStack UI.
+2. In the model list page, use dropdown to filter with `Embedding`.
+3. Review the model description, maximum context length and supported sizes.
 
 ![Deploy Model](../assets/using-models/using-embedding-models/deploy-model.png)
 
@@ -44,14 +41,14 @@ With the model deployed and an API key, you can generate text embeddings via the
 ```bash
 export SERVER_URL=<your-server-url>
 export GPUSTACK_API_KEY=<your-api-key>
-curl $SERVER_URL/v1-openai/embeddings \
-  -H "Authorization: Bearer $GPUSTACK_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "The food was delicious and the waiter...",
-    "model": "bge-small-en-v1.5",
-    "encoding_format": "float"
-  }'
+curl $SERVER_URL/v1/embeddings \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer ${GPUSTACK_API_KEY}" \
+-d '{
+  "model": "qwen3-embedding-4b",
+  "input": "The food was delicious and the waiter...",
+  "encoding_format": "float"
+}'
 ```
 
 Replace `<your-server-url>` with the URL of your GPUStack server and `<your-api-key>` with the API key you generated in the previous step.
@@ -74,8 +71,13 @@ Example response:
       "object": "embedding"
     }
   ],
-  "model": "bge-small-en-v1.5",
+  "model": "qwen3-embedding-4b",
   "object": "list",
-  "usage": { "prompt_tokens": 12, "total_tokens": 12 }
+  "usage": {
+    "prompt_tokens": 9,
+    "total_tokens": 9,
+    "completion_tokens": 0,
+    "prompt_tokens_details": null
+  }
 }
 ```

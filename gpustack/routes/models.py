@@ -1,13 +1,14 @@
 import math
 from typing import List, Optional, Union
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy import bindparam, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import JSON
-from sqlmodel import col, or_, func
+from sqlmodel import and_, col, or_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
+from enum import Enum
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -16,10 +17,12 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
+from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
     BackendEnum,
+    ModelListParams,
 )
 from gpustack.schemas.workers import GPUDeviceInfo, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
@@ -37,7 +40,11 @@ from gpustack.schemas.models import (
     MyModel,
 )
 from gpustack.schemas.users import User
-from gpustack.server.services import ModelService, WorkerService
+from gpustack.server.services import (
+    ModelService,
+    WorkerService,
+    delete_accessible_model_cache,
+)
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
@@ -45,32 +52,47 @@ from gpustack.utils.gpu import parse_gpu_id
 router = APIRouter()
 
 
+class ModelStateFilterEnum(str, Enum):
+    READY = "ready"
+    NOT_READY = "not_ready"
+    STOPPED = "stopped"
+
+
 @router.get("", response_model=ModelsPublic)
 async def get_models(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ModelListParams = Depends(),
+    state: Optional[ModelStateFilterEnum] = Query(
+        default=None,
+        description="Filter by model state.",
+    ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
+    backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
     return await _get_models(
         engine=engine,
         session=session,
         params=params,
+        state=state,
         search=search,
         categories=categories,
         cluster_id=cluster_id,
+        backend=backend,
     )
 
 
 async def _get_models(
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ModelListParams,
+    state: Optional[ModelStateFilterEnum] = None,
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
+    backend: Optional[str] = None,
     target_class: Union[Model, MyModel] = Model,
     user_id: Optional[int] = None,
 ):
@@ -81,6 +103,9 @@ async def _get_models(
     fields = {}
     if cluster_id:
         fields["cluster_id"] = cluster_id
+
+    if backend:
+        fields["backend"] = backend
 
     if user_id:
         fields["user_id"] = user_id
@@ -101,6 +126,31 @@ async def _get_models(
         conditions = build_category_conditions(session, target_class, categories)
         extra_conditions.append(or_(*conditions))
 
+    if state is None:
+        pass
+    elif state == ModelStateFilterEnum.READY:
+        extra_conditions.append(target_class.ready_replicas > 0)
+    elif state == ModelStateFilterEnum.NOT_READY:
+        extra_conditions.append(
+            and_(target_class.ready_replicas == 0, target_class.replicas > 0)
+        )
+    elif state == ModelStateFilterEnum.STOPPED:
+        extra_conditions.append(target_class.replicas == 0)
+
+    order_by = params.order_by
+    if order_by:
+        # When sorting by "source", add additional sorting fields for deterministic ordering
+        new_order_by = []
+        for field, direction in order_by:
+            new_order_by.append((field, direction))
+            if field == "source":
+                new_order_by.append(("huggingface_repo_id", direction))
+                new_order_by.append(("huggingface_filename", direction))
+                new_order_by.append(("model_scope_model_id", direction))
+                new_order_by.append(("model_scope_file_path", direction))
+                new_order_by.append(("local_path", direction))
+        order_by = new_order_by
+
     return await target_class.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
@@ -108,6 +158,7 @@ async def _get_models(
         page=params.page,
         per_page=params.perPage,
         fields=fields,
+        order_by=order_by,
     )
 
 
@@ -313,6 +364,15 @@ async def validate_gpu_ids(  # noqa: C901
         if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
+    if (
+        is_custom_backend(model_backend)
+        and len(worker_name_set) > 1
+        and model_in.replicas == 1
+    ):
+        raise BadRequestException(
+            message="Distributed inference across multiple workers is not supported for custom backends."
+        )
+
 
 def validate_gpu(gpu_device: GPUDeviceInfo, model_backend: str = ""):
     if (
@@ -362,6 +422,7 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
     await validate_model_in(session, model_in)
 
     try:
+        await revoke_model_access_cache(session=session)
         model = await Model.create(session, model_in)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
@@ -400,6 +461,7 @@ async def delete_model(session: SessionDep, id: int):
         raise NotFoundException(message="Model not found")
 
     try:
+        await revoke_model_access_cache(session=session, model=model)
         await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
@@ -438,6 +500,9 @@ async def add_model_access(
         col(User.id).in_([user.id for user in access_request.users]),
     ]
 
+    affected_user_ids = {user.id for user in model.users}
+    cache_model = model
+
     users = await User.all_by_fields(
         session=session, fields={}, extra_conditions=extra_conditions
     )
@@ -448,9 +513,20 @@ async def add_model_access(
                 raise NotFoundException(message=f"User ID {req_user.id} not found")
 
     model.users = list(users)
-    if access_request.access_policy is not None:
+    if (
+        access_request.access_policy is not None
+        and access_request.access_policy != model.access_policy
+    ):
         model.access_policy = access_request.access_policy
+        # if changing to public, need to update all users
+        affected_user_ids = None
+        cache_model = None
     try:
+        await revoke_model_access_cache(
+            session=session,
+            model=cache_model,
+            extra_user_ids=affected_user_ids,
+        )
         await ModelService(session).update(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to add model access: {e}")
@@ -466,10 +542,15 @@ async def get_my_models(
     user: CurrentUserDep,
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: ModelListParams = Depends(),
+    state: Optional[ModelStateFilterEnum] = Query(
+        default=None,
+        description="Filter by model state.",
+    ),
     search: str = None,
     categories: Optional[List[str]] = Query(None, description="Filter by categories."),
     cluster_id: int = None,
+    backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
     user_id = None
     target_class = Model
@@ -481,9 +562,11 @@ async def get_my_models(
         engine=engine,
         session=session,
         params=params,
+        state=state,
         search=search,
         categories=categories,
         cluster_id=cluster_id,
+        backend=backend,
         target_class=target_class,
         user_id=user_id,
     )
@@ -507,3 +590,19 @@ async def get_my_model(
         user_id=user_id,
         target_class=target_class,
     )
+
+
+async def revoke_model_access_cache(
+    session: AsyncSession,
+    model: Optional[Model] = None,
+    extra_user_ids: Optional[set[int]] = None,
+):
+    user_ids = set()
+    if model is None:
+        users = await User.all(session)
+        user_ids = {user.id for user in users}
+    else:
+        user_ids = {user.id for user in model.users}
+    if extra_user_ids:
+        user_ids.update(extra_user_ids)
+    await delete_accessible_model_cache(session, *user_ids)

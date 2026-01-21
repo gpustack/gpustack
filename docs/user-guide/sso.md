@@ -8,15 +8,17 @@ Any authentication provider that supports OIDC can be configured. The `email`, `
 
 The following CLI flags are available for OIDC configuration:
 
-| <div style="width:180px">Flag</div>     | Description                                                                                                                                                          |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--oidc-issuer`                         | OIDC issuer URL. OIDC discovery under `<issuer>/.well-known/openid-configuration` will be used to discover the OIDC configuration.                                   |
-| `--oidc-client-id`                      | OIDC client ID.                                                                                                                                                      |
-| `--oidc-client-secret`                  | OIDC client secret.                                                                                                                                                  |
-| `--oidc-redirect-uri`                   | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                         |
-| `--external-auth-name` (Optional)       | Mapping of OIDC user information to username, e.g., `preferred_username`. By default, the `email` claim is used if available.                                        |
-| `--external-auth-full-name` (Optional)  | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used. |
-| `--external-auth-avatar-url` (Optional) | Mapping of OIDC user information to user's avatar URL. By default, the `picture` claim is used if available.                                                         |
+| <div style="width:180px">Flag</div>                   | Description                                                                                                                                                          |
+|-------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--oidc-issuer`                                       | OIDC issuer URL. OIDC discovery under `<issuer>/.well-known/openid-configuration` will be used to discover the OIDC configuration.                                   |
+| `--oidc-client-id`                                    | OIDC client ID.                                                                                                                                                      |
+| `--oidc-client-secret`                                | OIDC client secret.                                                                                                                                                  |
+| `--oidc-redirect-uri`                                 | The redirect URI configured in your OIDC application. This must be set to `<server-url>/auth/oidc/callback`.                                                         |
+| `--external-auth-name` (Optional)                     | Mapping of OIDC user information to username, e.g., `preferred_username`. By default, the `email` claim is used if available.                                        |
+| `--external-auth-full-name` (Optional)                | Mapping of OIDC user information to user's full name. Multiple elements can be combined, e.g., `name` or `firstName+lastName`. By default, the `name` claim is used. |
+| `--external-auth-avatar-url` (Optional)               | Mapping of OIDC user information to user's avatar URL. By default, the `picture` claim is used if available.                                                         |
+| `--external-auth-default-inactive` (Optional)         | Prevents new SSO users from being activated by default.                                                                                                              |
+| `--external-auth-post-logout-redirect-key` (Optional) | Generic parameter name for post-logout redirection across different IdPs (e.g., Auth0 `returnTo`). Applied to both OIDC and SAML.                                    |
 
 You can also set these options via environment variables instead of CLI flags:
 
@@ -29,6 +31,8 @@ GPUSTACK_OIDC_REDIRECT_URI="{your-server-url}/auth/oidc/callback"
 GPUSTACK_EXTERNAL_AUTH_NAME="email"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
+GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE="true"
+GPUSTACK_EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY="returnTo"  # e.g., for Auth0
 ```
 
 ### Example: Integrate with Auth0 OIDC
@@ -44,6 +48,8 @@ To configure GPUStack with Auth0 as the OIDC provider:
 ![auth0-app](../assets/sso/auth0-app.png)
 
 3. Add `<your-server-url>/auth/oidc/callback` in the Allowed Callback URLs. Adapt the URL to match your server's URL.
+
+4. In Allowed Logout URLs, add `<your-server-url>/` (or your desired post-logout URL).
 
 ![auth0-callback](../assets/sso/auth0-callback.png)
 
@@ -70,20 +76,23 @@ GPUStack supports SAML authentication for Single Sign-On (SSO). This allows user
 
 The following CLI flags are available for SAML configuration:
 
-| <div style="width:180px">Flag</div>     | Description                                                                                                                                                                                                                                                    |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--saml-idp-server-url`                 | SAML Identity Provider server URL.                                                                                                                                                                                                                             |
-| `--saml-idp-entity-id`                  | SAML Identity Provider entity ID.                                                                                                                                                                                                                              |
-| `--saml-idp-x509-cert`                  | SAML Identity Provider X.509 certificate.                                                                                                                                                                                                                      |
-| `--saml-sp-entity-id`                   | SAML Service Provider entity ID.                                                                                                                                                                                                                               |
-| `--saml-sp-acs-url`                     | SAML Service Provider Assertion Consumer Service URL. It should be set to `<gpustack-server-url>/auth/saml/callback`.                                                                                                                                          |
-| `--saml-sp-x509-cert`                   | SAML Service Provider X.509 certificate.                                                                                                                                                                                                                       |
-| `--saml-sp-private-key`                 | SAML Service Provider private key.                                                                                                                                                                                                                             |
-| `--saml-sp-attribute-prefix` (Optional) | SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-\*. e.g., 'http://schemas.auth0.com/'.                                                                                                 |
-| `--saml-security` (Optional)            | SAML security settings in JSON format.                                                                                                                                                                                                                         |
-| `--external-auth-name` (Optional)       | Mapping of SAML user information to username. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.                            |
-| `--external-auth-full-name` (Optional)  | Mapping of SAML user information to user's full name. Multiple elements can be combined. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'. |
-| `--external-auth-avatar-url` (Optional) | Mapping of SAML user information to user's avatar URL. You must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.                                                          |
+| <div style="width:180px">Flag</div>           | Description                                                                                                                                                                                                                                                    |
+|-----------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--saml-idp-server-url`                       | SAML Identity Provider server URL.                                                                                                                                                                                                                             |
+| `--saml-idp-entity-id`                        | SAML Identity Provider entity ID.                                                                                                                                                                                                                              |
+| `--saml-idp-x509-cert`                        | SAML Identity Provider X.509 certificate.                                                                                                                                                                                                                      |
+| `--saml-sp-entity-id`                         | SAML Service Provider entity ID.                                                                                                                                                                                                                               |
+| `--saml-sp-acs-url`                           | SAML Service Provider Assertion Consumer Service URL. It should be set to `<gpustack-server-url>/auth/saml/callback`.                                                                                                                                          |
+| `--saml-sp-x509-cert`                         | SAML Service Provider X.509 certificate.                                                                                                                                                                                                                       |
+| `--saml-sp-private-key`                       | SAML Service Provider private key.                                                                                                                                                                                                                             |
+| `--saml-idp-logout-url` (Optional)            | SAML Identity Provider Single Logout endpoint URL.                                                                                                                                                                                                             |
+| `--saml-sp-slo-url` (Optional)                | SAML Service Provider Single Logout Service callback URL (e.g., `<server-url>/auth/saml/logout/callback`).                                                                                                                                                     |
+| `--saml-sp-attribute-prefix` (Optional)       | SAML Service Provider attribute prefix, which is used for fetching the attributes that are specified by --external-auth-\*. e.g., 'http://schemas.auth0.com/'.                                                                                                 |
+| `--saml-security` (Optional)                  | SAML security settings in JSON format.                                                                                                                                                                                                                         |
+| `--external-auth-name` (Optional)             | Mapping of SAML user information to username. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress' or simplify with 'emailaddress' by '--saml-sp-attribute-prefix'.                            |
+| `--external-auth-full-name` (Optional)        | Mapping of SAML user information to user's full name. Multiple elements can be combined. You must configure the full attribute name like 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' or simplify with 'name' by '--saml-sp-attribute-prefix'. |
+| `--external-auth-avatar-url` (Optional)       | Mapping of SAML user information to user's avatar URL. You must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.                                                          |
+| `--external-auth-default-inactive` (Optional) | Prevents new SSO users from being activated by default.                                                                                                                                                                                                        |
 
 You can also set these options via environment variables instead of CLI flags:
 
@@ -101,6 +110,10 @@ GPUSTACK_SAML_SECURITY="{}"
 GPUSTACK_EXTERNAL_AUTH_NAME="emailaddress"
 GPUSTACK_EXTERNAL_AUTH_FULL_NAME="name"
 GPUSTACK_EXTERNAL_AUTH_AVATAR_URL="picture"
+GPUSTACK_EXTERNAL_AUTH_DEFAULT_INACTIVE="true"
+GPUSTACK_SAML_IDP_LOGOUT_URL="https://idp.example.com/saml/slo"  # if IdP supports SLO
+GPUSTACK_SAML_SP_SLO_URL="{your-server-url}/auth/saml/logout/callback"
+GPUSTACK_EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY="returnTo"  # optional, adds a post-logout parameter for compatible IdPs
 ```
 
 ### Example: Integrate with Auth0 SAML
@@ -155,5 +168,12 @@ sudo docker run -d --name gpustack \
     -e GPUSTACK_SAML_SP_X509_CERT="$SP_CERT" \
     -e GPUSTACK_SAML_SP_PRIVATE_KEY="$SP_PRIVATE_KEY" \
     -e GPUSTACK_SAML_SP_ATTRIBUTE_PREFIX="$SP_ATTRIBUTE_PREFIX" \
+    -e GPUSTACK_SAML_IDP_LOGOUT_URL="<idp-slo-url-if-available>" \
+    -e GPUSTACK_SAML_SP_SLO_URL="<your-gpustack-server-url>/auth/saml/logout/callback" \
+    -e GPUSTACK_EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY="returnTo" \
     gpustack/gpustack
 ```
+
+!!! note
+
+    Not all IdPs provide standard SAML Single Logout (SLO). Auth0 SAML connections commonly do not expose `singleLogoutService`. If unavailable, GPUStack will still clear local sessions on logout; for full browser sign-out with Auth0, consider using its OIDC `v2/logout` with `client_id` and `returnTo` allowed.

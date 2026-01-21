@@ -166,6 +166,11 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 continue
 
             worker = worker_map.get(instance.worker_id)
+            if worker is None:
+                scored_instances.append(
+                    ModelInstanceScore(model_instance=instance, score=0)
+                )
+                continue
 
             allocatable = await get_worker_allocatable_resource(self._engine, worker)
 
@@ -258,6 +263,9 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         Score the candidates with the spread strategy.
         """
 
+        if worker is None:
+            return 0
+
         instance_worker_id = worker.id
         # level 1: max score, no model instances
         if instance_worker_id not in worker_model_instances_count_map:
@@ -307,6 +315,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             )
 
         if gpu_count == 0:
+            # computed_resource_claim.ram must have value when running cpu only model instance
             if scale_type == ScaleTypeEnum.SCALE_UP:
                 score = computed_resource_claim.ram / allocatable.ram * MaxScore
             elif scale_type == ScaleTypeEnum.SCALE_DOWN:
@@ -326,7 +335,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
             elif scale_type == ScaleTypeEnum.SCALE_DOWN:
                 score = calculate_score(
                     computed_resource_claim.ram,
-                    allocatable.ram + computed_resource_claim.ram,
+                    allocatable.ram + computed_resource_claim.ram or 0,
                     computed_resource_claim.vram[gpu_indexes[0]],
                     allocatable.vram[gpu_indexes[0]]
                     + computed_resource_claim.vram[gpu_indexes[0]],
@@ -343,7 +352,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 elif scale_type == ScaleTypeEnum.SCALE_DOWN:
                     result = calculate_score(
                         computed_resource_claim.ram,
-                        allocatable.ram + computed_resource_claim.ram,
+                        allocatable.ram + (computed_resource_claim.ram or 0),
                         computed_resource_claim.vram[i],
                         allocatable.vram[i] + computed_resource_claim.vram[i],
                     )

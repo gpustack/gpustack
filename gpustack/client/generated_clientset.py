@@ -10,6 +10,8 @@ from .generated_model_file_client import ModelFileClient
 from .generated_user_client import UserClient
 from .generated_inference_backend_client import InferenceBackendClient
 
+from gpustack.utils.network import use_proxy_env_for_url
+
 
 class ClientSet:
     def __init__(
@@ -40,8 +42,13 @@ class ClientSet:
         if parsed_url.hostname == "127.0.0.1" and parsed_url.scheme == "https":
             verify = False
 
+        use_proxy_env = use_proxy_env_for_url(base_url)
         http_client = (
-            HTTPClient(base_url=base_url, verify_ssl=verify)
+            HTTPClient(
+                base_url=base_url,
+                verify_ssl=verify,
+                httpx_args={"trust_env": use_proxy_env},
+            )
             .with_headers(headers)
             .with_timeout(timeout)
         )

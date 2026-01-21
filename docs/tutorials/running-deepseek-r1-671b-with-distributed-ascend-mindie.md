@@ -30,26 +30,21 @@ Before you begin, make sure the following requirements are met:
 
 ## Step 1: Install GPUStack Server
 
-According to the [Ascend Installation](../installation/ascend/installation.md), you can use the following command to start the GPUStack server **with the built-in worker**:
+According to the [Installation](../installation/installation.md), you can use the following command to start the GPUStack server:
 
 ```bash
 sudo docker run -d --name gpustack \
     --restart unless-stopped \
-    --privileged \
-    --env "ASCEND_VISIBLE_DEVICES=$(sudo ls /dev/davinci* | head -1 | grep -o '[0-9]\+' || echo "0")" \
-    --network host \
-    --volume /var/run/docker.sock:/var/run/docker.sock \
+    -p 80:80 \
+    -p 10161:10161 \
     --volume gpustack-data:/var/lib/gpustack \
     --volume /path/to/your/model:/path/to/your/model \
-    --runtime ascend \
     gpustack/gpustack
-
 ```
 
 !!! note
 
     - Replace `/path/to/your/model` with the actual path on your system where the DeepSeek R1 model files are stored.
-    - Ensure the `hccn_tool` tool is installed and configured correctly on your system. This is required for discvoring the HCCN network communication.
 
 After GPUStack server is up and running, run the following commands to get the initial admin password:
 

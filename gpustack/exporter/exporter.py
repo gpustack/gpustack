@@ -241,7 +241,7 @@ class MetricExporter(Collector):
                         if key not in cluster_workers:
                             cluster_workers[key] = []
                         cluster_workers[key].append(
-                            f"{worker.ip}:{worker.metrics_port}"
+                            f"{worker.advertise_address}:{worker.metrics_port}"
                         )
                 for (cluster_id, cluster_name), endpoints in cluster_workers.items():
                     targets.append(

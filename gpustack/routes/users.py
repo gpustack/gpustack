@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -8,11 +8,12 @@ from gpustack.api.exceptions import (
     ConflictException,
 )
 from gpustack.security import get_secret_hash
-from gpustack.server.deps import CurrentUserDep, ListParamsDep, SessionDep, EngineDep
+from gpustack.server.deps import CurrentUserDep, SessionDep, EngineDep
 from gpustack.schemas.users import (
     User,
     UserActivationUpdate,
     UserCreate,
+    UserListParams,
     UserUpdate,
     UserPublic,
     UsersPublic,
@@ -25,7 +26,10 @@ router = APIRouter()
 
 @router.get("", response_model=UsersPublic)
 async def get_users(
-    engine: EngineDep, session: SessionDep, params: ListParamsDep, search: str = None
+    engine: EngineDep,
+    session: SessionDep,
+    params: UserListParams = Depends(),
+    search: str = None,
 ):
     fuzzy_fields = {}
     if search:
@@ -46,6 +50,7 @@ async def get_users(
             "deleted_at": None,
             "is_system": False,
         },
+        order_by=params.order_by,
     )
 
 

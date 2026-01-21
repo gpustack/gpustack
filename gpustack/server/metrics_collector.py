@@ -3,7 +3,8 @@ import asyncio
 import copy
 from datetime import date
 from aiohttp import ClientSession as aiohttp_client, ClientTimeout
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.config.config import Config
+from gpustack.schemas.config import GatewayModeEnum
 from typing import Optional, Dict, List
 from dataclasses import dataclass
 from prometheus_client.parser import text_string_to_metric_families
@@ -140,7 +141,7 @@ class GatewayMetricsCollector:
     _disabled_collection: bool = False
     _client: aiohttp_client
     _embedded_gateway_metrics_url: str = (
-        f"http://localhost:{gateway_metrics_port}/stats/prometheus"
+        f"http://127.0.0.1:{gateway_metrics_port}/stats/prometheus"
     )
     cached_dict: Dict[str, ModelUsageMetrics] = {}
 

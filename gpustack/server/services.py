@@ -3,9 +3,9 @@ import logging
 import functools
 from typing import Any, Callable, Dict, List, Optional, Union, Set, Tuple
 from aiocache import Cache, BaseCache
-from sqlmodel import SQLModel, bindparam, cast
+from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.dialects.postgresql import JSONB
+
 
 from gpustack.api.exceptions import InternalServerErrorException
 from gpustack.schemas.api_keys import ApiKey
@@ -119,6 +119,7 @@ class UserService:
     async def update(self, user: User, source: Union[dict, SQLModel, None] = None):
         result = await user.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, user.id)
+        await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
         await delete_cache_by_key(self.get_by_username, user.username)
         return result
 
@@ -126,6 +127,7 @@ class UserService:
         apikeys = await APIKeyService(self.session).get_by_user_id(user.id)
         result = await user.delete(self.session)
         await delete_cache_by_key(self.get_by_id, user.id)
+        await delete_cache_by_key(self.get_user_accessible_model_names, user.id)
         await delete_cache_by_key(self.get_by_username, user.username)
         for apikey in apikeys:
             await delete_cache_by_key(
@@ -133,10 +135,25 @@ class UserService:
             )
         return result
 
+    async def model_allowed_for_user(
+        self, model_name: str, user_id: int, api_key: Optional[ApiKey]
+    ) -> bool:
+        limited_model_names: Optional[Set[str]] = (
+            set(api_key.allowed_model_names)
+            if api_key is not None
+            and api_key.allowed_model_names is not None
+            and len(api_key.allowed_model_names) > 0
+            else None
+        )
+        accessible_model_names: Set[str] = await self.get_user_accessible_model_names(
+            user_id
+        )
+        return model_name in intersection_nullable_set(
+            accessible_model_names, limited_model_names
+        )
+
     @locked_cached(ttl=60)
-    async def get_user_accessible_model_names(
-        self, user_id: int, access_key: Optional[str]
-    ) -> Set[str]:
+    async def get_user_accessible_model_names(self, user_id: int) -> Set[str]:
         # Get all accessible model names for the user
         user: User = await self.get_by_id(user_id)
         if user is None:
@@ -144,20 +161,17 @@ class UserService:
         if user.is_admin:
             all_models = await Model.all_by_field(self.session, "deleted_at", None)
             model_names = {model.name for model in all_models}
+        elif user.is_system and user.cluster_id is not None:
+            # the system user must have cluster_id
+            all_models = await Model.all_by_fields(
+                self.session, {"deleted_at": None, "cluster_id": user.cluster_id}
+            )
+            model_names = {model.name for model in all_models}
         else:
             allowed_models = await MyModel.all_by_fields(
                 self.session, {"user_id": user.id, "deleted_at": None}
             )
             model_names = {model.name for model in allowed_models}
-        if access_key is not None:
-            api_key: ApiKey = await APIKeyService(self.session).get_by_access_key(
-                access_key
-            )
-            if (
-                api_key.allowed_model_names is not None
-                and len(api_key.allowed_model_names) > 0
-            ):
-                model_names = model_names.intersection(set(api_key.allowed_model_names))
         return model_names
 
 
@@ -396,20 +410,16 @@ class ModelFileService:
         self.session = session
 
     async def get_by_resolved_path(self, path: str) -> List[ModelFile]:
-        condition = cast(ModelFile.resolved_paths, JSONB).op('?')(
-            bindparam("resolved_path", path)
-        )
-
         results = await ModelFile.all_by_fields(
             self.session,
-            extra_conditions=[condition],
         )
-        if results is None:
-            return None
-
+        filtered_results = []
         for result in results:
             self.session.expunge(result)
-        return results
+            if path in result.resolved_paths:
+                filtered_results.append(result)
+
+        return filtered_results
 
     async def get_by_source_index(self, source_index: str) -> List[ModelFile]:
         results = await ModelFile.all_by_field(
@@ -424,3 +434,19 @@ class ModelFileService:
 
     async def create(self, model_file: ModelFile):
         return await ModelFile.create(self.session, model_file)
+
+
+def intersection_nullable_set(set1: Set[str], set2: Optional[Set[str]]) -> Set[str]:
+    if set2 is None:
+        return set1
+    return set1.intersection(set2)
+
+
+async def delete_accessible_model_cache(
+    session: AsyncSession,
+    *user_ids: int,
+):
+    for user_id in user_ids:
+        await delete_cache_by_key(
+            UserService(session).get_user_accessible_model_names, user_id
+        )

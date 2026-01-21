@@ -1,13 +1,15 @@
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel, Text
 
 from gpustack.schemas.common import (
+    ListParams,
     PaginatedList,
     UTCDateTime,
     pydantic_column_type,
@@ -205,7 +207,7 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend_version: Optional[str] = None
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
     image_name: Optional[str] = None
-    run_command: Optional[str] = None
+    run_command: Optional[str] = Field(sa_type=Text, default=None)
 
     env: Optional[Dict[str, str]] = Field(sa_type=JSON, default=None)
     restart_on_error: Optional[bool] = True
@@ -237,26 +239,6 @@ class ModelSpecBase(SQLModel, ModelSource):
 
 
 class ModelBase(ModelSpecBase):
-    @model_validator(mode="after")
-    def validate(self):
-        backend = get_backend(self)
-        if self.cpu_offloading and backend in [
-            BackendEnum.VLLM,
-            BackendEnum.SGLANG,
-            BackendEnum.ASCEND_MINDIE,
-        ]:
-            raise ValueError(
-                f"CPU offloading is not supported for the {backend} backend"
-            )
-
-        if backend == BackendEnum.VOX_BOX:
-            if self.distributed_inference_across_workers:
-                raise ValueError(
-                    "Distributed inference across workers is not supported for the vox-box backend"
-                )
-
-        return self
-
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
 
@@ -279,6 +261,18 @@ class Model(ModelBase, BaseModelMixin, table=True):
         back_populates="cluster_models",
         sa_relationship_kwargs={"lazy": "noload"},
     )
+
+
+class ModelListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "name",
+        "source",
+        "cluster_id",
+        "replicas",
+        "ready_replicas",
+        "created_at",
+        "updated_at",
+    ]
 
 
 class ModelCreate(ModelBase):
@@ -342,6 +336,7 @@ class ComputedResourceClaim(BaseModel):
     ram: Optional[int] = Field(default=None)  # in bytes
     vram: Optional[Dict[int, int]] = Field(default=None)  # in bytes
     tensor_split: Optional[List[int]] = Field(default=None)
+    vram_utilization: Optional[float] = Field(default=None)
 
 
 class ModelInstanceSubordinateWorker(BaseModel):
@@ -350,6 +345,7 @@ class ModelInstanceSubordinateWorker(BaseModel):
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     total_gpus: Optional[int] = None
+    gpu_type: Optional[str] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
@@ -392,10 +388,40 @@ class DistributedServers(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+@dataclass
+class ModelInstanceDeploymentMetadata:
+    """
+    Metadata for model instance deployment.
+    """
+
+    name: str
+    """
+    Name for model instance deployment.
+    """
+    distributed: bool = False
+    """
+    Whether the model instance is deployed in distributed mode.
+    """
+    distributed_leader: bool = False
+    """
+    Whether the model instance is the leader in distributed mode.
+    """
+    distributed_follower: bool = False
+    """
+    Whether the model instance is a follower in distributed mode.
+    """
+    distributed_follower_index: Optional[int] = None
+    """
+    Index of the follower in distributed mode.
+    It is None for leader or non-distributed mode.
+    """
+
+
 class ModelInstanceBase(SQLModel, ModelSource):
     name: str = Field(index=True, unique=True)
     worker_id: Optional[int] = None
     worker_name: Optional[str] = None
+    worker_advertise_address: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     pid: Optional[int] = None
@@ -420,11 +446,16 @@ class ModelInstanceBase(SQLModel, ModelSource):
     computed_resource_claim: Optional[ComputedResourceClaim] = Field(
         sa_column=Column(pydantic_column_type(ComputedResourceClaim)), default=None
     )
+    gpu_type: Optional[str] = None
     gpu_indexes: Optional[List[int]] = Field(sa_column=Column(JSON), default=[])
     gpu_addresses: Optional[List[str]] = Field(sa_column=Column(JSON), default=[])
 
     model_id: int = Field(default=None, foreign_key="models.id")
     model_name: str
+
+    backend: Optional[str] = None
+    backend_version: Optional[str] = None
+    api_detected_backend_version: Optional[str] = None
 
     distributed_servers: Optional[DistributedServers] = Field(
         sa_column=Column(pydantic_column_type(DistributedServers)), default=None
@@ -434,6 +465,56 @@ class ModelInstanceBase(SQLModel, ModelSource):
     model_config = ConfigDict(protected_namespaces=())
 
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+
+    def get_deployment_metadata(
+        self,
+        worker_id: int,
+    ) -> Optional[ModelInstanceDeploymentMetadata]:
+        """
+        Get the deployment metadata for the model instance.
+
+        Args:
+            worker_id:
+                The ID of the worker to get the deployment metadata for.
+
+        Returns:
+            The deployment metadata,
+            or None if the model instance is not handling by the given `worker_id` worker.
+        """
+
+        dservers = self.distributed_servers
+        subworkers = (
+            dservers.subordinate_workers
+            if dservers and dservers.subordinate_workers
+            else []
+        )
+
+        name = self.name
+        distributed = bool(subworkers)
+        distributed_leader = distributed and self.worker_id == worker_id
+        distributed_follower = distributed and not distributed_leader
+        distributed_follower_index = None
+        if distributed_follower:
+            for idx, subworker in enumerate(subworkers):
+                if subworker.worker_id == worker_id:
+                    distributed_follower_index = idx
+                    break
+            if distributed_follower_index is not None:
+                # Mutate the name to include the follower index,
+                # so that each follower has a unique name.
+                name += f"-f{distributed_follower_index}"
+
+        if self.worker_id != worker_id and distributed_follower_index is None:
+            # This model instance is not handling by the given worker.
+            return None
+
+        return ModelInstanceDeploymentMetadata(
+            name=name,
+            distributed=distributed,
+            distributed_leader=distributed_leader,
+            distributed_follower=distributed_follower,
+            distributed_follower_index=distributed_follower_index,
+        )
 
 
 class ModelInstance(ModelInstanceBase, BaseModelMixin, table=True):

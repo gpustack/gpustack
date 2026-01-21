@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from gpustack.client import ClientSet
 from gpustack.client.worker_manager_clients import (
@@ -11,7 +11,9 @@ from gpustack.config.config import Config
 from gpustack.schemas.workers import (
     WorkerCreate,
     WorkerUpdate,
+    WorkerRegistrationPublic,
 )
+from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.security import API_KEY_PREFIX
 from gpustack.utils import platform
 from gpustack.worker.collector import WorkerStatusCollector
@@ -50,8 +52,6 @@ class WorkerManager:
             self._prepare_clients(worker_token)
 
     def _prepare_clients(self, token: str):
-        if self._clientset is not None and self._status_client is not None:
-            return
         self._clientset = ClientSet(
             base_url=self._cfg.get_server_url(),
             api_key=token,
@@ -66,7 +66,7 @@ class WorkerManager:
         if self._status_client is None:
             return
         try:
-            workerStatus = self._collector.collect(self._clientset)
+            workerStatus = self._collector.timed_collect(self._clientset)
         except Exception as e:
             logger.error(f"Failed to collect status for worker: {e}")
             return
@@ -75,24 +75,27 @@ class WorkerManager:
         except Exception as e:
             logger.error(f"Failed to update worker status: {e}")
 
-    def register_with_server(self) -> ClientSet:
-        # If the worker has been registered, self._clientset should be valid.
-        # the clientset is built in WorkerManager.__init__ if cfg._worker_token is stored.
-        if self._clientset:
-            return self._clientset
+    def register_with_server(
+        self,
+    ) -> Tuple[ClientSet, Optional[PredefinedConfigNoDefaults]]:
+        # always re-register the worker and retrive the token and config
         try:
-            token = self._register_worker()
+            worker_registerred = self._register_worker()
+            token = worker_registerred.token
             write_worker_token(self._cfg.data_dir, token)
             self._prepare_clients(token)
-            return self._clientset
+            return self._clientset, worker_registerred.worker_config
         except Exception as e:
             logger.error(f"Failed to register worker: {e}")
             raise
 
-    def _register_worker(self) -> str:
+    def _register_worker(self) -> WorkerRegistrationPublic:
         logger.info(
             f"Registering worker: {self._worker_name}",
         )
+        if self._is_embedded:
+            # always reloads the token
+            self._cfg.reload_token()
         self._registration_client = registration_client(
             data_dir=self._cfg.data_dir,
             server_url=self._cfg.get_server_url(),
@@ -125,7 +128,7 @@ class WorkerManager:
         logger.info(
             f"Worker {self._worker_name} registered with worker_id {created.id}."
         )
-        return created.token
+        return created
 
     def _register_shutdown_hooks(self):
         pass

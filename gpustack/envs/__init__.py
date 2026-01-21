@@ -41,3 +41,35 @@ DISABLE_OS_FILELOCK = os.getenv("GPUSTACK_DISABLE_OS_FILELOCK", "false").lower()
     "true",
     "1",
 ]
+# Add debug logs for slow worker status collection, default to 3 minutes
+WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS = float(
+    os.getenv("GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS", 180)
+)
+
+# Model evaluation cache configuration
+MODEL_EVALUATION_CACHE_MAX_SIZE = int(
+    os.getenv("GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE", 1000)
+)
+MODEL_EVALUATION_CACHE_TTL = int(os.getenv("GPUSTACK_MODEL_EVALUATION_CACHE_TTL", 3600))
+
+MIGRATION_DATA_DIR = os.getenv("GPUSTACK_MIGRATION_DATA_DIR", None)
+
+DATA_MIGRATION = os.getenv("GPUSTACK_DATA_MIGRATION", "false").lower() == "true"
+
+GATEWAY_PORT_CHECK_INTERVAL = int(
+    os.getenv("GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL", 2)
+)  # in seconds
+
+GATEWAY_PORT_CHECK_RETRY_COUNT = int(
+    os.getenv("GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT", 300)
+)  # number of retries
+
+GATEWAY_MIRROR_INGRESS_NAME = os.getenv(
+    "GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME", "gpustack"
+)
+
+DEFAULT_CLUSTER_KUBERNETES = (
+    os.getenv("GPUSTACK_DEFAULT_CLUSTER_KUBERNETES", "false").lower() == "true"
+)
+
+AUTO_GENERATE_UUID = os.getenv("GPUSTACK_AUTO_GENERATE_UUID", "false").lower() == "true"

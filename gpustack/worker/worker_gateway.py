@@ -1,20 +1,24 @@
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Optional
 from aiocache import Cache
 
 from gpustack.schemas.models import (
     ModelInstancePublic,
     ModelPublic,
 )
-from gpustack.config.config import Config, GatewayModeEnum
+from gpustack.schemas.config import (
+    GatewayModeEnum,
+    ModelInstanceProxyModeEnum,
+)
+from gpustack.config.config import Config
 from gpustack.client import ClientSet
 from gpustack.server.bus import Event, EventType
 from gpustack.gateway.client.networking_higress_io_v1_api import (
     NetworkingHigressIoV1Api,
-    McpBridgeRegistry,
 )
 from gpustack.gateway import utils as mcp_handler
+from gpustack.gateway import get_async_k8s_config
 from gpustack.api.exceptions import NotFoundException
 
 from kubernetes_asyncio.client import ApiException
@@ -34,20 +38,26 @@ class WorkerGatewayController:
         self._worker_id = worker_id
         self._clientset = clientset
         self._config = cfg
-        self._namespace = cfg.get_gateway_namespace()
         self._cluster_id = cluster_id
-        self._async_k8s_config = cfg.get_async_k8s_config()
+        self._async_k8s_config = get_async_k8s_config(cfg=cfg)
         self._lock = asyncio.Lock()
         self._model_cache = Cache(Cache.MEMORY)
         self._cache_synced = False
         self._disabled_gateway = cfg.gateway_mode == GatewayModeEnum.disabled
+
+    def _disable_controller(self) -> bool:
+        return (
+            self._disabled_gateway
+            or self._config.server_role() != Config.ServerRole.WORKER
+            or self._config.proxy_mode != ModelInstanceProxyModeEnum.WORKER
+        )
 
     async def wait_for_cache_sync(self):
         while not self._cache_synced:
             await asyncio.sleep(1)
 
     async def sync_model_cache(self):
-        if self._disabled_gateway:
+        if self._disable_controller():
             return
 
         async def set_cache(event: Event):
@@ -102,7 +112,7 @@ class WorkerGatewayController:
         if self._config.server_role() == Config.ServerRole.WORKER:
             model_ids = list(self._model_cache._cache.keys())
             await mcp_handler.cleanup_orphaned_model_ingresses(
-                self._namespace,
+                self._config.get_namespace(),
                 model_ids,
                 self._async_k8s_config,
             )
@@ -111,20 +121,12 @@ class WorkerGatewayController:
         model_instance = ModelInstancePublic.model_validate(event.data)
         if model_instance.worker_id != self._worker_id:
             return
-        desired_registry: List[McpBridgeRegistry] = []
-        to_delete_prefix: Optional[str] = None
-        if event.type == EventType.DELETED:
-            to_delete_prefix = mcp_handler.model_instance_prefix(model_instance)
-        else:
-            registry = mcp_handler.model_instance_registry(model_instance)
-            if registry is not None:
-                desired_registry.append(registry)
-        await mcp_handler.ensure_mcp_bridge(
-            client=self._networking_hisgress_api,
-            namespace=self._namespace,
-            mcp_bridge_name=mcp_handler.cluster_mcp_bridge_name(self._cluster_id),
-            desired_registries=desired_registry,
-            to_delete_prefix=to_delete_prefix,
+        desired_registry = await mcp_handler.ensure_model_instance_mcp_bridge(
+            event.type,
+            model_instance,
+            self._networking_hisgress_api,
+            self._config.gateway_namespace,
+            self._cluster_id,
         )
         if self._config.server_role() == Config.ServerRole.WORKER:
             ingress_name = mcp_handler.model_ingress_name(model_instance.model_id)
@@ -134,7 +136,7 @@ class WorkerGatewayController:
                 try:
                     await self._networking_api.delete_namespaced_ingress(
                         name=ingress_name,
-                        namespace=self._namespace,
+                        namespace=self._config.get_namespace(),
                     )
                 except ApiException as e:
                     if e.status != 404:
@@ -143,19 +145,17 @@ class WorkerGatewayController:
                 destinations = [(1, registry) for registry in desired_registry]
                 mcp_handler.replace_registry_weight(destinations)
                 await mcp_handler.ensure_model_ingress(
-                    namespace=self._namespace,
+                    namespace=self._config.get_namespace(),
                     destinations=destinations,
                     model=model,
                     event_type=event.type,
                     networking_api=self._networking_api,
-                    hostname=None,
-                    tls_secret_name=None,
                     included_generic_route=model.generic_proxy,
                     included_proxy_route=False,
                 )
 
     async def start_model_instance_controller(self):
-        if self._disabled_gateway:
+        if self._disable_controller():
             return
         await self._prerun()
         # Implementation of start method

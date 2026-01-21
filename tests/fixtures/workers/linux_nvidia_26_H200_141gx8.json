@@ -1,0 +1,195 @@
+{
+    "name": "host26-h200",
+    "hostname": "host26-h200",
+    "ip": "192.168.50.26",
+    "labels": {
+        "os": "Linux"
+    },
+    "state": "ready",
+    "system_reserved": {
+        "memory": 2147483648,
+        "gpu_memory": 0
+    },
+    "status": {
+        "memory": {
+            "total": 1610612736000,
+            "utilization_rate": 5.905919020930682,
+            "is_unified_memory": false,
+            "used": 3967795200,
+            "allocated": 0
+        },
+        "gpu_devices": [
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c263",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 0,
+                "device_index": 0,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c264",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 1,
+                "device_index": 1,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c265",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 2,
+                "device_index": 2,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c266",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 3,
+                "device_index": 3,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c267",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 4,
+                "device_index": 4,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c268",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 5,
+                "device_index": 5,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c269",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 6,
+                "device_index": 6,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 2.500228993649243,
+                    "is_unified_memory": false,
+                    "used": 429326336,
+                    "allocated": 0
+                },
+                "temperature": 36.0,
+                "type": "cuda"
+            },
+            {
+                "uuid": "GPU-f41f9601-2307-3af8-98c3-f25afe04c270",
+                "name": "H200 SXM5",
+                "vendor": "nvidia",
+                "index": 7,
+                "device_index": 7,
+                "device_chip_index": 0,
+                "core": {
+                    "total": 10240,
+                    "utilization_rate": 0.0
+                },
+                "memory": {
+                    "total": 151511121920,
+                    "utilization_rate": 3.6070316316560818,
+                    "is_unified_memory": false,
+                    "used": 619380736,
+                    "allocated": null
+                },
+                "temperature": 38.0,
+                "type": "cuda"
+            }
+        ]
+    },
+    "id": 26,
+    "created_at": "2024-07-05T02:17:42",
+    "updated_at": "2024-07-05T10:36:21"
+}

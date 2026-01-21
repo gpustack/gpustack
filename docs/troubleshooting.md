@@ -55,3 +55,22 @@ If you changed the default port using `--port` when starting GPUStack, specify t
 ```bash
 gpustack reset-admin-password --server-url http://localhost:9090
 ```
+
+## Assist in Accelerators Detection Diagnosis
+
+After successfully deploying the GPUStack Worker as described in the [installation guide](./installation/requirements.md),  
+if the Worker fails to detect any devices,  
+please enter the corresponding Worker container, run the following command, and report the results to [GPUStack](https://github.com/gpustack/gpustack/issues).
+
+```bash
+time GPUSTACK_RUNTIME_LOG_LEVEL=debug GPUSTACK_RUNTIME_LOG_EXCEPTION=1 gpustack-runtime detect --format json
+```
+
+## Assist in Model Deployment Diagnosis
+
+If you experience issues after deploying a model, 
+please enter the corresponding Worker container, run the following command, and report the results to [GPUStack](https://github.com/gpustack/gpustack/issues).
+
+```bash
+gpustack-runtime inspect <model instance name>
+```

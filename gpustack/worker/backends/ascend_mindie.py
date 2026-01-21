@@ -19,6 +19,7 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.envs import to_bool
 
+from gpustack.schemas.models import ModelInstanceDeploymentMetadata
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer, is_ascend_310p
 
@@ -38,6 +39,11 @@ class AscendMindIEParameters:
     token_timeout: int = 600
     e2e_timeout: int = 600
     #
+    # Backend config
+    #
+    kv_pool_config: Optional[str] = None
+    kv_pool_config_parsed: Optional[Dict[str, Any]] = None  # store JSON parsed result
+    #
     # Model deploy config
     #
     max_seq_len: int = 8192
@@ -51,6 +57,7 @@ class AscendMindIEParameters:
     trust_remote_code: bool = False
     models: Optional[str] = None
     models_parsed: Optional[any] = None  # store JSON parsed result
+    async_scheduler_wait_time: int = 120
     #
     # Schedule config
     #
@@ -66,6 +73,7 @@ class AscendMindIEParameters:
     max_preempt_count: int = 0
     support_select_batch: bool = False
     max_queue_delay_microseconds: int = 5000
+    max_first_token_wait_time: int = 2500
     #
     # Extends or Features
     #
@@ -138,6 +146,16 @@ class AscendMindIEParameters:
             help="E2E (from request accepted to inference stopped) timeout in seconds.",
         )
         #
+        # Backend config
+        #
+        parser.add_argument(
+            "--kv-pool-config",
+            type=str,
+            default=self.kv_pool_config,
+            help="KV pool configuration in JSON format. "
+            "For example: `{\"backend\":\"<KV pool backend name>\", \"configPath\":\"/path/to/your/config/file\"}`.",
+        )
+        #
         # Model deploy config
         #
         parser.add_argument(
@@ -156,7 +174,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--truncation",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Truncate the input token length, "
             "when the length is larger than the minimum between `--max-input-token-len` and `--max-seq-len` - 1.",
@@ -190,6 +207,12 @@ class AscendMindIEParameters:
             type=str,
             required=False,
             help="Models configuration in JSON format, for certain specific configurations, like Expert Parallelism Implementation Method, Tensor Parallelism LM Header/Output Attention Split.",
+        )
+        parser.add_argument(
+            "--async-scheduler-wait-time",
+            type=int,
+            default=self.async_scheduler_wait_time,
+            help="The wait time (in seconds) for the asynchronous scheduler to start.",
         )
         #
         # Schedule config
@@ -270,7 +293,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--support-select-batch",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable batch selecting. "
             "According to `--prefill-time-ms-per-req` and `--decode-time-ms-per-req`, "
@@ -280,7 +302,14 @@ class AscendMindIEParameters:
         parser.add_argument(
             "--max-queue-delay-microseconds",
             type=int,
+            default=self.max_queue_delay_microseconds,
             help="Maximum microseconds of queue waiting.",
+        )
+        parser.add_argument(
+            "--max-first-token-wait-time",
+            type=int,
+            default=self.max_first_token_wait_time,
+            help="Maximum milliseconds to wait for the first token generation.",
         )
         #
         # Extends or Features
@@ -295,7 +324,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-memory-decoding",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable memory decoding speculation. "
             "Use `--no-enable-memory-decoding` to disable explicitly.",
@@ -313,7 +341,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-lookahead",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable lookahead speculation. "
             "Use `--no-enable-lookahead` to disable explicitly.",
@@ -338,7 +365,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-buffer-response",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable buffer response. "
             "Use `--no-enable-buffer-response` to disable explicitly.",
@@ -357,7 +383,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-split",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable split fuse, something like chunked prefill. "
             "Use `--no-enable-split` to disable explicitly.",
@@ -388,7 +413,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-multi-token-prediction",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable multi-token prediction. "
             "Use `--no-enable-multi-token-prediction` to disable explicitly.",
@@ -402,7 +426,6 @@ class AscendMindIEParameters:
         )
         parser.add_argument(
             "--enable-prefix-caching",
-            type=bool,
             action=argparse.BooleanOptionalAction,
             help="Enable prefix caching. "
             "Use `--no-enable-prefix-caching` to disable explicitly.",
@@ -508,22 +531,23 @@ class AscendMindIEParameters:
             "This will merge into the `config.json` of the model structure.",
         )
 
-        args_parsed = parser.parse_known_args(args=args)
-        for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
-            try:
-                attr_value = getattr(args_parsed[0], attr_name, None)
-                if attr_value is not None:
-                    try:
-                        setattr(self, attr_name, attr_value)
-                    except ValueError as e:
-                        # Never reach here, but just in case.
-                        raise argparse.ArgumentTypeError(
-                            f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
-                        ) from e
-            except AttributeError:
-                # If reach here, that means the field is an internal property,
-                # which would not register in the argument parser.
-                pass
+        if args:
+            args_parsed = parser.parse_known_args(args=args)
+            for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
+                try:
+                    attr_value = getattr(args_parsed[0], attr_name, None)
+                    if attr_value is not None:
+                        try:
+                            setattr(self, attr_name, attr_value)
+                        except ValueError as e:
+                            # Never reach here, but just in case.
+                            raise argparse.ArgumentTypeError(
+                                f"Invalid value for --{attr_name.replace('_', '-')} {attr_value}"
+                            ) from e
+                except AttributeError:
+                    # If reach here, that means the field is an internal property,
+                    # which would not register in the argument parser.
+                    pass
 
         self._default()
         self._validate()
@@ -531,7 +555,16 @@ class AscendMindIEParameters:
     def _default(self):  # noqa: C901
         # Model deploy config
         if self.max_input_token_len <= 0:
-            self.max_input_token_len = self.max_seq_len
+            if self.max_prefill_tokens > 0:
+                self.max_input_token_len = min(
+                    self.max_seq_len, self.max_prefill_tokens
+                )
+            else:
+                self.max_input_token_len = self.max_seq_len
+        # Model config
+        self.max_prefill_batch_size = min(
+            self.max_prefill_batch_size, self.max_batch_size
+        )
         # Schedule config
         if self.max_prefill_tokens <= 0:
             self.max_prefill_tokens = self.max_seq_len
@@ -619,6 +652,14 @@ class AscendMindIEParameters:
             raise argparse.ArgumentTypeError(
                 "--e2e-timeout must be in the range [1, 3600]"
             )
+        # Backend config
+        if self.kv_pool_config:
+            try:
+                self.kv_pool_config_parsed = json.loads(self.kv_pool_config)
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"--kv-pool-config must be a valid JSON string: {self.kv_pool_config}"
+                ) from e
         # Model deploy config
         if self.max_seq_len <= 0:
             raise argparse.ArgumentTypeError("--max-seq-len must be greater than 0")
@@ -642,6 +683,10 @@ class AscendMindIEParameters:
                 raise argparse.ArgumentTypeError(
                     f"--models must be a valid JSON string: {self.models}"
                 ) from e
+        if not (1 <= self.async_scheduler_wait_time <= 3600):
+            raise argparse.ArgumentTypeError(
+                "--async-scheduler-wait-time must be in the range [1, 3600]"
+            )
         # Schedule config
         if self.cache_block_size & (self.cache_block_size - 1) != 0:
             raise argparse.ArgumentTypeError("--cache-block-size must be powers of 2")
@@ -678,6 +723,10 @@ class AscendMindIEParameters:
         if not (500 <= self.max_queue_delay_microseconds <= 1000000):
             raise argparse.ArgumentTypeError(
                 "--max-queue-delay-microseconds must be in the range [500, 1000000]"
+            )
+        if not (0 <= self.max_first_token_wait_time <= 3600000):
+            raise argparse.ArgumentTypeError(
+                "--max-first-token-wait-time must be in the range [0, 3600000]"
             )
         # Extends or Features
         if self.override_generation_config:
@@ -934,8 +983,6 @@ class AscendMindIEServer(InferenceServer):
     the final service in a Docker container instead of a subprocess.
     """
 
-    _workload_name: Optional[str] = None
-
     def start(self):
         try:
             self._start()
@@ -953,9 +1000,7 @@ class AscendMindIEServer(InferenceServer):
             if dservers and dservers.subordinate_workers
             else []
         )
-        is_distributed, is_distributed_leader, is_distributed_follower = (
-            self._get_distributed_metadata()
-        )
+        deployment_metadata = self._get_deployment_metadata()
 
         # Root path is defined by in Dockerfile ENV
         # https://github.com/gpustack/runner/blob/main/pack/cann/Dockerfile#L273
@@ -1007,11 +1052,14 @@ class AscendMindIEServer(InferenceServer):
         env["NPU_MEMORY_FRACTION"] = "0.8"
         # -- Disable OpenMP parallelism, speed up model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
+        # -- Enable safetensors GPU loading pass-through for faster model loading.
+        env["SAFETENSORS_FAST_GPU"] = env.pop("SAFETENSORS_FAST_GPU", "1")
         # -- Improve performance.
         env["MINDIE_ASYNC_SCHEDULING_ENABLE"] = env.pop(
             "MINDIE_ASYNC_SCHEDULING_ENABLE", "1"
         )
-        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "2")
+        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "1")
+        env["CPU_AFFINITY_CONF"] = env.pop("CPU_AFFINITY_CONF", "1")
         env["ATB_OPERATION_EXECUTE_ASYNC"] = "1"
         env["ATB_LAYER_INTERNAL_TENSOR_REUSE"] = env.pop(
             "ATB_LAYER_INTERNAL_TENSOR_REUSE", "1"
@@ -1040,7 +1088,7 @@ class AscendMindIEServer(InferenceServer):
         env.pop("WORLD_SIZE", "")
         env.pop("RANKTABLEFILE", "")
         env.pop("RANK_TABLE_FILE", "")
-        if not is_distributed:
+        if not deployment_metadata.distributed:
             env.pop("MIES_CONTAINER_IP", "")
             env.pop("HOST_IP", "")
 
@@ -1065,18 +1113,15 @@ class AscendMindIEServer(InferenceServer):
         ]
         model_config["worldSize"] = len(self._model_instance.gpu_indexes)
         backend_config["multiNodesInferEnabled"] = False
-        if is_distributed:
+        if deployment_metadata.distributed:
             # Add distributed config if in distributed mode.
             backend_config["multiNodesInferEnabled"] = True
             # During distributed setup,
             # we must get more than one port here,
             # so we use ports[1] for distributed initialization.
             backend_config["multiNodesInferPort"] = self._model_instance.ports[1]
-        if is_distributed_follower:
-            subworker = next(
-                (sw for sw in subworkers if sw.worker_id == self._worker.id),
-                None,
-            )
+        if deployment_metadata.distributed_follower:
+            subworker = subworkers[deployment_metadata.distributed_follower_index]
             # Override device config if is a subordinate worker.
             backend_config["npuDeviceIds"] = [
                 # Use logic(count) device indexes as NPU device IDs,
@@ -1110,7 +1155,7 @@ class AscendMindIEServer(InferenceServer):
         #       https://www.hiascend.com/document/detail/zh/mindie/20RC1/mindiellm/llmdev/mindie_llm0425.html.
         local_world_size = len(self._model_instance.gpu_indexes)
         world_size = local_world_size
-        if is_distributed:
+        if deployment_metadata.distributed:
             world_size = local_world_size * (len(subworkers) + 1)
         params = AscendMindIEParameters(
             local_world_size=local_world_size,
@@ -1127,13 +1172,16 @@ class AscendMindIEServer(InferenceServer):
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
-            params.from_args(self._model.backend_parameters)
+            params.from_args(self._flatten_backend_param())
 
             # -- Log config
             log_config["logLevel"] = params.log_level
             env["MINDIE_LOG_LEVEL"] = params.log_level.upper()
             # -- Server config
             server_config["maxLinkNum"] = params.max_link_num
+            # -- Backend config
+            if params.kv_pool_config_parsed:
+                backend_config["kvPoolConfig"] = params.kv_pool_config_parsed
             # -- Model deploy config
             model_deploy_config["maxSeqLen"] = params.max_seq_len
             model_deploy_config["maxInputTokenLen"] = params.max_input_token_len
@@ -1147,6 +1195,7 @@ class AscendMindIEServer(InferenceServer):
             model_config["trustRemoteCode"] = params.trust_remote_code
             if params.models_parsed:
                 model_config["models"] = params.models_parsed
+            model_config["async_scheduler_wait_time"] = params.async_scheduler_wait_time
             # -- Schedule config
             schedule_config["cacheBlockSize"] = params.cache_block_size
             schedule_config["maxPrefillBatchSize"] = params.max_prefill_batch_size
@@ -1160,6 +1209,7 @@ class AscendMindIEServer(InferenceServer):
             schedule_config["maxQueueDelayMicroseconds"] = (
                 params.max_queue_delay_microseconds
             )
+            schedule_config["maxFirstTokenWaitTime"] = params.max_first_token_wait_time
             # -- Extends or Features
             # --- Disable exposing metrics
             if params.no_metrics:
@@ -1324,7 +1374,7 @@ class AscendMindIEServer(InferenceServer):
         # Generate rank table file if needed,
         # see https://www.hiascend.com/document/detail/zh/mindie/20RC2/envdeployment/instg/mindie_instg_0027.html,
         #     https://www.hiascend.com/forum/thread-0237183374051498211-1-1.html
-        if is_distributed:
+        if deployment_metadata.distributed:
             server_count = f"{len(subworkers) + 1}"
             server_list = [
                 {
@@ -1398,11 +1448,11 @@ class AscendMindIEServer(InferenceServer):
             env["ATB_LLM_HCCL_ENABLE"] = env.pop("ATB_LLM_HCCL_ENABLE", "1")
             env["ATB_LLM_COMM_BACKEND"] = env.pop("ATB_LLM_COMM_BACKEND", "hccl")
             env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
-            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
             env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
                 "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
             )
-            if env.get("CANN_CHIP", "310p") != "310p":
+            if not is_ascend_310p(self._get_selected_gpu_devices()):
+                env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
                 env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
             # NB(thxCode): For deterministic calculation, needs the following environment variables.
             # LCCL_DETERMINISTIC=1
@@ -1432,6 +1482,12 @@ class AscendMindIEServer(InferenceServer):
         # Indicate the JSON configuration file.
         env["MIES_CONFIG_JSON_PATH"] = str(config_path)
 
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
+
         command_script = self._get_serving_command_script(env)
 
         command_args = self.build_versioned_command_args(
@@ -1441,7 +1497,8 @@ class AscendMindIEServer(InferenceServer):
         )
 
         self._create_workload(
-            is_distributed=is_distributed,
+            deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -1451,21 +1508,27 @@ class AscendMindIEServer(InferenceServer):
 
     def _create_workload(
         self,
-        is_distributed: bool,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
         config_files: List[ContainerFile],
         working_dir: Optional[str],
     ):
-        # Store workload name for management operations
-        self._workload_name = self._model_instance.name
-
         image = self._get_configured_image(backend="cann")
         if not image:
             raise ValueError("Failed to get Ascend MindIE backend image")
 
-        resources = self._get_configured_resources(mount_all_devices=is_distributed)
+        # Command script will override the given command,
+        # so we need to prepend command to command args.
+        if command_script and command:
+            command_args = command + command_args
+            command = None
+
+        resources = self._get_configured_resources(
+            mount_all_devices=deployment_metadata.distributed,
+        )
 
         mounts = self._get_configured_mounts()
 
@@ -1478,6 +1541,7 @@ class AscendMindIEServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command=command,
                 command_script=command_script,
                 args=command_args,
                 working_dir=working_dir,
@@ -1495,9 +1559,12 @@ class AscendMindIEServer(InferenceServer):
             ports=ports,
         )
 
-        logger.info(f"Creating Ascend MindIE container workload: {self._workload_name}")
+        logger.info(
+            f"Creating Ascend MindIE container workload: {deployment_metadata.name}"
+        )
         logger.info(
             f"With image: {image}, "
+            f"command: [{' '.join(command) if command else ''}], "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
@@ -1505,15 +1572,16 @@ class AscendMindIEServer(InferenceServer):
         )
 
         workload_plan = WorkloadPlan(
-            name=self._workload_name,
+            name=deployment_metadata.name,
             host_network=True,
             shm_size=10 * 1 << 30,  # 10 GiB
             containers=[run_container],
         )
-
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(f"Created Ascend MindIE container workload {self._workload_name}")
+        logger.info(
+            f"Created Ascend MindIE container workload: {deployment_metadata.name}"
+        )
 
     @staticmethod
     def _get_serving_command_script(env: dict[str, str]) -> Optional[str]:
@@ -1536,7 +1604,6 @@ class AscendMindIEServer(InferenceServer):
 if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
     if command -v uv >/dev/null 2>&1; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
-        export UV_PRERELEASE=allow
         export UV_HTTP_TIMEOUT=500
         export UV_NO_CACHE=1
         if [ -n "${PIP_INDEX_URL:-}" ]; then
@@ -1553,7 +1620,6 @@ if [ -n "${PYPI_PACKAGES_INSTALL:-}" ]; then
         echo "Installing additional PyPi packages: ${PYPI_PACKAGES_INSTALL}"
         export PIP_DISABLE_PIP_VERSION_CHECK=1
         export PIP_ROOT_USER_ACTION=ignore
-        export PIP_PRE=1
         export PIP_TIMEOUT=500
         export PIP_NO_CACHE_DIR=1
         pip install ${PYPI_PACKAGES_INSTALL}
@@ -1718,7 +1784,7 @@ fi
                     "modelName" : "llama_65b",
                     "modelWeightPath" : "/data/atb_testdata/weights/llama1-65b-safetensors",
                     "worldSize" : 4,
-                    "cpuMemSize" : 5,
+                    "cpuMemSize" : 0,
                     "npuMemSize" : -1,
                     "backendType" : "atb",
                     "trustRemoteCode" : false,
@@ -1747,7 +1813,8 @@ fi
             "maxIterTimes" : 512,
             "maxPreemptCount" : 0,
             "supportSelectBatch" : false,
-            "maxQueueDelayMicroseconds" : 5000
+            "maxQueueDelayMicroseconds" : 5000,
+            "maxFirstTokenWaitTime": 2500
         }
     }
 }

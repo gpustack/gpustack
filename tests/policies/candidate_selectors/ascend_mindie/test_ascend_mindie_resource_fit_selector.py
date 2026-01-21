@@ -19,6 +19,22 @@ from tests.fixtures.workers.fixtures import (
 from tests.utils.scheduler import compare_candidates
 
 
+def expected_candidate(
+    worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
+):
+    candidate = {
+        "worker_id": worker_id,
+        "worker_name": worker_name,
+        "gpu_indexes": gpu_indexes,
+        "is_unified_memory": False,
+        "vram": vram,
+        "subordinate_workers": subworkers or [],
+    }
+    if ram is not None:
+        candidate["ram"] = ram
+    return candidate
+
+
 @pytest.mark.parametrize(
     "m, expected",
     [
@@ -34,8 +50,8 @@ from tests.utils.scheduler import compare_candidates
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_2:npu:0",
-                        "ascend_4:npu:0",  # Unavailable worker.
+                        "ascend_2:cann:0",
+                        "ascend_4:cann:0",  # Unavailable worker.
                     ],
                     gpus_per_replica=2,
                 ),
@@ -57,8 +73,8 @@ from tests.utils.scheduler import compare_candidates
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_2:npu:0",
-                        "ascend_3:npu:0",  # Unavailable device.
+                        "ascend_2:cann:0",
+                        "ascend_3:cann:0",  # Unavailable device.
                     ],
                     gpus_per_replica=2,
                 ),
@@ -520,7 +536,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_2:npu:0",
+                        "ascend_2:cann:0",
                     ],
                     gpus_per_replica=1,
                 ),
@@ -553,8 +569,8 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_0:npu:1",
+                        "ascend_0:cann:0",
+                        "ascend_0:cann:1",
                     ],
                     gpus_per_replica=2,
                 ),
@@ -684,10 +700,10 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:1",
-                        "ascend_0:npu:2",
-                        "ascend_2:npu:3",
-                        "ascend_2:npu:4",
+                        "ascend_0:cann:1",
+                        "ascend_0:cann:2",
+                        "ascend_2:cann:3",
+                        "ascend_2:cann:4",
                     ],
                     gpus_per_replica=4,
                 ),
@@ -714,6 +730,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
                                 vram={3: 54975581388, 4: 54975581388},
+                                vram_utilization=0.8,
                             ),
                         ),
                     ],
@@ -733,8 +750,8 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_2:npu:0",
+                        "ascend_0:cann:0",
+                        "ascend_2:cann:0",
                     ],
                     gpus_per_replica=2,
                 ),
@@ -762,6 +779,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                             computed_resource_claim=ComputedResourceClaim(
                                 ram=536870912,
                                 vram={0: 54975581388},
+                                vram_utilization=0.8,
                             ),
                         ),
                     ],
@@ -780,10 +798,10 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:1",
-                        "ascend_0:npu:2",
-                        "ascend_2:npu:3",
-                        "ascend_2:npu:4",
+                        "ascend_0:cann:1",
+                        "ascend_0:cann:2",
+                        "ascend_2:cann:3",
+                        "ascend_2:cann:4",
                     ],
                     gpus_per_replica=2,
                 ),
@@ -1061,38 +1079,38 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_0:npu:1",
-                        "ascend_0:npu:2",
-                        "ascend_0:npu:3",
-                        "ascend_0:npu:4",
-                        "ascend_0:npu:5",
-                        "ascend_0:npu:6",
-                        "ascend_0:npu:7",
-                        "ascend_1:npu:0",
-                        "ascend_1:npu:1",
-                        "ascend_1:npu:2",
-                        "ascend_1:npu:3",
-                        "ascend_1:npu:4",
-                        "ascend_1:npu:5",
-                        "ascend_1:npu:6",
-                        "ascend_1:npu:7",
-                        "ascend_2:npu:0",
-                        "ascend_2:npu:1",
-                        "ascend_2:npu:2",
-                        "ascend_2:npu:3",
-                        "ascend_2:npu:4",
-                        "ascend_2:npu:5",
-                        "ascend_2:npu:6",
-                        "ascend_2:npu:7",
-                        "ascend_3:npu:0",
-                        "ascend_3:npu:1",
-                        "ascend_3:npu:2",
-                        "ascend_3:npu:3",
-                        "ascend_3:npu:4",
-                        "ascend_3:npu:5",
-                        "ascend_3:npu:6",
-                        "ascend_3:npu:7",
+                        "ascend_0:cann:0",
+                        "ascend_0:cann:1",
+                        "ascend_0:cann:2",
+                        "ascend_0:cann:3",
+                        "ascend_0:cann:4",
+                        "ascend_0:cann:5",
+                        "ascend_0:cann:6",
+                        "ascend_0:cann:7",
+                        "ascend_1:cann:0",
+                        "ascend_1:cann:1",
+                        "ascend_1:cann:2",
+                        "ascend_1:cann:3",
+                        "ascend_1:cann:4",
+                        "ascend_1:cann:5",
+                        "ascend_1:cann:6",
+                        "ascend_1:cann:7",
+                        "ascend_2:cann:0",
+                        "ascend_2:cann:1",
+                        "ascend_2:cann:2",
+                        "ascend_2:cann:3",
+                        "ascend_2:cann:4",
+                        "ascend_2:cann:5",
+                        "ascend_2:cann:6",
+                        "ascend_2:cann:7",
+                        "ascend_3:cann:0",
+                        "ascend_3:cann:1",
+                        "ascend_3:cann:2",
+                        "ascend_3:cann:3",
+                        "ascend_3:cann:4",
+                        "ascend_3:cann:5",
+                        "ascend_3:cann:6",
+                        "ascend_3:cann:7",
                     ],
                     gpus_per_replica=32,
                 ),
@@ -1158,6 +1176,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -1187,6 +1206,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                         ModelInstanceSubordinateWorker(
@@ -1216,6 +1236,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                     ],
@@ -1232,38 +1253,38 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_0:npu:1",
-                        "ascend_0:npu:2",
-                        "ascend_0:npu:3",
-                        "ascend_0:npu:4",
-                        "ascend_0:npu:5",
-                        "ascend_0:npu:6",
-                        "ascend_0:npu:7",
-                        "ascend_1:npu:0",
-                        "ascend_1:npu:1",
-                        "ascend_1:npu:2",
-                        "ascend_1:npu:3",
-                        "ascend_1:npu:4",
-                        "ascend_1:npu:5",
-                        "ascend_1:npu:6",
-                        "ascend_1:npu:7",
-                        "ascend_2:npu:0",
-                        "ascend_2:npu:1",
-                        "ascend_2:npu:2",
-                        "ascend_2:npu:3",
-                        "ascend_2:npu:4",
-                        "ascend_2:npu:5",
-                        "ascend_2:npu:6",
-                        "ascend_2:npu:7",
-                        "ascend_3:npu:0",
-                        "ascend_3:npu:1",
-                        "ascend_3:npu:2",
-                        "ascend_3:npu:3",
-                        "ascend_3:npu:4",
-                        "ascend_3:npu:5",
-                        "ascend_3:npu:6",
-                        "ascend_3:npu:7",
+                        "ascend_0:cann:0",
+                        "ascend_0:cann:1",
+                        "ascend_0:cann:2",
+                        "ascend_0:cann:3",
+                        "ascend_0:cann:4",
+                        "ascend_0:cann:5",
+                        "ascend_0:cann:6",
+                        "ascend_0:cann:7",
+                        "ascend_1:cann:0",
+                        "ascend_1:cann:1",
+                        "ascend_1:cann:2",
+                        "ascend_1:cann:3",
+                        "ascend_1:cann:4",
+                        "ascend_1:cann:5",
+                        "ascend_1:cann:6",
+                        "ascend_1:cann:7",
+                        "ascend_2:cann:0",
+                        "ascend_2:cann:1",
+                        "ascend_2:cann:2",
+                        "ascend_2:cann:3",
+                        "ascend_2:cann:4",
+                        "ascend_2:cann:5",
+                        "ascend_2:cann:6",
+                        "ascend_2:cann:7",
+                        "ascend_3:cann:0",
+                        "ascend_3:cann:1",
+                        "ascend_3:cann:2",
+                        "ascend_3:cann:3",
+                        "ascend_3:cann:4",
+                        "ascend_3:cann:5",
+                        "ascend_3:cann:6",
+                        "ascend_3:cann:7",
                     ],
                     gpus_per_replica=32,
                 ),
@@ -1329,6 +1350,7 @@ async def test_select_candidates_3x_64gx8(config, m, expected):
                                     6: 65283502899,
                                     7: 65283502899,
                                 },
+                                vram_utilization=0.95,
                             ),
                         ),
                     ],
@@ -1664,14 +1686,14 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 ],
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_0:npu:2",
-                        "ascend_1:npu:0",
-                        "ascend_1:npu:2",
-                        "ascend_2:npu:0",
-                        "ascend_2:npu:2",
-                        "ascend_3:npu:0",
-                        "ascend_3:npu:2",
+                        "ascend_0:cann:0",
+                        "ascend_0:cann:2",
+                        "ascend_1:cann:0",
+                        "ascend_1:cann:2",
+                        "ascend_2:cann:0",
+                        "ascend_2:cann:2",
+                        "ascend_3:cann:0",
+                        "ascend_3:cann:2",
                     ],
                     gpus_per_replica=8,
                 ),
@@ -1698,14 +1720,14 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 ],
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_0:npu:2",
-                        "ascend_1:npu:0",
-                        "ascend_1:npu:2",
-                        "ascend_2:npu:0",
-                        "ascend_2:npu:2",
-                        "ascend_3:npu:0",
-                        "ascend_3:npu:2",
+                        "ascend_0:cann:0",
+                        "ascend_0:cann:2",
+                        "ascend_1:cann:0",
+                        "ascend_1:cann:2",
+                        "ascend_2:cann:0",
+                        "ascend_2:cann:2",
+                        "ascend_3:cann:0",
+                        "ascend_3:cann:2",
                     ],
                     gpus_per_replica=8,
                 ),
@@ -1732,14 +1754,14 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 ],
                 gpu_selector=GPUSelector(
                     gpu_ids=[
-                        "ascend_0:npu:0",
-                        "ascend_0:npu:2",
-                        "ascend_1:npu:0",
-                        "ascend_1:npu:2",
-                        "ascend_2:npu:0",
-                        "ascend_2:npu:2",
-                        "ascend_3:npu:0",
-                        "ascend_3:npu:2",
+                        "ascend_0:cann:0",
+                        "ascend_0:cann:2",
+                        "ascend_1:cann:0",
+                        "ascend_1:cann:2",
+                        "ascend_2:cann:0",
+                        "ascend_2:cann:2",
+                        "ascend_3:cann:0",
+                        "ascend_3:cann:2",
                     ],
                     gpus_per_replica=8,
                 ),
@@ -1749,6 +1771,34 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
 - With --npu-memory-fraction=0.9, all GPUs combined need to provide at least 173.60 GiB of total VRAM and each GPU needs 90% of allocatable VRAM.
 - Manual GPU selection resulted in resource overcommit.
 - Selected GPUs have 307.20 GiB allocatable VRAM, 0/8 of GPUs meet the VRAM utilization ratio, providing 276.48 GiB of allocatable VRAM."""
+            ],
+        ),
+        (
+            1,
+            new_model(
+                id=1,
+                name="vocab_size_tp_divisibility_check",
+                replicas=1,
+                huggingface_repo_id="openai-community/gpt2",
+                cpu_offloading=False,
+                backend_parameters=[
+                    "--tensor-parallel-size=4",
+                    "--trust-remote-code",
+                ],
+                gpu_selector=GPUSelector(
+                    gpu_ids=[
+                        "ascend_0:npu:0",
+                        "ascend_0:npu:1",
+                        "ascend_1:npu:0",
+                        "ascend_1:npu:1",
+                    ],
+                    gpus_per_replica=4,
+                ),
+                backend=BackendEnum.ASCEND_MINDIE.value,
+            ),
+            [
+                "Model's vocabulary size (50257) must be divisible by the --tensor-parallel-size (4).",
+                "",
             ],
         ),
     ],
@@ -1835,3 +1885,107 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
     ):
         await resource_fit_selector.select_candidates(workers)
         assert resource_fit_selector.get_messages() == expect_msg
+
+
+@pytest.mark.parametrize(
+    "case_name, m, workers, expected_candidates",
+    [
+        # Auto schedule for DeepSeekV32 model
+        (
+            "auto_select_deepseekv32_model",
+            new_model(
+                1,
+                "test_name",
+                1,
+                huggingface_repo_id="deepseek-ai/DeepSeek-V3.2",
+                backend_version="0.11.0",
+            ),
+            [linux_ascend_1_910b_64gx8(), linux_ascend_2_910b_64gx8()],
+            [
+                expected_candidate(
+                    1,
+                    "ascend_0",
+                    [0, 1, 2, 3, 4, 5, 6, 7],
+                    {
+                        0: 54975581388,
+                        1: 54975581388,
+                        2: 54975581388,
+                        3: 54975581388,
+                        4: 54975581388,
+                        5: 54975581388,
+                        6: 54975581388,
+                        7: 54975581388,
+                    },
+                    ram=536870912,
+                    subworkers=[
+                        ModelInstanceSubordinateWorker(
+                            worker_id=2,
+                            worker_ip="192.168.50.2",
+                            total_gpus=8,
+                            gpu_indexes=[0, 1, 2, 3, 4, 5, 6, 7],
+                            gpu_addresses=[
+                                '29.17.48.42',
+                                '29.17.57.33',
+                                '29.17.51.79',
+                                '29.17.48.42',
+                                '29.17.45.217',
+                                '29.17.67.78',
+                                '29.17.114.33',
+                                '29.17.105.72',
+                            ],
+                            computed_resource_claim=ComputedResourceClaim(
+                                is_unified_memory=False,
+                                vram={
+                                    0: 54975581388,
+                                    1: 54975581388,
+                                    2: 54975581388,
+                                    3: 54975581388,
+                                    4: 54975581388,
+                                    5: 54975581388,
+                                    6: 54975581388,
+                                    7: 54975581388,
+                                },
+                                ram=536870912,
+                            ),
+                        )
+                    ],
+                )
+            ],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_select_candidates(config, case_name, m, workers, expected_candidates):
+    model_instances = [
+        ModelInstance(
+            id=worker.id * 10 + gpu.index,
+            worker_id=worker.id,
+            gpu_indexes=[gpu.index],
+            computed_resource_claim=ComputedResourceClaim(
+                vram={gpu.index: gpu.memory.allocated}
+            ),
+        )
+        for worker in workers
+        for gpu in worker.status.gpu_devices
+        if gpu.memory.allocated
+    ]
+
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m)
+
+    with (
+        patch("sqlmodel.ext.asyncio.session.AsyncSession", AsyncMock()),
+        patch(
+            "gpustack.policies.utils.get_worker_model_instances",
+            return_value=model_instances,
+        ),
+        patch(
+            'gpustack.policies.candidate_selectors.base_candidate_selector.get_worker_model_instances',
+            return_value=model_instances,
+        ),
+        patch(
+            "gpustack.schemas.workers.Worker.all",
+            return_value=workers,
+        ),
+    ):
+        actual = await resource_fit_selector.select_candidates(workers)
+        compare_candidates(actual, expected_candidates)

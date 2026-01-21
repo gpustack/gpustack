@@ -18,35 +18,23 @@ Before you begin, ensure that you have the following:
 
 Large language models in the catalog are marked with the `LLM` category. When you select a large language model from the catalog, the default configurations should work as long as you have enough GPU resources and the backend is compatible with your setup (e.g., vLLM backend requires an amd64 Linux worker).
 
-Here, we take the deployment of `DeepSeek R1` as an example.
+Here, we take the deployment of `Qwen3 0.6B` as an example.
 
-1. Navigate to the `Deployments` page in the GPUStack UI.
-2. Click the `Deploy Model` button.
-3. In the dropdown, select `Catalog` as the source for your model.
-4. In the catalog list page, use the search bar in the top left to search for the model keyword `DeepSeek`.
-5. Review the model description, maximum context length and supported sizes.
+Follow these steps to deploy the model from Catalog:
 
-![Model List](../assets/using-models/using-large-language-models/model-list.png)
+1. Navigate to the `Catalog` page in the GPUStack UI.
+2. In the model list page, use dropdown to filter with `LLM`.
+3. Review the model description, maximum context length and supported sizes.
 
-#### Deployment Using llama-box
-
-1. Select the `Deepseek R1` from the catalog.
-2. Select `7B` in Size.
-3. Click the `Save` button to deploy the model.
-
-![Deploy GGUF Model](../assets/using-models/using-large-language-models/deploy-model-llama-box.png)
-
-After deployment, you can monitor the model deployment's status on the `Deployments` page and wait for it to start running.
+![Model List](../assets/using-models/using-large-language-models/model-list.png) 
 
 #### Deployment Using vLLM
 
-1. Select the `Deepseek R1` from the catalog.
-2. Since the model name is the access ID and cannot be the same as a previously created one, change the default model name to `deepseek-r1-vllm`.
-3. Select the `vLLM` backend.
-4. Select `7B` in Size.
-5. Click the `Save` button to deploy the model.
+1. Select the `Qwen3 0.6B` from the catalog.
+2. Change the model name and configuration as needed.
+3. Click the `Save` button to deploy the model.
 
-![Deploy Safetensors Model](../assets/using-models/using-large-language-models/deploy-model-vllm.png)
+![Deploy Model](../assets/using-models/using-large-language-models/deploy-model.png)
 
 After deployment, you can monitor the model deployment's status on the `Deployments` page and wait for it to start running.
 
@@ -54,17 +42,12 @@ After deployment, you can monitor the model deployment's status on the `Deployme
 
 1. Navigate to the `Playground` > `Chat` page in the GPUStack UI.
 2. Verify that the deployed model is selected from the top-right `Model` dropdown.
-3. Provide a prompt for the text generation. For example:
-
-```
-2, 4, 6, 8, > What is the next number?
-```
-
+3. Provide a prompt for the text generation.
 4. Adjust the `Parameters` on the right based on your needs.
 5. Click the `Submit` button to generate the text.
 
 The generated chain of thought and result will be displayed in the UI.
 
-![Generated](../assets/using-models/using-large-language-models/generated.png)
+![Generated](../assets/using-models/using-large-language-models/playground-chat.png)
 
 By following these steps, you can leverage LLMs for AI-powered text generation and natural language tasks in GPUStack. Experiment with different prompts and settings to explore the full capabilities of LLMs!

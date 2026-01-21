@@ -13,7 +13,7 @@ from .generated_http_client import HTTPClient
 class InferenceBackendClient:
     def __init__(self, client: HTTPClient):
         self._client = client
-        self._url = f"{client._base_url}/v2/inference-backends"
+        self._url = "/inference-backends"
 
     def list(self, params: Dict[str, Any] = None) -> InferenceBackendsPublic:
         response = self._client.get_httpx_client().get(self._url, params=params)

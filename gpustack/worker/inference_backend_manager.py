@@ -61,7 +61,7 @@ class InferenceBackendManager:
         try:
             logger.info("Initializing InferenceBackend cache")
             resp = self._clientset.http_client.get_httpx_client().get(
-                self._clientset.base_url + "/v2/inference-backends/all"
+                "/inference-backends/all"
             )
             backends = resp.json()
             if backends:
@@ -97,6 +97,43 @@ class InferenceBackendManager:
                     # Wait before retrying
                     await asyncio.sleep(5)
 
+    def _merge_version_configs(
+        self,
+        old: Optional[InferenceBackend],
+        backend: InferenceBackend,
+    ) -> None:
+        """
+        Merge incoming backend version configs into the cached one while
+        preserving built-in entries.
+
+        Args:
+            old: Previously cached backend for the same name.
+            backend: Incoming backend to be merged into the cache.
+        """
+        if old and backend.is_built_in:
+            # Snapshot previous and incoming version maps
+            old_version = old.version_configs.root if old.version_configs else {}
+            new_version = (
+                backend.version_configs.root if backend.version_configs else {}
+            )
+
+            # Compute deletions: drop outdated non-built-in entries not present in new map
+            delete_version = set()
+            new_version_keys = set(new_version.keys())
+            for k, v in old_version.items():
+                if not v.built_in_frameworks and k not in new_version_keys:
+                    delete_version.add(k)
+
+            # Start from old (preserves built-ins), then apply incoming updates
+            merged = old_version
+            for k, v in new_version.items():
+                merged[k] = v
+
+            # Remove marked entries and finalize
+            for k in delete_version:
+                merged.pop(k, None)
+            backend.version_configs.root = merged
+
     def _handle_event(self, event: Event):
         """Handle a single InferenceBackend event."""
         try:
@@ -105,6 +142,8 @@ class InferenceBackendManager:
 
             if event.type == EventType.CREATED or event.type == EventType.UPDATED:
                 with _cache_lock:
+                    old = self.backends_cache.get(backend.backend_name)
+                    self._merge_version_configs(old, backend)
                     self.backends_cache[backend.backend_name] = backend
                 logger.debug(
                     f"Updated InferenceBackend in cache: {backend.id} ({event.type})"

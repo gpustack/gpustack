@@ -18,10 +18,12 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
+from gpustack.scheduler.model_registry import is_multimodal_model
 from gpustack.schemas.models import (
     ModelInstance,
     SpeculativeAlgorithmEnum,
     CategoryEnum,
+    ModelInstanceDeploymentMetadata,
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.envs import sanitize_env
@@ -29,6 +31,7 @@ from gpustack.worker.backends.base import (
     InferenceServer,
     cal_distributed_parallelism_arguments,
     is_ascend,
+    is_ascend_310p,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +45,6 @@ class SGLangServer(InferenceServer):
     providing better isolation, resource management, and deployment consistency.
     """
 
-    _workload_name: Optional[str] = None
     is_diffusion = False
 
     def start(self):  # noqa: C901
@@ -58,21 +60,31 @@ class SGLangServer(InferenceServer):
     def _start(self):
         logger.info(f"Starting SGLang model instance: {self._model_instance.name}")
 
-        is_distributed, is_distributed_leader, _ = self._get_distributed_metadata()
+        deployment_metadata = self._get_deployment_metadata()
 
         # Setup environment variables
-        env = self._get_configured_env(is_distributed)
+        env = self._get_configured_env(
+            is_distributed=deployment_metadata.distributed,
+        )
+
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
 
         command_script = self._get_serving_command_script(env)
 
         # Build SGLang command arguments
         command_args = self._build_command_args(
             port=self._get_serving_port(),
-            is_distributed=is_distributed,
-            is_distributed_leader=is_distributed_leader,
+            is_distributed=deployment_metadata.distributed,
+            is_distributed_leader=deployment_metadata.distributed_leader,
         )
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -83,15 +95,28 @@ class SGLangServer(InferenceServer):
             f"Starting SGLang Diffusion model instance: {self._model_instance.name}"
         )
 
+        deployment_metadata = self._get_deployment_metadata()
+
         # Setup environment variables
-        env = self._get_configured_env(False)
+        env = self._get_configured_env(
+            is_distributed=False,
+        )
+
+        command = None
+        if self.inference_backend:
+            command = self.inference_backend.get_container_entrypoint(
+                self._model.backend_version
+            )
 
         command_script = self._get_serving_command_script(env)
 
-        # Build SGLang command arguments
-        command_args = self._build_diffusion_args(port=self._get_serving_port())
+        command_args = self._build_command_args_for_diffusion(
+            port=self._get_serving_port(),
+        )
 
         self._create_workload(
+            deployment_metadata=deployment_metadata,
+            command=command,
             command_script=command_script,
             command_args=command_args,
             env=env,
@@ -99,6 +124,8 @@ class SGLangServer(InferenceServer):
 
     def _create_workload(
         self,
+        deployment_metadata: ModelInstanceDeploymentMetadata,
+        command: Optional[List[str]],
         command_script: Optional[str],
         command_args: List[str],
         env: Dict[str, str],
@@ -127,6 +154,16 @@ class SGLangServer(InferenceServer):
                 "SGLang versions <= 0.5.5 do not support Diffusion models."
             )
 
+        # Command script will override the given command,
+        # so we need to prepend command to command args.
+        if command_script and command:
+            command_args = command + command_args
+            command = None
+
+        resources = self._get_configured_resources()
+
+        mounts = self._get_configured_mounts()
+
         ports = self._get_configured_ports()
 
         # Create container configuration
@@ -137,6 +174,7 @@ class SGLangServer(InferenceServer):
             restart_policy=ContainerRestartPolicyEnum.NEVER,
             execution=ContainerExecution(
                 privileged=True,
+                command=command,
                 command_script=command_script,
                 args=command_args,
             ),
@@ -152,38 +190,53 @@ class SGLangServer(InferenceServer):
             ports=ports,
         )
 
-        workload_plan = WorkloadPlan(
-            name=self._workload_name,
-            host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
-            containers=[run_container],
-        )
-
-        logger.info(f"Creating SGLang container workload: {self._workload_name}")
+        logger.info(f"Creating SGLang container workload: {deployment_metadata.name}")
         logger.info(
             f"With image: {image}, "
+            f"command: [{' '.join(command) if command else ''}], "
             f"arguments: [{' '.join(command_args)}], "
             f"ports: [{','.join([str(port.internal) for port in ports])}], "
             f"envs(inconsistent input items mean unchangeable):{os.linesep}"
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
         )
+
+        workload_plan = WorkloadPlan(
+            name=deployment_metadata.name,
+            host_network=True,
+            shm_size=10 * 1 << 30,  # 10 GiB
+            containers=[run_container],
+        )
         create_workload(self._transform_workload_plan(workload_plan))
 
-        logger.info(
-            f"SGLang container workload {self._workload_name} created successfully"
-        )
+        logger.info(f"Created SGLang container workload: {deployment_metadata.name}")
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
         """
-        Setup environment variables for the SGLang container server.
+        Get environment variables for SGLang service.
         """
 
         # Apply GPUStack's inference environment setup
         env = super()._get_configured_env()
 
+        # Optimize environment variables
+        # -- Disable OpenMP parallelism to avoid resource contention, increases model loading.
+        env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
+        # -- Enable safetensors GPU loading pass-through for faster model loading.
+        env["SAFETENSORS_FAST_GPU"] = env.pop("SAFETENSORS_FAST_GPU", "1")
+        # -- Observe RUN:AI streamer model loading.
+        env["RUNAI_STREAMER_MEMORY_LIMIT"] = env.pop("RUNAI_STREAMER_MEMORY_LIMIT", "0")
+        env["RUNAI_STREAMER_LOG_TO_STDERR"] = env.pop(
+            "RUNAI_STREAMER_LOG_TO_STDERR", "1"
+        )
+        env["RUNAI_STREAMER_LOG_LEVEL"] = env.pop("RUNAI_STREAMER_LOG_LEVEL", "INFO")
+
         # Apply distributed environment variables
         if is_distributed:
             self._set_distributed_env(env)
+
+        # Apply Ascend-specific environment variables
+        if is_ascend(self._get_selected_gpu_devices()):
+            self._set_ascend_env(env)
 
         return env
 
@@ -204,6 +257,31 @@ class SGLangServer(InferenceServer):
         if "NCCL_SOCKET_IFNAME" not in env:
             env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
             env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
+
+    def _set_ascend_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for Ascend devices.
+        """
+
+        # -- Optimize Pytorch NPU operations delivery performance.
+        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "1")
+        # -- Enable NUMA coarse-grained binding.
+        env["CPU_AFFINITY_CONF"] = env.pop("CPU_AFFINITY_CONF", "1")
+        # -- Reuse memory in multi-streams.
+        env["PYTORCH_NPU_ALLOC_CONF"] = env.pop(
+            "PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"
+        )
+        # -- Increase HCCL connection timeout to avoid issues in large clusters.
+        env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
+        # -- Enable RDMA PCIe direct post with no strict mode for better performance.
+        env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
+            "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
+        )
+        if not is_ascend_310p(self._get_selected_gpu_devices()):
+            # -- Disable HCCL execution timeout for better stability.
+            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
+            # -- Enable the communication is scheduled by AI Vector directly with ROCE, instead of AI CPU.
+            env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
 
     def _build_command_args(
         self,
@@ -226,7 +304,15 @@ class SGLangServer(InferenceServer):
         arguments = self.build_versioned_command_args(arguments)
 
         derived_max_model_len = self._derive_max_model_len()
-        if derived_max_model_len and derived_max_model_len > 8192:
+        specified_max_model_len = find_parameter(
+            self._model.backend_parameters,
+            ["context-length"],
+        )
+        if (
+            specified_max_model_len is None
+            and derived_max_model_len
+            and derived_max_model_len > 8192
+        ):
             arguments.extend(["--context-length", "8192"])
 
         # Add auto parallelism arguments if needed
@@ -240,6 +326,10 @@ class SGLangServer(InferenceServer):
             self._model.backend_parameters, self._model.env
         )
         arguments.extend(metrics_arguments)
+
+        # Add multimodal argument if needed
+        if is_multimodal_model(self._get_model_architecture()):
+            arguments.append("--enable-multimodal")
 
         # Add speculative config arguments if needed
         speculative_config_arguments = self._get_speculative_arguments()
@@ -256,9 +346,25 @@ class SGLangServer(InferenceServer):
         hicache_arguments = self._get_hicache_arguments()
         arguments.extend(hicache_arguments)
 
+        if (
+            self._model_instance.computed_resource_claim
+            and self._model_instance.computed_resource_claim.vram_utilization
+        ):
+            input_utilization = find_parameter(
+                self._model.backend_parameters, ["mem-fraction-static"]
+            )
+            if not input_utilization:
+                arguments.extend(
+                    [
+                        "--mem-fraction-static",
+                        str(
+                            self._model_instance.computed_resource_claim.vram_utilization
+                        ),
+                    ]
+                )
+
         # Add user-defined backend parameters
-        if self._model.backend_parameters:
-            arguments.extend(self._model.backend_parameters)
+        arguments.extend(self._flatten_backend_param())
 
         # Add platform-specific parameters
         if is_ascend(self._get_selected_gpu_devices()):
@@ -269,6 +375,13 @@ class SGLangServer(InferenceServer):
                     "ascend",
                 ]
             )
+            if is_multimodal_model(self._get_model_architecture()):
+                arguments.extend(
+                    [
+                        "--mm-attention-backend",
+                        "ascend_attn",
+                    ]
+                )
 
         # Set host and port
         arguments.extend(
@@ -282,7 +395,7 @@ class SGLangServer(InferenceServer):
 
         return arguments
 
-    def _build_diffusion_args(self, port: int):
+    def _build_command_args_for_diffusion(self, port: int):
         arguments = [
             "sglang",
             "serve",
@@ -303,8 +416,7 @@ class SGLangServer(InferenceServer):
         arguments.extend(attention_arguments)
 
         # Add user-defined backend parameters
-        if self._model.backend_parameters:
-            arguments.extend(self._model.backend_parameters)
+        arguments.extend(self._flatten_backend_param())
 
         # Set host and port
         arguments.extend(

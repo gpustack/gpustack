@@ -1,0 +1,18 @@
+#!/command/with-contenv bash
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+
+EXIT_CODE="$1"
+EXIT_SIGNAL="$2"
+
+if [ "$EXIT_CODE" -ne 0 ]; then
+    echo "[INFO] apiserver exit code is non-zero, the latest logs are..." >&2
+    SCRIPT_ROOT=/etc/s6-overlay/scripts
+    source "$SCRIPT_ROOT/base.sh"
+    source "$GPUSTACK_GATEWAY_CONFIG"
+    source "$SCRIPT_ROOT/default-variables.sh"
+    tail -n 50 "${LOG_DIR}/apiserver/current" >&2
+fi
+
+handleServiceExit "apiserver" "$EXIT_CODE" "$EXIT_SIGNAL"

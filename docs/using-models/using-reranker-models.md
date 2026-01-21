@@ -13,14 +13,11 @@ Before you begin, ensure that you have the following:
 
 ## Step 1: Deploy the Model
 
-Follow these steps to deploy the model from Hugging Face:
+Follow these steps to deploy the model from Catalog:
 
-1. Navigate to the `Deployments` page in the GPUStack UI.
-2. Click the `Deploy Model` button.
-3. In the dropdown, select `Hugging Face` as the source for your model.
-4. Enable the `GGUF` checkbox to filter models by GGUF format.
-5. Use the search bar in the top left to search for the model name `gpustack/bge-reranker-v2-m3-GGUF`.
-6. Leave everything as default and click the `Save` button to deploy the model.
+1. Navigate to the `Catalog` page in the GPUStack UI.
+2. In the model list page, use dropdown to filter with `Reranker`.
+3. Review the model description, maximum context length and supported sizes.
 
 ![Deploy Model](../assets/using-models/using-reranker-models/deploy-model.png)
 
@@ -48,7 +45,7 @@ curl $SERVER_URL/v1/rerank \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $GPUSTACK_API_KEY" \
     -d '{
-        "model": "bge-reranker-v2-m3",
+        "model": "qwen3-reranker-4b",
         "query": "What is a panda?",
         "top_n": 3,
         "documents": [
@@ -65,34 +62,36 @@ Example response:
 
 ```json
 {
-  "model": "bge-reranker-v2-m3",
+  "model": "qwen3-reranker-4b",
   "object": "list",
   "results": [
     {
-      "document": {
-        "text": "The giant panda (Ailuropoda melanoleuca), sometimes called a panda bear or simply panda, is a bear species endemic to China."
-      },
-      "index": 2,
-      "relevance_score": 1.951932668685913
-    },
-    {
-      "document": {
-        "text": "it is a bear"
-      },
-      "index": 1,
-      "relevance_score": -3.7347371578216553
-    },
-    {
-      "document": {
-        "text": "hi"
-      },
       "index": 0,
-      "relevance_score": -6.157620906829834
+      "document": {
+        "text": "hi",
+        "multi_modal": null
+      },
+      "relevance_score": 0.9996911287307739
+    },
+    {
+      "index": 2,
+      "document": {
+        "text": "The giant panda (Ailuropoda melanoleuca), sometimes called a panda bear or simply panda, is a bear species endemic to China.",
+        "multi_modal": null
+      },
+      "relevance_score": 0.8206241726875305
+    },
+    {
+      "index": 1,
+      "document": {
+        "text": "it is a bear",
+        "multi_modal": null
+      },
+      "relevance_score": 0.7244728803634644
     }
   ],
   "usage": {
-    "prompt_tokens": 69,
-    "total_tokens": 69
+    "total_tokens": 51
   }
 }
 ```

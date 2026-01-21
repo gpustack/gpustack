@@ -41,6 +41,10 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Run GPUStack server or worker.",
         description="Run GPUStack server or worker.",
     )
+    start_cmd_options(parser_server)
+
+
+def start_cmd_options(parser_server: argparse.ArgumentParser):
     group = parser_server.add_argument_group("Common settings")
     group.add_argument(
         "--advertise-address",
@@ -140,10 +144,10 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("GATEWAY_KUBECONFIG"),
     )
     group.add_argument(
-        "--gateway-concurrency",
-        type=int,
-        help="Number of concurrent connections for the gateway. The default is 16.",
-        default=get_gpustack_env("GATEWAY_CONCURRENCY"),
+        "--gateway-namespace",
+        type=str,
+        help="The namespace where the gateway component is deployed.",
+        default=get_gpustack_env("GATEWAY_NAMESPACE"),
     )
     group.add_argument(
         "--service-discovery-name",
@@ -155,7 +159,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         "--namespace",
         type=str,
         help="Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.",
-        default=get_gpustack_env("NAMESPACE"),
+        default=os.getenv("POD_NAMESPACE"),
     )
 
     group = parser_server.add_argument_group("Server settings")
@@ -180,8 +184,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
     group.add_argument(
         "--disable-worker",
         action=OptionalBoolAction,
-        help="Disable embedded worker.",
+        help="(DEPRECATED) Disable the embedded worker for the GPUStack server. New installations will not have the embedded worker by default. Use '--enable-worker' to enable the embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled by default for legacy installations prior to v2.0.1.",
         default=get_gpustack_env_bool("DISABLE_WORKER"),
+    )
+    group.add_argument(
+        "--enable-worker",
+        action=OptionalBoolAction,
+        help="Enable the embedded worker for the GPUStack server.",
+        default=get_gpustack_env_bool("ENABLE_WORKER"),
     )
     group.add_argument(
         "--disable-metrics",
@@ -245,6 +255,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="External URL of the server. Should be set if the server is behind a reverse proxy.",
         default=get_gpustack_env("SERVER_EXTERNAL_URL"),
+    )
+    group.add_argument(
+        "--gateway-concurrency",
+        type=int,
+        help="Number of concurrent connections for the embedded gateway. The default is 16.",
+        default=get_gpustack_env("GATEWAY_CONCURRENCY"),
     )
 
     group = parser_server.add_argument_group("Worker settings")
@@ -323,7 +339,7 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=json.loads,
         help="The system reserves resources during scheduling, measured in GiB. \
         Where RAM is reserved per worker, and VRAM is reserved per GPU device. \
-        By default, 2 GiB of RAM and 1G of VRAM is reserved. \
+        By default, no resources are reserved. \
         Example: '{\"ram\": 2, \"vram\": 1}' or '{\"memory\": 2, \"gpu_memory\": 1}', \
         Note: The 'memory' and 'gpu_memory' keys are deprecated and will be removed in future releases.",
         default=get_gpustack_env("SYSTEM_RESERVED"),
@@ -345,6 +361,14 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         action=OptionalBoolAction,
         help="Enable downloading model files using Hugging Face Xet.",
     )
+    group.add_argument(
+        "--proxy-mode",
+        type=str,
+        help="Proxy mode for server accessing model instances: "
+        "direct (server connects directly) or worker (via worker proxy). "
+        "Default value is direct for embedded worker, and worker for standalone worker.",
+    )
+
     group.add_argument(
         "--enable-cors",
         action=OptionalBoolAction,
@@ -391,6 +415,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         help="Mapping of external authentication user information to user's avatar URL. e.g.,'picture'. For SAML, you must configure the full attribute name like 'http://schemas.auth0.com/picture' or simplify with 'picture' by '--saml-sp-attribute-prefix'.",
         default=get_gpustack_env("EXTERNAL_AUTH_AVATAR_URL"),
     )
+    group.add_argument(
+        "--external-auth-default-inactive",
+        action=OptionalBoolAction,
+        help="Set newly created externally authenticated users inactive by default.",
+        default=get_gpustack_env_bool("EXTERNAL_AUTH_DEFAULT_INACTIVE"),
+    )
     # OIDC settings
     group.add_argument(
         "--oidc-issuer",
@@ -417,9 +447,21 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         default=get_gpustack_env("OIDC_REDIRECT_URI"),
     )
     group.add_argument(
+        "--external-auth-post-logout-redirect-key",
+        type=str,
+        help="Generic key for post-logout redirection across IdPs.",
+        default=get_gpustack_env("EXTERNAL_AUTH_POST_LOGOUT_REDIRECT_KEY"),
+    )
+    group.add_argument(
+        "--oidc-skip-userinfo",
+        action=OptionalBoolAction,
+        help="Skip using the UserInfo endpoint and retrieve user details from the ID token.",
+        default=get_gpustack_env_bool("OIDC_SKIP_USERINFO"),
+    )
+    group.add_argument(
         "--oidc-use-userinfo",
         action=OptionalBoolAction,
-        help="Use the UserInfo endpoint to fetch user details after authentication.",
+        help="[Deprecated] Use the UserInfo endpoint to fetch user details after authentication.",
         default=get_gpustack_env_bool("OIDC_USE_USERINFO"),
     )
     # SAML settings
@@ -428,6 +470,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="SAML IdP server URL.",
         default=get_gpustack_env("SAML_IDP_SERVER_URL"),
+    )
+    group.add_argument(
+        "--saml-idp-logout-url",
+        type=str,
+        help="SAML IdP Single Logout endpoint URL.",
+        default=get_gpustack_env("SAML_IDP_LOGOUT_URL"),
     )
     group.add_argument(
         "--saml-idp-entity-id",
@@ -452,6 +500,12 @@ def setup_start_cmd(subparsers: argparse._SubParsersAction):
         type=str,
         help="SAML SP Assertion Consumer Service(ACS) URL. It should be set to `<server-url>/auth/saml/callback`.",
         default=get_gpustack_env("SAML_SP_ACS_URL"),
+    )
+    group.add_argument(
+        "--saml-sp-slo-url",
+        type=str,
+        help="SAML SP Single Logout Service URL. It can be set to `<server-url>/auth/saml/logout/callback` if you need to receive LogoutResponse.",
+        default=get_gpustack_env("SAML_SP_SLO_URL"),
     )
     group.add_argument(
         "--saml-sp-x509-cert",
@@ -488,6 +542,7 @@ def run(args: argparse.Namespace):
         debug_env_info()
         set_third_party_env(cfg=cfg)
         set_ulimit()
+        start_tracemalloc_if_debug(cfg)
         initialize_gateway(cfg)
         multiprocessing.set_start_method('spawn')
 
@@ -502,21 +557,19 @@ def run(args: argparse.Namespace):
 
 
 def run_server(cfg: Config):
-    sub_processes = []
+    worker = Worker(cfg)
 
-    if not cfg.disable_worker:
-        worker = Worker(cfg)
-        worker_process = multiprocessing.Process(target=worker.start)
-        sub_processes = [worker_process]
-
-    server = Server(config=cfg, sub_processes=sub_processes)
+    server = Server(
+        config=cfg, worker_process=multiprocessing.Process(target=worker.start)
+    )
 
     try:
         asyncio.run(server.start())
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     except Exception as e:
-        logger.error(f"Error running server: {e}")
+        logger.exception(f"Error running server: {e}")
+        # logger.error(f"Error running server: {e}")
     finally:
         logger.info("Server has shut down.")
 
@@ -574,7 +627,7 @@ def set_common_options(args, config_data: dict):
         "api_port",
         "gateway_mode",
         "gateway_kubeconfig",
-        "gateway_concurrency",
+        "gateway_namespace",
         "service_discovery_name",
         "namespace",
     ]
@@ -590,6 +643,7 @@ def set_server_options(args, config_data: dict):
         "disable_metrics",
         "database_url",
         "disable_worker",
+        "enable_worker",
         "bootstrap_password",
         "ssl_keyfile",
         "ssl_certfile",
@@ -606,20 +660,27 @@ def set_server_options(args, config_data: dict):
         "external_auth_name",
         "external_auth_full_name",
         "external_auth_avatar_url",
+        "external_auth_default_inactive",
         "oidc_issuer",
         "oidc_client_id",
         "oidc_client_secret",
         "oidc_redirect_uri",
+        "external_auth_post_logout_redirect_key",
+        "oidc_skip_userinfo",
+        "oidc_use_userinfo",
         "saml_idp_server_url",
+        "saml_idp_logout_url",
         "saml_idp_entity_id",
         "saml_idp_x509_cert",
         "saml_sp_entity_id",
         "saml_sp_acs_url",
+        "saml_sp_slo_url",
         "saml_sp_x509_cert",
         "saml_sp_private_key",
         "saml_sp_attribute_prefix",
         "saml_security",
         "server_external_url",
+        "gateway_concurrency",
     ]
 
     for option in options:
@@ -643,6 +704,7 @@ def set_worker_options(args, config_data: dict):
         "tools_download_base_url",
         "enable_hf_transfer",
         "enable_hf_xet",
+        "proxy_mode",
     ]
 
     for option in options:
@@ -653,6 +715,14 @@ def debug_env_info():
     hf_endpoint = os.getenv("HF_ENDPOINT")
     if hf_endpoint:
         logger.debug(f"Using HF_ENDPOINT: {hf_endpoint}")
+
+
+def start_tracemalloc_if_debug(cfg: Config):
+    if cfg.debug:
+        import tracemalloc
+
+        tracemalloc.start()
+        logger.debug("tracemalloc started for memory profiling")
 
 
 def set_third_party_env(cfg: Config):

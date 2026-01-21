@@ -1,5 +1,6 @@
 import argparse
 import logging
+import requests
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.cmd.start import get_gpustack_env
@@ -33,9 +34,20 @@ def setup_reset_admin_password_cmd(subparsers: argparse._SubParsersAction):
 
 def run(args):
     try:
-        server_url = "http://localhost"
+        # default using api port instead of web port
+        server_url = None
+        server_urls = ["http://localhost", "http://localhost:30080"]
         if args.server_url is not None:
             server_url = args.server_url
+        else:
+            for url in server_urls:
+                if test_url_accessible(url):
+                    server_url = url
+                    break
+            if server_url is None:
+                raise Exception(
+                    "Cannot connect to local gpustack server. Please specify --server-url"
+                )
 
         api_key = None
         if args.api_key is not None:
@@ -56,3 +68,11 @@ def run(args):
         print(f"Reset admin password: {reset_password}")
     except Exception as e:
         logger.fatal(f"Failed to reset admin password: {e}")
+
+
+def test_url_accessible(url: str) -> bool:
+    try:
+        resp = requests.get(f"{url}/healthz", timeout=2)
+        return resp.status_code == 200
+    except Exception:
+        return False

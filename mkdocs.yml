@@ -39,6 +39,16 @@ theme:
 plugins:
   - glightbox
   - search
+  - redirects:
+      redirect_maps:
+        'installation/nvidia/installation.md': 'installation/requirements.md'
+        'installation/amd/installation.md': 'installation/requirements.md'
+        'installation/ascend/installation.md': 'installation/requirements.md'
+        'installation/hygon/installation.md': 'installation/requirements.md'
+        'installation/mthreads/installation.md': 'installation/requirements.md'
+        'installation/iluvatar/installation.md': 'installation/requirements.md'
+        'installation/cambricon/installation.md': 'installation/requirements.md'
+        'installation/metax/installation.md': 'installation/requirements.md'
 extra:
   generator: false
   version:
@@ -74,15 +84,9 @@ nav:
   - Home:
       - Overview: overview.md
       - Quickstart: quickstart.md
-      - Installation:
+      - Installation: 
           - Requirements: installation/requirements.md
-          - NVIDIA: installation/nvidia/installation.md
-          - AMD: installation/amd/installation.md
-          - Ascend: installation/ascend/installation.md
-          - Hygon: installation/hygon/installation.md
-          - MThreads: installation/mthreads/installation.md
-          - Iluvatar: installation/iluvatar/installation.md
-          - Cambricon: installation/cambricon/installation.md
+          - Installation: installation/installation.md
           - Air-Gapped Installation: installation/air-gapped.md
           - Uninstallation: installation/uninstallation.md
       - Upgrade: upgrade.md
@@ -116,8 +120,6 @@ nav:
           - Using Embedding Models: using-models/using-embedding-models.md
           - Using Reranker Models: using-models/using-reranker-models.md
           - Using Image Generation Models: using-models/using-image-generation-models.md
-          - Recommended Parameters for Image Generation Models: using-models/recommended-parameters-for-image-generation-models.md
-          - Editing Images: using-models/editing-images.md
           - Using Audio Models: using-models/using-audio-models.md
       - Tutorials:
           - Running DeepSeek R1 671B with Distributed vLLM: tutorials/running-deepseek-r1-671b-with-distributed-vllm.md
@@ -125,8 +127,8 @@ nav:
           - Inference On CPUs: tutorials/inference-on-cpus.md
           - Inference with Tool Calling: tutorials/inference-with-tool-calling.md
           - Using Custom Inference Backend: tutorials/using-custom-backends.md
-          - Adding GPUCluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
-          - Adding GPUCluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
+          - Adding a GPU Cluster Using DigitalOcean: tutorials/adding-gpucluster-using-digitalocean.md
+          - Adding a GPU Cluster Using Kubernetes: tutorials/adding-gpucluster-using-kubernetes.md
       - Integrations:
           - OpenAI Compatible APIs: integrations/openai-compatible-apis.md
           - Integrate with Dify: integrations/integrate-with-dify.md
@@ -143,17 +145,19 @@ nav:
           - Reload Config: cli-reference/reload-config.md
           - List Images: cli-reference/list-images.md
           - Save Images: cli-reference/save-images.md
+          - Load Images: cli-reference/load-images.md
           - Copy Images: cli-reference/copy-images.md
+      - Environment Variables: environment-variables.md
   - Inference Performance Lab:
       - Overview: performance-lab/overview.md
       - Optimizing Throughput:
-          - GLM-4.6/4.5-Air:
+          - GLM-4.5-Air:
               - A100: performance-lab/glm-4.5-air/a100.md
               - H100: performance-lab/glm-4.5-air/h100.md
-          - GLM-4.6/4.5:
-              - A100: performance-lab/glm-4.6/a100.md
-              - H100: performance-lab/glm-4.6/h100.md
-              - H200: performance-lab/glm-4.6/h200.md
+          - GLM-4.x:
+              - A100: performance-lab/glm-4.x/a100.md
+              - H100: performance-lab/glm-4.x/h100.md
+              - H200: performance-lab/glm-4.x/h200.md
           - GPT-OSS-20B:
               - A100: performance-lab/gpt-oss-20b/a100.md
               - H100: performance-lab/gpt-oss-20b/h100.md
@@ -162,6 +166,8 @@ nav:
               - H100: performance-lab/gpt-oss-120b/h100.md
           - DeepSeek-R1:
               - H200: performance-lab/deepseek-r1/h200.md
+          - DeepSeek-V3.2:
+              - H200: performance-lab/deepseek-v3.2/h200.md
           - Qwen3-8B:
               - 910B: performance-lab/qwen3-8b/910b.md
           - Qwen3-14B:

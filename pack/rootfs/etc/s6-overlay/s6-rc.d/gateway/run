@@ -1,0 +1,57 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+# shellcheck disable=SC1091,SC1090
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+source "$GPUSTACK_GATEWAY_CONFIG"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+export JWT_POLICY="none"
+export CA_ROOT_CA="/etc/certs/root-cert.pem"
+export XDS_ROOT_CA="/etc/certs/root-cert.pem"
+export PROV_CERT="/etc/certs"
+export PILOT_XDS_SEND_TIMEOUT="60s"
+export PROXY_XDS_VIA_AGENT="true"
+export ENABLE_INGRESS_GATEWAY_SDS="false"
+export POD_NAME="higress-gateway"
+export POD_NAMESPACE="higress-system"
+export ISTIO_META_CLUSTER_ID="Kubernetes"
+export ISTIO_META_HTTP10="1"
+export INSTANCE_NAME="higress-gateway"
+export PROXY_XDS_DEBUG_VIA_AGENT="false"
+
+set -e
+
+exec 2>&1
+
+createDir /etc/istio/proxy
+createDir "${ISTIO_DATA_DIR}"
+if [ -e /var/lib/istio/data ] || [ -L /var/lib/istio/data ]; then
+    rm -rf /var/lib/istio/data
+fi
+ln -s "${ISTIO_DATA_DIR}" /var/lib/istio/data
+
+ACCESS_LOG_PATH="${HIGRESS_LOG_DIR}/access.log"
+createDir "${HIGRESS_LOG_DIR}"
+touch "${ACCESS_LOG_PATH}"
+sed -i -E "s;^accessLogFile: .+$;accessLogFile: ${ACCESS_LOG_PATH};" /etc/istio/config/mesh
+sed -i "1s;.*;${ACCESS_LOG_PATH};" /etc/logrotate.d/higress-logrotate
+
+# copied from higress-proxy-start.sh
+if [ -n "$LITE_METRICS" ]; then
+    cp /var/lib/istio/envoy/envoy_bootstrap_lite_tmpl.json /var/lib/istio/envoy/envoy_bootstrap_tmpl.json
+fi
+# end copied
+
+readinessCheck "GPUStack API server" "$GPUSTACK_API_PORT"
+
+cd /
+
+exec /usr/local/bin/pilot-agent proxy router \
+    --concurrency="${GATEWAY_CONCURRENCY}" \
+    --domain=higress-system.svc.cluster.local \
+    --proxyLogLevel=warning \
+    --proxyComponentLogLevel=misc:error \
+    --log_output_level=all:info \
+    --serviceCluster=higress-gateway

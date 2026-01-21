@@ -14,6 +14,7 @@ from gpustack.utils.config import (
     filter_whitelisted_yaml_config,
 )
 from gpustack.logging import setup_logging
+from gpustack.client.generated_http_client import default_versioned_prefix
 
 
 logger = logging.getLogger(__name__)
@@ -166,11 +167,11 @@ def apply_runtime_updates(
     args: argparse.Namespace,
 ):
     api_key = getattr(args, "api_key", None)
-    server_port = getattr(args, "server_port") or 8080
+    server_port = getattr(args, "server_port") or 30080
     worker_port = getattr(args, "worker_port") or 10150
     urls = [
-        f"http://127.0.0.1:{server_port}/debug/config",
-        f"http://127.0.0.1:{worker_port}/debug/config",
+        f"http://127.0.0.1:{server_port}{default_versioned_prefix}/config",
+        f"http://127.0.0.1:{worker_port}{default_versioned_prefix}/config",
     ]
     for url in urls:
         try:
@@ -190,11 +191,11 @@ def list_runtime_values(
     worker_port: int | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
-    s_port = server_port or 8080
+    s_port = server_port or 30080
     w_port = worker_port or 10150
     endpoints = {
-        "server": f"http://127.0.0.1:{s_port}/debug/config",
-        "worker": f"http://127.0.0.1:{w_port}/debug/config",
+        "server": f"http://127.0.0.1:{s_port}{default_versioned_prefix}/config",
+        "worker": f"http://127.0.0.1:{w_port}{default_versioned_prefix}/config",
     }
     for scope, url in endpoints.items():
         try:

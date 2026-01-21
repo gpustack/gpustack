@@ -2,7 +2,7 @@ import secrets
 import datetime
 import base64
 from typing import Optional
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import StreamingResponse
 
 from gpustack.api.exceptions import (
@@ -11,9 +11,15 @@ from gpustack.api.exceptions import (
     NotFoundException,
     ForbiddenException,
 )
-from gpustack.server.deps import ListParamsDep, SessionDep, EngineDep, CurrentUserDep
+from gpustack.config.config import get_global_config
+from gpustack.server.deps import (
+    SessionDep,
+    EngineDep,
+    CurrentUserDep,
+)
 from gpustack.schemas.workers import (
     WorkerCreate,
+    WorkerListParams,
     WorkerPublic,
     WorkerUpdate,
     WorkersPublic,
@@ -25,6 +31,10 @@ from gpustack.schemas.workers import (
 from gpustack.schemas.clusters import Cluster, Credential, ClusterStateEnum
 from gpustack.schemas.users import User, UserRole
 from gpustack.schemas.api_keys import ApiKey
+from gpustack.schemas.config import (
+    SensitivePredefinedConfig,
+    PredefinedConfigNoDefaults,
+)
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
@@ -45,7 +55,7 @@ async def get_workers(
     user: CurrentUserDep,
     engine: EngineDep,
     session: SessionDep,
-    params: ListParamsDep,
+    params: WorkerListParams = Depends(),
     name: str = None,
     search: str = None,
     uuid: str = None,
@@ -73,12 +83,25 @@ async def get_workers(
         # me query overrides all other filters
         fields = {"id": user.worker.id}
         fuzzy_fields = {}
+
+    order_by = params.order_by
+    if order_by:
+        new_order_by = []
+        for field, direction in order_by:
+            # maps gpus (gpu count) to the internal representation for JSON array length
+            if field == "gpus":
+                new_order_by.append(("status.gpu_devices[]", direction))
+            else:
+                new_order_by.append((field, direction))
+        order_by = new_order_by
+
     worker_list = await Worker.paginated_by_query(
         session=session,
         fields=fields,
         fuzzy_fields=fuzzy_fields,
         page=params.page,
         per_page=params.perPage,
+        order_by=order_by,
     )
     if not user.worker:
         return worker_list
@@ -109,10 +132,18 @@ def update_worker_data(
 ) -> Worker:
     to_create_worker = None
     if existing is not None:
+        # Preserve maintenance field from existing worker if not explicitly set in worker_in
+        incoming_data = worker_in.model_dump()
+        if (
+            incoming_data.get("maintenance") is None
+            and existing.maintenance is not None
+        ):
+            incoming_data["maintenance"] = existing.maintenance
+
         to_create_worker = Worker.model_validate(
             {
                 **existing.model_dump(),
-                **worker_in.model_dump(),
+                **incoming_data,
                 "labels": {
                     **existing.labels,
                     **worker_in.labels,
@@ -191,6 +222,22 @@ async def create_worker(
     cluster = await Cluster.one_by_id(session, cluster_id)
     if cluster is None or cluster.deleted_at is not None:
         raise NotFoundException(message="Cluster not found")
+
+    sensitive_fields = set(SensitivePredefinedConfig.model_fields.keys())
+
+    worker_config = (
+        {}
+        if cluster.worker_config is None
+        else cluster.worker_config.model_dump(exclude=sensitive_fields)
+    )
+    cfg = get_global_config()
+    if (
+        cfg.system_default_container_registry is not None
+        and len(cfg.system_default_container_registry) > 0
+    ):
+        worker_config.setdefault(
+            "system_default_container_registry", cfg.system_default_container_registry
+        )
 
     hashed_suffix = secrets.token_hex(6)
     access_key = secrets.token_hex(8)
@@ -273,6 +320,9 @@ async def create_worker(
         await session.refresh(worker)
         worker_dump = worker.model_dump()
         worker_dump["token"] = worker.token
+        worker_dump["worker_config"] = PredefinedConfigNoDefaults.model_validate(
+            worker_config
+        )
 
         return WorkerRegistrationPublic.model_validate(worker_dump)
     except Exception as e:
@@ -318,7 +368,7 @@ async def create_worker_status(
 ):
     if user.worker is None:
         raise ForbiddenException(message="Failed to find related worker")
-    # query a session bond worker
+    # query a session bound worker
     worker: Worker = await Worker.one_by_id(session, user.worker.id)
     if not worker or worker.deleted_at is not None:
         raise NotFoundException(message="Worker not found")
@@ -339,6 +389,25 @@ async def create_worker_status(
         return Response(status_code=204)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update worker: {e}")
+
+
+async def heartbeat(user: CurrentUserDep, session: SessionDep):
+    if user.worker is None:
+        raise ForbiddenException(message="Failed to find related worker")
+    # query a session bound worker
+    worker: Worker = await Worker.one_by_id(session, user.worker.id)
+    if not worker or worker.deleted_at is not None:
+        raise NotFoundException(message="Worker not found")
+
+    worker.heartbeat_time = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0
+    )
+    try:
+        await worker.update(session=session)
+    except Exception as e:
+        raise InternalServerErrorException(message=f"Failed to update worker: {e}")
+
+    return Response(status_code=204)
 
 
 @router.get("/{id}/privatekey")

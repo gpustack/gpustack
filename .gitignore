@@ -97,6 +97,9 @@ ipython_config.py
 # Poetry
 # poetry.lock
 
+# uv
+# uv.lock
+
 # celery beat schedule file
 celerybeat-schedule
 
@@ -161,3 +164,6 @@ __pycache__/
 
 # kubernetes config
 kubeconfig
+
+# Others
+.claude

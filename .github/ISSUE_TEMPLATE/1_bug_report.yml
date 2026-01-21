@@ -7,8 +7,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        🙏 Thanks for taking the time to report a bug!  
-        Please fill out the details below so we can help you faster ⚡
+        🙏 Thank you for taking the time to report a bug!
+        Please fill out the details below so we can help you resolve the issue faster ⚡
+
+        Before submitting, please note:
+        - If logs are lengthy, please upload them as a file or attachment instead of pasting them inline.
+        - When sharing code or logs, wrap them in code blocks (```).
+        - Providing the diagnostic information below will significantly accelerate troubleshooting.
 
   - type: input
     id: gpustack-version
@@ -53,5 +58,27 @@ body:
       label: ❌ Actual result
       description: What happened?
       placeholder: The actual behavior you observed
+    validations:
+      required: false
+
+  - type: textarea
+    id: accelerator-diagnosis
+    attributes:
+      label: 🔍 Accelerator detection diagnosis (if applicable)
+      description: |
+        If detection fails, run the following diagnostic command inside the problematic worker container and provide the output: `time GPUSTACK_RUNTIME_LOG_LEVEL=debug GPUSTACK_RUNTIME_LOG_EXCEPTION=1 gpustack-runtime detect --format json`.
+      placeholder: |
+        Output(wrap with code block)
+    validations:
+      required: false
+
+  - type: textarea
+    id: model-deployment-diagnosis
+    attributes:
+      label: 🐳 Model deployment / container diagnosis (if applicable)
+      description: |
+        If deploying fails, run the following diagnostic command inside the problematic worker container and provide the output: `gpustack-runtime inspect <model instance name>`.
+      placeholder: |
+        Output(wrap with code block or file attachment)
     validations:
       required: false

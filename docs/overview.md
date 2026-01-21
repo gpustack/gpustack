@@ -13,7 +13,7 @@
   <a href="https://discord.gg/VXYJzuaqwD" target="_blank">
     <img alt="Discord" src="https://img.shields.io/badge/Discord-GPUStack-blue?logo=discord&logoColor=white">
   </a>
-  <a href="../assets/wechat-group-qrcode.jpg" target="_blank">
+  <a href="../assets/docs-wechat-group-qrcode.jpg" target="_blank">
     <img alt="WeChat" src="https://img.shields.io/badge/微信群-GPUStack-blue?logo=wechat&logoColor=white">
   </a>
 </p>
@@ -25,53 +25,51 @@
   <a class="github-button" href="https://github.com/gpustack/gpustack/fork" data-show-count="true" data-icon="octicon-repo-forked" data-size="large" aria-label="Fork">Fork</a>
 </p>
 
-GPUStack is an open-source GPU cluster manager for running AI models.
+GPUStack is an open-source GPU cluster manager designed for efficient AI model deployment. It lets you run models efficiently on your own GPU hardware by choosing the best inference engines, scheduling GPU resources, analyzing model architectures, and automatically configuring deployment parameters.
 
-### Key Features
+The following figure shows how GPUStack delivers improved inference throughput over the unoptimized vLLM baseline:
 
-- **High Performance:** Optimized for high-throughput and low-latency inference.
-- **GPU Cluster Management:** Efficiently manage multiple GPU clusters across different providers, including Docker-based, Kubernetes, and cloud platforms such as DigitalOcean.
-- **Broad GPU Compatibility:** Seamless support for GPUs from various vendors.
-- **Extensive Model Support:** Supports a wide range of models, including LLMs, VLMs, image models, audio models, embedding models, and rerank models.
-- **Flexible Inference Backends:** Built-in support for fast inference engines such as vLLM and SGLang, with the ability to integrate custom backends.
-- **Multi-Version Backend Support:** Run multiple versions of inference backends concurrently to meet diverse runtime requirements.
-- **Distributed Inference:** Supports single-node and multi-node, multi-GPU inference, including heterogeneous GPUs across vendors and environments.
-- **Scalable GPU Architecture:** Easily scale by adding more GPUs, nodes, or clusters to your infrastructure.
-- **Robust Model Stability:** Ensures high availability through automatic failure recovery, multi-instance redundancy, and intelligent load balancing.
-- **Intelligent Deployment Evaluation:** Automatically assesses model resource requirements, backend and architecture compatibility, OS compatibility, and other deployment factors.
-- **Automated Scheduling:** Dynamically allocates models based on available resources.
-- **OpenAI-Compatible APIs:** Fully compatible with OpenAI API specifications for seamless integration.
-- **User & API Key Management:** Simplified management of users and API keys.
-- **Real-Time GPU Monitoring:** Monitor GPU performance and utilization in real time.
-- **Token and Rate Metrics:** Track token usage and API request rates.
+![a100-throughput-comparison](assets/a100-throughput-comparison.png)
 
-## Supported Accelerators
+For detailed benchmarking methods and results, visit our [Inference Performance Lab](https://docs.gpustack.ai/latest/performance-lab/overview/).
 
-GPUStack supports a variety of General-Purpose Accelerators, including:
+## Tested Inference Engines, GPUs, and Models
 
-- [x] NVIDIA GPU
-- [x] AMD GPU
-- [x] Ascend NPU
-- [x] Hygon DCU (Experimental)
-- [x] MThreads GPU (Experimental)
-- [x] Iluvatar GPU (Experimental)
-- [x] MetaX GPU (Experimental)
-- [x] Cambricon MLU (Experimental)
+GPUStack uses a plug-in architecture that makes it easy to add new AI models, inference engines, and GPU hardware. We work closely with partners and the open-source community to test and optimize emerging models across different inference engines and GPUs. Below is the current list of supported inference engines, GPUs, and models, which will continue to expand over time.
 
-## Supported Models
+**Tested Inference Engines:**
 
-GPUStack uses [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [MindIE](https://www.hiascend.com/en/software/mindie) and [vox-box](https://github.com/gpustack/vox-box) as built-in inference backends, and it also supports any custom backend that can run in a container and expose a serving API. This allows GPUStack to work with a wide range of models.
+- vLLM
+- SGLang
+- TensorRT-LLM
+- MindIE
 
-Models can come from the following sources:
+**Tested GPUs:**
 
-1. [Hugging Face](https://huggingface.co/)
+- NVIDIA A100
+- NVIDIA H100/H200
+- Ascend 910B
 
-2. [ModelScope](https://modelscope.cn/)
+**Tuned Models:**
 
-3. Local File Path
+- Qwen3
+- gpt-oss
+- GLM-4.5-Air
+- GLM-4.x
+- DeepSeek-R1
+- DeepSeek-V3.2
 
-For information on which models are supported by each built-in inference backend, please refer to the supported models section in the [Built-in Inference Backends](user-guide/built-in-inference-backends.md) documentation.
+## Architecture
 
-## OpenAI-Compatible APIs
+GPUStack enables development teams, IT organizations, and service providers to deliver Model-as-a-Service at scale. It supports industry-standard APIs for LLM, voice, image, and video models. The platform includes built-in user authentication and access control, real-time monitoring of GPU performance and utilization, and detailed metering of token usage and API request rates.
 
-GPUStack serves OpenAI compatible APIs. For details, please refer to [OpenAI Compatible APIs](./user-guide/openai-compatible-apis.md)
+The figure below illustrates how a single GPUStack server can manage multiple GPU clusters across both on-premises and cloud environments. The GPUStack scheduler allocates GPUs to maximize resource utilization and selects the appropriate inference engines for optimal performance. Administrators also gain full visibility into system health and metrics through integrated Grafana and Prometheus dashboards.
+
+![gpustack-v2-architecture](assets/gpustack-v2-architecture.png)
+
+GPUStack provides a powerful framework for deploying AI models. Its core features include:
+
+- **Multi-Cluster GPU Management.** Manages GPU clusters across multiple environments. This includes on-premises servers, Kubernetes clusters, and cloud providers.
+- **Pluggable Inference Engines.** Automatically configures high-performance inference engines such as vLLM, SGLang, and TensorRT-LLM. You can also add custom inference engines as needed.
+- **Performance-Optimized Configurations.** Offers pre-tuned modes for low latency or high throughput. GPUStack supports extended KV cache systems like LMCache and HiCache to reduce TTFT. It also includes built-in support for speculative decoding methods such as EAGLE3, MTP, and N-grams.
+- **Enterprise-Grade Operations.** Offers support for automated failure recovery, load balancing, monitoring, authentication, and access control.

@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 import httpx
 import logging
 import jwt
@@ -6,7 +8,11 @@ from jwt.algorithms import RSAAlgorithm
 from gpustack.config.config import Config
 from typing import Annotated, Dict, Optional
 from fastapi import APIRouter, Form, Request, Response
-from gpustack.api.exceptions import InvalidException, UnauthorizedException
+from gpustack.api.exceptions import (
+    InvalidException,
+    UnauthorizedException,
+    BadRequestException,
+)
 from gpustack.schemas.users import UpdatePassword
 from gpustack.schemas.users import User, AuthProviderEnum
 from gpustack.security import (
@@ -15,12 +21,20 @@ from gpustack.security import (
     verify_hashed_secret,
 )
 from gpustack import envs
-from gpustack.api.auth import SESSION_COOKIE_NAME, authenticate_user
+from gpustack.api.auth import (
+    SESSION_COOKIE_NAME,
+    OIDC_ID_TOKEN_COOKIE_NAME,
+    SSO_LOGIN_COOKIE_NAME,
+    authenticate_user,
+)
 from gpustack.server.deps import CurrentUserDep, SessionDep
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from fastapi.responses import RedirectResponse
 from lxml import etree
 from gpustack.utils.convert import safe_b64decode, inflate_data
+from urllib.parse import urlencode
+
+from gpustack.utils.network import use_proxy_env_for_url
 
 router = APIRouter()
 timeout = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=10.0)
@@ -34,7 +48,7 @@ async def decode_and_validate_token(
     Decode the JWT token without verification and check if required fields are present.
 
     Args:
-        token: The access token from OIDC provider
+        token: token from OIDC provider
         config: Application configuration
     Returns:
         Dictionary containing decoded token data
@@ -44,13 +58,16 @@ async def decode_and_validate_token(
     jwks = jwks_res.json()
 
     unverified_header = jwt.get_unverified_header(token)
-    kid = unverified_header['kid']
+    kid = unverified_header.get("kid", None)
 
     public_key = None
-    for key in jwks['keys']:
-        if key['kid'] == kid:
-            public_key = RSAAlgorithm.from_jwk(json.dumps(key))
-            break
+    if kid:
+        for key in jwks['keys']:
+            if key['kid'] == kid:
+                public_key = RSAAlgorithm.from_jwk(json.dumps(key))
+                break
+    else:
+        public_key = RSAAlgorithm.from_jwk(json.dumps(jwks['keys'][0]))
 
     if public_key is None:
         raise UnauthorizedException(message="Public key not found in JWKS")
@@ -65,26 +82,41 @@ async def decode_and_validate_token(
 
 
 async def get_oidc_user_data(
-    client: httpx.AsyncClient, token: str, config: Config
+    client: httpx.AsyncClient, token_res, config: Config
 ) -> Dict:
     """
     Retrieve user data from OIDC token or userinfo endpoint.
 
+    By default, it uses the userinfo endpoint (standard OIDC).
+    If `oidc_skip_userinfo` is set to True in config, it retrieves data from the ID token.
+
     Args:
         client: HTTP client for making requests
-        token: The access token from OIDC provider
+        token_res: The token response from OIDC provider
         config: Application configuration
 
     Returns:
         Dictionary containing user data
     """
     user_data = None
-    if not config.oidc_use_userinfo:
-        try:
-            user_data = await decode_and_validate_token(client, token, config)
-        except Exception as e:
-            logger.warning(f"Token decoding/validation failed: {str(e)}")
+    if not isinstance(token_res, Dict):
+        raise InvalidException(message="Invalid token response")
+
+    if config.oidc_skip_userinfo:
+        tokens = []
+        if access_token := token_res.get("access_token", None):
+            tokens.append(access_token)
+        if id_token := token_res.get("id_token", None):
+            tokens.append(id_token)
+        for token in tokens:
+            try:
+                user_data = await decode_and_validate_token(client, token, config)
+                if user_data:
+                    break
+            except Exception as e:
+                logger.warning(f"Token decoding/validation failed: {str(e)}")
     else:
+        token = token_res.get("access_token", "")
         userinfo_endpoint = config.openid_configuration["userinfo_endpoint"]
         headers = {'Authorization': f'Bearer {token}'}
         userinfo_res = await client.get(userinfo_endpoint, headers=headers)
@@ -114,6 +146,10 @@ async def init_saml_auth(request: Request):
                 "url": config.saml_sp_acs_url,  # callback url
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
             },
+            "singleLogoutService": {
+                "url": config.saml_sp_slo_url,
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
             "x509cert": config.saml_sp_x509_cert,  # SP public key
             "privateKey": config.saml_sp_private_key,  # sp privateKey
         },
@@ -121,6 +157,10 @@ async def init_saml_auth(request: Request):
             "entityId": config.saml_idp_entity_id,  # idp_entityId
             "singleSignOnService": {
                 "url": config.saml_idp_server_url,  # server url
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
+            "singleLogoutService": {
+                "url": config.saml_idp_logout_url,
                 "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
             },
             "x509cert": config.saml_idp_x509_cert,  # idp public key
@@ -225,7 +265,7 @@ async def saml_callback(request: Request, session: SessionDep):
                 avatar_url=avatar_url,
                 hashed_password="",
                 is_admin=False,
-                is_active=False,
+                is_active=not config.external_auth_default_inactive,
                 source=AuthProviderEnum.SAML,
                 require_password_change=False,
             )
@@ -242,10 +282,30 @@ async def saml_callback(request: Request, session: SessionDep):
             max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
             expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
         )
+        response.set_cookie(
+            key=SSO_LOGIN_COOKIE_NAME,
+            value="true",
+            httponly=True,
+            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        )
     except Exception as e:
         logger.error(f"SAML callback error: {str(e)}")
         raise UnauthorizedException(message=str(e))
 
+    return response
+
+
+@router.api_route("/saml/logout/callback", methods=["GET", "POST"])
+async def saml_logout_callback(request: Request):
+    try:
+        auth = await init_saml_auth(request)
+        auth.process_slo(False)
+    except Exception:
+        pass
+    response = RedirectResponse(url="/")
+    response.delete_cookie(key=SESSION_COOKIE_NAME)
+    response.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
     return response
 
 
@@ -300,17 +360,19 @@ async def oidc_callback(request: Request, session: SessionDep):
         "client_secret": config.oidc_client_secret,
         "redirect_uri": config.oidc_redirect_uri,
     }
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    token_endpoint = config.openid_configuration["token_endpoint"]
+    use_proxy_env = use_proxy_env_for_url(token_endpoint)
+    async with httpx.AsyncClient(timeout=timeout, trust_env=use_proxy_env) as client:
         try:
-            token_endpoint = config.openid_configuration["token_endpoint"]
             token_res = await client.request("POST", token_endpoint, data=data)
             res_data = json.loads(token_res.text)
-            if "access_token" not in res_data:
-                raise UnauthorizedException(message=res_data['error_description'])
-            token = res_data['access_token']
+            if token_res.status_code != 200:
+                raise BadRequestException(
+                    message=f"Failed to get token, {res_data['error_description']}"
+                )
 
             # Get user data from token or userinfo endpoint
-            user_data = await get_oidc_user_data(client, token, config)
+            user_data = await get_oidc_user_data(client, res_data, config)
 
             if config.external_auth_name:
                 # If external_auth_name is set, use it as username.
@@ -359,7 +421,7 @@ async def oidc_callback(request: Request, session: SessionDep):
             avatar_url=avatar_url,
             hashed_password="",
             is_admin=False,
-            is_active=False,
+            is_active=not config.external_auth_default_inactive,
             source=AuthProviderEnum.OIDC,
             require_password_change=False,
         )
@@ -376,6 +438,25 @@ async def oidc_callback(request: Request, session: SessionDep):
         max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
         expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
     )
+    try:
+        id_token = res_data.get("id_token")
+        if id_token:
+            response.set_cookie(
+                key=OIDC_ID_TOKEN_COOKIE_NAME,
+                value=id_token,
+                httponly=True,
+                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            )
+            response.set_cookie(
+                key=SSO_LOGIN_COOKIE_NAME,
+                value="true",
+                httponly=True,
+                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to set id_token cookie: {str(e)}")
     return response
 
 
@@ -406,12 +487,53 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    response.delete_cookie(key=SESSION_COOKIE_NAME)
+async def logout(request: Request):
+    config: Config = request.app.state.server_config
+    external_logout_url = None
+    if (
+        config.external_auth_type == AuthProviderEnum.OIDC
+        and config.openid_configuration
+    ):
+        end_session_endpoint = config.openid_configuration.get("end_session_endpoint")
+        if end_session_endpoint:
+            redirect_uri = str(config.server_external_url or request.base_url)
+            params = {
+                "client_id": config.oidc_client_id,
+                "post_logout_redirect_uri": redirect_uri,
+                "id_token_hint": request.cookies.get(OIDC_ID_TOKEN_COOKIE_NAME),
+            }
+            if config.external_auth_post_logout_redirect_key:
+                params[config.external_auth_post_logout_redirect_key] = redirect_uri
+            query = urlencode({k: v for k, v in params.items() if v})
+            external_logout_url = (
+                end_session_endpoint if not query else f"{end_session_endpoint}?{query}"
+            )
+    elif config.external_auth_type == AuthProviderEnum.SAML:
+        try:
+            auth = await init_saml_auth(request)
+            redirect_uri = str(config.server_external_url or request.base_url)
+            params = {}
+            if config.external_auth_post_logout_redirect_key:
+                params[config.external_auth_post_logout_redirect_key] = redirect_uri
+            external_logout_url = auth.logout(return_to=redirect_uri)
+            query = urlencode({k: v for k, v in params.items() if v})
+            if query:
+                external_logout_url += f"&{query}"
+        except Exception as e:
+            logger.error(f"Failed to get SAML logout url: {str(e)}")
+            external_logout_url = None
+    sso_login = request.cookies.get(SSO_LOGIN_COOKIE_NAME)
+    content = json.dumps({"logout_url": external_logout_url}) if sso_login else ""
+    resp = Response(content=content, media_type="application/json")
+    resp.delete_cookie(key=SESSION_COOKIE_NAME)
+    resp.delete_cookie(key=OIDC_ID_TOKEN_COOKIE_NAME)
+    resp.delete_cookie(key=SSO_LOGIN_COOKIE_NAME)
+    return resp
 
 
 @router.post("/update-password")
 async def update_password(
+    request: Request,
     session: SessionDep,
     user: CurrentUserDep,
     update_in: UpdatePassword,
@@ -422,3 +544,61 @@ async def update_password(
     hashed_password = get_secret_hash(update_in.new_password)
     patch = {"hashed_password": hashed_password, "require_password_change": False}
     await user.update(session, patch)
+
+    _remove_initial_password_file_if_exists(request.app.state.server_config)
+
+
+@router.get("/config")
+async def get_auth_config(request: Request):
+    req_dict = {}
+    config: Config = request.app.state.server_config
+
+    auth_type = (config.external_auth_type or "Local").lower()
+    if auth_type == "oidc":
+        req_dict = {"is_oidc": True, "is_saml": False}
+    elif auth_type == "saml":
+        req_dict = {"is_oidc": False, "is_saml": True}
+
+    initial_password_file = Path(config.data_dir) / "initial_admin_password"
+    if initial_password_file.exists():
+        req_dict["first_time_setup"] = True
+        req_dict["get_initial_password_command"] = _get_initial_password_command(
+            initial_password_file
+        )
+
+    return req_dict
+
+
+def _get_initial_password_command(initial_password_file: Path) -> str:
+    """
+    Get the command to retrieve the initial admin password.
+    """
+    if os.getenv("KUBERNETES_SERVICE_HOST") is not None:
+        # Kubernetes
+        pod_name = os.getenv("HOSTNAME", "<pod_name>")
+        namespace_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+        namespace = (
+            namespace_file.read_text().strip()
+            if namespace_file.exists()
+            else "<namespace>"
+        )
+        return f"kubectl exec {pod_name} -n {namespace} -- cat {initial_password_file}"
+    elif Path("/.dockerenv").exists():
+        # Docker
+        return f"docker exec <container_name_or_id> cat {initial_password_file}"
+    else:
+        # Non-containerized
+        return f"cat {initial_password_file}"
+
+
+def _remove_initial_password_file_if_exists(config: Config):
+    """
+    Remove the initial admin password file if it exists.
+    """
+    initial_password_file = Path(config.data_dir) / "initial_admin_password"
+    if initial_password_file.exists():
+        try:
+            initial_password_file.unlink()
+            logger.debug(f"Initial password file deleted: {initial_password_file}")
+        except Exception as e:
+            logger.warning(f"Failed to delete initial password file: {e}")

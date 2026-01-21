@@ -6,6 +6,122 @@ This document describes how to monitor GPUStack Server/Worker/LLM serving runtim
 
 GPUStack provides a comprehensive set of metrics for model serving and GPU resource management. By integrating Prometheus and Grafana, users can collect, store, and visualize these metrics in real time, enabling efficient monitoring and troubleshooting.
 
+## Deploy Observability Stack
+
+The observability stack consists of two components:
+
+- **Prometheus**: Scrapes metrics from GPUStack and stores them.
+- **Grafana**: Visualizes metrics from Prometheus.
+
+All components can be deployed together via Docker Compose for easy management.
+
+### Deploying alongside GPUStack Server
+
+You can deploy GPUStack together with the observability stack using the provided `docker-compose.yaml` for a one-step setup. For details, refer to the [Installation via Docker Compose](../installation/installation.md#installation-via-docker-compose).
+
+### Deploying Separately
+
+If you started GPUStack using `docker run` (not Compose), you can deploy the observability components separately and connect them to your existing GPUStack server as follows:
+
+#### Steps
+
+1. **Get Docker Compose Directory**
+
+    Compose file directory: [docker-compose(GitHub)](https://github.com/gpustack/gpustack/tree/main/docker-compose)
+
+    ```bash
+    LATEST_TAG=$(
+        curl -s "https://api.github.com/repos/gpustack/gpustack/releases" \
+        | grep '"tag_name"' \
+        | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' \
+        | grep -Ev 'rc|beta|alpha|preview' \
+        | head -1
+    )
+    echo "Latest stable release: $LATEST_TAG"
+    git clone -b "$LATEST_TAG" https://github.com/gpustack/gpustack.git
+    cd gpustack/docker-compose
+    ```
+
+2. **Edit the Prometheus configuration file `prometheus.yml`**.
+
+    Edit `prometheus/prometheus.yml` to replace `<gpustack_server_host>` with the actual hostname or IP address of your GPUStack server. Ensure the metrics port is open and accessible, 10161 is the default metrics port, if you have changed it during server startup, please use the custom port.
+
+    ```yaml
+    scrape_configs:
+    - job_name: gpustack-worker-discovery
+        scrape_interval: 5s
+        http_sd_configs:
+        - url: "http://<gpustack_server_host>:10161/metrics/targets"
+            refresh_interval: 1m
+    - job_name: gpustack-server
+        scrape_interval: 10s
+        static_configs:
+        - targets: ["<gpustack_server_host>:10161"]
+    ```
+
+3. **Start the observability stack**
+
+    ```bash
+    sudo docker-compose -f docker-compose.observability.yaml up -d
+    ```
+
+### Accessing Metrics
+
+- **GPUStack Metrics Endpoint**:  
+  Access metrics at `http://<gpustack_server_host>:10161/metrics`
+- **GPUStack Worker Metrics Targets**:  
+  Access metrics at `http://<gpustack_server_host>:10161/metrics/targets`
+- **Prometheus UI**:  
+  Access Prometheus at `http://<host>:9090`
+- **Grafana UI**:  
+  Access Grafana at `http://<host>:3000` (default user: `admin`, password: `grafana`)
+
+## Customizing Metrics Mapping
+
+GPUStack supports dynamic customization of metrics mapping through its configuration API. This allows you to update how runtime engine metrics are mapped to GPUStack metrics without restarting the service. The configuration is managed centrally on the server and can be accessed or modified via HTTP API.
+
+### API Endpoints
+
+- **Get Current Metrics Config**
+
+  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config`
+  - Returns the current metrics mapping configuration in JSON format.
+
+- **Update Metrics Config**
+
+  - POST `http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config`
+  - Accepts a JSON payload to update the metrics mapping configuration. Changes take effect immediately for all workers.
+
+- **Get Default Metrics Config**
+  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/default-config`
+  - Returns the default metrics mapping configuration in JSON format, useful for reference or resetting.
+
+### Example Usage
+
+**Get current config:**
+
+```bash
+curl http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config
+```
+
+**Update config:**
+
+```bash
+curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/config \
+     -H "Content-Type: application/json" \
+     -d @custom_metrics_config.json
+```
+
+_(where `custom_metrics_config.json` is your new config file)_
+
+**Get default config:**
+
+```bash
+curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v2/metrics/default-config
+```
+
+> **Note**: The configuration should be provided in valid JSON format.
+
 ## Metrics Exposed by GPUStack
 
 The following metrics are exposed by GPUStack and can be scraped by Prometheus. Each metric includes hierarchical labels for cluster, worker, model, and instance identification.
@@ -70,137 +186,3 @@ These metrics are mapped from various runtime engines (vLLM, SGLang, MindIE) as 
 | gpustack:model_instance_status   | Gauge | Status of each model instance (with state label). |
 
 > **Note**: All metrics are labeled with relevant identifiers (cluster, worker, model, instance, user) for fine-grained monitoring and filtering.
-
-## Deploy GPUStack with the Observability Stack
-
-The observability stack consists of three main components:
-
-- **GPUStack Server**: Exposes metrics at `/metrics` endpoint, expose worker metrics targets at `/metrics/targets`.
-- **Prometheus**: Scrapes metrics from GPUStack and stores them.
-- **Grafana**: Visualizes metrics from Prometheus.
-
-All components are deployed via Docker Compose for easy management.
-
-### Docker Compose Configuration
-
-GPUStack provides a `docker-compose.yaml` file to deploy the observability stack in NVIDIA GPU environments, please refer to [Docker Compose](https://github.com/gpustack/gpustack/blob/main/docker-compose/docker-compose.server.nvidia.yaml).
-
-Below is a sample `docker-compose.yaml` for deploying GPUStack Server, Prometheus, and Grafana:
-
-```yaml
-services:
-  gpustack-server:
-    image: gpustack/gpustack
-    container_name: gpustack-server
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    volumes:
-      - gpustack-data:/var/lib/gpustack
-      - /var/run/docker.sock:/var/run/docker.sock
-    runtime: nvidia
-
-  prometheus:
-    image: prom/prometheus
-    container_name: gpustack-prometheus
-    restart: unless-stopped
-    network_mode: host
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--web.enable-remote-write-receiver"
-    volumes:
-      - ./prometheus:/etc/prometheus
-      - prom_data:/prometheus
-
-  grafana:
-    image: grafana/grafana
-    container_name: gpustack-grafana
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - GF_SERVER_HTTP_PORT=3000
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=grafana
-      - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles
-    volumes:
-      - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/grafana_dashboards:/etc/dashboards:ro
-
-volumes:
-  prom_data: {}
-  gpustack-data: {}
-```
-
-### Prometheus Configuration
-
-Configure Prometheus to scrape metrics from GPUStack Server and Worker by adding the following to `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: gpustack-worker-discovery
-    scrape_interval: 5s
-    http_sd_configs:
-      - url: "http://localhost:10161/metrics/targets"
-        refresh_interval: 1m
-  - job_name: gpustack-server
-    scrape_interval: 10s
-    static_configs:
-      - targets: ["localhost:10161"]
-```
-
-### Accessing Metrics
-
-- **GPUStack Metrics Endpoint**:  
-  Access metrics at `http://<gpustack_server_host>:10161/metrics`
-- **GPUStack Worker Metrics Targets**:  
-  Access metrics at `http://<gpustack_server_host>:10161/metrics/targets`
-- **Prometheus UI**:  
-  Access Prometheus at `http://<host>:9090`
-- **Grafana UI**:  
-  Access Grafana at `http://<host>:3000` (default user: `admin`, password: `grafana`)
-
-### Customizing Metrics Mapping
-
-GPUStack supports dynamic customization of metrics mapping through its configuration API. This allows you to update how runtime engine metrics are mapped to GPUStack metrics without restarting the service. The configuration is managed centrally on the server and can be accessed or modified via HTTP API.
-
-#### API Endpoints
-
-- **Get Current Metrics Config**
-
-  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config`
-  - Returns the current metrics mapping configuration in JSON format.
-
-- **Update Metrics Config**
-
-  - POST `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config`
-  - Accepts a JSON payload to update the metrics mapping configuration. Changes take effect immediately for all workers.
-
-- **Get Default Metrics Config**
-  - GET `http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/default-config`
-  - Returns the default metrics mapping configuration in JSON format, useful for reference or resetting.
-
-#### Example Usage
-
-**Get current config:**
-
-```bash
-curl http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config
-```
-
-**Update config:**
-
-```bash
-curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/config \
-     -H "Content-Type: application/json" \
-     -d @custom_metrics_config.json
-```
-
-_(where `custom_metrics_config.json` is your new config file)_
-
-**Get default config:**
-
-```bash
-curl -X POST http://<gpustack_server_host>:<gpustack_server_port>/v1/metrics/default-config
-```
-
-> **Note**: The configuration should be provided in valid JSON format.

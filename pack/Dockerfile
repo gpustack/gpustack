@@ -22,7 +22,7 @@
 # - HIGRESS_APISERVER_VERSION: Version of Higress API server to use.
 ARG PYTHON_VERSION=3.11
 ARG GPUSTACK_BASE_IMAGE=base
-ARG GPUSTACK_RUNTIME_ROCM_VERSION=6.2.4
+ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.8
 ARG HIGRESS_APISERVER_VERSION=0.0.25
@@ -167,9 +167,7 @@ RUN <<EOF
             PYTHON_LIB_PREFIX=$(python3 -c "import sys; print(sys.base_prefix);")
             echo "${PYTHON_LIB_PREFIX}/lib" >> /etc/ld.so.conf.d/python3.conf
             echo "${PYTHON_LIB_PREFIX}/lib64" >> /etc/ld.so.conf.d/python3.conf
-            EXPORT_PYTHON_LIB="export LD_LIBRARY_PATH=${PYTHON_LIB_PREFIX}/lib:${PYTHON_LIB_PREFIX}/lib64:\${LD_LIBRARY_PATH}"
-            echo "${EXPORT_PYTHON_LIB}" >> /etc/profile
-            echo "${EXPORT_PYTHON_LIB}" >> ~/.bashrc
+            ldconfig -v
         fi
         exit 0
     fi
@@ -232,10 +230,11 @@ wheel
 pybind11<3
 Cython
 psutil
-poetry
 pipx
 uv
 yq
+hatchling
+py-spy
 EOT
     pip install -r /tmp/requirements.txt
 
@@ -270,7 +269,7 @@ RUN set -eux; \
     && echo "Installed s6-overlay ${S6_OVERLAY_VERSION} successfully."
 
 ENV S6_KEEP_ENV=1 \
-    S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_SERVICES_GRACETIME=3000 \
     S6_KILL_GRACETIME=3000 \
     S6_VERBOSITY=1
@@ -340,7 +339,6 @@ RUN <<EOF
         && gosu postgres sed -i "s/^#log_destination/log_destination/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#log_min_messages = warning/log_min_messages = info/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#logging_collector = off/logging_collector = on/" "$PGCONFIG_FILE" \
-        && gosu postgres sed -i 's/^#log_directory = '\''log'\''/log_directory = '\''\/var\/lib\/gpustack\/log\/postgresql'\''/g' "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#log_filename/log_filename/" "$PGCONFIG_FILE" \
         && gosu postgres sed -i "s/^#log_rotation_size/log_rotation_size/" "$PGCONFIG_FILE"
 
@@ -388,8 +386,8 @@ RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
 
 EOF
 # Initialize configurations
-COPY pack/higress-configs/ /
-ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/opt/data/plugins
+COPY pack/rootfs/ /
+ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/usr/local/share/gpustack-higress/plugins
 ## END Install Higress standalone components
 
 ## Install Skopeo
@@ -453,7 +451,6 @@ RUN --mount=type=cache,target=/root/.cache \
     export POETRY_NO_CACHE=0
     export UV_NO_CACHE=0
     export UV_SYSTEM_PYTHON=1
-    export UV_PRERELEASE=allow
     export UV_LINK_MODE=copy
 
     # Build GPUStack
@@ -500,8 +497,6 @@ RUN --mount=type=cache,target=/root/.cache \
         && rm -rf /tmp/* \
         && rm -rf /workspace/gpustack/dist
 EOF
-## Copy s6-overlay service scripts.
-COPY pack/s6-overlay /etc/s6-overlay
 
 ## Entrypoint
 
@@ -533,6 +528,21 @@ RUN --mount=type=bind,from=rocm-base,source=/opt/rocm/share,target=/opt/rocm/sha
     uv pip install --no-build-isolation \
         /opt/rocm/share/amd_smi
     uv pip tree
+
+    # Hack to avoid: Fail to open libdrm_amdgpu.so: libdrm_amdgpu.so: cannot open shared object file: No such file or directory
+    TARGET_DIR="/usr/lib/$(uname -m)-linux-gnu"
+    TARGET_LIB="libdrm_amdgpu.so.1.0.0"
+    TARGET_LINK="libdrm_amdgpu.so"
+    TARGET_LIB_EXISTED="true"
+    if [[ ! -e "${TARGET_DIR}/${TARGET_LIB}" ]]; then
+        TARGET_LIB_EXISTED="false"
+        touch "${TARGET_DIR}/${TARGET_LIB}"
+    fi
+    pushd "${TARGET_DIR}" \
+        && ln -sf "${TARGET_LIB}" "${TARGET_LINK}"
+    if [[ "${TARGET_LIB_EXISTED}" == "false" ]]; then
+        rm -f "${TARGET_DIR}/${TARGET_LIB}"
+    fi
 EOF
 ENV AMD_VISIBLE_DEVICES="all" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/opt/rocm"
@@ -658,6 +668,21 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
+## Active all T-Head devices detection,
+## works with (default) T-Head container runtime and privileged mode.
+## See https://help.aliyun.com/document_detail/2996754.html.
+## Runs:
+## - With container runtime installed:
+##   [TODO, TBD]
+## - Without container runtime installed:
+##   + Allowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e GPUSTACK_RUNTIME_DOCKER_RESOURCE_INJECTION_POLICY=CDI -v /var/run/cdi:/var/run/cdi --privileged -v /usr/local/PPU_SDK:/usr/local/PPU_SDK:ro ...
+##   + Disallowing privileged, try with:
+##     docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -e GPUSTACK_RUNTIME_DOCKER_RESOURCE_INJECTION_POLICY=CDI -v /var/run/cdi:/var/run/cdi --security-opt seccomp=unconfined -v /dev:/dev:ro -v /usr/local/PPU_SDK:/usr/local/PPU_SDK:ro ...
+ENV PPU_HOME="/usr/local/PPU_SDK" \
+    LD_LIBRARY_PATH="/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/PPU_SDK/lib:${LD_LIBRARY_PATH}" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/usr/local/PPU_SDK;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}"
+
 ## Active GPUStack runtime mirrored deployment mode,
 ## if getting an error like, "Found multiple Containers with the same hostname ...",
 ## please use `--env GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME=...` to specify the exact container name.
@@ -665,13 +690,18 @@ ENV NVIDIA_DISABLE_REQUIRE="true" \
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 
 ## GPUSTACK_RUNTIME_LOG_EXCEPTION=false: Disable logging exceptions from gpustack-runtime.
+## GPUSTACK_RUNTIME_DEPLOY_CDI_SPECS_DIRECTORY=/var/run/cdi: Set CDI specs directory.
 ## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT=true: Enable mirrored deployment mode.
 ## GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE=false: Disable auto correction of runner images.
+## GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION=true: Disable visualizating image pull progress, instead using simple logs.
 ## GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS: Configure filter labels for mirrored deployment.
 ## GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES: Declare volumes to be ignored during mirrored deployment.
 ENV GPUSTACK_RUNTIME_LOG_EXCEPTION="false" \
+    GPUSTACK_RUNTIME_DEPLOY_CDI_SPECS_DIRECTORY="/var/run/cdi" \
     GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT="true" \
+    GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES="/var/run/cdi;${GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT_IGNORE_VOLUMES}" \
     GPUSTACK_RUNTIME_DEPLOY_CORRECT_RUNNER_IMAGE="false" \
+    GPUSTACK_RUNTIME_DOCKER_IMAGE_NO_PULL_VISUALIZATION="true" \
     GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS="${GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS}"
 
 COPY --chmod=755 pack/entrypoint.sh /usr/bin/entrypoint.sh

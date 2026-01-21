@@ -1,0 +1,79 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+# shellcheck disable=SC1091,SC1090
+# ================================
+# Postgres longrun service
+# ================================
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
+source "$GPUSTACK_POSTGRES_CONFIG"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+PGDATA="${POSTGRES_DATA_DIR}"
+PGLOG="${LOG_DIR}/postgresql"
+PASS_FILE="${DATA_DIR}/postgres_root_pass"
+
+# Ensure data directory
+if [ ! -d "$PGDATA" ]; then
+	echo "[INFO] Creating Postgres data directory at $PGDATA."
+	createDir "$PGDATA" \
+		&& chown -R postgres:postgres "$PGDATA" \
+		&& chmod 0700 "$PGDATA"
+fi
+
+# Ensure log directory
+if [ ! -d "$PGLOG" ]; then
+	echo "[INFO] Creating Postgres log directory at $PGLOG."
+	createDir "$PGLOG" \
+		&& chown -R postgres:postgres "$PGLOG" \
+		&& chmod 0755 "$PGLOG"
+fi
+
+# Password setup
+ROOT_PASS=""
+if [ ! -f "$PASS_FILE" ]; then
+	if [ -n "$POSTGRES_PASSWORD" ]; then
+		ROOT_PASS="$POSTGRES_PASSWORD"
+	else
+		ROOT_PASS=$(tr -dc 'A-Za-z0-9!@#$%^&*_+=' </dev/urandom | head -c 16)
+		ROOT_PASS="$(tr -dc 'A-Za-z' </dev/urandom | head -c 1)${ROOT_PASS:1}"
+	fi
+	echo "$ROOT_PASS" > "$PASS_FILE"
+	chmod 600 "$PASS_FILE"
+	echo "[INFO] Postgres root password written to $PASS_FILE."
+elif [ -f "$PASS_FILE" ]; then
+    ROOT_PASS=$(cat "$PASS_FILE")
+    echo "[INFO] Postgres root password read from $PASS_FILE."
+fi
+
+# reconfigure Postgres port
+PGCONFIG_FILE=/etc/postgresql/main/postgresql.conf
+gosu postgres sed -i "s/^port[[:space:]]*=[[:space:]]*[0-9]\+/port = $EMBEDDED_DATABASE_PORT/" "$PGCONFIG_FILE"
+gosu postgres sed -i "s|^#log_directory = 'log'|log_directory = '$PGLOG'|" "$PGCONFIG_FILE"
+
+# Initialize database
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "[INFO] Initializing Postgres database."
+	gosu postgres initdb -D "$PGDATA" > /dev/null
+fi
+gosu postgres pg_ctl -s -D "$PGDATA" -o "-c listen_addresses='localhost' -c port='$EMBEDDED_DATABASE_PORT'" -w start > /dev/null
+if ! gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "SELECT 1 FROM pg_roles WHERE rolname='root'" | grep -q 1; then
+    gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -q --command "CREATE USER root WITH PASSWORD '$ROOT_PASS';" > /dev/null
+fi
+if ! gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -tAc "SELECT 1 FROM pg_database WHERE datname='gpustack'" | grep -q 1; then
+    gosu postgres psql -p "$EMBEDDED_DATABASE_PORT" -q --command "CREATE DATABASE gpustack OWNER root;" > /dev/null
+fi
+gosu postgres pg_ctl -p "$EMBEDDED_DATABASE_PORT" -s -D "$PGDATA" -m fast -w stop > /dev/null
+
+# Start Postgres
+echo "[INFO] Starting Postgres."
+exec s6-notifyoncheck \
+     -d -w 5000 -n 10 -s 3000 \
+     -- \
+     gosu postgres /usr/bin/postgres \
+         -D "$PGDATA" \
+         -p "$EMBEDDED_DATABASE_PORT" \
+         -c config_file=/etc/postgresql/main/postgresql.conf \
+         -c hba_file=/etc/postgresql/main/pg_hba.conf

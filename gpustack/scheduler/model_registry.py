@@ -1,7 +1,10 @@
-# Synced with https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/model_executor/models/registry.py
+# Synced with https://github.com/vllm-project/vllm/blob/v0.11.2/vllm/model_executor/models/registry.py
 # Update these when the builtin vLLM is updated
 # List of supported model architectures for the default version of the vLLM backend
 # TODO version-aware support list
+from typing import List
+
+from gpustack.schemas.models import CategoryEnum
 
 _TEXT_GENERATION_MODELS = [
     # [Decoder-only]
@@ -35,8 +38,11 @@ _TEXT_GENERATION_MODELS = [
     "Ernie4_5_MoeForCausalLM",
     "ExaoneForCausalLM",
     "Exaone4ForCausalLM",
-    "FalconForCausalLM",
     "Fairseq2LlamaForCausalLM",
+    "FalconForCausalLM",
+    "FalconMambaForCausalLM",
+    "FalconH1ForCausalLM",
+    "FlexOlmoForCausalLM",
     "GemmaForCausalLM",
     "Gemma2ForCausalLM",
     "Gemma3ForCausalLM",
@@ -65,17 +71,21 @@ _TEXT_GENERATION_MODELS = [
     "InternLM3ForCausalLM",
     "JAISLMHeadModel",
     "JambaForCausalLM",
+    "KimiLinearForCausalLM",
     "Lfm2ForCausalLM",
+    "Lfm2MoeForCausalLM",
     "LlamaForCausalLM",
     "LLaMAForCausalLM",
     "Llama4ForCausalLM",
     "LongcatFlashForCausalLM",
     "MambaForCausalLM",
-    "FalconMambaForCausalLM",
-    "FalconH1ForCausalLM",
     "Mamba2ForCausalLM",
     "MiniCPMForCausalLM",
     "MiniCPM3ForCausalLM",
+    "MiniMaxForCausalLM",
+    "MiniMaxText01ForCausalLM",
+    "MiniMaxM1ForCausalLM",
+    "MiniMaxM2ForCausalLM",
     "MistralForCausalLM",
     "MixtralForCausalLM",
     "MotifForCausalLM",
@@ -91,6 +101,9 @@ _TEXT_GENERATION_MODELS = [
     "OlmoeForCausalLM",
     "OPTForCausalLM",
     "OrionForCausalLM",
+    "OuroForCausalLM",
+    "PanguEmbeddedForCausalLM",
+    "PanguUltraMoEForCausalLM",
     "PersimmonForCausalLM",
     "PhiForCausalLM",
     "Phi3ForCausalLM",
@@ -123,6 +136,7 @@ _TEXT_GENERATION_MODELS = [
 _EMBEDDING_MODELS = [
     # [Text-only]
     "BertModel",
+    "BertSpladeSparseEmbeddingModel",
     "DeciLMForCausalLM",
     "Gemma2Model",
     "Gemma3TextModel",
@@ -158,6 +172,7 @@ _EMBEDDING_MODELS = [
     # "LlavaNextForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
     # "Phi3VForCausalLM",
     # "Qwen2VLForConditionalGeneration", # Registered in _TEXT_GENERATION_MODELS
+    "CLIPModel",
     "PrithviGeoSpatialMAE",
     "Terratorch",
 ]
@@ -169,6 +184,7 @@ _CROSS_ENCODER_MODELS = [
     "RobertaForSequenceClassification",
     "XLMRobertaForSequenceClassification",
     "ModernBertForSequenceClassification",
+    "ModernBertForTokenClassification",
     # [Auto-converted]
     "JinaVLForRanking",
 ]
@@ -177,10 +193,12 @@ _MULTIMODAL_MODELS = [
     # [Decoder-only]
     "AriaForConditionalGeneration",
     "AyaVisionForConditionalGeneration",
+    "BeeForConditionalGeneration",
     "Blip2ForConditionalGeneration",
     "ChameleonForConditionalGeneration",
     "Cohere2VisionForConditionalGeneration",
     "DeepseekVLV2ForCausalLM",
+    "DeepseekOCRForCausalLM",
     "DotsOCRForCausalLM",
     "Ernie4_5_VLMoeForConditionalGeneration",
     "FuyuForCausalLM",
@@ -202,6 +220,7 @@ _MULTIMODAL_MODELS = [
     "KeyeVL1_5ForConditionalGeneration",
     "RForConditionalGeneration",
     "KimiVLForConditionalGeneration",
+    "LightOnOCRForConditionalGeneration",
     "Llama_Nemotron_Nano_VL",
     "Llama4ForConditionalGeneration",
     "LlavaForConditionalGeneration",
@@ -218,6 +237,7 @@ _MULTIMODAL_MODELS = [
     "NVLM_D",
     "Ovis",
     "Ovis2_5",
+    "PaddleOCRVLForConditionalGeneration",
     "PaliGemmaForConditionalGeneration",
     "Phi3VForCausalLM",
     "Phi4MMForCausalLM",
@@ -229,6 +249,7 @@ _MULTIMODAL_MODELS = [
     "Qwen2AudioForConditionalGeneration",
     "Qwen2_5OmniModel",
     "Qwen2_5OmniForConditionalGeneration",
+    "Qwen3OmniMoeForConditionalGeneration",
     "Qwen3VLForConditionalGeneration",
     "Qwen3VLMoeForConditionalGeneration",
     "UltravoxModel",
@@ -252,19 +273,75 @@ _TRANSFORMERS_SUPPORTED_MODELS = [
     "Emu3ForConditionalGeneration",
 ]
 
-_TRANSFORMERS_BACKEND_MODELS = [
+
+_TRANSFORMERS_BACKEND_TEXT_GENERATION_MODELS = [
     "TransformersModel",
     "TransformersForCausalLM",
-    "TransformersForMultimodalLM",
+    "TransformersMoEForCausalLM",
 ]
 
-vllm_supported_embedding_architectures = _EMBEDDING_MODELS
+_TRANSFORMERS_BACKEND_MULTIMODAL_MODELS = [
+    "TransformersForMultimodalLM",
+    "TransformersMultiModalForCausalLM",
+    "TransformersMultiModalMoEForCausalLM",
+]
 
-vllm_supported_reranker_architectures = _CROSS_ENCODER_MODELS
+_TRANSFORMERS_BACKEND_EMBEDDING_MODELS = [
+    "TransformersEmbeddingModel",
+    "TransformersMoEEmbeddingModel",
+    "TransformersMultiModalEmbeddingModel",
+]
 
-vllm_supported_llm_architectures = (
+_TRANSFORMERS_BACKEND_CROSS_ENCODER_MODELS = [
+    "TransformersForSequenceClassification",
+    "TransformersMoEForSequenceClassification",
+    "TransformersMultiModalForSequenceClassification",
+]
+
+_LLM_MODELS = (
     _TEXT_GENERATION_MODELS
     + _MULTIMODAL_MODELS
     + _TRANSFORMERS_SUPPORTED_MODELS
-    + _TRANSFORMERS_BACKEND_MODELS
+    + _TRANSFORMERS_BACKEND_TEXT_GENERATION_MODELS
+    + _TRANSFORMERS_BACKEND_MULTIMODAL_MODELS
 )
+
+_EMBEDDING_MODELS = _EMBEDDING_MODELS + _TRANSFORMERS_BACKEND_EMBEDDING_MODELS
+
+_RERANKER_MODELS = _CROSS_ENCODER_MODELS + _TRANSFORMERS_BACKEND_CROSS_ENCODER_MODELS
+
+
+def detect_model_type(architectures: List[str]) -> CategoryEnum:
+    """
+    Detect the model type based on the architectures.
+
+    Args:
+        architectures: List of model architecture names.
+
+    Returns:
+        The detected model category.
+    """
+    for architecture in architectures or []:
+        if architecture in _EMBEDDING_MODELS:
+            return CategoryEnum.EMBEDDING
+        if architecture in _RERANKER_MODELS:
+            return CategoryEnum.RERANKER
+        if architecture in _LLM_MODELS:
+            return CategoryEnum.LLM
+    return CategoryEnum.UNKNOWN
+
+
+def is_multimodal_model(architectures: List[str]) -> bool:
+    """
+    Check if the model is a multimodal model based on the architectures.
+
+    Args:
+        architectures: List of model architecture names.
+
+    Returns:
+        True if the model is multimodal, False otherwise.
+    """
+    for architecture in architectures or []:
+        if architecture in _MULTIMODAL_MODELS:
+            return True
+    return False

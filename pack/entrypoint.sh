@@ -4,7 +4,7 @@
 set -e
 
 source /etc/s6-overlay/scripts/base.sh
-ARGS_FILE="/var/lib/gpustack/run/args/gpustack"
+ARGS_FILE="/run/gpustack/args"
 mkdir -p "$(dirname "$ARGS_FILE")"
 
 # If any arguments are passed to the container, save them to the args file
@@ -21,5 +21,7 @@ fi
 
 # remove generated gateway config to force regeneration
 rm -rf "${GPUSTACK_GATEWAY_CONFIG}"
+
+export S6_STAGE2_HOOK="/etc/s6-overlay/scripts/gpustack-prerun.sh"
 
 exec /init

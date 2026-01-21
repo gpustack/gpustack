@@ -1,0 +1,17 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
+source "$GPUSTACK_POSTGRES_CONFIG"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+echo "[INFO] Checking Postgres readiness."
+if gosu postgres pg_isready -p "$EMBEDDED_DATABASE_PORT" -q; then
+    echo "[INFO] Postgres is ready."
+    exit 0
+else
+    echo "[ERROR] Postgres is not ready."
+    exit 1
+fi

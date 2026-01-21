@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from gpustack.routes import (
     api_keys,
     auth,
+    config,
     dashboard,
     debug,
     draft_models,
@@ -105,6 +106,12 @@ worker_client_router.add_api_route(
     methods=["POST"],
     include_in_schema=False,
 )
+worker_client_router.add_api_route(
+    path="/worker-heartbeat",
+    endpoint=workers.heartbeat,
+    methods=["POST"],
+    include_in_schema=False,
+)
 worker_client_router.include_router(
     inference_backend.router, prefix="/inference-backends", tags=["Inference Backend"]
 )
@@ -158,6 +165,12 @@ api_router.include_router(
 )
 api_router.include_router(
     v1_admin_router, dependencies=[Depends(get_admin_user)], prefix=versioned_prefix
+)
+api_router.include_router(
+    config.router,
+    dependencies=[Depends(get_admin_user)],
+    prefix=versioned_prefix,
+    include_in_schema=False,
 )
 api_router.include_router(
     debug.router,

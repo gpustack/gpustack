@@ -62,6 +62,9 @@ from gpustack.schemas.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic, ApiKey
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.common import PaginatedList
+from gpustack.schemas.filesystem import (
+    FileExistsResponse,
+)
 
 __all__ = [
     "ApiKey",
@@ -125,4 +128,5 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
+    "FileExistsResponse",
 ]

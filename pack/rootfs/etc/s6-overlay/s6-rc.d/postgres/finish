@@ -1,0 +1,29 @@
+#!/command/with-contenv bash
+
+EXIT_CODE="$1"
+EXIT_SIGNAL="$2"
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+# The config should be ready before starting
+source "$GPUSTACK_POSTGRES_CONFIG"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+PGDATA="${GPUSTACK_POSTGRES_DIR}/data"
+
+echo "[INFO] PostgreSQL service is stopping..."
+
+if [ -f "$PGDATA/postmaster.pid" ]; then
+    echo "[ERROR] Gracefully shutting down PostgreSQL..."
+    gosu postgres pg_ctl -D "$PGDATA" -m fast stop || \
+    gosu postgres pg_ctl -D "$PGDATA" -m immediate stop
+
+    sleep 2
+fi
+
+if [ -f "$PGDATA/postmaster.pid" ]; then
+    echo "[ERROR] PostgreSQL did not exit cleanly. Forcing immediate shutdown."
+    gosu postgres pg_ctl -D "$PGDATA" -m immediate stop
+fi
+
+handleServiceExit "postgres" "$EXIT_CODE" "$EXIT_SIGNAL"
