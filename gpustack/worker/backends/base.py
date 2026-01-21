@@ -704,9 +704,8 @@ $@
 
         backend_variant = None
         service = self._model.backend.lower()
-        service_version = (
-            self._model.backend_version if self._model.backend_version else None
-        )
+        model_service_version = self._model.backend_version
+        service_version = model_service_version
 
         # Default variant for some backends.
         if backend == "cann":
@@ -719,8 +718,9 @@ $@
             backend=backend,
             backend_variant=backend_variant,
             service=service,
-            service_version=service_version,
+            service_version=model_service_version,
             platform=platform.system_arch(),
+            with_deprecated=model_service_version is not None,
         )
         if not runners:
             # Return directly if there is not a valid runner.
