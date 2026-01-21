@@ -57,6 +57,7 @@ class WorkerConfig(PredefinedConfig):
     worker_ip: Optional[str] = None
     worker_ifname: Optional[str] = None
     worker_name: Optional[str] = None
+    kv_cache_disk_path: Optional[str] = None
 
 
 class Config(WorkerConfig, BaseSettings):

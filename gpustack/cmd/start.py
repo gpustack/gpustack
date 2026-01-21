@@ -368,6 +368,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         "direct (server connects directly) or worker (via worker proxy). "
         "Default value is direct for embedded worker, and worker for standalone worker.",
     )
+    group.add_argument(
+        "--kv-cache-disk-path",
+        type=str,
+        help="Path to SSD storage for KV cache offloading (L3 cache). If set, enables disk-based cache for extended KV cache. The path should be accessible from the container.",
+        default=get_gpustack_env("KV_CACHE_DISK_PATH"),
+    )
 
     group.add_argument(
         "--enable-cors",
@@ -705,6 +711,7 @@ def set_worker_options(args, config_data: dict):
         "enable_hf_transfer",
         "enable_hf_xet",
         "proxy_mode",
+        "kv_cache_disk_path",
     ]
 
     for option in options:

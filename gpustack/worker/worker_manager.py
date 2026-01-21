@@ -116,6 +116,7 @@ class WorkerManager:
         workerUpdate = WorkerUpdate(
             name=self._worker_name,
             labels=self._ensure_builtin_labels(),
+            disk_path=self._cfg.kv_cache_disk_path,
         )
         to_register = WorkerCreate.model_validate(
             {
