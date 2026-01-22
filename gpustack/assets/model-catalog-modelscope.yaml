@@ -1441,3 +1441,5 @@ model_sets:
       source: model_scope
       model_scope_model_id: iic/SenseVoiceSmall
       backend: VoxBox
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "12884901888" # 12 GiB, it depends on the audio length. This value works for ~10 minutes audio input.

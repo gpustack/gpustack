@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
 import asyncio
+from typing import Dict, List
+import os
+import logging
 
 from gpustack_runtime.detector import ManufacturerEnum
 
@@ -8,10 +11,8 @@ from gpustack.utils.convert import safe_int
 from gpustack.utils.file import get_local_file_size_in_byte
 from gpustack.utils.gpu import parse_gpu_id
 from gpustack.utils.hub import get_model_weight_size
-from typing import Dict, List
-import os
-import logging
-
+from gpustack.utils.unit import byte_to_gib
+from gpustack.policies.utils import get_vram_claim_from_model_env
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
 )
@@ -58,7 +59,14 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
                 self._selected_gpu_index = safe_int(match.get("gpu_index"))
 
     def _set_messages(self):
-        self._messages = ["No workers meet the resource requirements."]
+        ram_message = ""
+        requirement_message = ""
+        if self._cpu_ram_claim and self._cpu_ram_claim > 0:
+            ram_message = f" and {byte_to_gib(self._gpu_ram_claim)} GiB of RAM"
+        if self._gpu_vram_claim and self._gpu_vram_claim > 0:
+            requirement_message = f"The model requires {byte_to_gib(self._gpu_vram_claim)} GiB of VRAM{ram_message}."
+            self._messages.append(requirement_message)
+        self._messages.append("No workers meet the resource requirements.")
 
     def get_messages(self) -> List[str]:
         return self._messages
@@ -190,6 +198,9 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         """
         Find single worker without offloading candidates for the model instance with workers.
         """
+        if not self._model.cpu_offloading:
+            return []
+
         candidates = []
         for worker in workers:
             result = await self._find_single_worker_with_cpu_candidates(worker)
@@ -231,6 +242,24 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
 
 
 def estimate_model_resource(cfg: Config, model: Model, cache_dir: str) -> dict:
+    """
+    Estimate the model resource requirement using vox_box.
+    If the model has GPUSTACK_MODEL_VRAM_CLAIM env var, use it directly.
+    Otherwise, use vox_box to estimate the model resource requirement.
+
+    Returns:
+        A dict of resource requirement, e.g.:
+        {"cuda": {"vram": 1073741824, "ram": 1073741824}, "cpu": {"ram": 12 * Gib}, "os": ["linux"]}
+    """
+    env_vram_claim = get_vram_claim_from_model_env(model)
+    if env_vram_claim is not None:
+        return {
+            "cuda": {
+                "vram": env_vram_claim,
+                "ram": 0,
+            }
+        }
+
     try:
         from vox_box.estimator.estimate import estimate_model
         from vox_box.config import Config as VoxBoxConfig
