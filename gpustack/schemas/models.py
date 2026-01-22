@@ -60,6 +60,12 @@ class BackendEnum(str, Enum):
     CUSTOM = "Custom"
 
 
+class BackendSourceEnum(str, Enum):
+    CUSTOM = "custom"
+    BUILT_IN = "built-in"
+    COMMUNITY = "community"
+
+
 class AccessPolicyEnum(str, Enum):
     PUBLIC = "public"
     AUTHED = "authed"

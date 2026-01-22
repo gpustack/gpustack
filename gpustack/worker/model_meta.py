@@ -7,7 +7,6 @@ from gpustack.schemas.models import (
     Model,
     CategoryEnum,
 )
-from gpustack.schemas.inference_backend import is_built_in_backend
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +17,6 @@ def get_meta_from_running_instance(
     """
     Get the meta information from the running instance (synchronous version).
     """
-    is_built_in = is_built_in_backend(backend)
-    if not is_built_in or backend == BackendEnum.CUSTOM:
-        # Skip meta fetching for custom or non-built-in backends
-        return {}
 
     if backend == BackendEnum.SGLANG and CategoryEnum.IMAGE in model.categories:
         # SGLang Diffusion does not provide metadata endpoints at the moment.
