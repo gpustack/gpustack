@@ -279,7 +279,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 f"model {self._model.readable_source}, filter candidates with resource fit selector: {candidate_func.__name__}"
             )
 
-            candidates = await candidate_func(workers)
+            candidates = candidate_func(workers)
 
             if len(candidates) >= 1 and candidates[0].overcommit:
                 # Manually selected candidate with overcommit. Also add the message.
@@ -309,7 +309,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return False
 
-    async def find_manual_gpu_selection_candidates(
+    def find_manual_gpu_selection_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         request = RequestEstimateUsage(
@@ -317,14 +317,14 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             vram=self._vram_claim,
         )
 
-        return await self._find_manual_gpu_selection_candidates(
+        return self._find_manual_gpu_selection_candidates(
             workers,
             {"*": self._gpu_memory_utilization},
             request,
             self._event_collector,
         )
 
-    async def find_single_worker_single_gpu_full_offloading_candidates(
+    def find_single_worker_single_gpu_full_offloading_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -341,7 +341,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 if not worker.status.gpu_devices:
                     continue
 
-                result = await self._find_single_worker_single_gpu_full_offloading_candidates(
+                result = self._find_single_worker_single_gpu_full_offloading_candidates(
                     worker,
                     gpu_type,
                 )
@@ -350,7 +350,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def _find_single_worker_single_gpu_full_offloading_candidates(
+    def _find_single_worker_single_gpu_full_offloading_candidates(
         self,
         worker: Worker,
         gpu_type: Optional[str] = None,
@@ -362,7 +362,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         candidates = []
 
-        allocatable = await self.get_worker_allocatable_resource(worker, gpu_type)
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
         if ram_not_enough(self._ram_claim, allocatable):
             return []
@@ -431,7 +431,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def find_single_worker_multi_gpu_full_offloading_candidates(
+    def find_single_worker_multi_gpu_full_offloading_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         if self._gpu_count == 1:
@@ -444,10 +444,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 if not worker.status.gpu_devices:
                     continue
 
-                result = (
-                    await self._find_single_worker_multi_gpu_full_offloading_candidates(
-                        worker, gpu_type
-                    )
+                result = self._find_single_worker_multi_gpu_full_offloading_candidates(
+                    worker, gpu_type
                 )
                 if result:
                     candidates.extend(result)
@@ -463,7 +461,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         ]
         return final_candidates
 
-    async def _find_single_worker_multi_gpu_full_offloading_candidates(  # noqa: C901
+    def _find_single_worker_multi_gpu_full_offloading_candidates(  # noqa: C901
         self, worker: Worker, gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -475,7 +473,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         if total_gpu < 2:
             return None
 
-        allocatable = await self.get_worker_allocatable_resource(worker, gpu_type)
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
         if ram_not_enough(self._ram_claim, allocatable):
             return []
@@ -568,13 +566,13 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return []
 
-    async def find_multi_worker_multi_gpu_candidates(
+    def find_multi_worker_multi_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         candidates = []
         workers_of_type = group_workers_by_gpu_type(workers)
         for gpu_type, workers_of_type in workers_of_type.items():
-            result = await self.auto_select_multi_worker_multi_gpu_candidates(
+            result = self.auto_select_multi_worker_multi_gpu_candidates(
                 workers_of_type, gpu_type
             )
             if result:
@@ -582,7 +580,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def auto_select_multi_worker_multi_gpu_candidates(  # noqa: C901
+    def auto_select_multi_worker_multi_gpu_candidates(  # noqa: C901
         self, workers: List[Worker], gpu_type: Optional[str] = None
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -625,9 +623,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             gpu_sum = 0
             vram_sum = 0
             for worker in worker_group:
-                allocatable = await self.get_worker_allocatable_resource(
-                    worker, gpu_type
-                )
+                allocatable = self.get_worker_allocatable_resource(worker, gpu_type)
 
                 if ram_not_enough(self._ram_claim, allocatable):
                     # The RAM resource(for extended KV cache) is required per worker.

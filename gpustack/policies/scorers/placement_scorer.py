@@ -117,7 +117,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
         Score the candidates with the binpack strategy.
         """
         for candidate in candidates:
-            allocatable = await get_worker_allocatable_resource(
+            allocatable = get_worker_allocatable_resource(
                 self._model_instances, candidate.worker
             )
 
@@ -171,9 +171,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
                 )
                 continue
 
-            allocatable = await get_worker_allocatable_resource(
-                self._model_instances, worker
-            )
+            allocatable = get_worker_allocatable_resource(self._model_instances, worker)
 
             final_score = 0
             score = await self._score_binpack_item(
@@ -478,7 +476,7 @@ class PlacementScorer(ScheduleCandidatesScorer, ModelInstanceScorer):
 
             score = 0
             for subordinate_worker in subordinate_workers:
-                allocatable = await get_worker_allocatable_resource(
+                allocatable = get_worker_allocatable_resource(
                     self._model_instances,
                     worker_map.get(subordinate_worker.worker_id),
                 )
