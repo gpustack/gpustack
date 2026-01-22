@@ -231,6 +231,21 @@ def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
     return gpu_type_to_workers
 
 
+def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
+    """
+    Get the VRAM claim from model environment variable 'GPUSTACK_MODEL_VRAM_CLAIM' if set.
+    """
+    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
+        try:
+            return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
+        except ValueError:
+            logger.warning(
+                f"Invalid VRAM claim value for model {model.name}: {model.env['GPUSTACK_MODEL_VRAM_CLAIM']}"
+            )
+
+    return None
+
+
 async def estimate_model_vram(
     model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
 ) -> int:
@@ -252,9 +267,10 @@ async def estimate_model_vram(
     - 72B requires 164.5 GiB
 
     """
-    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
+    env_vram_claim = get_vram_claim_from_model_env(model)
+    if env_vram_claim is not None:
         # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
-        return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
+        return env_vram_claim
 
     # CUDA graphs can take additional 1~3 GiB memory
     # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
