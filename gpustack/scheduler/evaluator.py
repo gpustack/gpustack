@@ -25,6 +25,7 @@ from gpustack.schemas.model_evaluations import (
     ResourceClaim,
 )
 from gpustack.schemas.models import (
+    ModelInstance,
     BackendEnum,
     CategoryEnum,
     SourceEnum,
@@ -90,8 +91,12 @@ async def evaluate_models(
         session, fields=fields, extra_conditions=extra_conditions
     )
 
+    model_instances = await ModelInstance.all_by_fields(session, fields=fields)
+
     async def evaluate(model: ModelSpec):
-        return await evaluate_model_with_cache(config, session, model, workers)
+        return await evaluate_model_with_cache(
+            config, session, model, workers, model_instances
+        )
 
     tasks = [evaluate(model) for model in model_specs]
     results = await asyncio.gather(*tasks)
@@ -140,6 +145,7 @@ async def evaluate_model_with_cache(
     session: AsyncSession,
     model: ModelSpec,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
 ) -> ModelEvaluationResult:
     cache_key = make_hashable_key(model, workers)
     if cache_key in evaluate_cache:
@@ -150,7 +156,9 @@ async def evaluate_model_with_cache(
 
     try:
         async with evaluate_model_limiter:
-            result = await evaluate_model(config, session, model, workers)
+            result = await evaluate_model(
+                config, session, model, workers, model_instances
+            )
             evaluate_cache[cache_key] = result
     except Exception as e:
         logger.exception(
@@ -169,6 +177,7 @@ async def evaluate_model(
     session: AsyncSession,
     model: ModelSpec,
     workers: List[Worker],
+    model_instances: List[ModelInstance],
 ) -> ModelEvaluationResult:
     result = ModelEvaluationResult()
 
@@ -197,8 +206,11 @@ async def evaluate_model(
     result.resource_claim_by_cluster_id = {}
 
     for cluster_id, cluster_workers in workers_by_cluster.items():
+        cluster_model_instances = [
+            inst for inst in model_instances if inst.cluster_id == cluster_id
+        ]
         candidate, schedule_messages = await scheduler.find_candidate(
-            config, model, cluster_workers
+            config, model, cluster_workers, cluster_model_instances
         )
         if not candidate:
             result.scheduling_messages.extend(schedule_messages)
