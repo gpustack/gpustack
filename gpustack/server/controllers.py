@@ -2,6 +2,8 @@ import logging
 import random
 import string
 import asyncio
+import yaml
+from importlib.resources import files
 from typing import Any, Dict, List, Tuple, Optional, Set
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,10 +17,16 @@ from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer, ScaleTypeEnum
 from gpustack.policies.base import ModelInstanceScore
 from gpustack.policies.scorers.status_scorer import StatusScorer
-from gpustack.schemas.inference_backend import InferenceBackend, get_built_in_backend
+from gpustack.schemas.inference_backend import (
+    InferenceBackend,
+    get_built_in_backend,
+    VersionConfig,
+    VersionConfigDict,
+)
 from gpustack.schemas.model_files import ModelFile, ModelFileStateEnum
 from gpustack.schemas.models import (
     BackendEnum,
+    BackendSourceEnum,
     ModelSource,
     MyModel,
     Model,
@@ -812,22 +820,208 @@ class WorkerController:
 
 class InferenceBackendController:
     """
-    Inference backend controller initializes built-in backends in the database.
+    Inference backend controller initializes built-in and community backends in the database.
     """
 
     async def start(self):
         async with async_session() as session:
-            for built_in_backend in get_built_in_backend():
-                if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
-                    continue
-                backend = await InferenceBackend.one_by_field(
-                    session, "backend_name", built_in_backend.backend_name
+            # Initialize built-in backends
+            await self._init_built_in_backends(session)
+
+            # Initialize community backends
+            await self._init_community_backends(session)
+
+    async def _init_built_in_backends(self, session: AsyncSession):
+        """Initialize built-in backends in the database."""
+        for built_in_backend in get_built_in_backend():
+            if built_in_backend.backend_name == BackendEnum.CUSTOM.value:
+                continue
+
+            backend = await InferenceBackend.one_by_field(
+                session, "backend_name", built_in_backend.backend_name
+            )
+
+            if not backend:
+                # Create new built-in backend with backend_source
+                built_in_backend.backend_source = BackendSourceEnum.BUILT_IN
+                built_in_backend.enabled = True
+                await InferenceBackend.create(session, built_in_backend)
+                logger.info(
+                    f"Init built-in backend {built_in_backend.backend_name} in database"
                 )
-                if not backend:
-                    await InferenceBackend.create(session, built_in_backend)
-                    logger.info(
-                        f"Init built-in backend {built_in_backend.backend_name} in database"
+            elif backend.backend_source is None:
+                # Update existing backend without backend_source
+                backend.backend_source = BackendSourceEnum.BUILT_IN
+                if backend.enabled is None:
+                    backend.enabled = True
+                    await backend.update(
+                        session,
+                        {
+                            "backend_source": BackendSourceEnum.BUILT_IN,
+                            "enabled": (
+                                backend.enabled if backend.enabled is not None else True
+                            ),
+                        },
                     )
+                    logger.info(
+                        f"Updated backend_source for existing built-in backend {backend.backend_name}"
+                    )
+
+    async def _init_community_backends(self, session: AsyncSession):
+        """Load community backends from community-backends.yaml into database."""
+        try:
+            # Get the path to community-backends.yaml
+            yaml_file = files("gpustack.assets").joinpath(
+                "community_backends/community-backends.yaml"
+            )
+
+            if not yaml_file.is_file():
+                logger.debug(
+                    "community-backends.yaml not found, skipping community backend initialization"
+                )
+                return
+
+            yaml_data = yaml.safe_load(yaml_file.read_text())
+
+            if not yaml_data:
+                logger.debug("No community backends found in community-backends.yaml")
+                return
+
+            if not isinstance(yaml_data, list):
+                logger.error(
+                    f"Invalid community-backends.yaml format: expected list, got {type(yaml_data).__name__}"
+                )
+                return
+
+            for backend_config in yaml_data:
+                await self._upsert_community_backend(session, backend_config)
+
+            logger.debug("Community backends initialized from community-backends.yaml")
+
+        except (ModuleNotFoundError, FileNotFoundError):
+            # community_backends directory or yaml file does not exist
+            logger.debug(
+                "Community backends directory or file not found, skipping initialization"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize community backends: {e}")
+
+    async def _upsert_community_backend(self, session: AsyncSession, config: dict):
+        """Create or update a community backend from YAML configuration."""
+        backend_name = config.get("backend_name")
+        if not backend_name:
+            return
+
+        # Prepare backend data
+        allowed_keys = [
+            "backend_name",
+            "version_configs",
+            "default_version",
+            "default_backend_param",
+            "default_run_command",
+            "default_entrypoint",
+            "health_check_path",
+            "description",
+            "icon",
+            "default_environment",
+        ]
+        backend_data = {k: config[k] for k in allowed_keys if k in config}
+
+        # Set backend source
+        backend_data["backend_source"] = BackendSourceEnum.COMMUNITY
+        backend_data["enabled"] = False
+
+        # Convert version_configs to VersionConfigDict
+        if 'version_configs' in backend_data and backend_data['version_configs']:
+            version_config_dict = {}
+            for version, ver_config in backend_data['version_configs'].items():
+                # All versions loaded from YAML are predefined versions
+                # Convert framework information to built_in_frameworks
+
+                frameworks = None
+                if 'built_in_frameworks' in ver_config:
+                    frameworks = ver_config['built_in_frameworks']
+                elif (
+                    'custom_framework' in ver_config and ver_config['custom_framework']
+                ):
+                    # Even if YAML uses custom_framework, convert it to built_in_frameworks
+                    frameworks = [ver_config['custom_framework']]
+
+                # Set built_in_frameworks and clear custom_framework
+                if frameworks:
+                    ver_config['built_in_frameworks'] = (
+                        frameworks if isinstance(frameworks, list) else [frameworks]
+                    )
+                else:
+                    # If no framework specified, use empty list to mark as predefined version
+                    ver_config['built_in_frameworks'] = []
+
+                # Ensure custom_framework is None (predefined versions should not have custom_framework)
+                ver_config['custom_framework'] = None
+
+                version_config_dict[version] = VersionConfig(**ver_config)
+
+            backend_data['version_configs'] = VersionConfigDict(
+                root=version_config_dict
+            )
+
+        # Upsert: update if exists, create if not
+        existing = await InferenceBackend.one_by_field(
+            session, "backend_name", backend_name
+        )
+        if existing:
+            # Smart merge logic to preserve user customizations
+
+            # 1. Merge version_configs: preserve user custom versions, update YAML versions
+            if 'version_configs' in backend_data and backend_data['version_configs']:
+                yaml_versions = backend_data['version_configs'].root
+                existing_versions = (
+                    existing.version_configs.root if existing.version_configs else {}
+                )
+
+                # Create merged version dictionary
+                merged_versions = {}
+
+                # First add all YAML versions (overwrite old versions with same name)
+                for version, config in yaml_versions.items():
+                    merged_versions[version] = config
+
+                # Then add user custom versions (built_in_frameworks is None)
+                for version, config in existing_versions.items():
+                    if (
+                        config.built_in_frameworks is None
+                        and version not in yaml_versions
+                    ):
+                        # This is a user custom version not in YAML, preserve it
+                        merged_versions[version] = config
+
+                backend_data['version_configs'] = VersionConfigDict(
+                    root=merged_versions
+                )
+
+            # 2. Preserve user-modified enabled status (if user enabled it, don't reset to False)
+            if existing.enabled:
+                backend_data['enabled'] = True
+
+            # 3. Merge default_environment (preserve user-added environment variables)
+            if existing.default_environment:
+                if (
+                    'default_environment' in backend_data
+                    and backend_data['default_environment']
+                ):
+                    # Merge: YAML environment variables + user-added environment variables
+                    merged_env = dict(existing.default_environment)
+                    merged_env.update(backend_data['default_environment'])
+                    backend_data['default_environment'] = merged_env
+                else:
+                    # YAML doesn't define it, preserve user's
+                    backend_data['default_environment'] = existing.default_environment
+
+            # 4. Update database
+            await existing.update(session, backend_data)
+        else:
+            backend = InferenceBackend(**backend_data)
+            await InferenceBackend.create(session, backend)
 
 
 class ModelFileController:

@@ -31,7 +31,7 @@ from gpustack_runtime.deployer import WorkloadPlan, DockerDeployer
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
-from gpustack.schemas.inference_backend import InferenceBackend
+from gpustack.schemas.inference_backend import InferenceBackend, ContainerEnvConfig
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -481,6 +481,54 @@ class InferenceServer(ABC):
             for port in self._model_instance.ports or []
         ]
 
+    @staticmethod
+    def _get_container_env_config(env: Dict[str, str]) -> ContainerEnvConfig:
+        """
+        Read container configuration from environment variables passed to the container.
+
+        Args:
+            env: The environment variables dictionary passed to the container.
+
+        Returns:
+            A ContainerEnvConfig containing container configuration:
+            - user: Run as specific UID (int)
+            - group: Run as specific GID (int)
+            - shm_size_gib: Shared memory size in GiB (float, default 10.0)
+        """
+        config = ContainerEnvConfig()
+
+        # Read user ID
+        uid_str = env.get("GPUSTACK_CONTAINER_UID")
+        if uid_str:
+            try:
+                config.user = int(uid_str)
+            except ValueError:
+                logger.warning(
+                    f"Invalid GPUSTACK_CONTAINER_UID value: {uid_str}, ignoring"
+                )
+
+        # Read group ID
+        gid_str = env.get("GPUSTACK_CONTAINER_GID")
+        if gid_str:
+            try:
+                config.group = int(gid_str)
+            except ValueError:
+                logger.warning(
+                    f"Invalid GPUSTACK_CONTAINER_GID value: {gid_str}, ignoring"
+                )
+
+        # Read shared memory size in GiB
+        shm_str = env.get("GPUSTACK_CONTAINER_SHM_SIZE_GIB", "10")
+        try:
+            config.shm_size_gib = float(shm_str)
+        except ValueError:
+            logger.warning(
+                f"Invalid GPUSTACK_CONTAINER_SHM_SIZE_GIB value: {shm_str}, using default 10.0"
+            )
+            config.shm_size_gib = 10.0
+
+        return config
+
     def _get_serving_port(self) -> int:
         """
         Get the (main) serving port for the model instance.
@@ -611,6 +659,7 @@ $@
                 worker_ip=self._worker.ip,
                 model_name=resolved_model_name,
                 command=version_config.run_command,
+                env=self._model.env,
             )
             if command:
                 return shlex.split(command)

@@ -80,6 +80,9 @@ class VoxBoxServer(InferenceServer):
 
         ports = self._get_configured_ports()
 
+        # Read container config from environment variables
+        container_config = self._get_container_env_config(env)
+
         run_container = Container(
             image=image,
             name="default",
@@ -90,6 +93,8 @@ class VoxBoxServer(InferenceServer):
                 command=command,
                 command_script=command_script,
                 args=command_args,
+                run_as_user=container_config.user,
+                run_as_group=container_config.group,
             ),
             envs=[
                 ContainerEnv(
@@ -116,7 +121,7 @@ class VoxBoxServer(InferenceServer):
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
             host_network=True,
-            shm_size=10 * 1 << 30,  # 10 GiB
+            shm_size=int(container_config.shm_size_gib * (1 << 30)),
             containers=[run_container],
         )
         create_workload(self._transform_workload_plan(workload_plan))
