@@ -660,10 +660,12 @@ class ActiveRecordMixin:
             topic,
             id(subscriber),
         )
+
         async with async_session() as session:
-            items = await cls.all(session)
-            for item in items:
-                yield Event(type=EventType.CREATED, data=item)
+            initial_items = await cls.all(session)
+
+        for item in initial_items:
+            yield Event(type=EventType.CREATED, data=item)
 
         heartbeat_interval = timedelta(seconds=15)
         last_event_time = datetime.now(timezone.utc)
