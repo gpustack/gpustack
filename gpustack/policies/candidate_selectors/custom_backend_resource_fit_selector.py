@@ -194,7 +194,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 f"trying candidate selector: {candidate_func.__name__}"
             )
 
-            candidates = await candidate_func(workers)
+            candidates = candidate_func(workers)
             if candidates:
                 # Prepare diagnostic messages for the user
                 self._set_messages()
@@ -215,7 +215,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
 
         return False
 
-    async def find_manual_gpu_selection_candidates(
+    def find_manual_gpu_selection_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         # Single worker scenarios
@@ -224,7 +224,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 ram=self._ram_claim,
                 vram=self._vram_claim,
             )
-            return await self._find_manual_gpu_selection_candidates(
+            return self._find_manual_gpu_selection_candidates(
                 workers, {"*": 0}, request, self._event_collector
             )
 
@@ -242,7 +242,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return []
 
-    async def find_single_worker_single_gpu_candidates(
+    def find_single_worker_single_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -257,7 +257,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 if not worker.status or not worker.status.gpu_devices:
                     continue
 
-                allocatable = await get_worker_allocatable_resource(
+                allocatable = get_worker_allocatable_resource(
                     self._model_instances, worker, gpu_type
                 )
 
@@ -292,7 +292,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def find_single_worker_multi_gpu_candidates(
+    def find_single_worker_multi_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -311,7 +311,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                 if len(worker.status.gpu_devices) < 2:
                     continue  # Need at least 2 GPUs for multi-GPU
 
-                allocatable = await get_worker_allocatable_resource(
+                allocatable = get_worker_allocatable_resource(
                     self._model_instances, worker, gpu_type
                 )
 
@@ -359,7 +359,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
             )
         return candidates
 
-    async def _find_cpu_only_candidates(
+    def _find_cpu_only_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -368,9 +368,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         candidates = []
 
         for worker in workers:
-            allocatable = await get_worker_allocatable_resource(
-                self._model_instances, worker
-            )
+            allocatable = get_worker_allocatable_resource(self._model_instances, worker)
 
             # Check if worker has enough RAM for CPU inference
             if allocatable.ram >= self._ram_claim:

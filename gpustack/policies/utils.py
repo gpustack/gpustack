@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.policies.base import (
@@ -33,7 +33,7 @@ class WorkerGPUInfo(BaseModel):
     allocatable_vram: int  # in bytes
 
 
-async def get_worker_allocatable_resource(  # noqa: C901
+def get_worker_allocatable_resource(  # noqa: C901
     all_model_instances: List[ModelInstance],
     worker: Worker,
     gpu_type: Optional[str] = None,
@@ -47,7 +47,7 @@ async def get_worker_allocatable_resource(  # noqa: C901
             allocated.vram[gpu_index] = allocated.vram.get(gpu_index, 0) + vram
 
     is_unified_memory = worker.status.memory.is_unified_memory
-    model_instances = await get_worker_model_instances(all_model_instances, worker)
+    model_instances = get_worker_model_instances(all_model_instances, worker)
     allocated = Allocated(ram=0, vram={})
 
     for model_instance in model_instances:
@@ -315,7 +315,7 @@ async def estimate_diffusion_model_vram(
     return weight_size
 
 
-async def get_worker_model_instances(
+def get_worker_model_instances(
     all_model_instances: List[ModelInstance], worker: Worker
 ) -> List[ModelInstance]:
     """
@@ -458,7 +458,7 @@ async def get_local_model_weight_size(
     raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
 
 
-async def group_worker_gpu_by_memory(
+def group_worker_gpu_by_memory(
     workers: List[Worker],
     model_instances: List[ModelInstance],
     ram_claim: int = 0,
@@ -496,9 +496,7 @@ async def group_worker_gpu_by_memory(
             continue
 
         # Get allocatable resources for this worker
-        allocatable = await get_worker_allocatable_resource(
-            model_instances, worker, gpu_type
-        )
+        allocatable = get_worker_allocatable_resource(model_instances, worker, gpu_type)
 
         if ram_not_enough(ram_claim, allocatable):
             continue
@@ -652,12 +650,10 @@ def sort_gpu_indexes_by_allocatable_rate(
     return sorted(allocatable_rate, key=lambda idx: allocatable_rate[idx], reverse=True)
 
 
-async def sort_selected_workers_by_gpu_type_and_resource(
+def sort_selected_workers_by_gpu_type_and_resource(
     workers: List[Worker],
     selected_gpu_indexes_by_gpu_type_and_worker: Dict[str, Dict[str, List[int]]],
-    get_worker_allocatable_resource: Callable[
-        [Worker, Optional[str]], Awaitable[Allocatable]
-    ],
+    get_worker_allocatable_resource: Callable[[Worker, Optional[str]], Allocatable],
 ) -> Dict[str, List[Worker]]:
     """
     Filter and sort selected workers by their GPU resource availability.
@@ -684,7 +680,7 @@ async def sort_selected_workers_by_gpu_type_and_resource(
                 continue
 
             # Sort selected GPUs by allocatable rate
-            allocatable = await get_worker_allocatable_resource(worker, gpu_type)
+            allocatable = get_worker_allocatable_resource(worker, gpu_type)
             sorted_gpu_indexes = [
                 idx
                 for idx in sort_gpu_indexes_by_allocatable_rate(

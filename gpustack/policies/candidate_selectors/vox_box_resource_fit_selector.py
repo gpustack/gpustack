@@ -98,14 +98,14 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
                 f"model {self._model.readable_source}, filter candidates with resource fit selector: {candidate_func.__name__}"
             )
 
-            candidates = await candidate_func(workers)
+            candidates = candidate_func(workers)
             if candidates:
                 return candidates
 
         self._set_messages()
         return []
 
-    async def find_single_worker_single_gpu_candidates(
+    def find_single_worker_single_gpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -117,13 +117,13 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
             if not worker.status.gpu_devices:
                 continue
 
-            result = await self._find_single_worker_single_gpu_candidates(worker)
+            result = self._find_single_worker_single_gpu_candidates(worker)
             if result:
                 candidates.extend(result)
 
         return candidates
 
-    async def _find_single_worker_single_gpu_candidates(
+    def _find_single_worker_single_gpu_candidates(
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -143,9 +143,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ):
             return []
 
-        allocatable = await get_worker_allocatable_resource(
-            self._model_instances, worker
-        )
+        allocatable = get_worker_allocatable_resource(self._model_instances, worker)
         is_unified_memory = worker.status.memory.is_unified_memory
 
         if self._gpu_ram_claim > allocatable.ram:
@@ -186,7 +184,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
 
         return candidates
 
-    async def find_single_worker_cpu_candidates(
+    def find_single_worker_cpu_candidates(
         self, workers: List[Worker]
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -194,12 +192,12 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         """
         candidates = []
         for worker in workers:
-            result = await self._find_single_worker_with_cpu_candidates(worker)
+            result = self._find_single_worker_with_cpu_candidates(worker)
             if result:
                 candidates.extend(result)
         return candidates
 
-    async def _find_single_worker_with_cpu_candidates(
+    def _find_single_worker_with_cpu_candidates(
         self, worker: Worker
     ) -> List[ModelInstanceScheduleCandidate]:
         """
@@ -213,9 +211,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         ):
             return []
 
-        allocatable = await get_worker_allocatable_resource(
-            self._model_instances, worker
-        )
+        allocatable = get_worker_allocatable_resource(self._model_instances, worker)
         is_unified_memory = worker.status.memory.is_unified_memory
 
         if self._cpu_ram_claim > allocatable.ram:

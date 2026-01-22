@@ -447,11 +447,11 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             )
         return available_worker_devices_idx
 
-    async def _manual_select_candidates(
+    def _manual_select_candidates(
         self, workers: List[Worker], request_usage: RequestEstimateUsage
     ) -> List[ModelInstanceScheduleCandidate]:
         event_collector = EventCollector(self._model, logger)
-        candidates = await self._find_manual_gpu_selection_candidates(
+        candidates = self._find_manual_gpu_selection_candidates(
             workers,
             {"*": self._serving_params.npu_memory_fraction},
             request_usage,
@@ -881,7 +881,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Statisfy the selected devices count, if specified.
         if self._model.gpu_selector and self._model.gpu_selector.gpu_ids:
-            return await self._manual_select_candidates(
+            return self._manual_select_candidates(
                 workers,
                 request_usage,
             )
@@ -923,9 +923,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         if worker.id in self.__worker_alloc_idx:
             return self.__worker_alloc_idx[worker.id]
 
-        worker_alloc = await get_worker_allocatable_resource(
-            self._model_instances, worker
-        )
+        worker_alloc = get_worker_allocatable_resource(self._model_instances, worker)
         if not worker_alloc:
             logger.warning(f"Worker {worker.name} has no allocatable resources.")
             worker_alloc = Allocatable(ram=0, vram={0: 0})
