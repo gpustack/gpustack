@@ -42,7 +42,7 @@ from gpustack.server.controllers import (
     InferenceBackendController,
 )
 from gpustack.server.db import async_session
-from gpustack.server.init_db import init_db
+from gpustack.server.init_db import init_db, get_query_count
 from gpustack.scheduler.scheduler import Scheduler
 from gpustack.server.system_load import SystemLoadCollector
 from gpustack.server.update_check import UpdateChecker
@@ -105,6 +105,7 @@ class Server:
         self._start_worker_instance_cleaner()
         self._start_metrics_exporter()
         self._start_gateway_metrics_collector()
+        self._start_query_count_logger()
         self._start_default_registry_checker()
 
         jwt_manager = JWTManager(self._config.jwt_secret_key)
@@ -331,6 +332,17 @@ class Server:
         exporter = MetricExporter(cfg=self._config)
         self._create_async_task(exporter.generate_metrics_cache())
         self._create_async_task(exporter.start())
+
+    def _start_query_count_logger(self):
+        """Start a background task to log query count periodically."""
+
+        async def log_query_count():
+            while True:
+                await asyncio.sleep(60)  # Log every minute
+                count = get_query_count()
+                logger.debug(f"[DB QUERY COUNT] Total queries since startup: {count}")
+
+        self._create_async_task(log_query_count())
 
     @staticmethod
     def _setup_data_dir(data_dir: str):
