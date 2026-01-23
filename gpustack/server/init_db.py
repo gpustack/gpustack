@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 import time
 import re
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -39,6 +40,24 @@ from gpustack.schemas.stmt import (
 logger = logging.getLogger(__name__)
 
 SLOW_QUERY_THRESHOLD_SECOND = 0.5
+
+# Query counter for performance monitoring
+_query_counter = 0
+_query_counter_lock = threading.Lock()
+
+
+def increment_query_count_sync():
+    """Increment the global query counter (synchronous version)."""
+    global _query_counter
+    with _query_counter_lock:
+        _query_counter += 1
+
+
+def get_query_count() -> int:
+    """Get the current query count."""
+    global _query_counter
+    with _query_counter_lock:
+        return _query_counter
 
 
 async def init_db(db_url: str):
@@ -135,6 +154,14 @@ def listen_events(engine: AsyncEngine):
             event.listen(
                 engine.sync_engine, "after_cursor_execute", after_cursor_execute
             )
+
+    # Always count queries for performance monitoring
+    event.listen(engine.sync_engine, "after_cursor_execute", count_query)
+
+
+def count_query(conn, cursor, statement, parameters, context, executemany):
+    """Increment the global query counter for each query executed."""
+    increment_query_count_sync()
 
 
 def setup_sqlite_pragmas(conn, record):
