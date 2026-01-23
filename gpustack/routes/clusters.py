@@ -38,6 +38,11 @@ from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import get_global_config, get_cluster_image_name
 
+CLUSTER_LOAD_OPTIONS = [
+    selectinload(Cluster.cluster_workers),
+    selectinload(Cluster.cluster_models),
+]
+
 router = APIRouter()
 
 
@@ -70,12 +75,19 @@ async def get_clusters(
 
     if params.watch:
         return StreamingResponse(
-            Cluster.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            Cluster.streaming(
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+                options=CLUSTER_LOAD_OPTIONS,
+            ),
             media_type="text/event-stream",
         )
 
     items = await Cluster.all_by_fields(
-        session=session, fields=fields, fuzzy_fields=fuzzy_fields
+        session=session,
+        fields=fields,
+        fuzzy_fields=fuzzy_fields,
+        options=CLUSTER_LOAD_OPTIONS,
     )
 
     if not items:
@@ -152,7 +164,11 @@ def _make_sort_key(field: str) -> Callable[[Any], tuple]:
 
 @router.get("/{id}", response_model=ClusterPublic, response_model_exclude_none=True)
 async def get_cluster(session: SessionDep, id: int):
-    cluster = await Cluster.one_by_id(session, id)
+    cluster = await Cluster.one_by_id(
+        session,
+        id,
+        options=CLUSTER_LOAD_OPTIONS,
+    )
     if not cluster:
         raise NotFoundException(message=f"cluster {id} not found")
     return cluster
@@ -265,7 +281,11 @@ async def update_cluster(session: SessionDep, id: int, input: ClusterUpdate):
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to update cluster: {e}")
 
-    return await Cluster.one_by_id(session, id)
+    return await Cluster.one_by_id(
+        session,
+        id,
+        options=CLUSTER_LOAD_OPTIONS,
+    )
 
 
 @router.delete("/{id}")

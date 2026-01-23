@@ -16,8 +16,6 @@ from sqlmodel import (
     String,
 )
 import sqlalchemy as sa
-from sqlalchemy.orm.state import InstanceState
-from sqlalchemy.orm.attributes import NO_VALUE
 from typing import TYPE_CHECKING
 
 from gpustack.schemas.config import (
@@ -31,18 +29,6 @@ if TYPE_CHECKING:
     from gpustack.schemas.models import Model, ModelInstance
     from gpustack.schemas.workers import Worker
     from gpustack.schemas.users import User
-
-
-def is_in_session(obj: SQLModel, attr: Optional[str] = None) -> bool:
-    insp: InstanceState = sa.inspect(obj)
-    if insp.session is None:
-        return False
-    if attr:
-        attr_state = insp.attrs.get(attr)
-        if attr_state is None:
-            return False
-        return attr_state.loaded_value is not NO_VALUE
-    return True
 
 
 class PublicFields:
@@ -125,18 +111,18 @@ class WorkerPool(WorkerPoolBase, BaseModelMixin, table=True):
     @computed_field()
     @property
     def workers(self) -> int:
-        if not is_in_session(self, "pool_workers"):
-            return self._workers
-        return len(self.pool_workers) if self.pool_workers else 0
+        if self.pool_workers is not None:
+            return len(self.pool_workers)
+
+        return self._workers
 
     @computed_field()
     @property
     def ready_workers(self) -> int:
-        if not is_in_session(self, "pool_workers"):
-            return self._ready_workers
-        if self.pool_workers is None or len(self.pool_workers) == 0:
-            return 0
-        return len([w for w in self.pool_workers if w.state.value == 'ready'])
+        if self.pool_workers is not None:
+            return len([w for w in self.pool_workers if w.state.value == 'ready'])
+
+        return self._ready_workers
 
     def __hash__(self):
         return hash(self.id)
@@ -315,39 +301,39 @@ class Cluster(ClusterBase, BaseModelMixin, table=True):
     @computed_field()
     @property
     def workers(self) -> int:
-        if not is_in_session(self, "cluster_workers"):
-            return self._workers
-        return len(self.cluster_workers) if self.cluster_workers else 0
+        if self.cluster_workers is not None:
+            return len(self.cluster_workers)
+
+        return self._workers
 
     @computed_field()
     @property
     def ready_workers(self) -> int:
-        if not is_in_session(self, "cluster_workers"):
-            return self._ready_workers
-        if self.cluster_workers is None or len(self.cluster_workers) == 0:
-            return 0
-        return len([w for w in self.cluster_workers if w.state.value == 'ready'])
+        if self.cluster_workers is not None:
+            return len([w for w in self.cluster_workers if w.state.value == 'ready'])
+
+        return self._ready_workers
 
     @computed_field(alias="gpus")
     @property
     def gpus(self) -> int:
-        if not is_in_session(self, "cluster_workers"):
-            return self._gpus
-        if self.workers == 0:
-            return 0
-        count = 0
-        for worker in self.cluster_workers:
-            if worker.status is None or worker.status.gpu_devices is None:
-                continue
-            count += len(worker.status.gpu_devices)
-        return count
+        if self.cluster_workers is not None:
+            count = 0
+            for worker in self.cluster_workers:
+                if worker.status is None or worker.status.gpu_devices is None:
+                    continue
+                count += len(worker.status.gpu_devices)
+            return count
+
+        return self._gpus
 
     @computed_field(alias="models")
     @property
     def models(self) -> int:
-        if not is_in_session(self, "cluster_models"):
-            return self._models
-        return len(self.cluster_models) if self.cluster_models else 0
+        if self.cluster_models is not None:
+            return len(self.cluster_models)
+
+        return self._models
 
     def __hash__(self):
         return hash(self.id)
