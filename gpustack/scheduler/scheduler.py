@@ -409,7 +409,7 @@ async def find_candidate(
             )
         elif model.backend == BackendEnum.VOX_BOX:
             candidates_selector = VoxBoxResourceFitSelector(
-                config, model, config.cache_dir
+                config, model, model_instances, config.cache_dir
             )
         elif model.backend == BackendEnum.ASCEND_MINDIE:
             candidates_selector = AscendMindIEResourceFitSelector(

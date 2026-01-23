@@ -24,6 +24,7 @@ from gpustack.policies.utils import (
 from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
+    ModelInstance,
 )
 from gpustack.schemas.workers import Worker
 
@@ -38,9 +39,12 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         self,
         config: Config,
         model: Model,
+        model_instances: List[ModelInstance],
         cache_dir: str,
     ):
-        super().__init__(config, model, parse_model_params=False)
+        super().__init__(
+            config, model, model_instances=model_instances, parse_model_params=False
+        )
         self._cache_dir = os.path.join(cache_dir, "vox-box")
         self._messages = []
 
