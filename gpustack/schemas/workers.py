@@ -312,12 +312,6 @@ class WorkerUpdate(SQLModel):
         default=None,
         sa_column=Column(pydantic_column_type(Maintenance), default=None),
     )
-    disk_path: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True),
-    )
-    """ Path to SSD storage for KV cache offloading (L3 cache). If set, enables disk-based cache.
-    The path should be accessible from the container. GPUStack will automatically mount this path if it exists on the host."""
 
 
 class WorkerCreate(WorkerStatusStored, WorkerUpdate):
@@ -395,12 +389,6 @@ class WorkerBase(WorkerCreate):
     provider_config: Optional[Dict[str, Any]] = Field(
         default=None, sa_column=Column(JSON, nullable=True)
     )
-    disk_path: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True),
-    )
-    """ Path to SSD storage for KV cache offloading (L3 cache). If set, enables disk-based cache.
-    The path should be accessible from the container. GPUStack will automatically mount this path if it exists on the host."""
 
 
 class Worker(WorkerBase, BaseModelMixin, table=True):

@@ -262,16 +262,16 @@ class VLLMServer(InferenceServer):
             env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(byte_to_gib(ram_size))
 
         # SSD (L3) cache configuration via environment variables
-        # disk_path is configured at worker level, disk_size is configured at model level
-        if self._worker.disk_path:
-            env["LMCACHE_LOCAL_DISK"] = self._worker.disk_path
+        # kv_cache_dir is configured at worker level, disk_size is configured at model level
+        if self._config.kv_cache_dir:
+            env["LMCACHE_LOCAL_DISK"] = self._config.kv_cache_dir
             if extended_kv_cache.disk_size and extended_kv_cache.disk_size > 0:
                 env["LMCACHE_MAX_LOCAL_DISK_SIZE"] = str(extended_kv_cache.disk_size)
 
     def _add_lmcache_ssd_mount(self, mounts: List[ContainerMount]):
         """
-        Add SSD mount for LMCache L3 cache if disk_path is configured.
-        disk_path is configured at worker level.
+        Add SSD mount for LMCache L3 cache if kv_cache_dir is configured.
+        kv_cache_dir is configured at worker level via config.
 
         Args:
             mounts: List of container mounts to append to
@@ -280,24 +280,24 @@ class VLLMServer(InferenceServer):
         if not (extended_kv_cache and extended_kv_cache.enabled):
             return
 
-        # disk_path is configured at worker level
-        if not self._worker.disk_path:
+        # kv_cache_dir is configured at worker level via config
+        if not self._config.kv_cache_dir:
             return
 
         # Check if the path exists on the host
-        disk_path = self._worker.disk_path
-        if os.path.exists(disk_path):
+        kv_cache_dir = self._config.kv_cache_dir
+        if os.path.exists(kv_cache_dir):
             # Mount the SSD path to the container
             # Use the same path inside the container for simplicity
             mounts.append(
                 ContainerMount(
-                    path=disk_path,
+                    path=kv_cache_dir,
                 )
             )
-            logger.info(f"Added SSD mount for LMCache L3 cache: {disk_path}")
+            logger.info(f"Added SSD mount for LMCache L3 cache: {kv_cache_dir}")
         else:
             logger.warning(
-                f"SSD path for LMCache L3 cache does not exist on host: {disk_path}. "
+                f"KV cache directory for LMCache L3 cache does not exist on host: {kv_cache_dir}. "
                 "Please ensure the path exists or create it before deploying the model."
             )
 
