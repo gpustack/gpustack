@@ -2,6 +2,7 @@ from datetime import datetime
 import re
 from enum import Enum
 from sqlalchemy import Enum as SQLEnum, Text
+from sqlalchemy.orm import selectinload
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from typing import ClassVar, List, Optional, TYPE_CHECKING
@@ -186,5 +187,8 @@ def is_default_cluster_user(cluster_user: User) -> bool:
 
 async def get_default_cluster_user(session: AsyncSession) -> Optional[User]:
     return await User.one_by_field(
-        session=session, field="username", value=default_cluster_user_name
+        session=session,
+        field="username",
+        value=default_cluster_user_name,
+        options=[selectinload(User.cluster)],
     )
