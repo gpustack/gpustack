@@ -15,6 +15,8 @@ from gpustack.schemas.clusters import (
     WorkerPool,
 )
 
+WORKER_POOL_LOAD_OPTIONS = [selectinload(WorkerPool.pool_workers)]
+
 router = APIRouter()
 
 
@@ -40,7 +42,11 @@ async def list(
 
     if params.watch:
         return StreamingResponse(
-            WorkerPool.streaming(fields=fields, fuzzy_fields=fuzzy_fields),
+            WorkerPool.streaming(
+                fields=fields,
+                fuzzy_fields=fuzzy_fields,
+                options=WORKER_POOL_LOAD_OPTIONS,
+            ),
             media_type="text/event-stream",
         )
 
@@ -55,7 +61,7 @@ async def list(
 
 @router.get("/{id}", response_model=WorkerPoolPublic)
 async def get(session: SessionDep, id: int):
-    existing = await WorkerPool.one_by_id(session, id)
+    existing = await WorkerPool.one_by_id(session, id, options=WORKER_POOL_LOAD_OPTIONS)
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"worker pool {id} not found")
 
@@ -75,14 +81,14 @@ async def update(session: SessionDep, id: int, input: WorkerPoolUpdate):
             message=f"Failed to update worker pool {id}: {e}"
         )
 
-    return await WorkerPool.one_by_id(session, id)
+    return await WorkerPool.one_by_id(
+        session, id, options=[selectinload(WorkerPool.pool_workers)]
+    )
 
 
 @router.delete("/{id}")
 async def delete(session: SessionDep, id: int):
-    existing = await WorkerPool.one_by_id(
-        session, id, options=[selectinload(WorkerPool.pool_workers)]
-    )
+    existing = await WorkerPool.one_by_id(session, id, options=WORKER_POOL_LOAD_OPTIONS)
     if not existing or existing.deleted_at is not None:
         raise NotFoundException(message=f"worker pool {id} not found")
     if len(existing.pool_workers) > 0:

@@ -184,6 +184,7 @@ class ActiveRecordMixin:
         fields: dict = {},
         fuzzy_fields: Optional[dict] = None,
         extra_conditions: Optional[List] = None,
+        options: Optional[List] = None,
     ):
         """
         Return all objects with the given fields and values.
@@ -203,6 +204,9 @@ class ActiveRecordMixin:
 
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
+
+        if options:
+            statement = statement.options(*options)
 
         result = await session.exec(statement)
         return result.all()
@@ -651,7 +655,9 @@ class ActiveRecordMixin:
         )
 
     @classmethod
-    async def subscribe(cls, source: str) -> AsyncGenerator[Event, None]:
+    async def subscribe(
+        cls, source: str, options: Optional[List] = None
+    ) -> AsyncGenerator[Event, None]:
         topic = cls.__name__.lower()
         subscriber = event_bus.subscribe(cls.__name__.lower())
         logger.info(
@@ -662,7 +668,7 @@ class ActiveRecordMixin:
         )
 
         async with async_session() as session:
-            initial_items = await cls.all(session)
+            initial_items = await cls.all(session, options=options)
 
         for item in initial_items:
             yield Event(type=EventType.CREATED, data=item)
@@ -693,10 +699,18 @@ class ActiveRecordMixin:
         fields: Optional[dict] = None,
         fuzzy_fields: Optional[dict] = None,
         filter_func: Optional[Callable[[Any], bool]] = None,
+        options: Optional[List] = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream events matching the given criteria as JSON strings."""
+        """Stream events matching the given criteria as JSON strings.
+
+        Args:
+            fields: Exact match filters as key-value pairs
+            fuzzy_fields: Fuzzy match filters
+            filter_func: Optional filter function to apply to event data
+            options: SQLAlchemy options for eager loading relationships (e.g., selectinload)
+        """
         try:
-            async for event in cls.subscribe(source="streaming"):
+            async for event in cls.subscribe(source="streaming", options=options):
                 if event.type == EventType.HEARTBEAT:
                     yield "\n\n"
                     continue
