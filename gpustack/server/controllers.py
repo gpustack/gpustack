@@ -674,13 +674,19 @@ class WorkerController:
         if event.type not in (EventType.UPDATED, EventType.DELETED):
             return
         worker: Worker = event.data
-        # Skip reconciliation for provisioning and deleting workers.
-        # There is a dedicated controller to handle provisioning.
-        if not worker or (
-            worker.state.is_provisioning
-            and not worker.state == WorkerStateEnum.DELETING
-        ):
+        if not worker:
             return
+
+        if worker.state.is_provisioning and worker.state != WorkerStateEnum.DELETING:
+            # Skip reconciliation for provisioning and deleting workers.
+            # There is a dedicated controller to handle provisioning.
+            return
+
+        if event.type == EventType.UPDATED:
+            changed_fields = event.changed_fields
+            if not changed_fields or "state" not in changed_fields:
+                # No state change
+                return
 
         async with async_session() as session:
             instances = await ModelInstance.all_by_field(
