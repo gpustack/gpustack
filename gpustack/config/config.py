@@ -7,8 +7,8 @@ import ipaddress
 
 from gpustack_runtime.detector import (
     manufacturer_to_backend,
-    supported_manufacturers,
-    supported_backends,
+    available_manufacturers,
+    available_backends,
 )
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -486,10 +486,10 @@ class Config(WorkerConfig, BaseSettings):
             if index is None:
                 raise Exception("GPU device index is required")
 
-            vendors = supported_manufacturers()
+            vendors = available_manufacturers()
             if vendor not in vendors:
                 raise Exception(
-                    f"Unsupported GPU device vendor, supported vendors are: {','.join(map(str, vendors))}"
+                    f"Unsupported GPU device vendor, available vendors are: {','.join(map(str, vendors))}"
                 )
 
             if not memory:
@@ -515,10 +515,10 @@ class Config(WorkerConfig, BaseSettings):
                 if gateway and not validators.ip(gateway):
                     raise Exception("GPU device network gateway is invalid")
 
-            types = supported_backends()
+            types = available_backends()
             if type_ not in types:
                 raise Exception(
-                    f"Unsupported GPU type, supported type are: {','.join(map(str, types))}"
+                    f"Unsupported GPU type, available type are: {','.join(map(str, types))}"
                 )
 
             gpu_devices.append(

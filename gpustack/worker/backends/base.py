@@ -15,7 +15,7 @@ from gpustack_runtime.deployer import ContainerResources, ContainerMount, Contai
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import (
     ManufacturerEnum,
-    supported_backends,
+    available_backends,
 )
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
@@ -681,8 +681,8 @@ $@
             # To use a CPU-only version, user must configure in `Inference Backend` page.
             return None
 
-        if backend not in supported_backends():
-            # Return directly if found backend is not within the supported backends.
+        if backend not in available_backends():
+            # Return directly if found backend is not within the available backends.
             return None
 
         """
