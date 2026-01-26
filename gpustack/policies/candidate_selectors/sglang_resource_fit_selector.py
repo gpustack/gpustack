@@ -280,7 +280,11 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             f"The model requires approximately {byte_to_gib(self._vram_claim)} GiB of VRAM"
             f"{f' and {byte_to_gib(self._ram_claim)} GiB of RAM' if self._ram_claim > 0 else ''}."
         )
-        max_mem_fraction_static = max(self._mem_fraction_static_by_gpu_type.values())
+        max_mem_fraction_static = (
+            max(self._mem_fraction_static_by_gpu_type.values())
+            if self._mem_fraction_static_by_gpu_type
+            else 0
+        )
         if max_mem_fraction_static != 0 and not self._is_diffusion:
             default_msg_list.append(
                 f"With --mem-fraction-static={max_mem_fraction_static}, "
@@ -330,21 +334,23 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             if self._selected_gpu_indexes_by_gpu_type_and_worker
             else set(workers_by_gpu_type.keys())
         )
-        self._mem_fraction_static_by_gpu_type = {
-            gpu_type: (
-                self._param_mem_fraction_static
-                if self._param_mem_fraction_static > 0
-                else MemFractionStaticCalculator(
-                    self._model,
-                    self._model_instances,
-                    self._model_params,
-                    gpu_type,
-                    self._selected_gpu_indexes_by_gpu_type_and_worker,
-                )._cal_mem_fraction_static(workers_of_type)
-            )
-            for gpu_type, workers_of_type in workers_by_gpu_type.items()
-            if gpu_type in valid_gpu_types
-        }
+        self._mem_fraction_static_by_gpu_type.update(
+            {
+                gpu_type: (
+                    self._param_mem_fraction_static
+                    if self._param_mem_fraction_static > 0
+                    else MemFractionStaticCalculator(
+                        self._model,
+                        self._model_instances,
+                        self._model_params,
+                        gpu_type,
+                        self._selected_gpu_indexes_by_gpu_type_and_worker,
+                    )._cal_mem_fraction_static(workers_of_type)
+                )
+                for gpu_type, workers_of_type in workers_by_gpu_type.items()
+                if gpu_type in valid_gpu_types
+            }
+        )
 
     def should_skip_candidate_func(self, candidate_func) -> bool:
         # Skip conditions for manual GPU selection.
