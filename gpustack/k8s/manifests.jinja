@@ -183,6 +183,8 @@ spec:
               mountPath: /var/lib/gpustack
             - name: cdi
               mountPath: /var/run/cdi
+            - name: kubelet-device-plugins
+              mountPath: /var/lib/kubelet/device-plugins
             #
             # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices
             #
@@ -225,6 +227,10 @@ spec:
         - name: cdi
           hostPath:
             path: /var/run/cdi
+            type: DirectoryOrCreate
+        - name: kubelet-device-plugins
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
             type: DirectoryOrCreate
         #
         # (Optional) Mount Ascend driver and toolkit directories if using Ascend devices

@@ -14,6 +14,10 @@ import tenacity
 import uvicorn
 from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
+from gpustack_runtime.deployer.k8s.deviceplugin import (
+    serve_async as kdp_serve_async,
+    get_resource_injection_policy,
+)
 
 from gpustack.api import exceptions
 from gpustack.config.config import (
@@ -285,6 +289,10 @@ class Worker:
         )
         self._create_async_task(controller.sync_model_cache())
         self._create_async_task(controller.start_model_instance_controller())
+
+        # Start Kubernetes Device Plugin server if allowed.
+        if get_resource_injection_policy() == "kdp":
+            self._create_async_task(kdp_serve_async(stop_event=asyncio.Event()))
 
         # wait for a while to let other tasks start
         await asyncio.sleep(0.5)

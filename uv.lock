@@ -2002,7 +2002,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "gpustack-runner", specifier = ">=0.1.24.post1" },
-    { name = "gpustack-runtime", specifier = "==0.1.40.post1" },
+    { name = "gpustack-runtime", specifier = "==0.1.41.post3" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.32.0" },
@@ -2092,22 +2092,27 @@ wheels = [
 
 [[package]]
 name = "gpustack-runtime"
-version = "0.1.40.post1"
+version = "0.1.41.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
+    { name = "cachetools" },
     { name = "docker" },
     { name = "gpustack-runner" },
+    { name = "grpc-interceptor" },
+    { name = "grpcio" },
     { name = "kubernetes" },
     { name = "mthreads-ml-py" },
     { name = "nvidia-ml-py" },
     { name = "podman" },
+    { name = "protobuf" },
     { name = "pyyaml" },
     { name = "tqdm" },
+    { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/13/ee/cadca3b007f3ce5519dbb986a91a27d83f539dc189893287a3e06ed25f84/gpustack_runtime-0.1.40.post1.tar.gz", hash = "sha256:6dcaf7186ec1c0e41539c9dfabf86b5f80774bfb7bfb268a9fbf315ab27456d8", size = 1472643, upload-time = "2026-01-15T00:40:50.43Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/2c/6976f5a2463404d4ab0bcd30f8b8b9896eac4d88a3f8ae0bcf5a60b2a1b2/gpustack_runtime-0.1.41.post3.tar.gz", hash = "sha256:7e35d8e69cb848a1573441e717c6faae5311c91de3e313d356a2c7a539dfcefa", size = 1493273, upload-time = "2026-01-26T03:14:55.535Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/0a/c91c486952dbed9ca7ce624578cb63d58dab73083988cce47169de6ce5a8/gpustack_runtime-0.1.40.post1-py3-none-any.whl", hash = "sha256:aa17573105f345edeb52765f32aca757244d56f7609fb967eccfe93633bec6e1", size = 1452930, upload-time = "2026-01-15T00:40:48.687Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/a8/a400e538e3af86f9609e8a1dbe3fba3f6a013f4ff620a4a14c1e3ffa6248/gpustack_runtime-0.1.41.post3-py3-none-any.whl", hash = "sha256:8bb7541d35929d791d217ed2611376dbe824624dd04664a92209480b837e661d", size = 1474403, upload-time = "2026-01-26T03:14:52.834Z" },
 ]
 
 [[package]]
@@ -2149,6 +2154,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/27/45/80935968b53cfd3f33cf99ea5f08227f2646e044568c9b1555b58ffd61c2/greenlet-3.2.4-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:ee7a6ec486883397d70eec05059353b8e83eca9168b9f3f9a361971e77e0bcd0", size = 1564846, upload-time = "2025-11-04T12:42:15.191Z" },
     { url = "https://files.pythonhosted.org/packages/69/02/b7c30e5e04752cb4db6202a3858b149c0710e5453b71a3b2aec5d78a1aab/greenlet-3.2.4-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:326d234cbf337c9c3def0676412eb7040a35a768efc92504b947b3e9cfc7543d", size = 1633814, upload-time = "2025-11-04T12:42:17.175Z" },
     { url = "https://files.pythonhosted.org/packages/e9/08/b0814846b79399e585f974bbeebf5580fbe59e258ea7be64d9dfb253c84f/greenlet-3.2.4-cp312-cp312-win_amd64.whl", hash = "sha256:a7d4e128405eea3814a12cc2605e0e6aedb4035bf32697f72deca74de4105e02", size = 299899, upload-time = "2025-08-07T13:38:53.448Z" },
+]
+
+[[package]]
+name = "grpc-interceptor"
+version = "0.15.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "grpcio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9f/28/57449d5567adf4c1d3e216aaca545913fbc21a915f2da6790d6734aac76e/grpc-interceptor-0.15.4.tar.gz", hash = "sha256:1f45c0bcb58b6f332f37c637632247c9b02bc6af0fdceb7ba7ce8d2ebbfb0926", size = 19322, upload-time = "2023-11-16T02:05:42.459Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/ac/8d53f230a7443401ce81791ec50a3b0e54924bf615ad287654fa4a2f5cdc/grpc_interceptor-0.15.4-py3-none-any.whl", hash = "sha256:0035f33228693ed3767ee49d937bac424318db173fef4d2d0170b3215f254d9d", size = 20848, upload-time = "2023-11-16T02:05:40.913Z" },
 ]
 
 [[package]]
@@ -6637,6 +6654,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8f/28/7c85c8032b91dbe79725b6f17d2fffc595dff06a35c7a30a37bef73a1ab4/typer-0.20.0.tar.gz", hash = "sha256:1aaf6494031793e4876fb0bacfa6a912b551cf43c1e63c800df8b1a866720c37", size = 106492, upload-time = "2025-10-20T17:03:49.445Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/78/64/7713ffe4b5983314e9d436a90d5bd4f63b6054e2aca783a3cfc44cb95bbf/typer-0.20.0-py3-none-any.whl", hash = "sha256:5b463df6793ec1dca6213a3cf4c0f03bc6e322ac5e16e13ddd622a889489784a", size = 47028, upload-time = "2025-10-20T17:03:47.617Z" },
+]
+
+[[package]]
+name = "types-protobuf"
+version = "5.28.3.20241203"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/80/ed668c8bb4cb92e4cc4a8bfea6a6b0693a4c02c2a5634675ada41bb11919/types_protobuf-5.28.3.20241203.tar.gz", hash = "sha256:2e1c962bdf76c576506b5fc0678d28efa6652a54c04ae46562a6209e777bd789", size = 59278, upload-time = "2024-12-03T02:59:03.263Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/98/3779835381fb3995d31db970b7384d42a42cb487771bd2e6ed98799afa6c/types_protobuf-5.28.3.20241203-py3-none-any.whl", hash = "sha256:5367632a4785394b0504e7c1e4d54a2dceeae9cd4f73a705d0f6499fc99cecb1", size = 73973, upload-time = "2024-12-03T02:59:01.531Z" },
 ]
 
 [[package]]
