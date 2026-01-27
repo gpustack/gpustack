@@ -1,10 +1,23 @@
+import asyncio
 import logging
 import os
+import subprocess
+import traceback
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from gpustack.api.auth import worker_auth
-from gpustack.schemas.filesystem import FileExistsResponse
+from gpustack.schemas.filesystem import (
+    FileExistsResponse,
+    GGUFParseRequest,
+    GGUFParseResponse,
+)
+from gpustack.schemas.models import Model
+from gpustack.scheduler.calculator import (
+    _gguf_parser_command,
+    _gguf_parser_env,
+    GPUOffloadEnum,
+)
 
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
@@ -133,3 +146,97 @@ async def get_model_weight_size(
         raise HTTPException(
             status_code=500, detail=f"Failed to calculate size: {str(e)}"
         )
+
+
+@router.post("/files/parse-gguf", response_model=GGUFParseResponse)
+async def parse_gguf_file(request: GGUFParseRequest):
+    """
+    Parse a GGUF file using gguf-parser binary on the worker.
+
+    Security:
+    - Path validation to prevent directory traversal
+    - Only allow parsing of existing files
+    - 60 second timeout to prevent long-running processes
+    """
+    try:
+        # 1. Deserialize Model object
+        model = Model.model_validate(request.model_dict)
+
+        # 2. Path validation
+        normalized_path = os.path.normpath(model.local_path)
+
+        # Security check: prevent directory traversal
+        if ".." in model.local_path:
+            raise HTTPException(status_code=403, detail="Access denied: Invalid path")
+
+        # Check if file exists
+        if not os.path.exists(normalized_path):
+            raise HTTPException(
+                status_code=404, detail=f"File not found: {model.local_path}"
+            )
+
+        # Check if path is a file
+        if not os.path.isfile(normalized_path):
+            raise HTTPException(
+                status_code=400, detail=f"Path is not a file: {model.local_path}"
+            )
+
+        # 3. Build offload enum
+        offload_enum = GPUOffloadEnum(request.offload)
+
+        # 4. Prepare kwargs (override parameters)
+        kwargs = {}
+        if request.tensor_split:
+            kwargs["tensor_split"] = request.tensor_split
+        if request.rpc:
+            kwargs["rpc"] = request.rpc
+        if request.cache_dir:
+            kwargs["cache_dir"] = request.cache_dir
+
+        # 5. Reuse _gguf_parser_command to build command
+        command = await _gguf_parser_command(model, offload_enum, **kwargs)
+        env = _gguf_parser_env(model)
+
+        # 6. Execute command
+        logger.debug(f"Executing gguf-parser command: {' '.join(map(str, command))}")
+
+        # Use subprocess.run in a thread to avoid asyncio event loop issues
+        # This is more reliable than asyncio.create_subprocess_exec in worker threads
+        def run_command():
+            """Run command synchronously in a thread."""
+            try:
+                result = subprocess.run(
+                    command,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                )
+                return result.returncode, result.stdout, result.stderr
+            except subprocess.TimeoutExpired:
+                return -1, b"", b"Parsing timed out after 60 seconds"
+
+        # Run in thread pool to avoid blocking
+        returncode, stdout, stderr = await asyncio.to_thread(run_command)
+        logger.debug("Process completed, processing output")
+
+        if returncode == -1:
+            # Timeout
+            logger.error(f"GGUF parsing timed out for {model.local_path}")
+            return GGUFParseResponse(success=False, error=stderr.decode())
+
+        if returncode != 0:
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            logger.error(f"GGUF parsing failed for {model.local_path}: {error_msg}")
+            return GGUFParseResponse(success=False, error=error_msg)
+
+        output_str = stdout.decode()
+        logger.debug(f"GGUF parsing succeeded for {model.local_path}")
+        return GGUFParseResponse(success=True, output=output_str)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        logger.error(f"Error parsing GGUF file: {e}\nTraceback:\n{error_detail}")
+        return GGUFParseResponse(success=False, error=f"{type(e).__name__}: {str(e)}")
