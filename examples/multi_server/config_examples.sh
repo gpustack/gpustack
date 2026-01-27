@@ -254,9 +254,9 @@ events {
 http {
     upstream gpustack_servers {
         least_conn;
-        server 192.168.1.10:30080 weight=1;
-        server 192.168.1.11:30080 weight=1;
-        server 192.168.1.12:30080 weight=1;
+        server server1:30080 weight=1;
+        server server2:30080 weight=1;
+        server server3:30080 weight=1;
     }
 
     server {
