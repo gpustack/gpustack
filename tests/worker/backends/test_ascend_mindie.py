@@ -170,7 +170,7 @@ async def test_ascend_mindie_parameters_parallelism_default(
         world_size=world_size,
         local_world_size=local_world_size,
     )
-    actual.from_args(args)
+    actual.from_args_and_envs(args)
     assert actual == expected
 
 
@@ -332,7 +332,7 @@ async def test_ascend_mindie_parameters_parallelism_violation(
             world_size=world_size,
             local_world_size=local_world_size,
         )
-        params.from_args(args)
+        params.from_args_and_envs(args)
         return
 
     with pytest.raises(argparse.ArgumentTypeError, match=exception_msg):
@@ -340,4 +340,4 @@ async def test_ascend_mindie_parameters_parallelism_violation(
             world_size=world_size,
             local_world_size=local_world_size,
         )
-        params.from_args(args)
+        params.from_args_and_envs(args)
