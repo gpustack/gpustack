@@ -246,11 +246,13 @@ class Worker:
             # Check worker ip change every 15 seconds.
             run_periodically_in_thread(self._check_worker_ip_change, 15)
 
-        # Send heartbeat to the server every 30 seconds.
-        run_periodically_in_thread(self._heartbeat, 30)
+        # Send heartbeat to the server every WORKER_HEARTBEAT_INTERVAL seconds.
+        run_periodically_in_thread(self._heartbeat, envs.WORKER_HEARTBEAT_INTERVAL)
 
-        # Report the worker node status to the server every 30 seconds.
-        run_periodically_in_thread(self._worker_manager.sync_worker_status, 30)
+        # Report the worker node status to the server every WORKER_STATUS_SYNC_INTERVAL seconds.
+        run_periodically_in_thread(
+            self._worker_manager.sync_worker_status, envs.WORKER_STATUS_SYNC_INTERVAL
+        )
 
         # Start the worker server to expose APIs.
         self._create_async_task(self._serve_apis())
