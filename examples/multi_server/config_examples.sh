@@ -176,7 +176,7 @@ services:
       - db
     restart: unless-stopped
     environment:
-      - GPUSTACK_DATABASE_URL=postgresql://root:gpustack_secret@db:5432/gpustack
+      - GPUSTACK_DATABASE_URL=postgresql://postgres:gpustack_secret@db:5432/gpustack
 
   # Server 2
   server2:
