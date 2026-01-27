@@ -143,7 +143,6 @@ gpustack start --config server1.yaml
 ### 3. 启动其他 Server
 
 ```bash
-gp端
 gpustack start --config server2.yaml
 gpustack start --config server3.yaml
 ```
