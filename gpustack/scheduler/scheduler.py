@@ -45,7 +45,6 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
-    SourceEnum,
     get_backend,
     is_gguf_model,
     DistributedServerCoordinateModeEnum,
@@ -155,18 +154,14 @@ class Scheduler:
                     instance.state_message = "Evaluating resource requirements"
                     await ModelInstanceService(session).update(instance)
 
-                if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
-                    model.local_path
-                ):
-                    # The local path model is not accessible from the server, skip evaluation.
-                    await self._queue.put(instance)
-                    return
+                # Get available workers for potential remote parsing
+                workers = await Worker.all(session)
 
                 should_update_model = False
                 try:
                     if is_gguf_model(model):
                         should_update_model = await evaluate_gguf_model(
-                            self._config, model
+                            self._config, model, workers
                         )
                         if await self.check_model_distributability(
                             session, model, instance
@@ -476,12 +471,14 @@ def pick_highest_score_candidate(candidates: List[ModelInstanceScheduleCandidate
 async def evaluate_gguf_model(
     config: Config,
     model: Model,
+    workers: Optional[List[Worker]] = None,
 ) -> bool:
 
     task_output = await calculate_model_resource_claim(
         model,
         offload=GPUOffloadEnum.Full,
         cache_dir=config.cache_dir,
+        workers=workers,
     )
     if (
         task_output.resource_architecture

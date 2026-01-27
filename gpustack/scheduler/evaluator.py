@@ -364,7 +364,7 @@ async def evaluate_model_metadata(
                             # Path not found on any worker
                             return False, [
                                 "The model file path you specified does not exist on the GPUStack server or any worker. "
-                                "Please ensure the model file is accessible from at least one worker."
+                                "Please ensure the model file is accessible from at least one node."
                             ]
                 except Exception as e:
                     logger.warning(
