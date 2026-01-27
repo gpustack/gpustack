@@ -112,7 +112,23 @@ class AscendMindIEParameters:
     prefill_expected_time_ms: Optional[int] = None
     decode_expected_time_ms: Optional[int] = None
 
-    def from_args(self, args: List[str]):
+    def from_args_and_envs(
+        self, args: List[str], envs: Optional[Dict[str, str]] = None
+    ):
+        """
+        Parse parameters from command line arguments and environment variables.
+
+        Args:
+            args:
+                A list of command line arguments.
+            envs:
+                A dictionary of environment variables. Optional.
+
+        Raises:
+            Failed to parse the arguments or invalid argument values will raise.
+
+        """
+
         parser = argparse.ArgumentParser(exit_on_error=False, allow_abbrev=False)
         #
         # Log config
@@ -191,7 +207,6 @@ class AscendMindIEParameters:
         parser.add_argument(
             "--npu-memory-fraction",
             type=float,
-            default=self.npu_memory_fraction,
             help="The fraction of NPU memory to be used for the model executor, "
             "which can range from 0 to 1 (included). "
             "For example, a value of 0.5 would imply 50% NPU memory utilization. "
@@ -532,10 +547,10 @@ class AscendMindIEParameters:
         )
 
         if args:
-            args_parsed = parser.parse_known_args(args=args)
+            args_parsed, _ = parser.parse_known_args(args=args)
             for attr_name in [attr.name for attr in dataclasses.fields(self.__class__)]:
                 try:
-                    attr_value = getattr(args_parsed[0], attr_name, None)
+                    attr_value = getattr(args_parsed, attr_name, None)
                     if attr_value is not None:
                         try:
                             setattr(self, attr_name, attr_value)
@@ -548,9 +563,38 @@ class AscendMindIEParameters:
                     # If reach here, that means the field is an internal property,
                     # which would not register in the argument parser.
                     pass
+            if not hasattr(args_parsed, "npu_memory_fraction"):
+                self._from_envs(envs or {})
+        else:
+            self._from_envs(envs or {})
 
         self._default()
         self._validate()
+
+    def _from_envs(self, envs: Dict[str, str]):
+        """
+        Parse parameters from environment variables.
+
+        Supported environment variables:
+        - NPU_MEMORY_FRACTION: The fraction of NPU memory to be used for the model executor.
+
+        Args:
+            envs:
+                A dictionary of environment variables.
+
+        """
+        allowed_env_attr_mapping = {
+            "NPU_MEMORY_FRACTION": "npu_memory_fraction",
+        }
+        for env_var, attr_name in allowed_env_attr_mapping.items():
+            if env_var in envs:
+                try:
+                    attr_type = type(getattr(self, attr_name))
+                    setattr(self, attr_name, attr_type(envs[env_var]))
+                except ValueError as e:
+                    raise argparse.ArgumentTypeError(
+                        f"Invalid value for {env_var}: {envs[env_var]}"
+                    ) from e
 
     def _default(self):  # noqa: C901
         # Model deploy config
@@ -1049,7 +1093,7 @@ class AscendMindIEServer(InferenceServer):
         # -- Enforce using ATB as backend
         env["MINDIE_LLM_FRAMEWORK_BACKEND"] = "ATB"
         # -- Enforce using 80% of GPU memory.
-        env["NPU_MEMORY_FRACTION"] = "0.8"
+        env["NPU_MEMORY_FRACTION"] = env.pop("NPU_MEMORY_FRACTION", "0.8")
         # -- Disable OpenMP parallelism, speed up model loading.
         env["OMP_NUM_THREADS"] = env.pop("OMP_NUM_THREADS", "1")
         # -- Enable safetensors GPU loading pass-through for faster model loading.
@@ -1172,7 +1216,7 @@ class AscendMindIEServer(InferenceServer):
             logger.debug(
                 f"Parsing given parameters: {os.linesep}{os.linesep.join(self._model.backend_parameters)}"
             )
-            params.from_args(self._flatten_backend_param())
+            params.from_args_and_envs(self._flatten_backend_param(), env)
 
             # -- Log config
             log_config["logLevel"] = params.log_level

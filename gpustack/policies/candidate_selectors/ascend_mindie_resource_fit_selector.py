@@ -70,7 +70,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             max_seq_len = 8192
         self._serving_params.max_seq_len = max_seq_len
         try:
-            self._serving_params.from_args(model.backend_parameters or [])
+            self._serving_params.from_args_and_envs(
+                model.backend_parameters or [], model.env or {}
+            )
         except Exception as e:
             raise ValueError(
                 f"Failed to parse model {model.name} serve parameters: {e}"
@@ -91,7 +93,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
             return None, None
 
         serving_params = AscendMindIEParameters()
-        serving_params.from_args(model.backend_parameters)
+        serving_params.from_args_and_envs(model.backend_parameters, model.env or {})
 
         pp, tp, dp, cp, sp, moe_tp, moe_ep, ws = (
             serving_params.pipeline_parallel_size,
