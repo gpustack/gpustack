@@ -47,7 +47,7 @@ The **Applies to** column indicates where the environment variable should be set
 | Variable                   | Description                                  | Default | Applies to |
 | -------------------------- | -------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_DB_ECHO`         | Enable database query logging.               | `false` | Server     |
-| `GPUSTACK_DB_POOL_SIZE`    | Database connection pool size.               | `5`     | Server     |
+| `GPUSTACK_DB_POOL_SIZE`    | Database connection pool size.               | `10`     | Server     |
 | `GPUSTACK_DB_MAX_OVERFLOW` | Database connection pool max overflow.       | `10`    | Server     |
 | `GPUSTACK_DB_POOL_TIMEOUT` | Database connection pool timeout in seconds. | `30`    | Server     |
 
