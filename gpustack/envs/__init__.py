@@ -23,6 +23,12 @@ HIGRESS_EXT_AUTH_TIMEOUT_MS = int(
 )
 
 # Worker configuration
+WORKER_HEARTBEAT_INTERVAL = int(
+    os.getenv("GPUSTACK_WORKER_HEARTBEAT_INTERVAL", 30)
+)  # in seconds
+WORKER_STATUS_SYNC_INTERVAL = int(
+    os.getenv("GPUSTACK_WORKER_STATUS_SYNC_INTERVAL", 30)
+)  # in seconds
 WORKER_HEARTBEAT_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD", 150)
 )  # 2.5 minutes in seconds

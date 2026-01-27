@@ -82,6 +82,8 @@ The **Applies to** column indicates where the environment variable should be set
 
 | Variable                                               | Description                                                                                               | Default | Applies to |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                   | Worker heartbeat interval in seconds.                                                                     | `30`    | Worker     |
+| `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                 | Worker status synchronization interval in seconds.                                                        | `30`    | Worker     |
 | `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.                                                                 | `150`   | Server     |
 | `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.                                                        | `300`   | Server     |
 | `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                                                                   | `1000`  | Server     |
