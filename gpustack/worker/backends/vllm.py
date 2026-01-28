@@ -23,7 +23,10 @@ from gpustack.schemas.models import (
     ModelInstanceDeploymentMetadata,
 )
 from gpustack.utils import network
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import (
+    find_parameter,
+    find_int_parameter,
+)
 from gpustack.utils.envs import sanitize_env
 from gpustack.utils.unit import byte_to_gib
 from gpustack.worker.backends.base import (
@@ -268,8 +271,8 @@ class VLLMServer(InferenceServer):
         env["VLLM_HOST_IP"] = self._worker.ip
         # During distributed setup,
         # we must get more than one port here,
-        # so we use ports[1] for distributed initialization.
-        env["VLLM_PORT"] = str(self._model_instance.ports[1])
+        # so we use ports[-1] for distributed initialization.
+        env["VLLM_PORT"] = str(self._model_instance.ports[-1])
 
         # Disable Ray logging to stderr by default,
         # see https://github.com/gpustack/gpustack/issues/4158#issuecomment-3809213348.
@@ -419,6 +422,22 @@ class VLLMServer(InferenceServer):
 
         if is_distributed:
             arguments.extend(["--distributed-executor-backend", "ray"])
+            dps = find_int_parameter(
+                self._model.backend_parameters, ["data-parallel-size", "dp"]
+            )
+            if dps and dps > 1:
+                # Prefer to use Ray backend for data parallelism if DP size is specified.
+                dpb = find_parameter(
+                    self._model.backend_parameters, ["data-parallel-backend", "dpb"]
+                )
+                if dpb is None:
+                    arguments.extend(["--data-parallel-backend", "ray"])
+                # Specify a port for DP RPC communication,
+                # we must get more than one port here, see gpustack/worker/serve_manager.py,
+                # so we use ports[1] for DP RPC communication.
+                arguments.extend(
+                    ["--data-parallel-rpc-port", str(self._model_instance.ports[1])]
+                )
 
         if self._model.extended_kv_cache and self._model.extended_kv_cache.enabled:
             vendor, _, _ = self._get_device_info()
