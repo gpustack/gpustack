@@ -48,6 +48,7 @@ from gpustack.schemas.models import (
     get_backend,
     is_gguf_model,
     DistributedServerCoordinateModeEnum,
+    SourceEnum,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
@@ -570,7 +571,22 @@ async def evaluate_vox_box_model(
     return should_update
 
 
-async def evaluate_diffusion_model(model: Model):
+async def evaluate_diffusion_model(
+    model: Model,
+    workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
+):
+    """
+    Evaluate diffusion model and update model categories.
+
+    Args:
+        model: Model to evaluate
+        workers: Optional list of workers (for LOCAL_PATH remote read)
+        session: Optional database session (for LOCAL_PATH worker optimization)
+
+    Returns:
+        True if the model is a diffusion model, False otherwise
+    """
     # SGLang now supports Diffusers (image) models.
     # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
     # classify as IMAGE directly.
@@ -580,9 +596,33 @@ async def evaluate_diffusion_model(model: Model):
         return False
 
     hf_token = get_global_config().huggingface_token
-    is_diffusers = await asyncio.wait_for(
-        has_diffusers_model_index(model, token=hf_token), timeout=10
-    )
+
+    # For Hub sources and local files, use hub.py function
+    if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+        is_diffusers = await asyncio.wait_for(
+            has_diffusers_model_index(model, token=hf_token), timeout=10
+        )
+    # For LOCAL_PATH, try local first, then workers
+    elif model.source == SourceEnum.LOCAL_PATH:
+        # Try local read first
+        is_diffusers = await asyncio.wait_for(
+            has_diffusers_model_index(model, token=hf_token), timeout=10
+        )
+        # If not found locally and workers are provided, query workers
+        if not is_diffusers and workers:
+            from gpustack.scheduler.calculator import (
+                check_diffusers_model_index_from_workers,
+            )
+
+            is_diffusers = await asyncio.wait_for(
+                check_diffusers_model_index_from_workers(
+                    model, workers, session, hf_token
+                ),
+                timeout=10,
+            )
+    else:
+        return False
+
     if is_diffusers:
         model.categories = [CategoryEnum.IMAGE]
         return True
@@ -607,7 +647,9 @@ async def evaluate_pretrained_config(
     """
     # 1) try to evaluate as diffusion model
     try:
-        is_image_category = await evaluate_diffusion_model(model)
+        is_image_category = await evaluate_diffusion_model(
+            model, workers=workers, session=session
+        )
         if is_image_category:
             return True
     except Exception:

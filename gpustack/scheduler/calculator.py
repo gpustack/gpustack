@@ -845,6 +845,144 @@ def get_pretrained_config_sync(  # noqa: C901
         return None
 
 
+async def check_diffusers_model_index_from_workers(
+    model: Model,
+    workers: List[Worker],
+    session: Optional[AsyncSession] = None,
+    token: Optional[str] = None,
+) -> bool:
+    """
+    Check if a LOCAL_PATH model is a diffusers model by querying workers.
+
+    This function is specifically for LOCAL_PATH models that are not available
+    locally on the server. It uses the optimized worker query strategy.
+
+    Args:
+        model: Model with source LOCAL_PATH
+        workers: List of workers to query
+        session: Optional database session for querying ModelFile
+        token: Optional Hugging Face API token (unused for LOCAL_PATH)
+
+    Returns:
+        True if model_index.json contains _diffusers_version, False otherwise
+    """
+    if not workers:
+        return False
+
+    # Read model_index.json from workers
+    data = await read_local_path_file_from_workers(
+        model, "model_index.json", workers, session
+    )
+
+    if data is None:
+        return False
+
+    # Check for _diffusers_version key
+    if isinstance(data, dict) and "_diffusers_version" in data:
+        return True
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and "_diffusers_version" in item:
+                return True
+
+    return False
+
+
+async def read_local_path_file_from_workers(  # noqa: C901
+    model: Model,
+    file_path: str,
+    workers: List[Worker],
+    session: Optional[AsyncSession] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Read a file from LOCAL_PATH model by querying workers.
+
+    This function implements a multi-tier strategy:
+    1. Try workers that are known to have the model file (from ModelFile)
+    2. Apply filters (GPU selector, label selector) to reduce broadcast scope
+    3. Broadcast to filtered workers
+
+    Args:
+        model: Model with source LOCAL_PATH
+        file_path: Relative path to the file (e.g., "config.json", "model_index.json")
+        workers: List of workers to query
+        session: Optional database session for querying ModelFile
+
+    Returns:
+        File content as dict if successful, None otherwise
+    """
+    if not workers:
+        return None
+
+    # Build full file path
+    fp = os.path.join(model.local_path, file_path)
+
+    async def try_read_from_worker(worker: Worker) -> Optional[Dict[str, Any]]:
+        """Try to read file from a single worker."""
+        try:
+            async with WorkerFilesystemClient() as filesystem_client:
+                logger.info(f"Trying to read {file_path} from worker {worker.id}")
+                content = await filesystem_client.read_model_config(worker, fp)
+                if content:
+                    logger.info(
+                        f"Successfully read {file_path} from worker {worker.id}"
+                    )
+                    return content
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to read {file_path} from worker {worker.id}: {e}")
+            return None
+
+    # Tier 1: Try workers that likely have the file first
+    target_workers = await get_workers_with_model_file(session, model, workers)
+    if target_workers:
+        logger.info(
+            f"Trying to read {file_path} from {len(target_workers)} known workers first"
+        )
+        tasks = [try_read_from_worker(worker) for worker in target_workers]
+        for completed_task in asyncio.as_completed(tasks):
+            result = await completed_task
+            if result:
+                return result
+
+    # Tier 1.5: Apply filters to reduce broadcast scope
+    filtered_workers = workers
+    messages = []
+
+    # Apply GPUMatchingFilter
+    if model.gpu_selector:
+        gpu_filter = GPUMatchingFilter(model)
+        filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
+        messages.extend(gpu_messages)
+
+    # Apply LabelMatchingFilter
+    if model.worker_selector:
+        label_filter = LabelMatchingFilter(model)
+        filtered_workers, label_messages = await label_filter.filter(filtered_workers)
+        messages.extend(label_messages)
+
+    if messages:
+        for msg in messages:
+            logger.info(f"Worker filtering for {file_path} read: {msg}")
+
+    # Tier 2: Broadcast to filtered workers
+    if not filtered_workers:
+        logger.warning(f"No workers available after filtering for {file_path}")
+        return None
+
+    logger.info(
+        f"Broadcasting {file_path} read request to {len(filtered_workers)} filtered workers "
+        f"(reduced from {len(workers)} total workers)"
+    )
+    tasks = [try_read_from_worker(worker) for worker in filtered_workers]
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result:
+            return result
+
+    return None
+
+
 async def get_pretrained_config_from_workers(  # noqa: C901
     model: Model,
     workers: List[Worker],
@@ -854,11 +992,7 @@ async def get_pretrained_config_from_workers(  # noqa: C901
     """
     Get pretrained config from remote workers for LOCAL_PATH models.
 
-    This function implements a multi-tier strategy:
-    1. Check if path exists locally on server
-    2. Try workers that are known to have the model file (optimized)
-    3. Apply filters (GPU selector, label selector) to reduce broadcast scope
-    4. Broadcast to filtered workers
+    This function now reuses read_local_path_file_from_workers for consistency.
 
     Args:
         model: Model with source LOCAL_PATH
@@ -892,75 +1026,17 @@ async def get_pretrained_config_from_workers(  # noqa: C901
             logger.warning(f"Failed to load config from local path: {e}")
             return None
 
-    async def try_read_config_from_worker(worker: Worker) -> Optional[Any]:
-        """Try to read pretrained config from a single worker."""
-        try:
-            async with WorkerFilesystemClient() as filesystem_client:
-                logger.info(f"Trying to read config from worker {worker.id}")
-                # Read config.json file
-                config_path = os.path.join(model.local_path, "config.json")
-                config_dict = await filesystem_client.read_model_config(
-                    worker, config_path
-                )
-                if not config_dict:
-                    return None
+    # Read config.json from workers using the new unified function
+    config_dict = await read_local_path_file_from_workers(
+        model, "config.json", workers, session
+    )
 
-                logger.info(f"Successfully read config from worker {worker.id}")
-                from transformers import PretrainedConfig
-
-                return PretrainedConfig.from_dict(config_dict)
-        except Exception as e:
-            logger.debug(f"Failed to read config from worker {worker.id}: {e}")
-            return None
-
-    # Tier 1: Try workers that likely have the file first
-    target_workers = await get_workers_with_model_file(session, model, workers)
-    if target_workers:
-        logger.info(
-            f"Trying to read config from {len(target_workers)} known workers first"
-        )
-        tasks = [try_read_config_from_worker(worker) for worker in target_workers]
-        for completed_task in asyncio.as_completed(tasks):
-            result = await completed_task
-            if result:
-                return result
-
-    # Tier 1.5: Apply filters to reduce broadcast scope
-    filtered_workers = workers
-    messages = []
-
-    # Apply GPUMatchingFilter
-    if model.gpu_selector:
-        gpu_filter = GPUMatchingFilter(model)
-        filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
-        messages.extend(gpu_messages)
-
-    # Apply LabelMatchingFilter
-    if model.worker_selector:
-        label_filter = LabelMatchingFilter(model)
-        filtered_workers, label_messages = await label_filter.filter(filtered_workers)
-        messages.extend(label_messages)
-
-    for msg in messages or []:
-        logger.info(f"Worker filtering for config read: {msg}")
-
-    # Tier 2: Broadcast to filtered workers
-    if not filtered_workers:
-        logger.warning("No workers available after filtering")
+    if not config_dict:
         return None
 
-    logger.info(
-        f"Broadcasting config read request to {len(filtered_workers)} filtered workers "
-        f"(reduced from {len(workers)} total workers)"
-    )
-    tasks = [try_read_config_from_worker(worker) for worker in filtered_workers]
+    from transformers import PretrainedConfig
 
-    for completed_task in asyncio.as_completed(tasks):
-        result = await completed_task
-        if result:
-            return result
-
-    return None
+    return PretrainedConfig.from_dict(config_dict)
 
 
 async def _calculate_on_worker(  # noqa: C901
