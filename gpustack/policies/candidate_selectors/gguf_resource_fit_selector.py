@@ -93,6 +93,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
         self._model = model
         self._model_instances = model_instances
         self._cache_dir = cache_dir
+        self._workers = []  # Initialize workers list for remote parsing
 
         self._workers_allocatable_resource = {}
         self._gpus_allocatable_vram = []
@@ -372,6 +373,9 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
 
         if not workers:
             return []
+
+        # Save workers reference for remote parsing
+        self._workers = workers
 
         # reset the data with input workers.
         await self._set_offload_resource_claim()
@@ -2235,6 +2239,7 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
             self._model,
             offload,
             cache_dir=self._cache_dir,
+            workers=self._workers,
             **kwargs,
         )
 
