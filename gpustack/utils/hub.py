@@ -19,11 +19,9 @@ from transformers import PretrainedConfig
 from huggingface_hub import HfApi
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
 from requests.exceptions import HTTPError
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
-from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.models import (
     CategoryEnum,
     Model,
@@ -31,7 +29,6 @@ from gpustack.schemas.models import (
     get_mmproj_filename,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.server.services import ModelFileService
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 
@@ -275,44 +272,10 @@ def match_model_scope_file_paths(
     return matching_paths
 
 
-async def get_workers_with_model_file(
-    session: Optional[AsyncSession],
-    model: Model,
-    workers: List[Worker],
-    is_single: bool = False,
-) -> List[Worker]:
-    """
-    Get workers that likely have the model file from ModelFile.
-    """
-    if not session:
-        return []
-
-    source_index = model.model_source_index
-    if not source_index:
-        return []
-
-    model_files = await ModelFileService(session).get_by_source_index(source_index)
-    if not model_files:
-        return []
-
-    worker_ids = set()
-
-    # Collect worker_ids from READY or DOWNLOADING files
-    for mf in model_files:
-        if mf.state == ModelFileStateEnum.READY and mf.worker_id:
-            worker_ids.add(mf.worker_id)
-            if is_single:
-                break
-
-    # Filter workers by collected worker_ids
-    return [w for w in workers if w.id in worker_ids]
-
-
 async def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
     workers: Optional[List[Worker]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
@@ -384,7 +347,7 @@ async def read_repo_file_content(  # noqa: C901
                 with open(fp, "r", encoding="utf-8") as f:
                     return json.load(f)
 
-            # Path not exist, try to read from worker if session and workers are provided
+            # Path not exist, try to read from workers if provided
             if not workers:
                 return None
 
@@ -412,22 +375,9 @@ async def read_repo_file_content(  # noqa: C901
                     )
                     return None
 
-            # Try to get workers that likely have the file first
-            target_workers = await get_workers_with_model_file(session, model, workers)
-            if target_workers:
-                logger.info(
-                    f"Trying to read from {len(target_workers)} known workers first"
-                )
-                # Try these workers first
-                tasks = [try_read_from_worker(worker) for worker in target_workers]
-                for completed_task in asyncio.as_completed(tasks):
-                    result = await completed_task
-                    if result:
-                        return result
-
-            # Fall back to broadcasting to all workers
+            # Broadcast to all provided workers
             logger.info(
-                f"Broadcasting read request for {file_path} to all {len(workers)} workers"
+                f"Broadcasting read request for {file_path} to {len(workers)} workers"
             )
             tasks = [try_read_from_worker(worker) for worker in workers]
 
@@ -771,7 +721,6 @@ def get_model_scope_model_min_gguf_path(
 async def has_diffusers_model_index(  # noqa: C901
     model: Model,
     token: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
     workers: Optional[List[Worker]] = None,
 ) -> bool:
     """Check whether the model source contains a model_index.json with
@@ -784,7 +733,7 @@ async def has_diffusers_model_index(  # noqa: C901
     """
     try:
         data = await read_repo_file_content(
-            model, "model_index.json", token=token, session=session, workers=workers
+            model, "model_index.json", token=token, workers=workers
         )
         if data is None:
             return False

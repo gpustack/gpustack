@@ -210,10 +210,9 @@ class WorkerFilesystemClient:
         }
 
         # Add override parameters
-        if "tensor_split" in kwargs:
-            payload["tensor_split"] = kwargs["tensor_split"]
-        if "rpc" in kwargs:
-            payload["rpc"] = kwargs["rpc"]
+        for key in ("tensor_split", "rpc"):
+            if key in kwargs:
+                payload[key] = kwargs[key]
 
         use_proxy_env = use_proxy_env_for_url(url)
         client = self._http_client if use_proxy_env else self._http_client_no_proxy
