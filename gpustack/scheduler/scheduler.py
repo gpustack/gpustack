@@ -159,7 +159,7 @@ class Scheduler:
                 try:
                     if is_gguf_model(model):
                         should_update_model = await evaluate_gguf_model(
-                            self._config, model, workers
+                            self._config, model, workers, session
                         )
                         if await self.check_model_distributability(
                             session, model, instance
@@ -471,12 +471,14 @@ async def evaluate_gguf_model(
     config: Config,
     model: Model,
     workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
 ) -> bool:
 
     task_output = await calculate_model_resource_claim(
         model,
         offload=GPUOffloadEnum.Full,
         workers=workers,
+        session=session,
     )
     if (
         task_output.resource_architecture

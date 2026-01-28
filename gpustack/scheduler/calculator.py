@@ -13,6 +13,9 @@ from dataclasses_json import dataclass_json
 from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import get_global_config
+from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
+from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.models import (
     Model,
     SourceEnum,
@@ -20,11 +23,11 @@ from gpustack.schemas.models import (
     CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
+from gpustack.server.services import ModelFileService
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.convert import parse_duration, safe_int
 from gpustack.utils.hub import (
     filter_filename,
-    get_workers_with_model_file,
     list_repo,
     match_hugging_face_files,
     match_model_scope_file_paths,
@@ -591,6 +594,39 @@ async def _gguf_parser_command(  # noqa: C901
     return command
 
 
+async def get_workers_with_model_file(
+    session: Optional[AsyncSession],
+    model: Model,
+    workers: List[Worker],
+    is_single: bool = False,
+) -> List[Worker]:
+    """
+    Get workers that likely have the model file from ModelFile.
+    """
+    if not session:
+        return []
+
+    source_index = model.model_source_index
+    if not source_index:
+        return []
+
+    model_files = await ModelFileService(session).get_by_source_index(source_index)
+    if not model_files:
+        return []
+
+    worker_ids = set()
+
+    # Collect worker_ids from READY or DOWNLOADING files
+    for mf in model_files:
+        if mf.state == ModelFileStateEnum.READY and mf.worker_id:
+            worker_ids.add(mf.worker_id)
+            if is_single:
+                break
+
+    # Filter workers by collected worker_ids
+    return [w for w in workers if w.id in worker_ids]
+
+
 async def _try_parse_on_workers(
     model: Model,
     workers: List[Worker],
@@ -608,10 +644,9 @@ async def _try_parse_on_workers(
 
     # Prepare override parameters (only pass necessary ones)
     parse_kwargs = {}
-    if "tensor_split" in kwargs:
-        parse_kwargs["tensor_split"] = kwargs["tensor_split"]
-    if "rpc" in kwargs:
-        parse_kwargs["rpc"] = kwargs["rpc"]
+    for key in ("tensor_split", "rpc"):
+        if key in kwargs:
+            parse_kwargs[key] = kwargs[key]
 
     async def try_parse_on_worker(worker: Worker) -> Optional[ModelResourceClaim]:
         """Try to parse GGUF on a single worker."""
@@ -819,9 +854,11 @@ async def get_pretrained_config_from_workers(  # noqa: C901
     """
     Get pretrained config from remote workers for LOCAL_PATH models.
 
-    This function implements a two-tier fallback strategy similar to GGUF parsing:
-    1. Try workers that are known to have the model file (optimized)
-    2. Broadcast to all workers if step 1 fails
+    This function implements a multi-tier strategy:
+    1. Check if path exists locally on server
+    2. Try workers that are known to have the model file (optimized)
+    3. Apply filters (GPU selector, label selector) to reduce broadcast scope
+    4. Broadcast to filtered workers
 
     Args:
         model: Model with source LOCAL_PATH
@@ -888,9 +925,35 @@ async def get_pretrained_config_from_workers(  # noqa: C901
             if result:
                 return result
 
-    # Tier 2: Fall back to broadcasting to all workers
-    logger.info(f"Broadcasting config read request to all {len(workers)} workers")
-    tasks = [try_read_config_from_worker(worker) for worker in workers]
+    # Tier 1.5: Apply filters to reduce broadcast scope
+    filtered_workers = workers
+    messages = []
+
+    # Apply GPUMatchingFilter
+    if model.gpu_selector:
+        gpu_filter = GPUMatchingFilter(model)
+        filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
+        messages.extend(gpu_messages)
+
+    # Apply LabelMatchingFilter
+    if model.worker_selector:
+        label_filter = LabelMatchingFilter(model)
+        filtered_workers, label_messages = await label_filter.filter(filtered_workers)
+        messages.extend(label_messages)
+
+    for msg in messages or []:
+        logger.info(f"Worker filtering for config read: {msg}")
+
+    # Tier 2: Broadcast to filtered workers
+    if not filtered_workers:
+        logger.warning("No workers available after filtering")
+        return None
+
+    logger.info(
+        f"Broadcasting config read request to {len(filtered_workers)} filtered workers "
+        f"(reduced from {len(workers)} total workers)"
+    )
+    tasks = [try_read_config_from_worker(worker) for worker in filtered_workers]
 
     for completed_task in asyncio.as_completed(tasks):
         result = await completed_task
@@ -900,7 +963,7 @@ async def get_pretrained_config_from_workers(  # noqa: C901
     return None
 
 
-async def _calculate_on_worker(
+async def _calculate_on_worker(  # noqa: C901
     model: Model,
     workers: List[Worker],
     offload: GPUOffloadEnum,
@@ -911,7 +974,7 @@ async def _calculate_on_worker(
     Calculate model resource claim by running gguf-parser on a worker.
 
     Optimization: Try to find workers that likely have the file first (from
-    ModelFile), then fall back to broadcasting to all workers.
+    ModelFile), then apply filters, then fall back to broadcasting.
     This significantly reduces network overhead in most scenarios.
 
     Args:
@@ -925,7 +988,7 @@ async def _calculate_on_worker(
         ModelResourceClaim if successful, None otherwise.
     """
 
-    # Try to find workers from ModelFile
+    # Tier 1: Try to find workers from ModelFile
     if session:
         target_workers = await get_workers_with_model_file(
             session, model, workers, is_single=True
@@ -941,18 +1004,51 @@ async def _calculate_on_worker(
             if result:
                 return result
 
-    # Fall back to broadcasting to all workers
+    # Tier 1.5: Apply filters before broadcasting
+    filtered_workers = workers
+    messages = []
+
+    # Apply GPUMatchingFilter
+    if model.gpu_selector:
+        from gpustack.policies.worker_filters.gpu_matching_filter import (
+            GPUMatchingFilter,
+        )
+
+        gpu_filter = GPUMatchingFilter(model)
+        filtered_workers, gpu_messages = await gpu_filter.filter(filtered_workers)
+        messages.extend(gpu_messages)
+
+    # Apply LabelMatchingFilter
+    if model.worker_selector:
+        from gpustack.policies.worker_filters.label_matching_filter import (
+            LabelMatchingFilter,
+        )
+
+        label_filter = LabelMatchingFilter(model)
+        filtered_workers, label_messages = await label_filter.filter(filtered_workers)
+        messages.extend(label_messages)
+
+    if messages:
+        for msg in messages:
+            logger.info(f"Worker filtering for GGUF parsing: {msg}")
+
+    # Tier 2: Fall back to broadcasting to filtered workers
+    if not filtered_workers:
+        logger.warning("No workers available after filtering for GGUF parsing")
+        return None
+
     logger.info(
-        f"No cached worker info found, broadcasting GGUF parse request to "
-        f"all {len(workers)} workers for model {model.name}"
+        f"Broadcasting GGUF parse request to {len(filtered_workers)} filtered workers "
+        f"(reduced from {len(workers)} total workers) for model {model.name}"
     )
-    return await _try_parse_on_workers(model, workers, offload, **kwargs)
+    return await _try_parse_on_workers(model, filtered_workers, offload, **kwargs)
 
 
 async def calculate_model_resource_claim(
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
     workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
     **kwargs,
 ) -> ModelResourceClaim:
     """
@@ -961,6 +1057,7 @@ async def calculate_model_resource_claim(
         model: Model to calculate the resource claim for.
         offload: GPU offload strategy.
         workers: Optional list of available workers for remote parsing.
+        session: Optional database session for querying cached worker info.
         kwargs: Additional arguments to pass to the GGUF parser.
     """
 
@@ -968,7 +1065,9 @@ async def calculate_model_resource_claim(
         # Try to calculate on worker if workers are provided
         if workers:
             try:
-                result = await _calculate_on_worker(model, workers, offload, **kwargs)
+                result = await _calculate_on_worker(
+                    model, workers, offload, session=session, **kwargs
+                )
                 if result:
                     return result
             except Exception as e:
