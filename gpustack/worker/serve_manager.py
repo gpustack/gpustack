@@ -27,6 +27,7 @@ from gpustack.logging import (
 from gpustack.schemas.inference_backend import InferenceBackend, is_built_in_backend
 from gpustack.utils import network, platform
 from gpustack.utils.attrs import set_attr
+from gpustack.utils.command import find_int_parameter
 from gpustack.utils.datetimex import parse_iso8601_to_utc
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
@@ -619,17 +620,31 @@ class ServeManager:
                     unavailable_ports=unavailable_ports,
                 )
                 mi.ports = [mi.port]
+                unavailable_ports.add(mi.port)
                 if (
                     mi.distributed_servers
                     and mi.distributed_servers.subordinate_workers
                 ):
+                    # Get RPC port for DP communication in vLLM backend.
+                    if backend == BackendEnum.VLLM:
+                        dps = find_int_parameter(
+                            model.backend_parameters,
+                            ["data-parallel-size", "dp"],
+                        )
+                        if dps and dps > 1:
+                            dp_connecting_port = network.get_free_port(
+                                port_range=self._config.service_port_range,
+                                unavailable_ports=unavailable_ports,
+                            )
+                            mi.ports.append(dp_connecting_port)
+                            unavailable_ports.add(dp_connecting_port)
                     # Get port for subordinate workers' communication.
-                    unavailable_ports.add(mi.port)
                     connecting_port = network.get_free_port(
                         port_range=self._config.service_port_range,
                         unavailable_ports=unavailable_ports,
                     )
                     mi.ports.append(connecting_port)
+                    unavailable_ports.add(connecting_port)
 
             logger.debug(
                 f"Starting model instance {mi.name}"
