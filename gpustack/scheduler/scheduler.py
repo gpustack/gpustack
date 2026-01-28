@@ -477,7 +477,6 @@ async def evaluate_gguf_model(
     task_output = await calculate_model_resource_claim(
         model,
         offload=GPUOffloadEnum.Full,
-        cache_dir=config.cache_dir,
         workers=workers,
     )
     if (
