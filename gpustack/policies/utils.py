@@ -3,6 +3,7 @@ import logging
 import os
 from typing import Callable, Dict, List, Optional
 
+from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.policies.base import (
     Allocatable,
@@ -14,9 +15,11 @@ from gpustack.schemas.models import (
     CategoryEnum,
     SourceEnum,
 )
+from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.workers import Worker, GPUDevicesInfo, GPUDeviceInfo
 from pydantic import BaseModel
 
+from gpustack.server.services import ModelFileService
 from gpustack.utils.hub import get_model_weight_size, get_diffusion_model_weight_size
 
 logger = logging.getLogger(__name__)
@@ -246,8 +249,38 @@ def get_vram_claim_from_model_env(model: Model) -> Optional[int]:
     return None
 
 
+async def _get_cached_model_size(
+    session: Optional[AsyncSession],
+    model: Model,
+) -> Optional[int]:
+    """
+    Get cached file size from downloaded ModelFile.
+    """
+    if not session:
+        return None
+
+    source_index = model.model_source_index
+    if not source_index:
+        return None
+
+    model_files = await ModelFileService(session).get_by_source_index(source_index)
+    if not model_files:
+        return None
+
+    # Find READY files with size
+    for mf in model_files:
+        if mf.state == ModelFileStateEnum.READY and mf.size:
+            logger.info(f"Using cached size {mf.size} from ModelFile {mf.id}")
+            return mf.size
+
+    return None
+
+
 async def estimate_model_vram(
-    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
+    model: Model,
+    token: Optional[str] = None,
+    workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
 ) -> int:
     """
     Estimate the vram requirement in bytes heuristically.
@@ -293,7 +326,15 @@ async def estimate_model_vram(
                 timeout=timeout_in_seconds,
             )
         elif model.source == SourceEnum.LOCAL_PATH:
-            weight_size = await get_local_model_weight_size(model.local_path, workers)
+            # Try to get cached size from ModelFile first
+            cached_size = await _get_cached_model_size(session, model)
+            if cached_size:
+                weight_size = cached_size
+            else:
+                # Fall back to querying workers
+                weight_size = await get_local_model_weight_size(
+                    model.local_path, workers
+                )
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -304,7 +345,10 @@ async def estimate_model_vram(
 
 
 async def estimate_diffusion_model_vram(
-    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
+    model: Model,
+    token: Optional[str] = None,
+    workers: Optional[List[Worker]] = None,
+    session: Optional[AsyncSession] = None,
 ) -> int:
     """ """
     if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
@@ -322,7 +366,15 @@ async def estimate_diffusion_model_vram(
                 timeout=timeout_in_seconds,
             )
         elif model.source == SourceEnum.LOCAL_PATH:
-            weight_size = await get_local_model_weight_size(model.local_path, workers)
+            # Try to get cached size from ModelFile first
+            cached_size = await _get_cached_model_size(session, model)
+            if cached_size:
+                weight_size = cached_size
+            else:
+                # Fall back to querying workers
+                weight_size = await get_local_model_weight_size(
+                    model.local_path, workers
+                )
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
     except Exception as e:
@@ -455,23 +507,35 @@ async def get_local_model_weight_size(
         except Exception as e:
             logger.error(f"Failed to calculate size locally for {local_path}: {e}")
             raise e
+    if not workers:
+        raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
 
-    if workers:
+    async def try_get_size_from_worker(worker: Worker) -> Optional[int]:
+        """Try to get model weight size from a single worker."""
         try:
             async with WorkerFilesystemClient() as fs_client:
-                tasks = [
-                    fs_client.get_model_weight_size(worker, local_path)
-                    for worker in workers
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for result in results:
-                    if isinstance(result, int):
-                        return result
+                size = await fs_client.get_model_weight_size(worker, local_path)
+                if isinstance(size, int):
+                    logger.info(
+                        f"Successfully got model weight size from worker {worker.id}: {size} bytes"
+                    )
+                    return size
+                return None
         except Exception as e:
-            logger.warning(f"Error checking model size on workers: {e}")
+            logger.debug(
+                f"Failed to get model weight size from worker {worker.id}: {e}"
+            )
+            return None
 
-    raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
+    # Concurrently try all workers and return the first successful result
+    logger.info(f"Broadcasting model weight size request to {len(workers)} workers")
+    tasks = [try_get_size_from_worker(worker) for worker in workers]
+
+    # Use as_completed to get results as they finish
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result is not None:
+            return result
 
 
 def group_worker_gpu_by_memory(
