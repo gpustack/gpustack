@@ -521,153 +521,26 @@ async def get_diffusion_model_weight_size(
     return sum_size
 
 
-async def _try_read_config_from_worker(
-    worker: Worker,
+def get_pretrained_config_from_hub(
     model: Model,
-) -> Optional[Any]:
-    """
-    Try to read pretrained config from a single worker.
-
-    Args:
-        worker: Worker to read config from.
-        model: Model to read config for.
-
-    Returns:
-        PretrainedConfig if successful, None otherwise.
-    """
-    try:
-        async with WorkerFilesystemClient() as filesystem_client:
-            logger.info(f"Trying to read config from worker {worker.id}")
-            # Read config.json file
-            config_path = os.path.join(model.local_path, "config.json")
-            config_dict = await filesystem_client.read_model_config(worker, config_path)
-            if not config_dict:
-                return None
-
-            logger.info(f"Successfully read config from worker {worker.id}")
-            pretrained_config = PretrainedConfig.from_dict(config_dict)
-            return pretrained_config
-    except Exception as e:
-        logger.warning(f"Failed to read config from worker {worker.id}: {e}")
-        return None
-
-
-async def _read_config_from_workers(
-    model: Model,
-    workers: List[Worker],
-    session: Optional[AsyncSession] = None,
-) -> Optional[Any]:
-    """
-    Try to read pretrained config from workers using optimized worker selection.
-
-    This function implements a two-level fallback strategy:
-    1. Try workers that likely have the file (from ModelFile)
-    2. Fall back to broadcasting to all workers
-
-    Args:
-        model: Model to read config for.
-        workers: List of available workers.
-        session: Optional database session for querying ModelFile.
-
-    Returns:
-        PretrainedConfig if successful, None otherwise.
-    """
-    # Try to get workers that likely have the file first
-    target_workers = await get_workers_with_model_file(session, model, workers)
-    if target_workers:
-        logger.info(
-            f"Trying to read config from {len(target_workers)} known workers first"
-        )
-        # Try these workers first
-        tasks = [
-            _try_read_config_from_worker(worker, model) for worker in target_workers
-        ]
-        for completed_task in asyncio.as_completed(tasks):
-            result = await completed_task
-            if result:
-                return result
-
-    # Fall back to broadcasting to all workers
-    logger.info(f"Broadcasting config read request to all {len(workers)} workers")
-    tasks = [_try_read_config_from_worker(worker, model) for worker in workers]
-
-    # Use as_completed to get results as they finish
-    for completed_task in asyncio.as_completed(tasks):
-        result = await completed_task
-        if result:
-            return result
-
-    return None
-
-
-async def _get_local_path_config(
-    model: Model,
-    trust_remote_code: bool,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
+    trust_remote_code: bool = False,
 ) -> Any:
     """
-    Get pretrained config for LOCAL_PATH source.
+    Get pretrained config from Hugging Face or ModelScope hub.
+
+    This is a synchronous function that should be called via asyncio.to_thread()
+    in async contexts to avoid blocking the event loop.
 
     Args:
-        model: Model to get config for.
-        trust_remote_code: Whether to trust remote code.
-        session: Optional database session for querying ModelFile.
-        workers: Optional list of workers to try reading from.
+        model: Model with source HUGGING_FACE or MODEL_SCOPE
+        trust_remote_code: Whether to trust remote code
 
     Returns:
-        PretrainedConfig or empty dict if path not found.
-    """
-    if not os.path.exists(model.local_path):
-        # Try to read config from worker
-        if workers:
-            result = await _read_config_from_workers(model, workers, session)
-            if result:
-                return result
-
-        logger.warning(
-            f"Local Path: {model.readable_source} is not local to the server node "
-            f"and may reside on a worker node."
-        )
-        # Return an empty dict here to facilitate special handling by upstream methods.
-        return {}
-
-    from transformers import AutoConfig
-
-    return AutoConfig.from_pretrained(
-        model.local_path,
-        trust_remote_code=trust_remote_code,
-        local_files_only=True,
-    )
-
-
-async def get_pretrained_config(
-    model: Model,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-    **kwargs,
-):
-    """
-    Get the pretrained config of the model from Hugging Face, ModelScope, or local path.
-
-    Args:
-        model: Model to get the pretrained config for.
-        session: Optional database session for querying ModelFile.
-        workers: Optional list of workers for remote file access.
-        **kwargs: Additional arguments (e.g., trust_remote_code).
-
-    Returns:
-        PretrainedConfig object or empty dict if local path not found.
+        PretrainedConfig object
 
     Raises:
-        ValueError: If model source is not supported.
+        ValueError: If model source is not HUGGING_FACE or MODEL_SCOPE
     """
-    trust_remote_code = False
-    if (
-        model.backend_parameters and "--trust-remote-code" in model.backend_parameters
-    ) or kwargs.get("trust_remote_code"):
-        trust_remote_code = True
-
     global_config = get_global_config()
 
     if model.source == SourceEnum.HUGGING_FACE:
@@ -702,98 +575,36 @@ async def get_pretrained_config(
                 local_files_only=local_files_only,
             )
 
-    elif model.source == SourceEnum.LOCAL_PATH:
-        return await _get_local_path_config(model, trust_remote_code, session, workers)
-
     else:
-        raise ValueError(f"Unsupported model source: {model.source}")
-
-
-async def get_pretrained_config_with_fallback(
-    model: Model,
-    session: Optional[AsyncSession] = None,
-    workers: Optional[List[Worker]] = None,
-    **kwargs,
-):
-    pretrained_config = None
-    try:
-        pretrained_config = await get_pretrained_config(
-            model, session=session, workers=workers, **kwargs
+        raise ValueError(
+            f"Unsupported model source for hub: {model.source}. "
+            f"Expected HUGGING_FACE or MODEL_SCOPE."
         )
-    except Exception as e:
-        if model.backend_version is not None or isinstance(e, ImportError):
-            logger.debug(
-                "Fallback to load config.json after AutoConfig.from_pretrained failed"
-            )
-            # Fallback:
-            # AutoConfig.from_pretrained performs strict architecture validation and may fail in several cases, like:
-            #   1. Models using custom or backend-specific architectures not recognized by the current Transformers version.
-            #   2. Newly released models whose architectures are not yet supported in older AutoConfig implementations.
-            #   3. Import-time failures caused by missing or conflicting dependencies
-            #      (e.g., LlamaFlashAttention2 import errors — see: https://github.com/deepseek-ai/DeepSeek-OCR/issues/7).
-            # In all such cases, fallback to loading config.json directly to avoid blocking model startup.
-            try:
-                # try to read config.json and ensure num_attention_heads not None.
-                config_dict = await read_repo_file_content(
-                    model,
-                    "config.json",
-                    token=get_global_config().huggingface_token,
-                    session=session,
-                    workers=workers,
-                )
-                if config_dict:
-                    try:
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                    except Exception as ce:
-                        logger.warning(f"read_repo_file_content failed: {ce}")
-            except Exception as ce:
-                logger.warning(f"Fallback to load config.json failed: {ce}")
-
-        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
-            # In GPUStack model evaluation skipping mode, an empty config is acceptable.
-            return pretrained_config
-
-        if any(
-            cat in model.categories
-            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
-        ):
-            # For image models, an empty config is acceptable.
-            return pretrained_config
-
-        if pretrained_config is None and (
-            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
-        ):
-            # LLM models or ValueError: empty config is NOT acceptable, raise error
-            raise e
-
-    return pretrained_config
 
 
-def get_pretrained_config_with_fallback_sync(model: Model, **kwargs):
+async def _fallback_read_config_json(model: Model) -> Optional[Any]:
     """
-    Synchronous wrapper for get_pretrained_config_with_fallback.
-    This is used in contexts where async is not available (e.g., worker backends).
-    """
-    import asyncio
+    Fallback to reading config.json directly when AutoConfig fails.
+    Only applicable for Hub sources (HUGGING_FACE, MODEL_SCOPE).
 
+    Args:
+        model: Model with Hub source
+
+    Returns:
+        PretrainedConfig if successful, None otherwise
+    """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If there's already a running event loop, we need to run in a thread
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    get_pretrained_config_with_fallback(model, **kwargs),
-                )
-                return future.result()
-        else:
-            # No running event loop, we can use asyncio.run directly
-            return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
-    except RuntimeError:
-        # No event loop at all, create a new one
-        return asyncio.run(get_pretrained_config_with_fallback(model, **kwargs))
+        # For Hub sources, we don't need session/workers
+        config_dict = await read_repo_file_content(
+            model,
+            "config.json",
+            token=get_global_config().huggingface_token,
+        )
+        if config_dict:
+            return PretrainedConfig.from_dict(config_dict)
+    except Exception as e:
+        logger.warning(f"Fallback to load config.json failed: {e}")
+    return None
 
 
 # Simplified from vllm.config._get_and_verify_max_len
