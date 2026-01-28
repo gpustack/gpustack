@@ -10,6 +10,7 @@ import time
 from typing import List, Optional, Dict, Tuple
 from dataclasses_json import dataclass_json
 
+from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import get_global_config
 from gpustack.schemas.models import (
@@ -22,6 +23,7 @@ from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.convert import parse_duration, safe_int
 from gpustack.utils.hub import (
     filter_filename,
+    get_workers_with_model_file,
     list_repo,
     match_hugging_face_files,
     match_model_scope_file_paths,
@@ -586,28 +588,18 @@ async def _gguf_parser_command(  # noqa: C901
     return command
 
 
-async def _calculate_on_worker(
+async def _try_parse_on_workers(
     model: Model,
     workers: List[Worker],
     offload: GPUOffloadEnum,
     **kwargs,
 ) -> Optional[ModelResourceClaim]:
     """
-    Calculate model resource claim by running gguf-parser on a worker.
-
-    Steps:
-    1. Try to parse GGUF on each worker until one succeeds
-    2. Parse the response and return ModelResourceClaim
-
-    Args:
-        model: Model to calculate the resource claim for.
-        workers: List of available workers.
-        offload: GPU offload strategy.
-        kwargs: Additional arguments to pass to the GGUF parser.
-
-    Returns:
-        ModelResourceClaim if successful, None otherwise.
+    Try to parse GGUF on specified workers concurrently.
     """
+    if not workers:
+        return None
+
     # Prepare parameters once
     offload_str = offload.value  # "full", "partial", "disable"
 
@@ -618,43 +610,92 @@ async def _calculate_on_worker(
     if "rpc" in kwargs:
         parse_kwargs["rpc"] = kwargs["rpc"]
 
-    # Try to parse on each worker until one succeeds
-    async with WorkerFilesystemClient() as fs_client:
-        for worker in workers:
-            try:
-                # Directly try to parse GGUF on this worker
+    async def try_parse_on_worker(worker: Worker) -> Optional[ModelResourceClaim]:
+        """Try to parse GGUF on a single worker."""
+        try:
+            async with WorkerFilesystemClient() as fs_client:
                 output_dict = await fs_client.parse_gguf(
                     worker,
                     model,
                     offload=offload_str,
                     **parse_kwargs,
                 )
-
-                # Parse response
                 claim = GGUFParserOutput.from_dict(output_dict)
-
-                # Clear VRAM claim if needed
                 if offload == GPUOffloadEnum.Disable:
                     clear_vram_claim(claim)
 
                 logger.info(
-                    f"Successfully parsed GGUF on worker {worker.name} for model {model.name}"
+                    f"Successfully parsed GGUF on worker {worker.name} "
+                    f"for model {model.name}"
                 )
-
                 return ModelResourceClaim(
                     model=model,
                     resource_claim_estimate=claim.estimate,
                     resource_architecture=claim.architecture,
                 )
+        except Exception as e:
+            logger.debug(f"Failed to parse GGUF on worker {worker.name}: {e}")
+            return None
 
-            except Exception as e:
-                # File not found or other error on this worker, try next one
-                logger.debug(f"Failed to parse GGUF on worker {worker.name}: {e}")
-                continue
+    # Concurrently try all workers and return the first successful result
+    tasks = [try_parse_on_worker(worker) for worker in workers]
 
-        # No worker succeeded
-        logger.debug(f"No worker could parse GGUF file at {model.local_path}")
-        return None
+    # Use as_completed to get results as they finish
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result:
+            return result
+
+    return None
+
+
+async def _calculate_on_worker(
+    model: Model,
+    workers: List[Worker],
+    offload: GPUOffloadEnum,
+    session: Optional[AsyncSession] = None,
+    **kwargs,
+) -> Optional[ModelResourceClaim]:
+    """
+    Calculate model resource claim by running gguf-parser on a worker.
+
+    Optimization: Try to find workers that likely have the file first (from
+    ModelFile), then fall back to broadcasting to all workers.
+    This significantly reduces network overhead in most scenarios.
+
+    Args:
+        model: Model to calculate the resource claim for.
+        workers: List of available workers.
+        offload: GPU offload strategy.
+        session: Optional database session for querying cached worker info.
+        kwargs: Additional arguments to pass to the GGUF parser.
+
+    Returns:
+        ModelResourceClaim if successful, None otherwise.
+    """
+
+    # Try to find workers from ModelFile
+    if session:
+        target_workers = await get_workers_with_model_file(
+            session, model, workers, is_single=True
+        )
+        if target_workers:
+            logger.info(
+                f"Found {len(target_workers)} workers from ModelFile, "
+                f"trying them first for model {model.name}"
+            )
+            result = await _try_parse_on_workers(
+                model, target_workers, offload, **kwargs
+            )
+            if result:
+                return result
+
+    # Fall back to broadcasting to all workers
+    logger.info(
+        f"No cached worker info found, broadcasting GGUF parse request to "
+        f"all {len(workers)} workers for model {model.name}"
+    )
+    return await _try_parse_on_workers(model, workers, offload, **kwargs)
 
 
 async def calculate_model_resource_claim(

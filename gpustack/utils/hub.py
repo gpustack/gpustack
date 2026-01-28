@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import gzip
@@ -22,8 +23,15 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.config.config import get_global_config
 from gpustack.schemas import ModelFile
-from gpustack.schemas.models import CategoryEnum, Model, SourceEnum, get_mmproj_filename
+from gpustack.schemas.model_files import ModelFileStateEnum
+from gpustack.schemas.models import (
+    CategoryEnum,
+    Model,
+    SourceEnum,
+    get_mmproj_filename,
+)
 from gpustack.schemas.workers import Worker
+from gpustack.server.services import ModelFileService
 from gpustack.utils.cache import is_cached, load_cache, save_cache
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 
@@ -267,6 +275,39 @@ def match_model_scope_file_paths(
     return matching_paths
 
 
+async def get_workers_with_model_file(
+    session: Optional[AsyncSession],
+    model: Model,
+    workers: List[Worker],
+    is_single: bool = False,
+) -> List[Worker]:
+    """
+    Get workers that likely have the model file from ModelFile.
+    """
+    if not session:
+        return []
+
+    source_index = model.model_source_index
+    if not source_index:
+        return []
+
+    model_files = await ModelFileService(session).get_by_source_index(source_index)
+    if not model_files:
+        return []
+
+    worker_ids = set()
+
+    # Collect worker_ids from READY or DOWNLOADING files
+    for mf in model_files:
+        if mf.state == ModelFileStateEnum.READY and mf.worker_id:
+            worker_ids.add(mf.worker_id)
+            if is_single:
+                break
+
+    # Filter workers by collected worker_ids
+    return [w for w in workers if w.id in worker_ids]
+
+
 async def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
@@ -339,31 +380,62 @@ async def read_repo_file_content(  # noqa: C901
             if not local_path or not os.path.isdir(local_path):
                 return None
             fp = os.path.join(local_path, file_path)
-            if not os.path.exists(fp):
-                # Try to read from worker if session and workers are provided
-                async with WorkerFilesystemClient() as filesystem_client:
-                    for worker in workers or []:
-                        try:
-                            logger.info(
-                                f"Trying to read file {file_path} from worker {worker.id}"
-                            )
-                            config_dict = await filesystem_client.read_model_config(
-                                worker, fp
-                            )
-                            if config_dict:
-                                logger.info(
-                                    f"Successfully read file {file_path} from worker {worker.id}"
-                                )
-                                return config_dict
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to read file {file_path} from worker {worker.id}: {e}"
-                            )
-                            continue
-                return None
-            with open(fp, "r", encoding="utf-8") as f:
-                return json.load(f)
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    return json.load(f)
 
+            # Path not exist, try to read from worker if session and workers are provided
+            if not workers:
+                return None
+
+            async def try_read_from_worker(
+                worker: Worker,
+            ) -> Optional[Dict[str, Any]]:
+                """Try to read config from a single worker."""
+                try:
+                    async with WorkerFilesystemClient() as filesystem_client:
+                        logger.info(
+                            f"Trying to read file {file_path} from worker {worker.id}"
+                        )
+                        config_dict = await filesystem_client.read_model_config(
+                            worker, fp
+                        )
+                        if config_dict:
+                            logger.info(
+                                f"Successfully read file {file_path} from worker {worker.id}"
+                            )
+                            return config_dict
+                        return None
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to read file {file_path} from worker {worker.id}: {e}"
+                    )
+                    return None
+
+            # Try to get workers that likely have the file first
+            target_workers = await get_workers_with_model_file(session, model, workers)
+            if target_workers:
+                logger.info(
+                    f"Trying to read from {len(target_workers)} known workers first"
+                )
+                # Try these workers first
+                tasks = [try_read_from_worker(worker) for worker in target_workers]
+                for completed_task in asyncio.as_completed(tasks):
+                    result = await completed_task
+                    if result:
+                        return result
+
+            # Fall back to broadcasting to all workers
+            logger.info(
+                f"Broadcasting read request for {file_path} to all {len(workers)} workers"
+            )
+            tasks = [try_read_from_worker(worker) for worker in workers]
+
+            # Use as_completed to get results as they finish
+            for completed_task in asyncio.as_completed(tasks):
+                result = await completed_task
+                if result:
+                    return result
         else:
             return None
     except Exception as e:
@@ -449,6 +521,126 @@ async def get_diffusion_model_weight_size(
     return sum_size
 
 
+async def _try_read_config_from_worker(
+    worker: Worker,
+    model: Model,
+) -> Optional[Any]:
+    """
+    Try to read pretrained config from a single worker.
+
+    Args:
+        worker: Worker to read config from.
+        model: Model to read config for.
+
+    Returns:
+        PretrainedConfig if successful, None otherwise.
+    """
+    try:
+        async with WorkerFilesystemClient() as filesystem_client:
+            logger.info(f"Trying to read config from worker {worker.id}")
+            # Read config.json file
+            config_path = os.path.join(model.local_path, "config.json")
+            config_dict = await filesystem_client.read_model_config(worker, config_path)
+            if not config_dict:
+                return None
+
+            logger.info(f"Successfully read config from worker {worker.id}")
+            pretrained_config = PretrainedConfig.from_dict(config_dict)
+            return pretrained_config
+    except Exception as e:
+        logger.warning(f"Failed to read config from worker {worker.id}: {e}")
+        return None
+
+
+async def _read_config_from_workers(
+    model: Model,
+    workers: List[Worker],
+    session: Optional[AsyncSession] = None,
+) -> Optional[Any]:
+    """
+    Try to read pretrained config from workers using optimized worker selection.
+
+    This function implements a two-level fallback strategy:
+    1. Try workers that likely have the file (from ModelFile)
+    2. Fall back to broadcasting to all workers
+
+    Args:
+        model: Model to read config for.
+        workers: List of available workers.
+        session: Optional database session for querying ModelFile.
+
+    Returns:
+        PretrainedConfig if successful, None otherwise.
+    """
+    # Try to get workers that likely have the file first
+    target_workers = await get_workers_with_model_file(session, model, workers)
+    if target_workers:
+        logger.info(
+            f"Trying to read config from {len(target_workers)} known workers first"
+        )
+        # Try these workers first
+        tasks = [
+            _try_read_config_from_worker(worker, model) for worker in target_workers
+        ]
+        for completed_task in asyncio.as_completed(tasks):
+            result = await completed_task
+            if result:
+                return result
+
+    # Fall back to broadcasting to all workers
+    logger.info(f"Broadcasting config read request to all {len(workers)} workers")
+    tasks = [_try_read_config_from_worker(worker, model) for worker in workers]
+
+    # Use as_completed to get results as they finish
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result:
+            return result
+
+    return None
+
+
+async def _get_local_path_config(
+    model: Model,
+    trust_remote_code: bool,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+) -> Any:
+    """
+    Get pretrained config for LOCAL_PATH source.
+
+    Args:
+        model: Model to get config for.
+        trust_remote_code: Whether to trust remote code.
+        session: Optional database session for querying ModelFile.
+        workers: Optional list of workers to try reading from.
+
+    Returns:
+        PretrainedConfig or empty dict if path not found.
+    """
+    if not os.path.exists(model.local_path):
+        # Try to read config from worker
+        if workers:
+            result = await _read_config_from_workers(model, workers, session)
+            if result:
+                return result
+
+        logger.warning(
+            f"Local Path: {model.readable_source} is not local to the server node "
+            f"and may reside on a worker node."
+        )
+        # Return an empty dict here to facilitate special handling by upstream methods.
+        return {}
+
+    from transformers import AutoConfig
+
+    return AutoConfig.from_pretrained(
+        model.local_path,
+        trust_remote_code=trust_remote_code,
+        local_files_only=True,
+    )
+
+
 async def get_pretrained_config(
     model: Model,
     session: Optional[AsyncSession] = None,
@@ -456,11 +648,20 @@ async def get_pretrained_config(
     **kwargs,
 ):
     """
-    Get the pretrained config of the model from Hugging Face or ModelScope.
+    Get the pretrained config of the model from Hugging Face, ModelScope, or local path.
+
     Args:
         model: Model to get the pretrained config for.
-    """
+        session: Optional database session for querying ModelFile.
+        workers: Optional list of workers for remote file access.
+        **kwargs: Additional arguments (e.g., trust_remote_code).
 
+    Returns:
+        PretrainedConfig object or empty dict if local path not found.
+
+    Raises:
+        ValueError: If model source is not supported.
+    """
     trust_remote_code = False
     if (
         model.backend_parameters and "--trust-remote-code" in model.backend_parameters
@@ -468,16 +669,17 @@ async def get_pretrained_config(
         trust_remote_code = True
 
     global_config = get_global_config()
-    pretrained_config = None
+
     if model.source == SourceEnum.HUGGING_FACE:
         from transformers import AutoConfig
 
-        pretrained_config = AutoConfig.from_pretrained(
+        return AutoConfig.from_pretrained(
             model.huggingface_repo_id,
             token=global_config.huggingface_token,
             trust_remote_code=trust_remote_code,
             cache_dir=os.path.join(global_config.cache_dir, "huggingface"),
         )
+
     elif model.source == SourceEnum.MODEL_SCOPE:
         from modelscope import AutoConfig
 
@@ -490,56 +692,21 @@ async def get_pretrained_config(
         if os.path.exists(repo_cache_dir):
             local_files_only = True
             pretrained_model_name_or_path = repo_cache_dir
+
         with get_model_lock(model.model_scope_model_id):
-            pretrained_config = AutoConfig.from_pretrained(
+            return AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
                 allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
                 cache_dir=model_scope_cache_dir,
                 local_files_only=local_files_only,
             )
+
     elif model.source == SourceEnum.LOCAL_PATH:
-        if not os.path.exists(model.local_path):
-            # Try to read config from worker
-            async with WorkerFilesystemClient() as filesystem_client:
-                for worker in workers or []:
-                    try:
-                        logger.info(f"Trying to read config from worker {worker.id}")
-                        # Read config.json file
-                        config_path = os.path.join(model.local_path, "config.json")
-                        config_dict = await filesystem_client.read_model_config(
-                            worker, config_path
-                        )
-                        if not config_dict:
-                            continue
-
-                        logger.info(f"Successfully read config from worker {worker.id}")
-                        pretrained_config = PretrainedConfig.from_dict(config_dict)
-                        return pretrained_config
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to read config from worker {worker.id}: {e}"
-                        )
-                        continue
-
-            logger.warning(
-                f"Local Path: {model.readable_source} is not local to the server node and may reside on a worker node."
-            )
-            # Return an empty dict here to facilitate special handling by upstream methods.
-            return {}
-
-        from transformers import AutoConfig
-
-        pretrained_config = AutoConfig.from_pretrained(
-            model.local_path,
-            trust_remote_code=trust_remote_code,
-            local_files_only=True,
-        )
+        return await _get_local_path_config(model, trust_remote_code, session, workers)
 
     else:
         raise ValueError(f"Unsupported model source: {model.source}")
-
-    return pretrained_config
 
 
 async def get_pretrained_config_with_fallback(
