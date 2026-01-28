@@ -335,14 +335,17 @@ async def ensure_instance_model_file(session: AsyncSession, instance: ModelInsta
         # Not scheduled yet
         return
 
+    instance = await ModelInstance.one_by_id(
+        session,
+        instance.id,
+        options=[
+            selectinload(ModelInstance.model_files),
+        ],
+    )
+    if not instance:
+        return
+
     if len(instance.model_files) > 0:
-        instance = await ModelInstance.one_by_id(
-            session,
-            instance.id,
-            options=[
-                selectinload(ModelInstance.model_files),
-            ],
-        )
         await sync_instance_files_state(session, instance, instance.model_files)
         return
 
