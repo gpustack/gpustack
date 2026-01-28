@@ -25,9 +25,6 @@ class GGUFParseRequest(BaseModel):
         default=None, description="Override tensor split"
     )
     rpc: Optional[List[str]] = Field(default=None, description="Override RPC servers")
-    cache_dir: Optional[str] = Field(
-        default=None, description="Override cache directory"
-    )
 
 
 class GGUFParseResponse(BaseModel):

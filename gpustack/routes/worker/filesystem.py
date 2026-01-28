@@ -7,6 +7,7 @@ import traceback
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from gpustack.api.auth import worker_auth
+from gpustack.config.config import get_global_config
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
     GGUFParseRequest,
@@ -190,8 +191,11 @@ async def parse_gguf_file(request: GGUFParseRequest):
             kwargs["tensor_split"] = request.tensor_split
         if request.rpc:
             kwargs["rpc"] = request.rpc
-        if request.cache_dir:
-            kwargs["cache_dir"] = request.cache_dir
+
+        # Worker should use its own cache_dir from config, not from server.
+        # The cache_dir is node-local and server's path may not exist on worker.
+        worker_config = get_global_config()
+        kwargs["cache_dir"] = worker_config.cache_dir
 
         # 5. Reuse _gguf_parser_command to build command
         command = await _gguf_parser_command(model, offload_enum, **kwargs)
