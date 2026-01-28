@@ -183,7 +183,7 @@ class WorkerFilesystemClient:
         worker: Worker,
         model: Model,
         offload: str = "full",
-        **kwargs,  # tensor_split, rpc, cache_dir override parameters
+        **kwargs,  # tensor_split, rpc override parameters
     ) -> Dict:
         """
         Parse a GGUF file on a worker using gguf-parser.
@@ -192,7 +192,7 @@ class WorkerFilesystemClient:
             worker: The worker to query
             model: The Model object to parse
             offload: GPU offload strategy (full, partial, disable)
-            **kwargs: Optional override parameters (tensor_split, rpc, cache_dir)
+            **kwargs: Optional override parameters (tensor_split, rpc)
 
         Returns:
             Parsed GGUF output as dict (GGUFParserOutput structure)
@@ -214,8 +214,6 @@ class WorkerFilesystemClient:
             payload["tensor_split"] = kwargs["tensor_split"]
         if "rpc" in kwargs:
             payload["rpc"] = kwargs["rpc"]
-        if "cache_dir" in kwargs:
-            payload["cache_dir"] = kwargs["cache_dir"]
 
         use_proxy_env = use_proxy_env_for_url(url)
         client = self._http_client if use_proxy_env else self._http_client_no_proxy

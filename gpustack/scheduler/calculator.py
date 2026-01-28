@@ -617,8 +617,6 @@ async def _calculate_on_worker(
         parse_kwargs["tensor_split"] = kwargs["tensor_split"]
     if "rpc" in kwargs:
         parse_kwargs["rpc"] = kwargs["rpc"]
-    if "cache_dir" in kwargs:
-        parse_kwargs["cache_dir"] = kwargs["cache_dir"]
 
     # Try to parse on each worker until one succeeds
     async with WorkerFilesystemClient() as fs_client:
