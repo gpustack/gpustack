@@ -7,7 +7,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 import time
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 from dataclasses_json import dataclass_json
 
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -17,6 +17,7 @@ from gpustack.schemas.models import (
     Model,
     SourceEnum,
     get_mmproj_filename,
+    CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.compat_importlib import pkg_resources
@@ -27,6 +28,8 @@ from gpustack.utils.hub import (
     list_repo,
     match_hugging_face_files,
     match_model_scope_file_paths,
+    _fallback_read_config_json,
+    get_pretrained_config_from_hub,
 )
 from gpustack.utils import platform
 
@@ -641,6 +644,254 @@ async def _try_parse_on_workers(
     tasks = [try_parse_on_worker(worker) for worker in workers]
 
     # Use as_completed to get results as they finish
+    for completed_task in asyncio.as_completed(tasks):
+        result = await completed_task
+        if result:
+            return result
+
+    return None
+
+
+async def get_pretrained_config(
+    model: Model,
+    session: Optional[AsyncSession] = None,
+    workers: Optional[List[Worker]] = None,
+    trust_remote_code: bool = False,
+) -> Optional[Any]:
+    """
+    Unified async entry point for getting pretrained config.
+
+    Handles all model sources with appropriate fallback strategies:
+    - Hub sources (HUGGING_FACE, MODEL_SCOPE): AutoConfig → config.json
+    - Worker sources (LOCAL_PATH): target workers → all workers
+
+    Args:
+        model: Model to get config for
+        session: Database session (for LOCAL_PATH worker optimization)
+        workers: Available workers (for LOCAL_PATH)
+        trust_remote_code: Whether to trust remote code
+
+    Returns:
+        PretrainedConfig object or None
+
+    Raises:
+        ValueError: If config is required but cannot be loaded
+    """
+    pretrained_config = None
+
+    try:
+        if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+            # Hub sources: run in thread pool to avoid blocking event loop
+            pretrained_config = await asyncio.to_thread(
+                get_pretrained_config_from_hub,
+                model,
+                trust_remote_code,
+            )
+
+        elif model.source == SourceEnum.LOCAL_PATH:
+            # Worker sources: direct async call
+            pretrained_config = await get_pretrained_config_from_workers(
+                model,
+                workers or [],
+                session,
+                trust_remote_code,
+            )
+            if pretrained_config is None:
+                logger.warning(
+                    f"Local Path: {model.readable_source} is not local to the server node "
+                    f"and may reside on a worker node."
+                )
+        else:
+            raise ValueError(f"Unsupported model source: {model.source}")
+
+    except Exception as e:
+        # Fallback logic ONLY for Hub sources
+        if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+            if model.backend_version is not None or isinstance(e, ImportError):
+                logger.debug(
+                    "Fallback to load config.json after AutoConfig.from_pretrained failed"
+                )
+                pretrained_config = await _fallback_read_config_json(model)
+
+        # Error handling for different model categories
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+            return pretrained_config
+
+        if any(
+            cat in model.categories
+            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
+        ):
+            return pretrained_config
+
+        if pretrained_config is None and (
+            CategoryEnum.LLM in model.categories or isinstance(e, ValueError)
+        ):
+            raise e
+
+    return pretrained_config
+
+
+def get_pretrained_config_sync(  # noqa: C901
+    model: Model,
+    trust_remote_code: bool = False,
+) -> Optional[Any]:
+    """
+    Unified sync entry point for getting pretrained config.
+
+    This is optimized for synchronous contexts (worker backends, candidate selectors).
+    For LOCAL_PATH models, it will convert to async call using asyncio.run.
+
+    Args:
+        model: Model to get config for
+        trust_remote_code: Whether to trust remote code
+
+    Returns:
+        PretrainedConfig object or None
+
+    Raises:
+        ValueError: If config cannot be loaded
+    """
+    # For LOCAL_PATH, convert to async call
+    if model.source == SourceEnum.LOCAL_PATH:
+        try:
+            return asyncio.run(
+                get_pretrained_config(
+                    model,
+                    session=None,  # No session available in sync context
+                    workers=None,  # No workers available in sync context
+                    trust_remote_code=trust_remote_code,
+                )
+            )
+        except RuntimeError:
+            # Event loop already running, try with new thread
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    get_pretrained_config(
+                        model,
+                        session=None,
+                        workers=None,
+                        trust_remote_code=trust_remote_code,
+                    ),
+                )
+                return future.result()
+
+    try:
+        return get_pretrained_config_from_hub(model, trust_remote_code)
+
+    except Exception as e:
+        # Fallback to config.json
+        if model.backend_version is not None or isinstance(e, ImportError):
+            logger.debug(
+                "Fallback to load config.json after AutoConfig.from_pretrained failed"
+            )
+            # For sync fallback, we need to use asyncio.run
+            # But this is only for the fallback path, not the main path
+            try:
+                return asyncio.run(_fallback_read_config_json(model))
+            except Exception as fe:
+                logger.warning(f"Fallback to load config.json failed: {fe}")
+
+        # Error handling
+        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+            return None
+
+        if any(
+            cat in model.categories
+            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
+        ):
+            return None
+
+        if CategoryEnum.LLM in model.categories or isinstance(e, ValueError):
+            raise e
+
+        return None
+
+
+async def get_pretrained_config_from_workers(  # noqa: C901
+    model: Model,
+    workers: List[Worker],
+    session: Optional[AsyncSession] = None,
+    trust_remote_code: bool = False,
+) -> Optional[Any]:
+    """
+    Get pretrained config from remote workers for LOCAL_PATH models.
+
+    This function implements a two-tier fallback strategy similar to GGUF parsing:
+    1. Try workers that are known to have the model file (optimized)
+    2. Broadcast to all workers if step 1 fails
+
+    Args:
+        model: Model with source LOCAL_PATH
+        workers: List of workers to query
+        session: Optional database session for querying ModelFile
+        trust_remote_code: Whether to trust remote code
+
+    Returns:
+        PretrainedConfig object if successful, None otherwise
+    """
+    if not workers:
+        return None
+
+    # Check if the model path exists locally on the server
+    if os.path.exists(model.local_path):
+        try:
+            config_path = os.path.join(model.local_path, "config.json")
+            if os.path.exists(config_path):
+                # Read file in thread pool to avoid blocking event loop
+                def read_config_json():
+                    import json
+
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                config_dict = await asyncio.to_thread(read_config_json)
+                from transformers import PretrainedConfig
+
+                return PretrainedConfig.from_dict(config_dict)
+        except Exception as e:
+            logger.warning(f"Failed to load config from local path: {e}")
+            return None
+
+    async def try_read_config_from_worker(worker: Worker) -> Optional[Any]:
+        """Try to read pretrained config from a single worker."""
+        try:
+            async with WorkerFilesystemClient() as filesystem_client:
+                logger.info(f"Trying to read config from worker {worker.id}")
+                # Read config.json file
+                config_path = os.path.join(model.local_path, "config.json")
+                config_dict = await filesystem_client.read_model_config(
+                    worker, config_path
+                )
+                if not config_dict:
+                    return None
+
+                logger.info(f"Successfully read config from worker {worker.id}")
+                from transformers import PretrainedConfig
+
+                return PretrainedConfig.from_dict(config_dict)
+        except Exception as e:
+            logger.debug(f"Failed to read config from worker {worker.id}: {e}")
+            return None
+
+    # Tier 1: Try workers that likely have the file first
+    target_workers = await get_workers_with_model_file(session, model, workers)
+    if target_workers:
+        logger.info(
+            f"Trying to read config from {len(target_workers)} known workers first"
+        )
+        tasks = [try_read_config_from_worker(worker) for worker in target_workers]
+        for completed_task in asyncio.as_completed(tasks):
+            result = await completed_task
+            if result:
+                return result
+
+    # Tier 2: Fall back to broadcasting to all workers
+    logger.info(f"Broadcasting config read request to all {len(workers)} workers")
+    tasks = [try_read_config_from_worker(worker) for worker in workers]
+
     for completed_task in asyncio.as_completed(tasks):
         result = await completed_task
         if result:

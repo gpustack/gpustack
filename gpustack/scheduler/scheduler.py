@@ -58,11 +58,9 @@ from gpustack.scheduler.calculator import (
 from gpustack.server.services import ModelInstanceService, ModelService
 from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
-from gpustack.utils.hub import (
-    get_pretrained_config_with_fallback,
-    has_diffusers_model_index,
-)
+from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
+from gpustack.scheduler.calculator import get_pretrained_config
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -175,6 +173,7 @@ class Scheduler:
                         should_update_model = await evaluate_pretrained_config(
                             model,
                             session=session,
+                            workers=workers,
                             raise_raw=True,
                         )
                 except Exception as e:
@@ -598,6 +597,8 @@ async def evaluate_pretrained_config(
     evaluate the model's pretrained config to determine its type.
     Args:
         model: Model to evaluate.
+        session: Optional database session (for LOCAL_PATH worker optimization).
+        workers: Optional list of workers (for LOCAL_PATH).
         raise_raw: If True, raise the raw exception.
     Returns:
         True if the model's categories are updated, False otherwise.
@@ -613,10 +614,12 @@ async def evaluate_pretrained_config(
     architectures = get_vllm_override_architectures(model)
     if not architectures:
         try:
-            pretrained_config = await get_pretrained_config_with_fallback(
+            trust_remote_code = _extract_trust_remote_code(model)
+            pretrained_config = await get_pretrained_config(
                 model,
                 session=session,
                 workers=workers,
+                trust_remote_code=trust_remote_code,
             )
         except ValueError as e:
             # Skip value error exceptions and defaults to LLM catagory for certain cases.
@@ -661,6 +664,13 @@ async def evaluate_pretrained_config(
     categories_modified = set_model_categories(model, model_type)
     gpus_per_replica_modified = set_model_gpus_per_replica(model)
     return categories_modified or gpus_per_replica_modified
+
+
+def _extract_trust_remote_code(model: Model) -> bool:
+    """Extract trust_remote_code from model backend parameters."""
+    if model.backend_parameters and "--trust-remote-code" in model.backend_parameters:
+        return True
+    return False
 
 
 def get_vllm_override_architectures(model: Model) -> List[str]:
