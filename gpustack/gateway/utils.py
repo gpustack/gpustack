@@ -1,4 +1,5 @@
 import logging
+import ipaddress
 import copy
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union, Dict, Any
@@ -122,6 +123,11 @@ def cluster_worker_prefix(cluster_id: int) -> str:
     return f"cluster-{cluster_id}-worker-"
 
 
+def model_cluster_name_from_model(model: Union[Model, ModelPublic]) -> str:
+    """Get the cluster name for a model (used as registry name in MCP Bridge)."""
+    return f"model-{model.id}"
+
+
 def model_prefix(model_instance: Union[ModelInstance, ModelInstancePublic]) -> str:
     return f"model-{model_instance.model_id}-"
 
@@ -152,6 +158,30 @@ def model_instance_registry(
         protocol="http",
         type=registry_type,
     )
+
+
+def get_model_instance_domain(
+    model_instance: Union[ModelInstance, ModelInstancePublic]
+) -> Optional[str]:
+    """
+    Get the domain string for a model instance.
+
+    Returns the address:port string, with IPv6 addresses wrapped in square brackets.
+    Returns None if the model instance has no valid address or port.
+    """
+    address = model_instance.worker_advertise_address or model_instance.worker_ip
+    if not address or model_instance.port is None:
+        return None
+
+    # IPv6 addresses need to be wrapped in square brackets
+    try:
+        ip = ipaddress.ip_address(address)
+        if isinstance(ip, ipaddress.IPv6Address):
+            return f"[{address}]:{model_instance.port}"
+    except ValueError:
+        pass  # Not an IP address, treat as hostname
+
+    return f"{address}:{model_instance.port}"
 
 
 def worker_registry(worker: Worker) -> Optional[McpBridgeRegistry]:
@@ -195,33 +225,101 @@ def diff_registries(
     existing: List[McpBridgeRegistry],
     desired: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    to_delete_registry_name: Optional[str] = None,
+    to_delete_domain: Optional[str] = None,
 ) -> Tuple[bool, List[McpBridgeRegistry]]:
-    desired_map = {
+    """
+    Compare existing and desired registries and return whether update is needed
+    and the merged registry list.
+
+    Args:
+        existing: List of existing McpBridgeRegistry
+        desired: List of desired McpBridgeRegistry
+        to_delete_prefix: If set, delete registries whose name starts with this prefix
+        to_delete_registry_name: Registry name to delete. If to_delete_domain is None,
+                                 the entire registry is deleted. If to_delete_domain is set,
+                                 only the specified domain is removed from the registry.
+        to_delete_domain: Specific domain to delete from the registry specified by
+                          to_delete_registry_name. Domain format: "ip:port,ip:port,..."
+                          If the registry has only this domain, the entire registry is deleted.
+                          If None and to_delete_registry_name is set, delete the entire registry.
+
+    Returns:
+        Tuple of (need_update, merged_registry_list)
+    """
+    desired_name_map = {
         reg.name: idx for idx, reg in enumerate(desired) if reg.name is not None
     }
+    # Track which desired indices have been matched
+    matched_desired_indices = set()
     total_list = []
     need_update = False
+
     for registry in existing:
-        if registry.name not in desired_map:
-            # delete registries that are not in the current list
-            if to_delete_prefix is not None and registry.name.startswith(
-                to_delete_prefix
-            ):
+        # Check if this registry matches to_delete_prefix
+        # Compatible with older single inference instance registry
+        if (
+            to_delete_prefix is not None
+            and registry.name is not None
+            and registry.name.startswith(to_delete_prefix)
+        ):
+            need_update = True
+            continue  # Skip this registry (delete it)
+
+        # Check if we need to delete registry by name
+        if (
+            to_delete_registry_name is not None
+            and registry.name == to_delete_registry_name
+        ):
+            if to_delete_domain is None:
+                # Delete the entire registry when to_delete_domain is None
                 need_update = True
+                continue  # Skip this registry (delete it)
             else:
-                # keep unrelated registries
+                # Delete specific domain from the registry
+                # Parse existing domains (comma-separated)
+                existing_domains = set(
+                    d.strip() for d in (registry.domain or "").split(",") if d.strip()
+                )
+                # Parse domains to delete (comma-separated)
+                domains_to_delete = set(
+                    d.strip() for d in to_delete_domain.split(",") if d.strip()
+                )
+                # Remove the domains to delete
+                remaining_domains = existing_domains - domains_to_delete
+
+                if not remaining_domains:
+                    # No domains left, delete the entire registry
+                    need_update = True
+                    continue  # Skip this registry (delete it)
+                elif remaining_domains != existing_domains:
+                    # Some domains were removed, update the registry
+                    need_update = True
+                    registry = registry.model_copy(
+                        update={"domain": ",".join(sorted(remaining_domains))}
+                    )
                 total_list.append(registry)
-        else:
-            # update existing registries
-            idx = desired_map.pop(registry.name)
-            if registry != desired[idx]:
+                continue
+
+        # Match by name
+        if registry.name in desired_name_map:
+            matched_idx = desired_name_map[registry.name]
+            matched_desired_indices.add(matched_idx)
+            desired_reg = desired[matched_idx]
+            # Compare domain
+            if registry.domain != desired_reg.domain:
                 need_update = True
-                registry = desired[idx]
+                registry = desired_reg
             total_list.append(registry)
-    # add new registries
-    for idx in desired_map.values():
-        need_update = True
-        total_list.append(desired[idx])
+        else:
+            # Name not matched, keep unrelated registries
+            total_list.append(registry)
+
+    # Add new registries that were not matched
+    for idx, reg in enumerate(desired):
+        if idx not in matched_desired_indices:
+            need_update = True
+            total_list.append(reg)
 
     total_list.sort(key=lambda r: r.name or "")
     return need_update, total_list
@@ -234,6 +332,8 @@ async def ensure_mcp_bridge(
     mcp_bridge_name: str,
     desired_registries: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    to_delete_registry_name: Optional[str] = None,
+    to_delete_domain: Optional[str] = None,
 ):
     existing_bridge = None
     try:
@@ -261,6 +361,8 @@ async def ensure_mcp_bridge(
             existing=existing_bridge.spec.registries or [],
             desired=desired_registries,
             to_delete_prefix=to_delete_prefix,
+            to_delete_registry_name=to_delete_registry_name,
+            to_delete_domain=to_delete_domain,
         )
         if need_update:
             existing_bridge.spec.registries = registry_list
@@ -440,6 +542,122 @@ def model_instances_registry_list(
         if registry is not None:
             registries.append((1, registry))
     return registries
+
+
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
+async def ensure_model_mcp_bridge(
+    namespace: str,
+    model: Union[Model, ModelPublic],
+    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
+    event_type: EventType,
+    networking_higress_api: NetworkingHigressIoV1Api,
+) -> Optional[McpBridgeRegistry]:
+    """
+    Ensure the MCP Bridge registry for a model is properly managed.
+
+    This function manages the mcp_bridge registry for each model, supporting:
+    - Adding new registry when model is created
+    - Updating domain when instances are added/removed
+    - Deleting registry when domain becomes empty or model is deleted
+
+    Parameters:
+        namespace (str): The Kubernetes namespace for the MCP Bridge.
+        model (Union[Model, ModelPublic]): The model object.
+        model_instances (List[Union[ModelInstance, ModelInstancePublic]]):
+            List of model instances for generating domain.
+        event_type (EventType): The event type (CREATED, UPDATED, DELETED).
+        networking_higress_api (NetworkingHigressIoV1Api): The Higress networking API client.
+
+    Returns:
+        Optional[McpBridgeRegistry]: The created/updated registry, or None if deleted.
+    """
+    mcp_bridge_name = model_mcp_bridge_name(model.cluster_id)
+    registry_name = model_cluster_name_from_model(model)
+
+    # Handle deletion event or empty instances (no valid domains)
+    if event_type == EventType.DELETED:
+        # Delete the entire registry for this model
+        await ensure_mcp_bridge(
+            client=networking_higress_api,
+            namespace=namespace,
+            mcp_bridge_name=mcp_bridge_name,
+            desired_registries=[],
+            to_delete_registry_name=registry_name,
+            to_delete_domain=None,  # Delete entire registry by name match
+        )
+        logger.info(f"Deleted MCP Bridge registry for model {model.name}")
+        return None
+
+    # Generate registry from model instances
+    registry = build_model_registry(model, model_instances)
+
+    if registry is None:
+        # No valid instances, delete the registry if exists
+        await ensure_mcp_bridge(
+            client=networking_higress_api,
+            namespace=namespace,
+            mcp_bridge_name=mcp_bridge_name,
+            desired_registries=[],
+            to_delete_registry_name=registry_name,
+            to_delete_domain=None,  # Delete entire registry
+        )
+        logger.info(
+            f"Removed MCP Bridge registry for model {model.name} (no valid instances)"
+        )
+        return None
+
+    # Create or update the registry
+    await ensure_mcp_bridge(
+        client=networking_higress_api,
+        namespace=namespace,
+        mcp_bridge_name=mcp_bridge_name,
+        desired_registries=[registry],
+    )
+    logger.info(
+        f"Ensured MCP Bridge registry for model {model.name} with {len(model_instances)} instance(s)"
+    )
+    return registry
+
+
+def build_model_registry(
+    model: Union[Model, ModelPublic],
+    model_instances: List[Union[ModelInstance, ModelInstancePublic]],
+) -> Optional[McpBridgeRegistry]:
+    """
+    Generate a McpBridgeRegistry for a model based on its instances.
+
+    Args:
+        model: The model object.
+        model_instances: List of model instances.
+
+    Returns:
+        McpBridgeRegistry with comma-separated domains, or None if no valid instances.
+    """
+    if not model_instances:
+        return None
+
+    registry_name = model_cluster_name_from_model(model)
+
+    # Collect all valid address:port pairs
+    domains = []
+    for mi in model_instances:
+        domain = get_model_instance_domain(mi)
+        if domain is not None:
+            domains.append(domain)
+
+    if not domains:
+        return None
+
+    # Join all domains with commas (sorted for consistency)
+    domain_str = ",".join(sorted(set(domains)))
+
+    return McpBridgeRegistry(
+        domain=domain_str,
+        port=80,
+        name=registry_name,
+        protocol="http",
+        type="static",
+    )
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))

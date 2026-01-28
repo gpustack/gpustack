@@ -125,6 +125,7 @@ class ModelController:
                     self._config,
                     model,
                     self._networking_api,
+                    self._higress_network_api,
                 )
         except Exception as e:
             logger.error(f"Failed to reconcile model {model.name}: {e}")
@@ -164,15 +165,6 @@ class ModelInstanceController:
                 if not model:
                     return
                 model_deleting = model.deleted_at is not None
-
-                if not self._disable_gateway:
-                    await mcp_handler.ensure_model_instance_mcp_bridge(
-                        event_type=event.type,
-                        model_instance=model_instance,
-                        networking_higress_api=self._higress_network_api,
-                        namespace=self._config.gateway_namespace,
-                        cluster_id=model.cluster_id,
-                    )
 
                 if event.type == EventType.DELETED:
                     # trigger model replica sync
@@ -582,6 +574,7 @@ async def sync_gateway(
     cfg: Config,
     model: Model,
     networking_api: k8s_client.NetworkingV1Api,
+    networking_higress_api: NetworkingHigressIoV1Api,
 ):
     event_type = event.type
     model_from_db = await Model.one_by_id(session, model.id)
@@ -589,8 +582,12 @@ async def sync_gateway(
         event_type = EventType.DELETED
     if event.type != EventType.DELETED:
         destinations = await calculate_destinations(session, model)
+        model_instances = await ModelInstance.all_by_field(
+            session, "model_id", model.id
+        )
     else:
         destinations = []
+        model_instances = []
     await mcp_handler.ensure_model_ingress(
         event_type=event_type,
         namespace=cfg.get_namespace(),
@@ -599,6 +596,14 @@ async def sync_gateway(
         networking_api=networking_api,
         included_generic_route=False,
         included_proxy_route=model.generic_proxy,
+    )
+
+    await mcp_handler.ensure_model_mcp_bridge(
+        namespace=cfg.get_namespace(),
+        model=model,
+        model_instances=model_instances,
+        event_type=event_type,
+        networking_higress_api=networking_higress_api,
     )
 
 
@@ -645,7 +650,12 @@ async def calculate_destinations(
             if registry is not None:
                 registry_list.append((len(instances), registry))
         else:
-            registry_list.extend(mcp_handler.model_instances_registry_list(instances))
+            if instances:
+                instances_cluster_registry = mcp_handler.build_model_registry(
+                    model, instances
+                )
+                if instances_cluster_registry:
+                    registry_list.append((1, instances_cluster_registry))
 
     mcp_handler.replace_registry_weight(registry_list)
     return registry_list
