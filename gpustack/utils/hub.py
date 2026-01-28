@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import gzip
@@ -28,9 +27,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     get_mmproj_filename,
 )
-from gpustack.schemas.workers import Worker
 from gpustack.utils.cache import is_cached, load_cache, save_cache
-from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 
 logger = logging.getLogger(__name__)
 
@@ -276,14 +273,13 @@ async def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
-    workers: Optional[List[Worker]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Read a JSON config file from the model's source.
 
     - Hugging Face: uses HfFileSystem to open `{repo_id}/{file_path}`.
     - ModelScope: downloads a snapshot matching `file_path` and cleaned automatically after reading locally.
-    - Local Path: reads from the local directory.
+    - Local Path: reads from the local directory only (no worker broadcast).
 
     Returns None if the file cannot be found or read.
     """
@@ -347,45 +343,9 @@ async def read_repo_file_content(  # noqa: C901
                 with open(fp, "r", encoding="utf-8") as f:
                     return json.load(f)
 
-            # Path not exist, try to read from workers if provided
-            if not workers:
-                return None
-
-            async def try_read_from_worker(
-                worker: Worker,
-            ) -> Optional[Dict[str, Any]]:
-                """Try to read config from a single worker."""
-                try:
-                    async with WorkerFilesystemClient() as filesystem_client:
-                        logger.info(
-                            f"Trying to read file {file_path} from worker {worker.id}"
-                        )
-                        config_dict = await filesystem_client.read_model_config(
-                            worker, fp
-                        )
-                        if config_dict:
-                            logger.info(
-                                f"Successfully read file {file_path} from worker {worker.id}"
-                            )
-                            return config_dict
-                        return None
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to read file {file_path} from worker {worker.id}: {e}"
-                    )
-                    return None
-
-            # Broadcast to all provided workers
-            logger.info(
-                f"Broadcasting read request for {file_path} to {len(workers)} workers"
-            )
-            tasks = [try_read_from_worker(worker) for worker in workers]
-
-            # Use as_completed to get results as they finish
-            for completed_task in asyncio.as_completed(tasks):
-                result = await completed_task
-                if result:
-                    return result
+            # Path not exist locally, return None
+            # Worker broadcast logic has been moved to calculator.py
+            return None
         else:
             return None
     except Exception as e:
@@ -721,20 +681,28 @@ def get_model_scope_model_min_gguf_path(
 async def has_diffusers_model_index(  # noqa: C901
     model: Model,
     token: Optional[str] = None,
-    workers: Optional[List[Worker]] = None,
 ) -> bool:
     """Check whether the model source contains a model_index.json with
     the key "_diffusers_version".
 
+    This function only handles direct file access (Hub sources and local files).
+    For LOCAL_PATH models that require worker queries, use
+    check_diffusers_model_index_from_workers() in calculator.py instead.
+
     Supported sources:
     - Hugging Face: checks via HfFileSystem
     - ModelScope: downloads only model_index.json via snapshot_download and inspects
-    - Local Path: reads model_index.json in the provided directory
+    - Local Path: reads model_index.json in the local directory only
+
+    Args:
+        model: Model to check
+        token: Optional Hugging Face API token
+
+    Returns:
+        True if model_index.json contains _diffusers_version, False otherwise
     """
     try:
-        data = await read_repo_file_content(
-            model, "model_index.json", token=token, workers=workers
-        )
+        data = await read_repo_file_content(model, "model_index.json", token=token)
         if data is None:
             return False
 

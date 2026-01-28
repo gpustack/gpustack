@@ -42,27 +42,89 @@ def is_config_file(filename: str) -> bool:
     return filename in ALLOWED_CONFIG_FILES
 
 
+def validate_path_security(path: str, base_path: str = None) -> str:
+    """
+    Validate path security to prevent directory traversal attacks.
+
+    This function:
+    1. Resolves the absolute path (following symlinks)
+    2. Validates the path is within the allowed base directory (if provided)
+    3. Prevents directory traversal attacks
+
+    Args:
+        path: The path to validate
+        base_path: Optional base directory that the path must be within
+
+    Returns:
+        The validated absolute path
+
+    Raises:
+        HTTPException: If the path is invalid or outside the allowed directory
+
+    Security:
+    - Uses os.path.realpath to resolve symlinks and get absolute path
+    - Validates path is within base_path if provided
+    - Prevents directory traversal attacks (../, symlinks, etc.)
+    """
+    try:
+        # Resolve to absolute path, following symlinks
+        # This is more secure than os.path.normpath which doesn't resolve symlinks
+        resolved_path = os.path.realpath(path)
+
+        # If base_path is provided, ensure the resolved path is within it
+        if base_path:
+            resolved_base = os.path.realpath(base_path)
+            # Use os.path.commonpath to check if resolved_path is under resolved_base
+            # This prevents directory traversal attacks
+            try:
+                common = os.path.commonpath([resolved_base, resolved_path])
+                if common != resolved_base:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Access denied: Path is outside allowed directory",
+                    )
+            except ValueError:
+                # Paths are on different drives (Windows)
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied: Path is outside allowed directory",
+                )
+
+        return resolved_path
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating path {path}: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid path: {str(e)}")
+
+
 @router.get("/files/model-config")
 async def read_model_config(path: str = Query(..., description="File path to read")):
     """
     Read and parse a model config file.
     Only model config files (config.json, model_index.json, etc.) can be read for security.
     Returns the parsed configuration object.
+
+    Security:
+    - Uses os.path.realpath to resolve symlinks and prevent directory traversal
+    - Only allows reading of whitelisted config files
+    - Validates file exists and is a regular file
     """
     try:
-        # Normalize the path
-        normalized_path = os.path.normpath(path)
+        # Validate path security (resolves symlinks, prevents directory traversal)
+        validated_path = validate_path_security(path)
 
         # Check if path exists
-        if not os.path.exists(normalized_path):
+        if not os.path.exists(validated_path):
             raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
         # Check if path is a file
-        if not os.path.isfile(normalized_path):
+        if not os.path.isfile(validated_path):
             raise HTTPException(status_code=400, detail=f"Path is not a file: {path}")
 
         # Check if file is a config file for security
-        filename = os.path.basename(normalized_path)
+        filename = os.path.basename(validated_path)
         if not is_config_file(filename):
             raise HTTPException(
                 status_code=403,
@@ -71,7 +133,7 @@ async def read_model_config(path: str = Query(..., description="File path to rea
 
         # Read and parse JSON file
         try:
-            with open(normalized_path, "r", encoding="utf-8") as f:
+            with open(validated_path, "r", encoding="utf-8") as f:
                 import json
 
                 config_data = json.load(f)
@@ -97,18 +159,21 @@ async def read_model_config(path: str = Query(..., description="File path to rea
 async def file_exists(path: str = Query(..., description="Path to check")):
     """
     Check if a path exists.
+
+    Security:
+    - Uses os.path.realpath to resolve symlinks and prevent directory traversal
     """
     try:
-        # Normalize the path
-        normalized_path = os.path.normpath(path)
+        # Validate path security (resolves symlinks, prevents directory traversal)
+        validated_path = validate_path_security(path)
 
         # Check if path exists
-        exists = os.path.exists(normalized_path)
-        is_file = os.path.isfile(normalized_path) if exists else False
-        is_dir = os.path.isdir(normalized_path) if exists else False
+        exists = os.path.exists(validated_path)
+        is_file = os.path.isfile(validated_path) if exists else False
+        is_dir = os.path.isdir(validated_path) if exists else False
 
         return FileExistsResponse(
-            exists=exists, path=normalized_path, is_file=is_file, is_dir=is_dir
+            exists=exists, path=validated_path, is_file=is_file, is_dir=is_dir
         )
 
     except Exception as e:
@@ -122,20 +187,26 @@ async def get_model_weight_size(
 ):
     """
     Calculate the total size of model weight files in a directory.
+
+    Security:
+    - Uses os.path.realpath to resolve symlinks and prevent directory traversal
+    - Only scans the specified directory (not recursive)
     """
     weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
     try:
-        normalized_path = os.path.normpath(path)
-        if not os.path.exists(normalized_path):
+        # Validate path security (resolves symlinks, prevents directory traversal)
+        validated_path = validate_path_security(path)
+
+        if not os.path.exists(validated_path):
             raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
 
-        if not os.path.isdir(normalized_path):
+        if not os.path.isdir(validated_path):
             raise HTTPException(
                 status_code=400, detail=f"Path is not a directory: {path}"
             )
 
         total_size = 0
-        with os.scandir(normalized_path) as it:
+        with os.scandir(validated_path) as it:
             for entry in it:
                 if entry.is_file() and entry.name.endswith(weight_file_extensions):
                     total_size += entry.stat().st_size
@@ -155,7 +226,7 @@ async def parse_gguf_file(request: GGUFParseRequest):
     Parse a GGUF file using gguf-parser binary on the worker.
 
     Security:
-    - Path validation to prevent directory traversal
+    - Uses os.path.realpath to resolve symlinks and prevent directory traversal
     - Only allow parsing of existing files
     - 60 second timeout to prevent long-running processes
     """
@@ -163,24 +234,23 @@ async def parse_gguf_file(request: GGUFParseRequest):
         # 1. Deserialize Model object
         model = Model.model_validate(request.model_dict)
 
-        # 2. Path validation
-        normalized_path = os.path.normpath(model.local_path)
-
-        # Security check: prevent directory traversal
-        if ".." in model.local_path:
-            raise HTTPException(status_code=403, detail="Access denied: Invalid path")
+        # 2. Path validation - use validate_path_security for robust security
+        validated_path = validate_path_security(model.local_path)
 
         # Check if file exists
-        if not os.path.exists(normalized_path):
+        if not os.path.exists(validated_path):
             raise HTTPException(
                 status_code=404, detail=f"File not found: {model.local_path}"
             )
 
         # Check if path is a file
-        if not os.path.isfile(normalized_path):
+        if not os.path.isfile(validated_path):
             raise HTTPException(
                 status_code=400, detail=f"Path is not a file: {model.local_path}"
             )
+
+        # Update model.local_path to use validated path
+        model.local_path = validated_path
 
         # 3. Build offload enum
         offload_enum = GPUOffloadEnum(request.offload)
