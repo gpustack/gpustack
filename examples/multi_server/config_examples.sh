@@ -10,7 +10,7 @@ cat > server1.yaml << 'EOF'
 # 基础配置
 port: 80
 api_port: 30080
-database_url: "postgresql://root@127.0.0.1:5432/gpustack?sslmode=disable"
+database_url: "postgresql://postgres@127.0.0.1:5432/gpustack?sslmode=disable"
 
 # 多Server配置
 server_id: "server-01"
@@ -176,7 +176,7 @@ services:
       - db
     restart: unless-stopped
     environment:
-      - GPUSTACK_DATABASE_URL=postgresql://root:gpustack_secret@db:5432/gpustack
+      - GPUSTACK_DATABASE_URL=postgresql://postgres:gpustack_secret@db:5432/gpustack
 
   # Server 2
   server2:
@@ -254,9 +254,9 @@ events {
 http {
     upstream gpustack_servers {
         least_conn;
-        server 192.168.1.10:30080 weight=1;
-        server 192.168.1.11:30080 weight=1;
-        server 192.168.1.12:30080 weight=1;
+        server server1:30080 weight=1;
+        server server2:30080 weight=1;
+        server server3:30080 weight=1;
     }
 
     server {

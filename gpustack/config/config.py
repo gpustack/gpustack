@@ -1,4 +1,4 @@
-﻿import os
+import os
 import secrets
 from enum import Enum
 from typing import List, Optional, Dict

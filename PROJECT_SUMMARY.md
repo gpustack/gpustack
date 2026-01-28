@@ -112,7 +112,7 @@
 
 ## 二、修改文件
 
-### 1类. 配置 (`gpustack/config/config.py`)
+### 1. 配置 (`gpustack/config/config.py`)
 
 **新增配置项**:
 ```python
