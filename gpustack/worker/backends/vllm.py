@@ -271,8 +271,11 @@ class VLLMServer(InferenceServer):
         # so we use ports[1] for distributed initialization.
         env["VLLM_PORT"] = str(self._model_instance.ports[1])
 
-        # Redirect Ray logs to stderr for easier debugging.
-        env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "1")
+        # Disable Ray logging to stderr by default,
+        # see https://github.com/gpustack/gpustack/issues/4158#issuecomment-3809213348.
+        env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "0")
+        # To reduce verbosity, set Ray backend log level to warning by default.
+        env["RAY_BACKEND_LOG_LEVEL"] = env.pop("RAY_BACKEND_LOG_LEVEL", "warning")
 
         if is_ascend(self._get_selected_gpu_devices()):
             # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
