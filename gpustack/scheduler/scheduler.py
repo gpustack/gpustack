@@ -295,7 +295,9 @@ class Scheduler:
             if model is None:
                 state_message = "Model not found"
 
-            model_instance = await ModelInstance.one_by_id(session, instance.id)
+            model_instance = await ModelInstance.one_by_id(
+                session, instance.id, for_update=True
+            )
             if model_instance is None:
                 logger.debug(
                     f"Model instance(ID: {instance.id}) was deleted before scheduling due"
