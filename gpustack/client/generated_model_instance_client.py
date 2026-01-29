@@ -207,7 +207,6 @@ class ModelInstanceClient:
                                 if cache_size > 0:
                                     # Set a flag to avoid repeated logging
                                     self._initial_sync_logged = True
-                                    initial_sync_logged = True
                                     logger.debug(
                                         f"model-instances cache populated with {cache_size} items"
                                     )

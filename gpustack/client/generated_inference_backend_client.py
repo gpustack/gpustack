@@ -211,7 +211,6 @@ class InferenceBackendClient:
                                 if cache_size > 0:
                                     # Set a flag to avoid repeated logging
                                     self._initial_sync_logged = True
-                                    initial_sync_logged = True
                                     logger.debug(
                                         f"inference-backends cache populated with {cache_size} items"
                                     )
