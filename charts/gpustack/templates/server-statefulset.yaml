@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  serviceName: server
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-server
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.server.metricsPort }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - env:
+            - name: GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME
+              value: "{{ .Release.Name }}"
+            - name: GPUSTACK_GATEWAY_MODE
+              value: incluster
+            - name: GPUSTACK_DEFAULT_CLUSTER_KUBERNETES
+              value: 'true'
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+          envFrom:
+          {{ if .Values.enableWorkers -}}
+            - secretRef:
+                name: registration-token
+                optional: false
+          {{ end -}}
+            - configMapRef:
+                name: server-config
+                optional: true
+          ports:
+            - containerPort: {{ .Values.server.apiPort }}
+              name: http
+              protocol: TCP
+            - containerPort: {{ .Values.server.metricsPort }}
+              name: metrics
+              protocol: TCP
+          image: {{ include "gpustack.image" . }}:{{ include "gpustack.imageTag" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          name: {{ .Release.Name }}-server
+          resources: {}
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /var/lib/gpustack
+              name: data-dir
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: {{ .Release.Name }}-server
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: data-dir
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 10Gi
