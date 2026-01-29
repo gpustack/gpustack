@@ -181,6 +181,26 @@ class Config(WorkerConfig, BaseSettings):
     # Number of concurrent connections for the embedded gateway.
     gateway_concurrency: int = 16
 
+    # ==================== Multi-Server Configuration ====================
+    # Server unique identifier, auto-generated if not specified
+    server_id: Optional[str] = None
+    # List of all Server URLs for multi-server deployment
+    server_urls: Optional[List[str]] = []
+    # Coordinator service URL for distributed coordination (optional, supports etcd, Consul, etc.)
+    coordinator_url: Optional[str] = None
+    # Scheduling mode: local (local only), distributed, auto (automatic)
+    scheduling_mode: str = "auto"
+    # Heartbeat interval (seconds)
+    heartbeat_interval: int = 15
+    # Server timeout (seconds)
+    server_timeout: int = 60
+    # Distributed lock timeout (seconds)
+    lock_timeout: int = 30
+    # Whether to enable distributed scheduling
+    distributed_scheduling: bool = True
+    # Schedule lock timeout (seconds)
+    schedule_lock_timeout: int = 60
+
     _set_worker_fields = {}
 
     model_config = SettingsConfigDict(
@@ -239,6 +259,9 @@ class Config(WorkerConfig, BaseSettings):
 
         if self.service_discovery_name is None:
             self.service_discovery_name = "worker" if self._is_worker() else "server"
+
+        # Multi-server configuration
+        self.init_multi_server_config()
 
         self.make_dirs()
         self.detect_gateway_mode()
@@ -777,6 +800,57 @@ class Config(WorkerConfig, BaseSettings):
             << 30
         )
         return system_reserved_in_bytes
+
+    def init_multi_server_config(self):
+        """
+        Initialize multi-server configuration with default values.
+        
+        新增：为多服务器配置添加默认值和验证逻辑
+        Added: Add default values and validation logic for multi-server configuration
+        """
+        # Generate server_id if not specified
+        # 如果未指定，生成 server_id
+        if self.server_id is None:
+            import uuid
+            self.server_id = str(uuid.uuid4())
+            
+        # Ensure server_urls is a list
+        # 确保 server_urls 是一个列表
+        if self.server_urls is None:
+            self.server_urls = []
+        
+        # Add current server to server_urls if not already present
+        # 如果当前服务器不在 server_urls 中，添加它
+        if not self._is_worker():
+            current_server_url = self.get_server_url()
+            if current_server_url not in self.server_urls:
+                self.server_urls.append(current_server_url)
+        
+        # Validate scheduling_mode
+        # 验证调度模式
+        valid_scheduling_modes = ["local", "distributed", "auto"]
+        if self.scheduling_mode not in valid_scheduling_modes:
+            self.scheduling_mode = "auto"
+            
+        # Ensure heartbeat_interval is within reasonable range
+        # 确保心跳间隔在合理范围内
+        if self.heartbeat_interval < 5 or self.heartbeat_interval > 60:
+            self.heartbeat_interval = 15
+        
+        # Ensure server_timeout is within reasonable range
+        # 确保服务器超时时间在合理范围内
+        if self.server_timeout < 30 or self.server_timeout > 300:
+            self.server_timeout = 60
+        
+        # Ensure lock_timeout is within reasonable range
+        # 确保锁超时时间在合理范围内
+        if self.lock_timeout < 10 or self.lock_timeout > 120:
+            self.lock_timeout = 30
+        
+        # Ensure schedule_lock_timeout is within reasonable range
+        # 确保调度锁超时时间在合理范围内
+        if self.schedule_lock_timeout < 30 or self.schedule_lock_timeout > 180:
+            self.schedule_lock_timeout = 60
 
 
 def get_image_name(
