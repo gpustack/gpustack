@@ -254,7 +254,7 @@ class ServeManager:
                 # FIXME(thxCode): Another problem caused by skipping this check is that if we actively delete the workload on the subordinate worker,
                 #                 we may not be able to correct the state of the subordinate worker.
                 if not is_main_worker and not workload:
-                    return
+                    continue
                 # Only if not in ERROR state yet.
                 if model_instance.state != ModelInstanceStateEnum.ERROR:
                     with contextlib.suppress(NotFoundException):
@@ -285,7 +285,7 @@ class ServeManager:
                             }
                         # Update model instance.
                         self._update_model_instance(model_instance.id, **patch_dict)
-                return
+                continue
 
             # Otherwise, update model instance state to RUNNING if everything is fine.
             model = self._get_model(model_instance)
