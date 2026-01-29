@@ -14,7 +14,9 @@ import sqlmodel
 import json
 import gpustack
 from sqlalchemy.dialects import postgresql
+from gpustack.migrations.utils import table_exists
 import gpustack.utils.sql_enum as sql_enum
+from gpustack.schemas.stmt import model_user_after_drop_view_stmt
 
 # revision identifiers, used by Alembic.
 revision: str = '53667f33f000'
@@ -31,6 +33,21 @@ cluster_state_enum = sa.Enum(
 
 cluster_state_to_add = ['PENDING']
 
+access_policy_enum = sa.Enum(
+    'PUBLIC',
+    'AUTHED',
+    'ALLOWED_USERS',
+    name='accesspolicyenum'
+).with_variant(
+    postgresql.ENUM(
+        'PUBLIC',
+        'AUTHED',
+        'ALLOWED_USERS',
+        name='accesspolicyenum',
+        create_type=False,
+    ), "postgresql"
+)
+
 UPGRADE_GPU_TYPE_MAPPING = {
     "npu": "cann",
     "dcu": "dtk",
@@ -39,7 +56,14 @@ UPGRADE_GPU_TYPE_MAPPING = {
 
 DOWNGRADE_GPU_TYPE_MAPPING = {v: k for k, v in UPGRADE_GPU_TYPE_MAPPING.items()}
 
+sqlite_now = "datetime('now')"
+
+def now_func():
+    return sa.func.now() if op.get_bind().dialect.name != 'sqlite' else sa.text(sqlite_now)
+
+
 def upgrade() -> None:
+    public_maas_integration_upgrade()
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.add_column(sa.Column('api_detected_backend_version', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
         batch_op.add_column(sa.Column('gpu_type', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
@@ -95,6 +119,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    public_maas_integration_downgrade()
     with op.batch_alter_table('model_instances', schema=None) as batch_op:
         batch_op.drop_column('api_detected_backend_version')
         batch_op.drop_column('gpu_type')
@@ -167,3 +192,163 @@ def _migrate_model_gpu_selector(gpu_type_map: dict[str, str]) -> None:
             {"gpu_selector": json.dumps(gpu_selector), "id": instance_id}
         )    
             
+def public_maas_integration_upgrade():
+    # Create model_providers table
+    if not table_exists('model_providers'):
+        op.create_table(
+            'model_providers',
+            sa.Column('id', sa.Integer(), primary_key=True, nullable=False),
+            sa.Column('name', sqlmodel.sql.sqltypes.AutoString() , nullable=False, unique=True, index=True),
+            sa.Column('description', sqlmodel.sql.sqltypes.AutoString() , nullable=True),
+            sa.Column('api_tokens', sa.JSON(), nullable=False, server_default='[]'),
+            sa.Column('timeout', sa.Integer(), nullable=False, default=120),
+            sa.Column('config', sa.JSON(), nullable=False),
+            sa.Column('models', sa.JSON(), nullable=True),
+            sa.Column('proxy_url', sqlmodel.sql.sqltypes.AutoString() , nullable=True),
+            sa.Column('proxy_timeout', sa.Integer(), nullable=True),
+            sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+            sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
+            sa.Column('deleted_at', sa.DateTime(), nullable=True),
+        )
+
+    # Create targetstateenum type
+    target_state_enum = sa.Enum(
+        'ACTIVE', 'UNAVAILABLE', name='targetstateenum',
+    )
+
+    if not table_exists('model_routes'):
+        # Create model_routes table
+        op.create_table(
+            'model_routes',
+            sa.Column('id', sa.Integer(), primary_key=True, nullable=False),
+            sa.Column('name', sqlmodel.sql.sqltypes.AutoString() , nullable=False),
+            sa.Column('description', sqlmodel.sql.sqltypes.AutoString() , nullable=True),
+            sa.Column('categories', sa.JSON(), nullable=False, default='[]'),
+            sa.Column('meta', sa.JSON(), nullable=True, default='{}'),
+            sa.Column('created_by_model', sa.Boolean(), nullable=False, default=False),
+            sa.Column('targets', sa.Integer(), nullable=False, default=0),
+            sa.Column('ready_targets', sa.Integer(), nullable=False, default=0),
+            sa.Column('access_policy', access_policy_enum, nullable=False, server_default='AUTHED'),
+            sa.Column('generic_proxy', sa.Boolean(), nullable=True, server_default=sa.sql.expression.false()),
+            sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+            sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
+            sa.Column('deleted_at', sa.DateTime(), nullable=True),
+
+        )
+        op.create_index(op.f('ix_model_routes_name'), 'model_routes', ['name'], unique=True)
+
+    if not table_exists('model_route_targets'):
+        # Create model_route_targets table
+        op.create_table(
+            'model_route_targets',
+            sa.Column('id', sa.Integer(), primary_key=True, nullable=False),
+            sa.Column('name', sqlmodel.sql.sqltypes.AutoString() , nullable=False),
+            sa.Column('route_id', sa.Integer(), sa.ForeignKey('model_routes.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('route_name', sqlmodel.sql.sqltypes.AutoString() , nullable=False),
+            sa.Column('provider_id', sa.Integer(), sa.ForeignKey('model_providers.id', ondelete='CASCADE'), nullable=True),
+            sa.Column('provider_model_name', sqlmodel.sql.sqltypes.AutoString() , nullable=True),
+            sa.Column('model_id', sa.Integer(), sa.ForeignKey('models.id', ondelete='CASCADE'), nullable=True),
+            sa.Column('weight', sa.Integer(), nullable=False, default=100),
+            sa.Column('fallback_status_codes', sa.JSON(), nullable=True),
+            sa.Column('state', target_state_enum, nullable=False, server_default='ACTIVE'),
+            sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func()),
+            sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False, server_default=now_func(), onupdate=now_func()),
+            sa.Column('deleted_at', sa.DateTime(), nullable=True),
+        )
+        # create index for route_name
+        op.create_index(op.f('ix_model_route_targets_route_name'), 'model_route_targets', ['route_name'], unique=False)
+
+    if not table_exists('usermodelroutelink'):
+        op.create_table('usermodelroutelink',
+            sa.Column('route_id', sa.Integer(), nullable=False),
+            sa.Column('user_id', sa.Integer(), nullable=False),
+            sa.ForeignKeyConstraint(['route_id'], ['model_routes.id'], name='fk_route_user_link_routes', ondelete='CASCADE'),
+            sa.ForeignKeyConstraint(['user_id'], ['users.id'], name='fk_route_user_link_users', ondelete='CASCADE'),
+            sa.PrimaryKeyConstraint('route_id', 'user_id')
+        )
+
+    # migrate create model route data from models
+    conn = op.get_bind()
+    conn.execute(sa.text("""
+    insert into model_routes (name, description, categories, meta, created_by_model, targets, ready_targets, access_policy, generic_proxy)
+    select name, description, categories, meta, true, 1, 0, access_policy, generic_proxy from models;
+    """))
+    # make target state default to UNAVAILABLE and let the controller update to ACTIVE after deployment is ready
+    conn.execute(sa.text("""
+    insert into model_route_targets (name, route_id, model_id, route_name, weight, state)
+        select concat(m.name, '-deployment') as name,
+            ma.id as route_id,
+            m.id as model_id,
+            m.name as route_name,
+            100 as weight,
+            'UNAVAILABLE' as state
+        from models m
+        join model_routes ma on ma.name = m.name;
+    """))
+
+    # migrate modeluserlink to usermodelroutelink
+    conn.execute(sa.text("""
+    insert into usermodelroutelink(route_id, user_id)
+        select mae.route_id, user_id from
+            modeluserlink as link
+            join model_route_targets mae 
+            on link.model_id = mae.model_id;
+    """))
+
+    # drop non_admin_user_models view if exists
+    op.execute(model_user_after_drop_view_stmt)
+
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.alter_column('model_id', existing_type=sa.Integer(), nullable=True)
+        batch_op.add_column(sa.Column('model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(sa.Column('provider_id', sa.Integer(), nullable=True))
+    
+    op.create_foreign_key(
+        'fk_model_usages_provider_id_model_providers',
+        'model_usages',
+        'model_providers',
+        ['provider_id'],
+        ['id'],
+        ondelete='SET NULL'
+    )
+    
+    conn.execute(sa.text("""
+    update model_usages mu set
+        model_name = m.name,
+        model_id = m.id
+    from models m where mu.model_id = m.id;
+    """))
+
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.alter_column('model_name', existing_type=sqlmodel.sql.sqltypes.AutoString(), nullable=False)
+
+def public_maas_integration_downgrade():
+    conn = op.get_bind()
+    
+    op.drop_constraint('fk_model_usages_provider_id_model_providers', 'model_usages', type_='foreignkey', if_exists=True)
+    # remove rows which model_id is null in model_usages
+    conn.execute(sa.text("""
+    delete from model_usages where model_id is null;
+    """)) 
+
+    with op.batch_alter_table('model_usages', schema=None) as batch_op:
+        batch_op.drop_column('model_name')
+        batch_op.drop_column('provider_id')
+        batch_op.alter_column('model_id', existing_type=sa.Integer(), nullable=False)
+    # drop non_admin_user_models view if exists
+    op.execute(model_user_after_drop_view_stmt)
+
+    op.drop_table('usermodelroutelink', if_exists=True)
+    # Drop model_route_targets table
+    op.drop_index(op.f('ix_model_route_targets_route_name'), table_name='model_route_targets', if_exists=True)
+    op.drop_table('model_route_targets', if_exists=True)
+    # Drop model_routes table
+    op.drop_index(op.f('ix_model_routes_name'), table_name='model_routes', if_exists=True)
+    op.drop_table('model_routes', if_exists=True)
+    try:
+        # Drop targetstateenum type
+        sa.Enum(name='targetstateenum').drop(op.get_bind(), checkfirst=True)
+    except Exception:
+        pass
+    # Drop model_providers table
+    op.drop_table('model_providers', if_exists=True)

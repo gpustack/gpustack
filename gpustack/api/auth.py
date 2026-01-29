@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 import logging
+import aiohttp
+from aiocache import cached
 from fastapi import Depends, Request
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
@@ -259,6 +261,37 @@ async def worker_auth(
     if not bearer_token:
         raise UnauthorizedException(message="Invalid authentication credentials")
     token = request.app.state.token
-    registration_token = request.app.state.config.token
-    if bearer_token.credentials not in [token, registration_token]:
-        raise UnauthorizedException(message="Invalid authentication credentials")
+    config: Config = request.app.state.config
+    registration_token = config.token
+    server_url = config.get_server_url()
+    if bearer_token.credentials in [token, registration_token]:
+        return
+    model_name = request.headers.get("X-Higress-Llm-Model")
+    if model_name is not None:
+        cred = bearer_token.credentials
+        show_len = max(1, min(6, len(cred)))
+        masked_token = f"{'*' * (len(cred) - show_len)}{cred[-show_len:]}"
+        logger.debug(f"Verifying worker token {masked_token} via server authentication")
+        cached_auth = make_auth_token_via_server(request.app.state.http_client_no_proxy)
+        is_valid = await cached_auth(server_url, bearer_token.credentials, model_name)
+        if is_valid:
+            return
+    raise UnauthorizedException(message="Invalid authentication credentials")
+
+
+def make_auth_token_via_server(client: aiohttp.ClientSession):
+    @cached(ttl=60)
+    async def inner(server_url: str, token: str, model_name: str) -> bool:
+        auth_url = f"{server_url.rstrip('/')}/token-auth"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Higress-Llm-Model": model_name,
+        }
+        try:
+            async with client.get(auth_url, headers=headers) as resp:
+                return resp.status == 200
+        except aiohttp.ClientError as e:
+            logger.error(f"Error verifying token via server: {e}")
+            return False
+
+    return inner

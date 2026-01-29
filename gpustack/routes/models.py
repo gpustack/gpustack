@@ -4,11 +4,8 @@ from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from gpustack_runtime.detector import ManufacturerEnum
-from sqlalchemy import bindparam, cast
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import selectinload
-from sqlmodel import and_, col, or_, func
+from sqlmodel import and_, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 from enum import Enum
 
@@ -27,7 +24,7 @@ from gpustack.schemas.models import (
     ModelListParams,
 )
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
-from gpustack.server.deps import ListParamsDep, SessionDep, CurrentUserDep
+from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
     Model,
     ModelCreate,
@@ -35,21 +32,22 @@ from gpustack.schemas.models import (
     ModelPublic,
     ModelsPublic,
 )
-from gpustack.schemas.models import (
-    ModelAccessUpdate,
-    ModelUserAccessExtended,
-    ModelAccessList,
-    MyModel,
+from gpustack.schemas.model_routes import (
+    ModelRoute,
+    ModelRouteTarget,
+    TargetStateEnum,
 )
-from gpustack.schemas.users import User
 from gpustack.server.services import (
     ModelService,
     WorkerService,
-    delete_accessible_model_cache,
 )
 from gpustack.utils.command import find_parameter
 from gpustack.utils.convert import safe_int
 from gpustack.utils.gpu import parse_gpu_id
+from gpustack.routes.model_common import (
+    build_category_conditions,
+    categories_filter,
+)
 
 router = APIRouter()
 
@@ -75,28 +73,6 @@ async def get_models(
     cluster_id: int = None,
     backend: Optional[str] = Query(None, description="Filter by backend."),
 ):
-    return await _get_models(
-        session=session,
-        params=params,
-        state=state,
-        search=search,
-        categories=categories,
-        cluster_id=cluster_id,
-        backend=backend,
-    )
-
-
-async def _get_models(
-    session: SessionDep,
-    params: ModelListParams,
-    state: Optional[ModelStateFilterEnum] = None,
-    search: str = None,
-    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
-    cluster_id: int = None,
-    backend: Optional[str] = None,
-    target_class: Union[Model, MyModel] = Model,
-    user_id: Optional[int] = None,
-):
     fuzzy_fields = {}
     if search:
         fuzzy_fields = {"name": search}
@@ -108,12 +84,9 @@ async def _get_models(
     if backend:
         fields["backend"] = backend
 
-    if user_id:
-        fields["user_id"] = user_id
-
     if params.watch:
         return StreamingResponse(
-            target_class.streaming(
+            Model.streaming(
                 fields=fields,
                 fuzzy_fields=fuzzy_fields,
                 filter_func=lambda data: categories_filter(data, categories),
@@ -123,19 +96,17 @@ async def _get_models(
 
     extra_conditions = []
     if categories:
-        conditions = build_category_conditions(session, target_class, categories)
+        conditions = build_category_conditions(session, Model, categories)
         extra_conditions.append(or_(*conditions))
 
     if state is None:
         pass
     elif state == ModelStateFilterEnum.READY:
-        extra_conditions.append(target_class.ready_replicas > 0)
+        extra_conditions.append(Model.ready_replicas > 0)
     elif state == ModelStateFilterEnum.NOT_READY:
-        extra_conditions.append(
-            and_(target_class.ready_replicas == 0, target_class.replicas > 0)
-        )
+        extra_conditions.append(and_(Model.ready_replicas == 0, Model.replicas > 0))
     elif state == ModelStateFilterEnum.STOPPED:
-        extra_conditions.append(target_class.replicas == 0)
+        extra_conditions.append(Model.replicas == 0)
 
     order_by = params.order_by
     if order_by:
@@ -151,7 +122,7 @@ async def _get_models(
                 new_order_by.append(("local_path", direction))
         order_by = new_order_by
 
-    return await target_class.paginated_by_query(
+    return await Model.paginated_by_query(
         session=session,
         fuzzy_fields=fuzzy_fields,
         extra_conditions=extra_conditions,
@@ -162,70 +133,12 @@ async def _get_models(
     )
 
 
-def build_pg_category_condition(target_class: Union[Model, MyModel], category: str):
-    if category == "":
-        return cast(target_class.categories, JSONB).op('@>')(cast('[]', JSONB))
-    return cast(target_class.categories, JSONB).op('?')(
-        bindparam(f"category_{category}", category)
-    )
-
-
-# Add MySQL category condition construction function
-def build_mysql_category_condition(target_class: Union[Model, MyModel], category: str):
-    if category == "":
-        return func.json_length(target_class.categories) == 0
-    return func.json_contains(
-        target_class.categories, func.cast(func.json_quote(category), JSON), '$'
-    )
-
-
-def build_category_conditions(session, target_class: Union[Model, MyModel], categories):
-    dialect = session.bind.dialect.name
-    if dialect == "postgresql":
-        return [
-            build_pg_category_condition(target_class, category)
-            for category in categories
-        ]
-    elif dialect == "mysql":
-        return [
-            build_mysql_category_condition(target_class, category)
-            for category in categories
-        ]
-    else:
-        raise NotImplementedError(f'Unsupported database {dialect}')
-
-
-def categories_filter(data: Union[Model, MyModel], categories: Optional[List[str]]):
-    if not categories:
-        return True
-
-    data_categories = data.categories or []
-    if not data_categories and "" in categories:
-        return True
-
-    return any(category in data_categories for category in categories)
-
-
 @router.get("/{id}", response_model=ModelPublic)
 async def get_model(
     session: SessionDep,
     id: int,
 ):
-    return await _get_model(session=session, id=id)
-
-
-async def _get_model(
-    session: SessionDep,
-    id: int,
-    target_class: Union[Model, MyModel] = Model,
-    user_id: Optional[int] = None,
-):
-    fields = {
-        "id": id,
-    }
-    if user_id:
-        fields["user_id"] = user_id
-    model = await target_class.one_by_fields(session, fields=fields)
+    model = await Model.one_by_id(session, id)
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -408,10 +321,42 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
         )
 
     await validate_model_in(session, model_in)
+    model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     try:
-        await revoke_model_access_cache(session=session)
-        model = await Model.create(session, model_in)
+        should_create_route = (
+            model_in.enable_model_route is not None and model_in.enable_model_route
+        )
+        model: Model = await Model.create(
+            session, source=model_in_dict, auto_commit=(not should_create_route)
+        )
+        if should_create_route:
+            model_route = ModelRoute(
+                name=model.name,
+                description=model.description,
+                categories=model.categories,
+                generic_proxy=model.generic_proxy,
+                created_by_model=True,
+                access_policy=model.access_policy,
+            )
+            model_route: ModelRoute = await ModelRoute.create(
+                session, source=model_route, auto_commit=False
+            )
+            model_route_target = ModelRouteTarget(
+                name=f"{model.name}-deployment",
+                route_name=model_route.name,
+                generic_proxy=model.generic_proxy,
+                model_route=model_route,
+                model=model,
+                weight=100,
+                state=TargetStateEnum.UNAVAILABLE,
+            )
+            await ModelRouteTarget.create(
+                session,
+                source=model_route_target,
+                auto_commit=False,
+            )
+            await session.commit()
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to create model: {e}")
 
@@ -445,154 +390,17 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
     model = await Model.one_by_id(
-        session, id, options=[selectinload(Model.users), selectinload(Model.instances)]
+        session,
+        id,
+        options=[
+            selectinload(Model.instances),
+            selectinload(Model.model_route_targets),
+        ],
     )
     if not model:
         raise NotFoundException(message="Model not found")
 
     try:
-        await revoke_model_access_cache(session=session, model=model)
         await ModelService(session).delete(model)
     except Exception as e:
         raise InternalServerErrorException(message=f"Failed to delete model: {e}")
-
-
-def model_access_list(model: Model) -> List[ModelUserAccessExtended]:
-    return [
-        ModelUserAccessExtended(
-            id=access.id,
-            username=access.username,
-            full_name=access.full_name,
-            avatar_url=access.avatar_url,
-            # Add more user fields here if needed
-        )
-        for access in model.users
-    ]
-
-
-@router.get("/{id}/access", response_model=ModelAccessList)
-async def get_model_access(session: SessionDep, id: int):
-    model: Model = await Model.one_by_id(
-        session, id, options=[selectinload(Model.users)]
-    )
-    if not model:
-        raise NotFoundException(message="Model not found")
-
-    return ModelAccessList(items=model_access_list(model))
-
-
-@router.post("/{id}/access", response_model=ModelAccessList)
-async def add_model_access(
-    session: SessionDep, id: int, access_request: ModelAccessUpdate
-):
-    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
-    if not model:
-        raise NotFoundException(message="Model not found")
-    extra_conditions = [
-        col(User.id).in_([user.id for user in access_request.users]),
-    ]
-
-    affected_user_ids = {user.id for user in model.users}
-    cache_model = model
-
-    users = await User.all_by_fields(
-        session=session, fields={}, extra_conditions=extra_conditions
-    )
-    if len(users) != len(access_request.users):
-        existing_user_ids = {user.id for user in users}
-        for req_user in access_request.users:
-            if req_user.id not in existing_user_ids:
-                raise NotFoundException(message=f"User ID {req_user.id} not found")
-
-    model.users = list(users)
-    if (
-        access_request.access_policy is not None
-        and access_request.access_policy != model.access_policy
-    ):
-        model.access_policy = access_request.access_policy
-        # if changing to public, need to update all users
-        affected_user_ids = None
-        cache_model = None
-    try:
-        await revoke_model_access_cache(
-            session=session,
-            model=cache_model,
-            extra_user_ids=affected_user_ids,
-        )
-        await ModelService(session).update(model)
-    except Exception as e:
-        raise InternalServerErrorException(message=f"Failed to add model access: {e}")
-    await session.refresh(model)
-    return ModelAccessList(items=model_access_list(model))
-
-
-my_models_router = APIRouter()
-
-
-@my_models_router.get("", response_model=ModelsPublic)
-async def get_my_models(
-    user: CurrentUserDep,
-    session: SessionDep,
-    params: ModelListParams = Depends(),
-    state: Optional[ModelStateFilterEnum] = Query(
-        default=None,
-        description="Filter by model state.",
-    ),
-    search: str = None,
-    categories: Optional[List[str]] = Query(None, description="Filter by categories."),
-    cluster_id: int = None,
-    backend: Optional[str] = Query(None, description="Filter by backend."),
-):
-    user_id = None
-    target_class = Model
-    if not user.is_admin:
-        target_class = MyModel
-        user_id = user.id
-
-    return await _get_models(
-        session=session,
-        params=params,
-        state=state,
-        search=search,
-        categories=categories,
-        cluster_id=cluster_id,
-        backend=backend,
-        target_class=target_class,
-        user_id=user_id,
-    )
-
-
-@my_models_router.get("/{id}", response_model=ModelPublic)
-async def get_my_model(
-    session: SessionDep,
-    id: int,
-    user: CurrentUserDep,
-):
-    user_id = None
-    target_class = Model
-    if not user.is_admin:
-        target_class = MyModel
-        user_id = user.id
-
-    return await _get_model(
-        session=session,
-        id=id,
-        user_id=user_id,
-        target_class=target_class,
-    )
-
-
-async def revoke_model_access_cache(
-    session: AsyncSession,
-    model: Optional[Model] = None,
-    extra_user_ids: Optional[set[int]] = None,
-):
-    user_ids = set()
-    if model is None:
-        users = await User.all(session)
-        user_ids = {user.id for user in users}
-    else:
-        user_ids = {user.id for user in model.users}
-    if extra_user_ids:
-        user_ids.update(extra_user_ids)
-    await delete_accessible_model_cache(session, *user_ids)

@@ -41,6 +41,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceUpdate,
     ModelInstanceStateEnum,
+    ModelInstancesPublic,
     get_backend,
     DistributedServerCoordinateModeEnum,
     ModelInstanceSubordinateWorker,
@@ -882,6 +883,26 @@ class ServeManager:
         inference_backend = self._inference_backend_manager.get_backend_by_name(backend)
 
         return inference_backend.health_check_path if inference_backend else None
+
+    def get_instance_ports_by_model_name(self, model_name: str) -> Dict[int, int]:
+        """
+        Get model instance IDs related to the given model name.
+
+        Args:
+            model_name: The model name to get instance IDs for.
+
+        Returns:
+            Model Instance id to its port mapping.
+        """
+        model_instances: ModelInstancesPublic = self._clientset.model_instances.list(
+            params={"model_name": model_name, "worker_id": self._worker_id}
+        )
+        model_instance_to_port: Dict[int, int] = {
+            mi.id: mi.port
+            for mi in model_instances.items
+            if mi.port and mi.state == ModelInstanceStateEnum.RUNNING
+        }
+        return model_instance_to_port
 
 
 def is_ready(

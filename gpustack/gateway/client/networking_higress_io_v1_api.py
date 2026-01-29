@@ -59,6 +59,14 @@ class McpBridgeRegistry(BaseModel):
     vport: Optional[VPort] = None
     zkServicesPath: Optional[List[str]] = Field(default_factory=list)
 
+    def get_service_name(self) -> str:
+        """The service name for this registry."""
+        return f"{self.name}.{self.type}"
+
+    def get_service_name_with_port(self) -> str:
+        """The service name with port for this registry."""
+        return f"{self.get_service_name()}:{self.port if self.port else 80}"
+
 
 class McpBridgeSpec(BaseModel):
     proxies: Optional[List[McpBridgeProxy]] = Field(default_factory=list)

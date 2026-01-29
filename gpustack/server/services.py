@@ -15,7 +15,12 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+)
+from gpustack.schemas.model_routes import (
+    ModelRoute,
     MyModel,
+    ModelRouteTarget,
+    TargetStateEnum,
     AccessPolicyEnum,
 )
 from gpustack.schemas.users import User
@@ -161,15 +166,9 @@ class UserService:
         # Get all accessible model names for the user
         user: User = await self.get_by_id(user_id)
         if user is None:
-            return []
-        if user.is_admin:
-            all_models = await Model.all_by_field(self.session, "deleted_at", None)
-            model_names = {model.name for model in all_models}
-        elif user.is_system and user.cluster_id is not None:
-            # the system user must have cluster_id
-            all_models = await Model.all_by_fields(
-                self.session, {"deleted_at": None, "cluster_id": user.cluster_id}
-            )
+            return set()
+        if user.is_admin or user.is_system:
+            all_models = await ModelRoute.all_by_field(self.session, "deleted_at", None)
             model_names = {model.name for model in all_models}
         else:
             allowed_models = await MyModel.all_by_fields(
@@ -242,6 +241,85 @@ class WorkerService:
         return result
 
 
+class ModelRouteService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @locked_cached(ttl=60)
+    async def get_by_name(self, name: str) -> Optional[ModelRoute]:
+        result = await ModelRoute.one_by_field(self.session, "name", name)
+        if result is None:
+            return None
+        self.session.expunge(result)
+        return result
+
+    @locked_cached(ttl=60)
+    async def get_model_auth_info_by_name(
+        self, name: str
+    ) -> Optional[Tuple[AccessPolicyEnum, str]]:
+        route = await ModelRoute.one_by_field(self.session, "name", name)
+        if route is None:
+            return None
+        route_targets = await ModelRouteTarget.all_by_fields(
+            self.session,
+            fields={"route_id": route.id},
+        )
+        if len(route_targets) == 0:
+            return None
+        models = await Model.all_by_fields(
+            session=self.session,
+            fields={},
+            extra_conditions=[
+                Model.id.in_(
+                    [e.model_id for e in route_targets if e.model_id is not None]
+                )
+            ],
+        )
+        # set a default static token to avoid empty token response for public maas model route
+        registration_token = "static_token_not_found"
+        for model in models:
+            cluster = await Cluster.one_by_id(self.session, model.cluster_id)
+            if cluster.registration_token is not None:
+                registration_token = cluster.registration_token
+                break
+
+        return route.access_policy, registration_token
+
+    @locked_cached(ttl=60)
+    async def get_model_ids_by_model_route_name(self, name: str) -> List[Model]:
+        route_targets = await ModelRouteTarget.all_by_fields(
+            self.session,
+            fields={
+                "route_name": name,
+                "state": TargetStateEnum.ACTIVE,
+                "deleted_at": None,
+            },
+            options=[selectinload(ModelRouteTarget.model)],
+        )
+        return [target.model for target in route_targets if target.model is not None]
+
+    async def update(
+        self,
+        model_route: ModelRoute,
+        source: Union[dict, SQLModel, None] = None,
+        auto_commit: bool = True,
+    ):
+        result = await model_route.update(self.session, source, auto_commit=auto_commit)
+        await delete_cache_by_key(self.get_model_auth_info_by_name, model_route.name)
+        await delete_cache_by_key(
+            self.get_model_ids_by_model_route_name, model_route.name
+        )
+        return result
+
+    async def delete(self, model_route: ModelRoute, auto_commit: bool = True):
+        result = await model_route.delete(self.session, auto_commit=auto_commit)
+        await delete_cache_by_key(self.get_model_auth_info_by_name, model_route.name)
+        await delete_cache_by_key(
+            self.get_model_ids_by_model_route_name, model_route.name
+        )
+        return result
+
+
 class ModelService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -262,30 +340,16 @@ class ModelService:
         self.session.expunge(result)
         return result
 
-    @locked_cached(ttl=60)
-    async def get_model_auth_info_by_name(
-        self, name: str
-    ) -> Optional[Tuple[AccessPolicyEnum, str]]:
-        model = await Model.one_by_field(self.session, "name", name)
-        cluster = (
-            await Cluster.one_by_id(self.session, model.cluster_id) if model else None
-        )
-        if model is None or cluster is None:
-            return None
-        return model.access_policy, cluster.registration_token
-
     async def update(self, model: Model, source: Union[dict, SQLModel, None] = None):
         result = await model.update(self.session, source)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
-        await delete_cache_by_key(self.get_model_auth_info_by_name, model.name)
         return result
 
     async def delete(self, model: Model):
         result = await model.delete(self.session)
         await delete_cache_by_key(self.get_by_id, model.id)
         await delete_cache_by_key(self.get_by_name, model.name)
-        await delete_cache_by_key(self.get_model_auth_info_by_name, model.name)
         return result
 
 

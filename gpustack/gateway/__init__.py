@@ -5,7 +5,7 @@ import os
 import logging
 import yaml
 import copy
-from typing import Any, Dict, Tuple, List, Optional
+from typing import Any, Dict, Tuple, List, Optional, Literal
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import Configuration
 from kubernetes_asyncio.config.kube_config import KubeConfigLoader, KubeConfigMerger
@@ -24,11 +24,15 @@ from gpustack.gateway.client import (
     McpBridgeSpec,
     McpBridgeRegistry,
     WasmPluginSpec,
+    WasmPluginMatchRule,
 )
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway.utils import (
     default_mcp_bridge_name,
     openai_model_prefixes,
+    gpustack_ai_proxy_name,
+    deployment_ai_proxy_id,
+    gpustack_default_ai_proxy_id,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
     ensure_wasm_plugin,
@@ -36,6 +40,8 @@ from gpustack.gateway.utils import (
 from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
 )
+from gpustack.gateway.ai_proxy_types import AIProxyDefaultConfig, EnableState
+from gpustack.schemas.model_provider import ModelProviderTypeEnum
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +231,7 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             name=ingress_name,
             namespace=gateway_namespace,
             annotations={
-                "higress.io/destination": f"{registry.name}.{registry.type}:{registry.port}",
+                "higress.io/destination": f"{registry.get_service_name_with_port()}",
                 "higress.io/ignore-path-case": "false",
             },
             labels=managed_labels,
@@ -259,41 +265,70 @@ async def ensure_ingress_resources(cfg: Config, api_client: k8s_client.ApiClient
             )
 
 
+def get_match_rules(
+    match_type: Literal["whitelist", "blacklist"],
+    paths: List[Tuple[str, str]],
+) -> Dict[str, Any]:
+    match_list = [
+        {
+            "match_rule_path": pair[0],
+            "match_rule_type": pair[1],
+        }
+        for pair in paths
+    ]
+    return {
+        "match_list": match_list,
+        "match_type": match_type,
+    }
+
+
 def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-llm-ext-auth"
     registry = get_gpustack_higress_registry(cfg=cfg)
-    match_list = [
-        {"match_rule_path": route, "match_rule_type": "exact"}
-        for route in supported_openai_routes
-    ]
-    match_list.append({"match_rule_path": "/model/proxy", "match_rule_type": "prefix"})
+
+    # this is to auth requests except for gpustack
+    default_match_rule = get_match_rules(
+        match_type="blacklist",
+        paths=[("/", "prefix")],
+    )
+    gpustack_match_rule = get_match_rules(
+        match_type="whitelist",
+        paths=[("/", "prefix")],
+    )
+
+    http_service = {
+        "authorization_request": {
+            "allowed_headers": [
+                {"exact": "X-GPUStack-Real-IP"},
+                {"exact": "x-higress-llm-model"},
+                {"exact": "cookie"},
+            ]
+        },
+        "authorization_response": {
+            "allowed_upstream_headers": [
+                {"exact": "X-Mse-Consumer"},
+                {"exact": "Authorization"},
+            ]
+        },
+        "endpoint": {
+            "path": "/token-auth",
+            "request_method": "GET",
+            "service_name": registry.get_service_name(),
+            "service_port": registry.port,
+        },
+        "endpoint_mode": "forward_auth",
+        "timeout": envs.HIGRESS_EXT_AUTH_TIMEOUT_MS,
+    }
+    namespace = cfg.get_namespace()
+    if namespace == cfg.gateway_namespace:
+        namespace = ""
+    # the ingress in plugin matchRules should not contains namespace prefix
+    # if it is in the same namespace with the gateway.
+    ingress_name = f"{namespace}/{envs.GATEWAY_MIRROR_INGRESS_NAME}".lstrip("/")
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            "http_service": {
-                "authorization_request": {
-                    "allowed_headers": [
-                        {"exact": "X-GPUStack-Real-IP"},
-                        {"exact": "x-higress-llm-model"},
-                        {"exact": "cookie"},
-                    ]
-                },
-                "authorization_response": {
-                    "allowed_upstream_headers": [
-                        {"exact": "X-Mse-Consumer"},
-                        {"exact": "Authorization"},
-                    ]
-                },
-                "endpoint": {
-                    "path": "/token-auth",
-                    "request_method": "GET",
-                    "service_name": f"{registry.name}.{registry.type}",
-                    "service_port": registry.port,
-                },
-                "endpoint_mode": "forward_auth",
-                "timeout": envs.HIGRESS_EXT_AUTH_TIMEOUT_MS,
-            },
-            "match_list": match_list,
-            "match_type": "blacklist",
+            "http_service": http_service,
+            **default_match_rule,
         },
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
@@ -302,6 +337,16 @@ def ext_auth_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         url=get_plugin_url_with_name_and_version(
             name="ext-auth", version="2.0.0", cfg=cfg
         ),
+        matchRules=[
+            WasmPluginMatchRule(
+                config={
+                    "http_service": http_service,
+                    **gpustack_match_rule,
+                },
+                configDisable=False,
+                ingress=[ingress_name],
+            )
+        ],
     )
     return resource_name, expected_spec
 
@@ -348,6 +393,28 @@ def model_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         matchRules=[],
         phase="AUTHN",
         priority=900,
+        url=get_plugin_url_with_name_and_version(
+            name="model-router", version="2.0.0", cfg=cfg
+        ),
+    )
+    return resource_name, expected_spec
+
+
+def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    resource_name = "gpustack-set-model-pre-route"
+    enabled_paths = supported_openai_routes.copy()
+    enabled_paths.append("/model/proxy")
+    expected_spec = WasmPluginSpec(
+        defaultConfig={
+            'modelToHeader': 'x-gpustack-model',
+            'enableOnPathSuffix': enabled_paths,
+        },
+        defaultConfigDisable=False,
+        failStrategy="FAIL_OPEN",
+        imagePullPolicy="UNSPECIFIED_POLICY",
+        matchRules=[],
+        phase="AUTHN",
+        priority=90,
         url=get_plugin_url_with_name_and_version(
             name="model-router", version="2.0.0", cfg=cfg
         ),
@@ -407,6 +474,48 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
         priority=900,
         url=get_plugin_url_with_name_and_version(
             name="gpustack-token-usage", version="1.0.0", cfg=cfg
+        ),
+    )
+    return resource_name, expected_spec
+
+
+def ai_proxy_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
+    default_registry = get_gpustack_higress_registry(cfg=cfg)
+    resource_name = gpustack_ai_proxy_name
+    expected_spec = WasmPluginSpec(
+        defaultConfig={
+            "activeProviderId": deployment_ai_proxy_id,
+            "providers": [
+                AIProxyDefaultConfig(
+                    id=deployment_ai_proxy_id,
+                    type=ModelProviderTypeEnum.OPENAI,
+                    failover=EnableState(enabled=False),
+                    retryOnFailure=EnableState(enabled=False),
+                ).model_dump(exclude_unset=True, exclude_none=True),
+                AIProxyDefaultConfig(
+                    id=gpustack_default_ai_proxy_id,
+                    type=ModelProviderTypeEnum.GENERIC,
+                    failover=EnableState(enabled=False),
+                    retryOnFailure=EnableState(enabled=False),
+                ).model_dump(exclude_unset=True, exclude_none=True),
+            ],
+        },
+        defaultConfigDisable=False,
+        failStrategy="FAIL_OPEN",
+        imagePullPolicy="UNSPECIFIED_POLICY",
+        matchRules=[
+            WasmPluginMatchRule(
+                config={
+                    "activeProviderId": gpustack_default_ai_proxy_id,
+                },
+                configDisable=False,
+                service=[default_registry.get_service_name()],
+            ),
+        ],
+        priority=100,
+        phase="UNSPECIFIED_PHASE",
+        url=get_plugin_url_with_name_and_version(
+            name="ai-proxy", version="2.0.0", cfg=cfg
         ),
     )
     return resource_name, expected_spec
@@ -513,6 +622,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             ext_auth_plugin(cfg=cfg),
             ai_statistics_plugin(cfg=cfg),
             model_router_plugin(cfg=cfg),
+            ai_proxy_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))

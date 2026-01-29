@@ -8,7 +8,7 @@ from gpustack.api.exceptions import (
     UnauthorizedException,
     BadRequestException,
 )
-from gpustack.server.services import ModelService, UserService
+from gpustack.server.services import ModelRouteService, UserService
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.users import User
 from gpustack.schemas.models import AccessPolicyEnum
@@ -70,7 +70,7 @@ async def server_auth(
             "Missing x-higress-llm-model header for token authentication",
         )
         raise credentials_exception if user is None else model_name_missing_exception
-    pair = await ModelService(session=session).get_model_auth_info_by_name(
+    pair = await ModelRouteService(session=session).get_model_auth_info_by_name(
         name=model_name
     )
     if pair is None:

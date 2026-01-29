@@ -1,5 +1,4 @@
 import secrets
-from datetime import datetime
 from urllib.parse import urlparse
 from enum import Enum
 from typing import ClassVar, Optional, Dict, Any, List
@@ -23,19 +22,17 @@ from gpustack.schemas.config import (
     PredefinedConfigNoDefaults,
 )
 from gpustack.mixins import BaseModelMixin
-from gpustack.schemas.common import ListParams, PaginatedList, pydantic_column_type
+from gpustack.schemas.common import (
+    PublicFields,
+    ListParams,
+    PaginatedList,
+    pydantic_column_type,
+)
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import Model, ModelInstance
     from gpustack.schemas.workers import Worker
     from gpustack.schemas.users import User
-
-
-class PublicFields:
-    id: int
-    created_at: datetime
-    updated_at: datetime
-    deleted_at: Optional[datetime] = None
 
 
 class WorkerPoolUpdate(SQLModel):

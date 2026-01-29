@@ -174,6 +174,7 @@ async def record_model_usage(
     fields = {
         "user_id": user.id,
         "model_id": model.id,
+        "model_name": model.name,
         "date": date.today(),
         "operation": operation,
     }
