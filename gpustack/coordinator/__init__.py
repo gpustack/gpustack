@@ -802,31 +802,6 @@ class DistributedCoordinatorService(CoordinatorService):
             raise ValueError("分布式协调服务需要配置 coordinator_url")
         
         logger.info(f"使用分布式协调服务，URL: {config.coordinator_url}")
-    
-    async def _send_heartbeat(self):
-        """发送心跳到协调服务"""
-        try:
-            async with self._session.post(
-                f"{self._config.coordinator_url}/api/v1/heartbeat",
-                json={
-                    "server_id": self._server_id,
-                    "name": self._server_name,
-                    "address": self._config.advertise_address,
-                    "api_port": self._config.api_port,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    self._update_servers_from_response(data.get("servers", []))
-        except Exception as e:
-            logger.warning(f"无法连接到协调服务: {e}")
-            # 回退到本地模式
-        
-        # 更新本地心跳
-        if self._server_id in self._servers:
-            self._servers[self._server_id].last_heartbeat = datetime.now(timezone.utc)
 
 
 def create_coordinator_service(

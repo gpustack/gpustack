@@ -200,6 +200,21 @@ class Config(WorkerConfig, BaseSettings):
     distributed_scheduling: bool = True
     # Schedule lock timeout (seconds)
     schedule_lock_timeout: int = 60
+    
+    # Configuration validation constants
+    MIN_HEARTBEAT_INTERVAL: int = 5
+    MAX_HEARTBEAT_INTERVAL: int = 60
+    DEFAULT_HEARTBEAT_INTERVAL: int = 15
+    MIN_SERVER_TIMEOUT: int = 30
+    MAX_SERVER_TIMEOUT: int = 300
+    DEFAULT_SERVER_TIMEOUT: int = 60
+    MIN_LOCK_TIMEOUT: int = 10
+    MAX_LOCK_TIMEOUT: int = 120
+    DEFAULT_LOCK_TIMEOUT: int = 30
+    MIN_SCHEDULE_LOCK_TIMEOUT: int = 30
+    MAX_SCHEDULE_LOCK_TIMEOUT: int = 180
+    DEFAULT_SCHEDULE_LOCK_TIMEOUT: int = 60
+    VALID_SCHEDULING_MODES: List[str] = ["local", "distributed", "auto"]
 
     _set_worker_fields = {}
 
@@ -305,6 +320,73 @@ class Config(WorkerConfig, BaseSettings):
             self.check_database_url()
 
         return self
+    
+    @model_validator(mode="before")
+    def validate_scheduling_mode(cls, values):
+        """Validate scheduling mode"""
+        scheduling_mode = values.get("scheduling_mode")
+        if scheduling_mode and scheduling_mode not in cls.VALID_SCHEDULING_MODES:
+            logger.warning(
+                f"Invalid scheduling_mode: {scheduling_mode}. Using default: 'auto'"
+            )
+            values["scheduling_mode"] = "auto"
+        return values
+    
+    @model_validator(mode="before")
+    def validate_heartbeat_interval(cls, values):
+        """Validate heartbeat interval"""
+        heartbeat_interval = values.get("heartbeat_interval")
+        if heartbeat_interval:
+            if heartbeat_interval < cls.MIN_HEARTBEAT_INTERVAL or heartbeat_interval > cls.MAX_HEARTBEAT_INTERVAL:
+                logger.warning(
+                    f"heartbeat_interval ({heartbeat_interval}) is outside the recommended range "
+                    f"[{cls.MIN_HEARTBEAT_INTERVAL}-{cls.MAX_HEARTBEAT_INTERVAL}]. "
+                    f"Using default value: {cls.DEFAULT_HEARTBEAT_INTERVAL}"
+                )
+                values["heartbeat_interval"] = cls.DEFAULT_HEARTBEAT_INTERVAL
+        return values
+    
+    @model_validator(mode="before")
+    def validate_server_timeout(cls, values):
+        """Validate server timeout"""
+        server_timeout = values.get("server_timeout")
+        if server_timeout:
+            if server_timeout < cls.MIN_SERVER_TIMEOUT or server_timeout > cls.MAX_SERVER_TIMEOUT:
+                logger.warning(
+                    f"server_timeout ({server_timeout}) is outside the recommended range "
+                    f"[{cls.MIN_SERVER_TIMEOUT}-{cls.MAX_SERVER_TIMEOUT}]. "
+                    f"Using default value: {cls.DEFAULT_SERVER_TIMEOUT}"
+                )
+                values["server_timeout"] = cls.DEFAULT_SERVER_TIMEOUT
+        return values
+    
+    @model_validator(mode="before")
+    def validate_lock_timeout(cls, values):
+        """Validate lock timeout"""
+        lock_timeout = values.get("lock_timeout")
+        if lock_timeout:
+            if lock_timeout < cls.MIN_LOCK_TIMEOUT or lock_timeout > cls.MAX_LOCK_TIMEOUT:
+                logger.warning(
+                    f"lock_timeout ({lock_timeout}) is outside the recommended range "
+                    f"[{cls.MIN_LOCK_TIMEOUT}-{cls.MAX_LOCK_TIMEOUT}]. "
+                    f"Using default value: {cls.DEFAULT_LOCK_TIMEOUT}"
+                )
+                values["lock_timeout"] = cls.DEFAULT_LOCK_TIMEOUT
+        return values
+    
+    @model_validator(mode="before")
+    def validate_schedule_lock_timeout(cls, values):
+        """Validate schedule lock timeout"""
+        schedule_lock_timeout = values.get("schedule_lock_timeout")
+        if schedule_lock_timeout:
+            if schedule_lock_timeout < cls.MIN_SCHEDULE_LOCK_TIMEOUT or schedule_lock_timeout > cls.MAX_SCHEDULE_LOCK_TIMEOUT:
+                logger.warning(
+                    f"schedule_lock_timeout ({schedule_lock_timeout}) is outside the recommended range "
+                    f"[{cls.MIN_SCHEDULE_LOCK_TIMEOUT}-{cls.MAX_SCHEDULE_LOCK_TIMEOUT}]. "
+                    f"Using default value: {cls.DEFAULT_SCHEDULE_LOCK_TIMEOUT}"
+                )
+                values["schedule_lock_timeout"] = cls.DEFAULT_SCHEDULE_LOCK_TIMEOUT
+        return values
 
     @staticmethod
     def check_port_range(port_range: str, diff: Optional[int] = None):
@@ -825,32 +907,6 @@ class Config(WorkerConfig, BaseSettings):
             current_server_url = self.get_server_url()
             if current_server_url not in self.server_urls:
                 self.server_urls.append(current_server_url)
-        
-        # Validate scheduling_mode
-        # 验证调度模式
-        valid_scheduling_modes = ["local", "distributed", "auto"]
-        if self.scheduling_mode not in valid_scheduling_modes:
-            self.scheduling_mode = "auto"
-            
-        # Ensure heartbeat_interval is within reasonable range
-        # 确保心跳间隔在合理范围内
-        if self.heartbeat_interval < 5 or self.heartbeat_interval > 60:
-            self.heartbeat_interval = 15
-        
-        # Ensure server_timeout is within reasonable range
-        # 确保服务器超时时间在合理范围内
-        if self.server_timeout < 30 or self.server_timeout > 300:
-            self.server_timeout = 60
-        
-        # Ensure lock_timeout is within reasonable range
-        # 确保锁超时时间在合理范围内
-        if self.lock_timeout < 10 or self.lock_timeout > 120:
-            self.lock_timeout = 30
-        
-        # Ensure schedule_lock_timeout is within reasonable range
-        # 确保调度锁超时时间在合理范围内
-        if self.schedule_lock_timeout < 30 or self.schedule_lock_timeout > 180:
-            self.schedule_lock_timeout = 60
 
 
 def get_image_name(
