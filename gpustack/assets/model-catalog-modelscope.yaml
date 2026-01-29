@@ -670,6 +670,28 @@ model_sets:
   release_date: "2025-12-01"
   specs:
     - mode: throughput
+      quantization: W8A8
+      gpu_filters:
+        vendor: ascend
+        vendor_variant: "910b"
+      source: model_scope
+      model_scope_model_id: vllm-ascend/DeepSeek-V3.2-W8A8
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --max-model-len=65532
+        - --gpu-memory-utilization=0.92
+        - --no-enable-prefix-caching
+        - --trust-remote-code
+        - --max-num-seqs=16
+        - '--compilation-config={"cudagraph_mode": "FULL_DECODE_ONLY"}'
+        - --tensor-parallel-size=8
+        - --data-parallel-size=2
+        - --data-parallel-size-local=1
+        - --enable-expert-parallel
+        - --quantization=ascend
+        - --tokenizer-mode=deepseek_v32
+    - mode: throughput
       quantization: FP8
       gpu_filters:
         vendor: nvidia
