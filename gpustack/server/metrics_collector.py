@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
+from gpustack.schemas.model_provider import ModelProvider
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 
@@ -212,12 +213,20 @@ class GatewayMetricsCollector:
                     fields={},
                     extra_conditions=[Model.name.in_(dedup_model_names)],
                 )
+                providers = await ModelProvider.all_by_fields(
+                    session=session,
+                    fields={},
+                )
+                model_to_provider_id = {
+                    m.name: p.id for p in providers for m in p.models
+                }
                 users = await User.all_by_fields(
                     session=session,
                     fields={},
                     extra_conditions=[User.id.in_(dedup_user_ids)],
                 )
                 validated_model_names = {m.name for m in models}
+                validated_model_names.update(model_to_provider_id.keys())
                 validated_user_ids = {u.id for u in users}
                 for metric in metrics:
                     logger.debug(f"Storing metric: {metric}")
@@ -228,8 +237,13 @@ class GatewayMetricsCollector:
                         and metric.user_id not in validated_user_ids
                     ):
                         continue
+
                     model_usage = ModelUsage(
-                        model_id=[m.id for m in models if m.name == metric.model][0],
+                        model_id=next(
+                            (m.id for m in models if m.name == metric.model), None
+                        ),
+                        provider_id=model_to_provider_id.get(metric.model, None),
+                        model_name=metric.model,
                         user_id=metric.user_id,
                         access_key=metric.access_key,
                         date=date.today(),

@@ -75,7 +75,7 @@ async def async_raise_if_response_error(response: httpx.Response):  # noqa: C901
         return
     try:
         await response.aread()
-    except Exception as e:
+    except httpx.ReadError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             reason="Unknown",

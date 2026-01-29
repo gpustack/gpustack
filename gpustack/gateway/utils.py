@@ -1,25 +1,35 @@
 import logging
 import copy
+from urllib.parse import urlparse
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union, Dict, Any
+from typing import List, Optional, Tuple, Union, Dict, Any, Literal
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
+from gpustack.gateway import ai_proxy_types
 from gpustack.gateway.client.networking_higress_io_v1_api import (
     NetworkingHigressIoV1Api,
     McpBridge,
     McpBridgeRegistry,
     McpBridgeSpec,
+    McpBridgeProxy,
 )
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     WasmPlugin,
     WasmPluginSpec,
     ExtensionsHigressIoV1Api,
+    WasmPluginMatchRule,
+)
+from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
+    NetworkingIstioIoV1Alpha3Api,
+    EnvoyFilter,
+    get_ingress_fallback_envoyfilter,
 )
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancePublic,
-    Model,
-    ModelPublic,
+)
+from gpustack.schemas.model_provider import (
+    ModelProvider,
 )
 from gpustack.server.bus import EventType
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
@@ -33,6 +43,12 @@ from gpustack.envs import GATEWAY_MIRROR_INGRESS_NAME
 logger = logging.getLogger(__name__)
 
 default_mcp_bridge_name = "default"
+gpustack_ai_proxy_name = "gpustack-ai-proxy"
+model_ingress_prefix = "ai-route-model-"
+model_route_ingress_prefix = "ai-route-route-"
+model_route_selector = {"gpustack.ai/route": "true"}
+deployment_ai_proxy_id = "gpustack-deployment"
+gpustack_default_ai_proxy_id = "gpustack-default"
 
 
 @dataclass
@@ -86,21 +102,34 @@ def get_default_mcpbridge_ref(
     )
 
 
-def ingress_rule_for_model(
-    mcp_bridge_name: str = default_mcp_bridge_name,
-) -> k8s_client.V1IngressRule:
+def wrap_route(
+    path: str,
+    path_type: str,
+    backend: Optional[k8s_client.V1IngressBackend] = None,
+) -> k8s_client.V1HTTPIngressPath:
+    if backend is None:
+        backend = k8s_client.V1IngressBackend(
+            resource=get_default_mcpbridge_ref(),
+        )
+    return k8s_client.V1HTTPIngressPath(
+        path=path,
+        path_type=path_type,
+        backend=backend,
+    )
+
+
+def anthropic_routes() -> List[k8s_client.V1HTTPIngressPath]:
+    return [
+        wrap_route("/v1/messages", "Prefix"),
+        wrap_route("/v1/complete", "Exact"),
+    ]
+
+
+def ingress_rule_for_model() -> k8s_client.V1IngressRule:
     paths: List[k8s_client.V1HTTPIngressPath] = []
     for route_prefix in openai_model_prefixes:
         for prefix in route_prefix.regex_prefixes():
-            paths.append(
-                k8s_client.V1HTTPIngressPath(
-                    path=prefix,
-                    path_type="ImplementationSpecific",
-                    backend=k8s_client.V1IngressBackend(
-                        resource=get_default_mcpbridge_ref(mcp_bridge_name),
-                    ),
-                )
-            )
+            paths.append(wrap_route(path=prefix, path_type="ImplementationSpecific"))
     return k8s_client.V1IngressRule(http=k8s_client.V1HTTPIngressRuleValue(paths=paths))
 
 
@@ -114,8 +143,23 @@ def model_mcp_bridge_name(cluster_id: int) -> str:
     return cluster_mcp_bridge_name(cluster_id)
 
 
+def model_route_cleanup_prefix(model_route_id: int) -> str:
+    return f"{model_route_ingress_prefix}{model_route_id}"
+
+
+def model_route_ingress_name(model_route_id: int) -> str:
+    return f"{model_route_ingress_prefix}{model_route_id}.internal"
+
+
+def fallback_ingress_name(name: str) -> str:
+    split_name = name.rsplit('.', 1)
+    if len(split_name) == 1:
+        return f"{name}.fallback"
+    return f"{split_name[0]}.fallback.{split_name[1]}"
+
+
 def model_ingress_name(model_id: int) -> str:
-    return f"ai-route-model-{model_id}"
+    return f"{model_ingress_prefix}{model_id}"
 
 
 def cluster_worker_prefix(cluster_id: int) -> str:
@@ -191,6 +235,96 @@ def cluster_registry(cluster: Cluster) -> Optional[McpBridgeRegistry]:
     )
 
 
+def provider_registry_name(id: int) -> str:
+    return f"provider-{id}"
+
+
+def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
+    domain = provider.config.get_service_registry()
+    if domain is None:
+        return None
+    provider_url = provider.config.get_base_url()
+    result = urlparse(url=provider_url)
+    protocol = "https"
+    port = 443
+    if result.scheme == "http":
+        protocol = "http"
+        port = 80
+    registry_type = "dns"
+    if is_ipaddress(domain):
+        registry_type = "static"
+        port = 80
+    elif result.port is not None:
+        port = result.port
+    proxyName = f"provider-{provider.id}-proxy" if provider.proxy_url else None
+    return McpBridgeRegistry(
+        domain=domain,
+        port=port,
+        name=provider_registry_name(provider.id),
+        protocol=protocol,
+        type=registry_type,
+        proxyName=proxyName,
+    )
+
+
+def provider_proxy(provider: ModelProvider) -> Optional[McpBridgeProxy]:
+    if provider.proxy_url is None:
+        return None
+    proxy_url = urlparse(provider.proxy_url)
+    scheme = proxy_url.scheme
+    port = proxy_url.port
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    # timeout in seconds
+    connection_timeout = provider.proxy_timeout or 5
+    return McpBridgeProxy(
+        name=f"{provider_registry_name(provider.id)}-proxy",
+        serverAddress=proxy_url.hostname,
+        serverPort=port,
+        type=scheme.upper(),
+        # convert to milliseconds
+        connectTimeout=connection_timeout * 1000,
+    )
+
+
+def provider_proxy_plugin_spec(
+    *providers: ModelProvider,
+) -> Tuple[List[Dict[str, Any]], List[WasmPluginMatchRule]]:
+    provider_list = []
+    match_rules = []
+    sorted_providers: List[ModelProvider] = sorted(providers, key=lambda p: p.id)
+    for provider in sorted_providers:
+        registry = provider_registry(provider)
+        if registry is None:
+            continue
+        service_name = registry.get_service_name()
+        default_config_data = {
+            "id": provider_registry_name(provider.id),
+            "apiTokens": provider.api_tokens,
+            **provider.config.model_dump(exclude={"type"}, exclude_none=True),
+            "type": provider.config.type.value,
+        }
+        if len(provider.api_tokens) > 1:
+            default_config_data["failover"] = ai_proxy_types.EnableState(enabled=True)
+        default_config = ai_proxy_types.AIProxyDefaultConfig.model_validate(
+            default_config_data
+        )
+        provider_list.append(
+            default_config.model_dump(by_alias=True, exclude_none=True)
+        )
+        active_config = ai_proxy_types.ActiveConfig(
+            activeProviderId=provider_registry_name(provider.id),
+        ).model_dump(exclude_none=True)
+        match_rules.append(
+            WasmPluginMatchRule(
+                config=active_config,
+                service=[service_name],
+                configDisable=False,
+            )
+        )
+    return provider_list, match_rules
+
+
 def diff_registries(
     existing: List[McpBridgeRegistry],
     desired: List[McpBridgeRegistry],
@@ -227,6 +361,40 @@ def diff_registries(
     return need_update, total_list
 
 
+def diff_proxies(
+    existing: List[McpBridgeProxy],
+    desired: List[McpBridgeProxy],
+    to_delete_prefix: Optional[str] = None,
+) -> Tuple[bool, List[McpBridgeProxy]]:
+    desired_map = {
+        reg.name: idx for idx, reg in enumerate(desired) if reg.name is not None
+    }
+    total_list = []
+    need_update = False
+    for proxy in existing:
+        if proxy.name not in desired_map:
+            # delete registries that are not in the current list
+            if to_delete_prefix is not None and proxy.name.startswith(to_delete_prefix):
+                need_update = True
+            else:
+                # keep unrelated proxies
+                total_list.append(proxy)
+        else:
+            # update existing proxies
+            idx = desired_map.pop(proxy.name)
+            if proxy != desired[idx]:
+                need_update = True
+                proxy = desired[idx]
+            total_list.append(proxy)
+    # add new proxies
+    for idx in desired_map.values():
+        need_update = True
+        total_list.append(desired[idx])
+
+    total_list.sort(key=lambda r: r.name or "")
+    return need_update, total_list
+
+
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
 async def ensure_mcp_bridge(
     client: NetworkingHigressIoV1Api,
@@ -234,6 +402,8 @@ async def ensure_mcp_bridge(
     mcp_bridge_name: str,
     desired_registries: List[McpBridgeRegistry],
     to_delete_prefix: Optional[str] = None,
+    desired_proxies: List[McpBridgeProxy] = None,
+    to_delete_proxies_prefix: Optional[str] = None,
 ):
     existing_bridge = None
     try:
@@ -249,7 +419,7 @@ async def ensure_mcp_bridge(
                 "namespace": namespace,
                 "labels": managed_labels,
             },
-            spec=McpBridgeSpec(registries=desired_registries),
+            spec=McpBridgeSpec(registries=desired_registries, proxies=desired_proxies),
         )
         await client.create_mcpbridge(
             namespace=namespace,
@@ -257,13 +427,23 @@ async def ensure_mcp_bridge(
         )
         logger.info(f"Created MCP Bridge {mcp_bridge_name} in namespace {namespace}.")
     else:
-        need_update, registry_list = diff_registries(
+        registry_need_update, registry_list = diff_registries(
             existing=existing_bridge.spec.registries or [],
             desired=desired_registries,
             to_delete_prefix=to_delete_prefix,
         )
-        if need_update:
+        proxy_need_update = False
+        proxy_list = existing_bridge.spec.proxies or []
+        if desired_proxies is not None:
+            proxy_need_update, proxy_list = diff_proxies(
+                existing=existing_bridge.spec.proxies or [],
+                desired=desired_proxies,
+                to_delete_prefix=to_delete_proxies_prefix,
+            )
+
+        if registry_need_update or proxy_need_update:
             existing_bridge.spec.registries = registry_list
+            existing_bridge.spec.proxies = proxy_list
             await client.edit_mcpbridge(
                 name=mcp_bridge_name,
                 namespace=namespace,
@@ -275,53 +455,44 @@ async def ensure_mcp_bridge(
 
 
 def generate_model_ingress(
+    ingress_name: str,
     namespace: str,
-    model: Model,
+    route_name: str,
     destinations: str,
     hostname: Optional[str] = None,
     tls: Optional[List[V1IngressTLS]] = None,
     included_generic_route: Optional[bool] = False,
     included_proxy_route: Optional[bool] = False,
+    extra_annotations: Optional[Dict[str, str]] = None,
 ) -> k8s_client.V1Ingress:
-    ingress_name = model_ingress_name(model.id)
-    namespace = namespace
+    annotations = {
+        "higress.io/rewrite-target": "/$1$3",
+        "higress.io/destination": destinations,
+        "higress.io/ignore-path-case": 'true',
+        **higress_http_header_matcher("exact", "x-higress-llm-model", route_name),
+    }
+    if extra_annotations is not None:
+        annotations.update(extra_annotations)
     metadata = k8s_client.V1ObjectMeta(
         name=ingress_name,
         namespace=namespace,
-        annotations={
-            "higress.io/rewrite-target": "/$1$3",
-            "higress.io/destination": destinations,
-            "higress.io/exact-match-header-x-higress-llm-model": model.name,
-            "higress.io/ignore-path-case": 'true',
-        },
+        annotations=annotations,
         labels=managed_labels,
     )
-    bridge_name = model_mcp_bridge_name(model.cluster_id)
-    expected_rule = ingress_rule_for_model(
-        mcp_bridge_name=bridge_name,
-    )
+    expected_rule = ingress_rule_for_model()
 
     if included_proxy_route:
         # to compatible with rewrite-target /$1$3, the first capturing group is empty
         expected_rule.http.paths.append(
-            k8s_client.V1HTTPIngressPath(
-                path="/()model/proxy(/|$)(.*)",
-                path_type="ImplementationSpecific",
-                backend=k8s_client.V1IngressBackend(
-                    resource=get_default_mcpbridge_ref(mcp_bridge_name=bridge_name),
-                ),
+            wrap_route(
+                "/()model/proxy(/|$)(.*)",
+                "ImplementationSpecific",
             )
         )
     if included_generic_route:
-        expected_rule.http.paths.append(
-            k8s_client.V1HTTPIngressPath(
-                path="/",
-                path_type="Prefix",
-                backend=k8s_client.V1IngressBackend(
-                    resource=get_default_mcpbridge_ref(mcp_bridge_name=bridge_name),
-                ),
-            )
-        )
+        expected_rule.http.paths.append(wrap_route("/", "Prefix"))
+    # support for Anthropic API
+    expected_rule.http.paths.extend(anthropic_routes())
     spec = k8s_client.V1IngressSpec(ingress_class_name="higress", rules=[expected_rule])
     if hostname is not None:
         hostname_rule = copy.deepcopy(expected_rule)
@@ -413,22 +584,38 @@ def mcp_ingress_equal(
     return True
 
 
-def replace_registry_weight(registry_list: List[Tuple[int, McpBridgeRegistry]]):
+def hamilton_calculate_weight(
+    weight_instance_pairs: List[Tuple[int, int]],
+    max_weight: Optional[int] = 0,
+) -> List[int]:
     """
-    return persentage dict for each registry.
-    The total should not exceed 100.
+    hamilton_calculate_weight to allocate percentage based on weight and instance count.
+    The total should be 100.
+
+    :param weight_instance_pairs: weight and instance count pairs
+    :type weight_instance_pairs: List[Tuple[int, int]]
+    :return: list of percentage for instance
+    :rtype: List[int]
     """
-    total = sum(count for count, _ in registry_list)
-    acc = 0
-    for i, (count, registry) in enumerate(registry_list):
-        if i < len(registry_list) - 1:
-            percent = round(100 * count / total) if total > 0 else 0
-            registry_list[i] = (percent, registry)
-            acc += percent
-        else:
-            # The last one, ensure the total sum is 100
-            percent = 100 - acc
-            registry_list[i] = (percent, registry)
+    instances_info = []
+    for weight, instance_count in weight_instance_pairs:
+        for _ in range(instance_count):
+            instances_info.append({'weight': weight, 'group_weight': weight})
+    total_weight = sum(max(info['weight'], max_weight) for info in instances_info)
+    if total_weight == 0:
+        return []
+    for info in instances_info:
+        weight = max(info['weight'], max_weight)
+        info['exact_quota'] = weight * 100 / total_weight
+        info['floor_quota'] = int(info['exact_quota'])
+        info['remainder'] = info['exact_quota'] - info['floor_quota']
+
+    total_floor = sum(info['floor_quota'] for info in instances_info)
+    remaining_seats = 100 - total_floor
+    sorted_instances = sorted(instances_info, key=lambda x: -x['remainder'])
+    for i in range(remaining_seats):
+        sorted_instances[i]['floor_quota'] += 1
+    return [info['floor_quota'] for info in instances_info]
 
 
 def model_instances_registry_list(
@@ -444,21 +631,24 @@ def model_instances_registry_list(
 
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
 async def ensure_model_ingress(
+    ingress_name: str,
+    route_name: str,
     namespace: str,
-    destinations: List[Tuple[int, McpBridgeRegistry]],
-    model: Union[Model, ModelPublic],
+    destinations: List[Tuple[int, str, McpBridgeRegistry]],
     event_type: EventType,
     networking_api: k8s_client.NetworkingV1Api,
     included_generic_route: Optional[bool] = False,
     included_proxy_route: Optional[bool] = False,
+    extra_annotations: Optional[Dict[str, str]] = None,
 ):
     """
     Ensure the model ingress resource in Kubernetes matches the desired state.
 
     Parameters:
+        ingress_name (str): The name of the ingress resource.
         namespace (str): The Kubernetes namespace for the ingress resource.
-        destinations (List[Tuple[int, McpBridgeRegistry]]): Weighted list of MCP Bridge registries for traffic routing.
-        model (Union[Model, ModelPublic]): The model object for which ingress is managed.
+        destinations (List[Tuple[int, str, McpBridgeRegistry]]): Weighted list of MCP Bridge registries for traffic routing.
+        route_name (str): The name of the model route for which ingress is managed.
         event_type (EventType): The event type (CREATED, UPDATED, DELETED) triggering reconciliation.
         networking_api (k8s_client.NetworkingV1Api): The Kubernetes networking API client.
         hostname (Optional[str]): The external hostname for ingress routing.
@@ -466,13 +656,14 @@ async def ensure_model_ingress(
         included_generic_route (bool): Whether to include a generic '/' route for fallback traffic. Used in worker gateway.
         included_proxy_route (bool): Whether to include a proxy route for model traffic (e.g., /model/proxy/{model_name}). Used in server gateway.
     """
-    ingress_name = model_ingress_name(model.id)
     if event_type == EventType.DELETED:
         try:
             await networking_api.delete_namespaced_ingress(
                 name=ingress_name, namespace=namespace
             )
-            logger.info(f"Deleted model ingress {ingress_name} for model {model.name}")
+            logger.info(
+                f"Deleted model ingress {ingress_name} for model route {route_name}"
+            )
         except ApiException as e:
             if e.status != 404:
                 logger.error(f"Failed to delete ingress {ingress_name}: {e}")
@@ -480,8 +671,8 @@ async def ensure_model_ingress(
 
     expected_destinations = '\n'.join(
         [
-            f"{persentage}% {registry.name}.{registry.type}:{registry.port}"
-            for persentage, registry in destinations
+            f"{persentage}% {registry.get_service_name_with_port()}"
+            for persentage, _, registry in destinations
         ]
     )
     try:
@@ -501,20 +692,25 @@ async def ensure_model_ingress(
         target_ingress_name=GATEWAY_MIRROR_INGRESS_NAME,
     )
     expected_ingress = generate_model_ingress(
+        ingress_name=ingress_name,
+        route_name=route_name,
         namespace=namespace,
-        model=model,
         destinations=expected_destinations,
         hostname=hostname,
         tls=tls,
         included_generic_route=included_generic_route,
         included_proxy_route=included_proxy_route,
+        extra_annotations=extra_annotations,
     )
+
     if existing_ingress is None:
         await networking_api.create_namespaced_ingress(
             namespace=namespace,
             body=expected_ingress,
         )
-        logger.info(f"Created model ingress {ingress_name} for model {model.name}")
+        logger.info(
+            f"Created model ingress {ingress_name} for model route {route_name}"
+        )
     else:
         is_equal = mcp_ingress_equal(
             existing=existing_ingress, expected=expected_ingress
@@ -541,13 +737,22 @@ async def ensure_model_ingress(
                 namespace=namespace,
                 body=existing_ingress,
             )
-            logger.info(f"Updated model ingress {ingress_name} for model {model.name}")
+            logger.info(
+                f"Updated model ingress {ingress_name} for model route {route_name}"
+            )
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
 async def ensure_wasm_plugin(
-    api: ExtensionsHigressIoV1Api, name: str, namespace: str, expected: WasmPluginSpec
+    api: ExtensionsHigressIoV1Api,
+    name: str,
+    namespace: str,
+    expected: WasmPluginSpec,
+    extra_labels: Optional[Dict[str, str]] = None,
 ):
+    labels = copy.deepcopy(managed_labels)
+    if extra_labels:
+        labels.update(extra_labels)
     current_plugin = None
     try:
         data: Dict[str, Any] = await api.get_wasmplugin(namespace=namespace, name=name)
@@ -562,7 +767,7 @@ async def ensure_wasm_plugin(
             metadata={
                 "name": name,
                 "namespace": namespace,
-                "labels": managed_labels,
+                "labels": labels,
             },
             spec=expected,
         )
@@ -571,7 +776,7 @@ async def ensure_wasm_plugin(
             body=wasm_plugin_body,
         )
         logger.info(f"Created WasmPlugin {name} in namespace {namespace}.")
-    elif match_labels(current_plugin.metadata.get("labels", {}), managed_labels):
+    elif match_labels(current_plugin.metadata.get("labels", {}), labels):
         current_spec = (
             current_plugin.spec.model_dump(exclude_none=True)
             if current_plugin.spec
@@ -588,10 +793,44 @@ async def ensure_wasm_plugin(
             logger.info(f"Updated WasmPlugin {name} in namespace {namespace}.")
 
 
-async def cleanup_orphaned_model_ingresses(
+async def cleanup_selected_wasm_plugins(
     namespace: str,
-    existing_model_ids: List[int],
+    expected_names: List[str],
     config: k8s_client.Configuration,
+    extra_labels: Optional[Dict[str, str]] = None,
+    reason: str = "orphaned",
+):
+    api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(config))
+    labels = copy.deepcopy(managed_labels)
+    if extra_labels:
+        labels.update(extra_labels)
+    try:
+        # Use label selector to filter only managed wasm plugins
+        label_selector = ','.join([f"{k}={v}" for k, v in labels.items()])
+        plugins = await api.list_wasmplugins(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        items: List[Dict[str, Any]] = plugins.get('items', [])
+        for plugin in items:
+            # name must be not None due to label selector
+            name = plugin.get("metadata", {}).get("name", None)
+            if name is None or name in expected_names:
+                continue
+            await api.delete_wasmplugin(name=name, namespace=namespace)
+            logger.info(
+                f"Deleted {reason} wasm plugin {name} in namespace {namespace}."
+            )
+    except Exception as e:
+        logger.error(f"Error cleaning up {reason} wasm plugins: {e}")
+
+
+async def cleanup_ingresses(
+    namespace: str,
+    expected_names: List[str],
+    config: k8s_client.Configuration,
+    cleanup_prefix: str,
+    reason: str = "orphaned",
 ):
     networking_api = k8s_client.NetworkingV1Api(k8s_client.ApiClient(config))
     try:
@@ -602,24 +841,18 @@ async def cleanup_orphaned_model_ingresses(
             label_selector=label_selector,
         )
         for ingress in ingresses.items:
-            if ingress.metadata and ingress.metadata.name:
-                name = ingress.metadata.name
-                if name.startswith("ai-route-model-"):
-                    try:
-                        model_id_str = name[len("ai-route-model-") :]
-                        model_id = int(model_id_str)
-                        if model_id not in existing_model_ids:
-                            await networking_api.delete_namespaced_ingress(
-                                name=name, namespace=namespace
-                            )
-                            logger.info(
-                                f"Deleted orphaned model ingress {name} in namespace {namespace}."
-                            )
-                    except ValueError:
-                        # not a valid model id, skip
-                        continue
+            # name must be not None due to label selector
+            name: str = ingress.metadata.name
+            if name in expected_names or not name.startswith(cleanup_prefix):
+                continue
+            await networking_api.delete_namespaced_ingress(
+                name=name, namespace=namespace
+            )
+            logger.info(
+                f"Deleted {reason} model ingress {name} in namespace {namespace}."
+            )
     except Exception as e:
-        print(f"Error cleaning up orphaned model ingresses: {e}")
+        logger.error(f"Error cleaning up {reason} model ingresses: {e}")
 
 
 async def ensure_model_instance_mcp_bridge(
@@ -684,3 +917,191 @@ async def mirror_hostname_tls_from_ingress(
             hostname = rule.host
             break
     return hostname, tls
+
+
+def get_model_route_mapper_config(
+    route_name: str,
+    ingress_name: str,
+    model_name_to_registries: Dict[str, List[str]],
+    fallback_model_name_to_registries: Dict[str, List[str]],
+    namespace: Optional[str] = None,
+) -> Optional[List[WasmPluginMatchRule]]:
+    # no need to create mapper if there is no model mapping
+    total_model_count = len(model_name_to_registries) + len(
+        fallback_model_name_to_registries
+    )
+    if total_model_count == 0:
+        return None
+    total_unique_models = set(model_name_to_registries.keys())
+    total_unique_models.update(fallback_model_name_to_registries.keys())
+
+    if len(total_unique_models) == 1 and route_name in total_unique_models:
+        return None
+
+    match_list: List[WasmPluginMatchRule] = []
+    ingress_prefix = "" if namespace is None else f"{namespace}/"
+    ingress_name = f"{ingress_prefix}{ingress_name}"
+    for model_name, service_names in model_name_to_registries.items():
+        config = {"modelMapping": {route_name: model_name}}
+        match_list.append(
+            WasmPluginMatchRule(
+                config=config,
+                ingress=[ingress_name],
+                configDisable=False,
+                service=service_names,
+            )
+        )
+    for model_name, service_names in fallback_model_name_to_registries.items():
+        fallback_name = fallback_ingress_name(ingress_name)
+        config = {"modelMapping": {route_name: model_name}}
+        match_list.append(
+            WasmPluginMatchRule(
+                config=config,
+                ingress=[fallback_name],
+                configDisable=False,
+                service=service_names,
+            )
+        )
+
+    return match_list
+
+
+def model_route_mapper_plugin_spec(
+    url: str,
+    match_rules: List[WasmPluginMatchRule],
+) -> WasmPluginSpec:
+    return WasmPluginSpec(
+        phase="AUTHN",
+        priority=800,
+        url=url,
+        defaultConfigDisable=True,
+        defaultConfig=None,
+        matchRules=match_rules,
+        failStrategy="FAIL_OPEN",
+    )
+
+
+def higress_http_header_matcher(
+    operator: Literal["exact", "regex", "prefix"],
+    header_key: str,
+    header_value: str,
+) -> Dict[str, str]:
+    header_matcher = "match-header"
+    return {
+        f"higress.io/{operator}-{header_matcher}-{header_key}": header_value,
+    }
+
+
+async def cleanup_fallback_filters(
+    namespace: str,
+    expected_names: List[str],
+    cleanup_prefix: str,
+    reason: str = "orphaned",
+    networking_istio_api: Optional[NetworkingIstioIoV1Alpha3Api] = None,
+    k8s_config: Optional[k8s_client.Configuration] = None,
+):
+    if networking_istio_api is None:
+        if k8s_config is None:
+            raise ValueError(
+                "Either networking_istio_api or k8s_config must be provided."
+            )
+        networking_istio_api = NetworkingIstioIoV1Alpha3Api(
+            k8s_client.ApiClient(k8s_config)
+        )
+    try:
+        label_selector = ','.join([f"{k}={v}" for k, v in managed_labels.items()])
+        filters = await networking_istio_api.list_envoyfilters(
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        items: List[Dict[str, Any]] = filters.get('items', [])
+        for filter_item in items:
+            # name must be not None due to label selector
+            name = filter_item.get("metadata", {}).get("name", None)
+            if (
+                name is None
+                or name in expected_names
+                or not name.startswith(cleanup_prefix)
+            ):
+                continue
+            await networking_istio_api.delete_envoyfilter(
+                name=name, namespace=namespace
+            )
+            logger.info(
+                f"Deleted {reason} fallback filter {name} in namespace {namespace}."
+            )
+    except Exception as e:
+        logger.error(f"Error cleaning up {reason} fallback filters: {e}")
+
+
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
+async def ensure_fallback_filter(
+    event_type: EventType,
+    ingress_name: str,
+    namespace: str,
+    networking_istio_api: NetworkingIstioIoV1Alpha3Api,
+):
+    if event_type == EventType.DELETED:
+        await cleanup_fallback_filters(
+            namespace=namespace,
+            expected_names=[],
+            networking_istio_api=networking_istio_api,
+            cleanup_prefix=ingress_name,
+            reason="event deleted",
+        )
+        return
+    existing_filter = None
+    try:
+        filter_dict = await networking_istio_api.get_envoyfilter(
+            namespace=namespace, name=ingress_name
+        )
+        existing_filter = EnvoyFilter.model_validate(filter_dict)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+    except Exception as e:
+        raise e
+    expected_filter = get_ingress_fallback_envoyfilter(
+        ingress_name=ingress_name,
+        namespace=namespace,
+        labels={**managed_labels},
+    )
+    if existing_filter is None:
+        await networking_istio_api.create_envoyfilter(
+            namespace=namespace,
+            body=expected_filter,
+        )
+        logger.info(
+            f"Created fallback EnvoyFilter {ingress_name} in namespace {namespace}."
+        )
+    else:
+        existing_spec_dict = existing_filter.spec.model_dump(exclude_none=True)
+        expected_spec_dict = expected_filter.spec.model_dump(exclude_none=True)
+        if existing_spec_dict != expected_spec_dict:
+            existing_filter.spec = expected_filter.spec
+            await networking_istio_api.edit_envoyfilter(
+                name=ingress_name,
+                namespace=namespace,
+                body=existing_filter,
+            )
+            logger.info(
+                f"Updated fallback EnvoyFilter {ingress_name} in namespace {namespace}."
+            )
+
+
+def compare_and_append_default_proxy_config(
+    existing_providers: List[Dict[str, Any]],
+    expected_providers: List[Dict[str, Any]],
+    to_keep_ids: Optional[List[str]] = [
+        deployment_ai_proxy_id,
+        gpustack_default_ai_proxy_id,
+    ],
+) -> List[Dict[str, Any]]:
+    existing_ids = {p.get('id') for p in existing_providers}
+    to_keep_ids = to_keep_ids or []
+    for expected in expected_providers:
+        expected_id = expected.get('id')
+        if expected_id not in existing_ids and expected_id not in to_keep_ids:
+            existing_providers.append(expected)
+    existing_providers.sort(key=lambda p: p.get('id', ''))
+    return existing_providers

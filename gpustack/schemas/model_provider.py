@@ -1,0 +1,481 @@
+from urllib.parse import urlparse
+from enum import Enum
+from typing import (
+    ClassVar,
+    Optional,
+    List,
+    Union,
+    TYPE_CHECKING,
+    Literal,
+    Mapping,
+)
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from sqlmodel import (
+    Field,
+    Column,
+    JSON,
+    SQLModel,
+    Relationship,
+)
+
+from gpustack.mixins import BaseModelMixin
+from gpustack.schemas.common import (
+    PublicFields,
+    ListParams,
+    PaginatedList,
+    pydantic_column_type,
+)
+
+if TYPE_CHECKING:
+    from gpustack.schemas.model_routes import ModelRouteTarget
+
+
+# The provider types should be synced with higress ai-proxy supported providers
+class ModelProviderTypeEnum(str, Enum):
+    AI360 = "ai360"
+    AZURE = "azure"
+    BAICHUAN = "baichuan"
+    BAIDU = "baidu"
+    BEDROCK = "bedrock"
+    CLAUDE = "claude"
+    CLOUDFLARE = "cloudflare"
+    COHERE = "cohere"
+    COZE = "coze"
+    DEEPL = "deepl"
+    DEEPSEEK = "deepseek"
+    DIFY = "dify"
+    DOUBAO = "doubao"
+    FIREWORKS = "fireworks"
+    GEMINI = "gemini"
+    GENERIC = "generic"
+    GITHUB = "github"
+    GROK = "grok"
+    GROQ = "groq"
+    HUNYUAN = "hunyuan"
+    LONGCAT = "longcat"
+    MINIMAX = "minimax"
+    MISTRAL = "mistral"
+    MOONSHOT = "moonshot"
+    OLLAMA = "ollama"
+    OPENAI = "openai"
+    OPENROUTER = "openrouter"
+    QWEN = "qwen"
+    SPARK = "spark"
+    STEPFUN = "stepfun"
+    TOGETHERAI = "together-ai"
+    TRITON = "triton"
+    YI = "yi"
+    ZHIPUAI = "zhipuai"
+
+    # following types are not supported yet
+    # For vertex, It has more complex configuration than other providers. Keep it unsupported for now.
+    # VERTEX     = "vertex"
+    # For vllm, most of the vllm provider functions can be replaced by open-ai compatible provider.
+    # VLLM       = "vllm"
+
+
+class BaseProviderConfig(BaseModel):
+    model_config: ConfigDict = {
+        "extra": "allow",
+    }
+    _public_endpoint: Optional[str] = None
+    _default_schema = "https"
+
+    def get_service_registry(self) -> Optional[str]:
+        return self._public_endpoint
+
+    def get_base_url(self) -> Optional[str]:
+        if self._public_endpoint:
+            return f"{self._default_schema}://{self._public_endpoint}"
+        return None
+
+
+class Ai360Config(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.AI360]
+    _public_endpoint: str = "api.360.cn"
+
+
+class AzureOpenAIConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.AZURE]
+    azureServiceUrl: str
+
+    def get_service_registry(self) -> Optional[str]:
+        if self.azureServiceUrl:
+            return urlparse(self.azureServiceUrl).netloc
+        return None
+
+    def get_base_url(self) -> Optional[str]:
+        return self.azureServiceUrl
+
+
+class BaichuanConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.BAICHUAN]
+    _public_endpoint: str = "api.baichuan-ai.com"
+
+
+class BaiduConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.BAIDU]
+    _public_endpoint: str = "qianfan.baidubce.com"
+
+
+class BedrockConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.BEDROCK]
+    awsAccessKey: str
+    awsSecretKey: str
+    awsRegion: str
+    bedrockAdditionalFields: Optional[dict] = None
+
+    def get_service_registry(self) -> Optional[str]:
+        return f"bedrock-runtime.{self.awsRegion}.amazonaws.com"
+
+
+class ClaudeConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.CLAUDE]
+    claudeVersion: Optional[str] = None
+    _public_endpoint: str = "api.anthropic.com"
+
+
+class CloudflareConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.CLOUDFLARE]
+    cloudflareAccountId: str
+
+    _public_endpoint: str = "api.cloudflare.com"
+
+
+class CohereConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.COHERE]
+    _public_endpoint: str = "api.cohere.com"
+
+
+class CozeConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.COZE]
+    _public_endpoint: str = "api.coze.cn"
+
+
+class DeeplConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.DEEPL]
+    targetLang: str
+    _public_endpoint: str = "api-free.deepl.com"
+
+
+class DeepseekConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.DEEPSEEK]
+    _public_endpoint: str = "api.deepseek.com"
+
+
+class DifyConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.DIFY]
+    difyApiUrl: Optional[str] = None
+    botType: Optional[str] = None
+    inputVariable: Optional[str] = None
+    outputVariable: Optional[str] = None
+    _public_endpoint: str = "api.dify.ai"
+
+    def get_service_registry(self) -> Optional[str]:
+        if self.difyApiUrl:
+            dify_url = urlparse(self.difyApiUrl)
+            return dify_url.netloc
+        return self._public_endpoint
+
+    def get_base_url(self) -> Optional[str]:
+        if self.difyApiUrl:
+            return self.difyApiUrl
+        return super().get_base_url()
+
+
+class DoubaoConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.DOUBAO]
+    doubaoDomain: Optional[str] = None
+
+    _public_endpoint: str = "ark.cn-beijing.volces.com"
+
+    def get_service_registry(self) -> Optional[str]:
+        if self.doubaoDomain:
+            return self.doubaoDomain
+        return self._public_endpoint
+
+
+class FireworksConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.FIREWORKS]
+    _public_endpoint: str = "api.fireworks.ai"
+
+
+class GeminiConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.GEMINI]
+    geminiSafetySetting: Optional[Mapping[str, str]] = None
+    apiVersion: Optional[str] = 'v1beta'
+    geminiThinkingBudget: Optional[float] = None
+    _public_endpoint: str = "generativelanguage.googleapis.com"
+
+
+class GenericConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.GENERIC]
+    _public_endpoint: str = ""
+
+    def get_service_registry(self) -> Optional[str]:
+        return None
+
+
+class GithubConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.GITHUB]
+    _public_endpoint: str = "models.inference.ai.azure.com"
+
+
+class GrokConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.GROK]
+    _public_endpoint: str = "api.x.ai"
+
+
+class GroqConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.GROQ]
+    _public_endpoint: str = "api.groq.com"
+
+
+class HunyuanConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.HUNYUAN]
+    hunyuanAuthId: str
+    hunyuanAuthKey: str
+    _public_endpoint: str = "hunyuan.tencentcloudapi.com"
+
+
+class LongcatConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.LONGCAT]
+    _public_endpoint: str = "api.longcat.chat"
+
+
+class MinimaxConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.MINIMAX]
+    minimaxApiType: Optional[str] = 'v2'
+    minimaxGroupId: Optional[str] = None
+    _public_endpoint: str = "api.minimax.chat"
+
+
+class MistralConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.MISTRAL]
+    _public_endpoint: str = "api.mistral.ai"
+
+
+class MoonshotConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.MOONSHOT]
+    moonshotFileId: Optional[str] = None
+    _public_endpoint: str = "api.moonshot.cn"
+
+
+class OllamaConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.OLLAMA]
+    ollamaServerHost: str
+    ollamaServerPort: int
+    _default_schema = "http"
+
+    def get_service_registry(self) -> Optional[str]:
+        return f"{self.ollamaServerHost}:{self.ollamaServerPort}"
+
+
+class OpenAIConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.OPENAI]
+    openaiCustomUrl: Optional[str] = None
+    responseJsonSchema: Optional[dict] = None
+    _public_endpoint: str = "api.openai.com"
+
+    def get_service_registry(self) -> Optional[str]:
+        if self.openaiCustomUrl:
+            openai_url = urlparse(self.openaiCustomUrl)
+            return openai_url.netloc
+        return self._public_endpoint
+
+    def get_base_url(self) -> Optional[str]:
+        if self.openaiCustomUrl:
+            return self.openaiCustomUrl
+        return super().get_base_url()
+
+
+class OpenrouterConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.OPENROUTER]
+    _public_endpoint: str = "openrouter.ai"
+
+
+class QwenConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.QWEN]
+    qwenEnableSearch: Optional[bool] = None
+    qwenFileIds: Optional[List[str]] = None
+    qwenEnableCompatible: Optional[bool] = False
+    _public_endpoint: str = "dashscope.aliyuncs.com"
+
+
+class SparkConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.SPARK]
+    _public_endpoint: str = "spark-api-open.xf-yun.com"
+
+
+class StepfunConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.STEPFUN]
+    _public_endpoint: str = "api.stepfun.com"
+
+
+class TogetherAIConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.TOGETHERAI]
+    _public_endpoint: str = "api.together.xyz"
+
+
+class TritonConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.TRITON]
+    modelVersion: Optional[str] = None
+    tritonDomain: Optional[str] = None
+
+    def get_service_registry(self) -> Optional[str]:
+        return self.tritonDomain
+
+
+class YiConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.YI]
+    _public_endpoint: str = "api.lingyiwanwu.com"
+
+
+class ZhipuaiConfig(BaseProviderConfig):
+    type: Literal[ModelProviderTypeEnum.ZHIPUAI]
+    _public_endpoint: str = "open.bigmodel.cn"
+
+
+ProviderConfigType = Union[
+    Ai360Config,
+    AzureOpenAIConfig,
+    BaichuanConfig,
+    BaiduConfig,
+    BedrockConfig,
+    ClaudeConfig,
+    CloudflareConfig,
+    CohereConfig,
+    CozeConfig,
+    DeeplConfig,
+    DeepseekConfig,
+    DifyConfig,
+    DoubaoConfig,
+    FireworksConfig,
+    GeminiConfig,
+    GithubConfig,
+    GrokConfig,
+    GroqConfig,
+    HunyuanConfig,
+    LongcatConfig,
+    MinimaxConfig,
+    MistralConfig,
+    MoonshotConfig,
+    OllamaConfig,
+    OpenAIConfig,
+    OpenrouterConfig,
+    QwenConfig,
+    SparkConfig,
+    StepfunConfig,
+    TogetherAIConfig,
+    TritonConfig,
+    YiConfig,
+    ZhipuaiConfig,
+]
+
+
+class ProviderModel(BaseModel):
+    name: str
+    category: Optional[str] = None
+    accessible: Optional[bool] = None
+
+
+class ModelProviderUpdate(SQLModel):
+    name: str = Field(index=True, nullable=False, unique=True)
+    description: Optional[str] = Field(default=None, nullable=True)
+    api_tokens: List[str] = Field(
+        sa_column=Column(JSON, nullable=False),
+        default=[],
+    )
+    timeout: int = Field(default=120, nullable=False)
+    config: ProviderConfigType = Field(
+        description="provider specific configuration",
+        sa_column=Column(
+            pydantic_column_type(
+                ProviderConfigType,
+                exclude_defaults=True,
+                exclude_none=True,
+                exclude_unset=True,
+            ),
+        ),
+    )
+    models: Optional[List[ProviderModel]] = Field(
+        default=[],
+        sa_column=Column(
+            pydantic_column_type(List[ProviderModel]),
+            nullable=True,
+        ),
+    )
+    proxy_url: Optional[str] = Field(default=None, nullable=True)
+    proxy_timeout: Optional[int] = Field(default=None, nullable=True)
+
+    @model_validator(mode="after")
+    def check_all(self):
+        if self.timeout <= 0:
+            raise ValueError("timeout must be a positive integer")
+        if self.proxy_timeout is not None and self.proxy_timeout <= 0:
+            raise ValueError("proxy_timeout must be a positive integer")
+        if self.proxy_timeout is not None and self.proxy_url is None:
+            raise ValueError("proxy_url must be set when proxy_timeout is set")
+        return self
+
+    @field_validator("api_tokens")
+    def check_api_tokens(cls, v):
+        if v is not None:
+            if not isinstance(v, list) or len(v) == 0:
+                raise ValueError("api_tokens must be a non-empty list")
+            for token in v:
+                if not isinstance(token, str) or len(token.strip()) == 0:
+                    raise ValueError("each api_token must be a non-empty string")
+        return v
+
+
+class ModelProviderCreate(ModelProviderUpdate):
+    pass
+
+
+class ModelProviderBase(ModelProviderCreate):
+    pass
+
+
+class ModelProvider(ModelProviderBase, BaseModelMixin, table=True):
+    __tablename__ = "model_providers"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    model_route_targets: List["ModelRouteTarget"] = Relationship(
+        back_populates="provider",
+        sa_relationship_kwargs={"lazy": "noload", "cascade": "delete"},
+    )
+
+
+class ModelProviderPublic(ModelProviderBase, PublicFields):
+    pass
+
+
+ModelProvidersPublic = PaginatedList[ModelProviderPublic]
+
+
+class ModelProviderListParams(ListParams):
+    sortable_fields: ClassVar[List[str]] = [
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+    ]
+
+
+class ProviderModelsInput(BaseModel):
+    api_token: str
+    config: ProviderConfigType
+
+
+class TestModelForExistingProviderInput(BaseModel):
+    model_name: str
+
+
+class TestProviderModelInput(ProviderModelsInput, TestModelForExistingProviderInput):
+    pass
+
+
+class TestProviderModelResult(BaseModel):
+    model_name: str
+    accessible: bool
+    error_message: Optional[str] = None

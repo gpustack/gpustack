@@ -1,4 +1,5 @@
 import re
+import random
 import asyncio
 from typing import AsyncGenerator, List, Optional, Tuple
 import aiohttp
@@ -24,16 +25,19 @@ from gpustack.api.exceptions import (
 from gpustack.api.responses import StreamingResponseWithStatusCode
 from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
-from gpustack.routes.models import build_category_conditions
+from gpustack.routes.model_common import build_category_conditions
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
+)
+from gpustack.schemas.model_routes import (
+    ModelRoute,
     MyModel,
 )
 from gpustack.server.deps import SessionDep, CurrentUserDep
 from gpustack.server.services import (
     ModelInstanceService,
-    ModelService,
+    ModelRouteService,
     WorkerService,
     UserService,
 )
@@ -61,8 +65,8 @@ async def list_models(
         description="Include model meta information.",
     ),
 ):
-    target_class = Model if user.is_admin else MyModel
-    statement = select(target_class).where(target_class.ready_replicas > 0)
+    target_class = ModelRoute if user.is_admin else MyModel
+    statement = select(target_class).where(target_class.ready_targets > 0)
     if target_class == MyModel:
         # Non-admin users should only see their own private models when filtering by categories.
         statement = statement.where(target_class.user_id == user.id)
@@ -113,18 +117,19 @@ async def proxy_request_by_model(
             message="Model not found",
             is_openai_exception=True,
         )
-    model = await ModelService(session).get_by_name(model_name)
-
-    if not model:
+    models: List[Model] = await ModelRouteService(
+        session
+    ).get_model_ids_by_model_route_name(model_name)
+    if len(models) == 0:
         raise NotFoundException(
-            message="Model not found",
+            message="Model not found or no running instances available",
             is_openai_exception=True,
         )
-
-    request.state.model = model
     request.state.stream = stream
+    model = random.choice(models)
+    request.state.model = model
 
-    mutate_request(request, body_json, form_data)
+    mutate_request(request, model_name, body_json, form_data)
 
     instance = await get_running_instance(session, model.id)
     worker = await WorkerService(session).get_by_id(instance.worker_id)
@@ -386,7 +391,10 @@ async def get_running_instance(session: AsyncSession, model_id: int):
 
 
 def mutate_request(
-    request: Request, body_json: Optional[dict], form_data: Optional[aiohttp.FormData]
+    request: Request,
+    model_name: str,
+    body_json: Optional[dict],
+    form_data: Optional[aiohttp.FormData],
 ):
     path = request.url.path
     model: Model = request.state.model
@@ -397,6 +405,11 @@ def mutate_request(
         and model.env.get("GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES", False)
     ):
         apply_qwen3_reranker_templates(body_json)
+    if model_name != model.name:
+        if body_json is not None:
+            body_json["model"] = model.name
+        elif form_data is not None:
+            form_data.add_field("model", model.name)
 
 
 def apply_qwen3_reranker_templates(body_json: dict):

@@ -27,10 +27,12 @@ from gpustack.routes import (
     token,
     benchmarks,
     benchmark_profiles,
+    model_provider,
+    rerank,
+    model_routes,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
-from gpustack.routes import rerank
 from gpustack.api.auth import (
     get_admin_user,
     get_current_user,
@@ -58,7 +60,7 @@ v1_base_router.include_router(
     metrics.router, prefix="/metrics", include_in_schema=False
 )
 v1_base_router.include_router(
-    models.my_models_router,
+    model_routes.my_models_router,
     dependencies=[Depends(get_current_user)],
     prefix="/my-models",
     tags=["My Models"],
@@ -89,6 +91,11 @@ model_routers = [
         "router": benchmark_profiles.router,
         "prefix": "/benchmark-profiles",
         "tags": ["Benchmark Profiles"],
+    },
+    {
+        "router": model_routes.target_router,
+        "prefix": "/model-route-targets",
+        "tags": ["Model Route Targets"],
     },
 ]
 # worker client have full access to model and model instances
@@ -152,6 +159,16 @@ admin_routers = model_routers + [
         "tags": ["Worker Pools"],
     },
     {"router": clusters.router, "prefix": "/clusters", "tags": ["Clusters"]},
+    {
+        "router": model_provider.router,
+        "prefix": "/model-providers",
+        "tags": ["Model Providers"],
+    },
+    {
+        "router": model_routes.router,
+        "prefix": "/model-routes",
+        "tags": ["Model Routes"],
+    },
 ]
 
 v1_admin_router = APIRouter()

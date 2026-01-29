@@ -81,6 +81,26 @@ from gpustack.schemas.benchmark import (
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
 )
+from gpustack.schemas.model_provider import (
+    ModelProvider,
+    ModelProviderCreate,
+    ModelProviderUpdate,
+    ModelProviderPublic,
+    ModelProvidersPublic,
+)
+from gpustack.schemas.model_routes import (
+    ModelRoute,
+    ModelRouteCreate,
+    ModelRouteUpdate,
+    ModelRoutePublic,
+    ModelRoutesPublic,
+    ModelRouteTarget,
+    ModelRouteTargetCreate,
+    ModelRouteTargetUpdate,
+    ModelRouteTargetPublic,
+    ModelRouteTargetsPublic,
+)
+
 
 __all__ = [
     "ApiKey",
@@ -159,4 +179,19 @@ __all__ = [
     "BenchmarkSnapshot",
     "BenchmarkMetrics",
     "FileExistsResponse",
+    "ModelProvider",
+    "ModelProviderCreate",
+    "ModelProviderUpdate",
+    "ModelProviderPublic",
+    "ModelProvidersPublic",
+    "ModelRoute",
+    "ModelRouteCreate",
+    "ModelRouteUpdate",
+    "ModelRoutePublic",
+    "ModelRoutesPublic",
+    "ModelRouteTarget",
+    "ModelRouteTargetCreate",
+    "ModelRouteTargetUpdate",
+    "ModelRouteTargetPublic",
+    "ModelRouteTargetsPublic",
 ]

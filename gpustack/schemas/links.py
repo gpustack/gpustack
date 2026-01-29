@@ -50,12 +50,12 @@ class ModelInstanceDraftModelFileLink(SQLModel, table=True):
     model_config = ConfigDict(protected_namespaces=())
 
 
-class ModelUserLink(SQLModel, table=True):
-    model_id: int | None = Field(
+class UserModelRouteLink(SQLModel, table=True):
+    route_id: int | None = Field(
         default=None,
         sa_column=Column(
             Integer,
-            ForeignKey("models.id", ondelete="CASCADE"),
+            ForeignKey("model_routes.id", ondelete="CASCADE"),
             primary_key=True,
         ),
     )
@@ -67,5 +67,3 @@ class ModelUserLink(SQLModel, table=True):
             primary_key=True,
         ),
     )
-
-    model_config = ConfigDict(protected_namespaces=())

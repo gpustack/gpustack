@@ -13,20 +13,22 @@ from gpustack.schemas.common import (
     PaginatedList,
     UTCDateTime,
     pydantic_column_type,
-    ItemList,
 )
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.links import (
     ModelInstanceDraftModelFileLink,
     ModelInstanceModelFileLink,
-    ModelUserLink,
 )
 from gpustack.utils.command import find_parameter, find_bool_parameter
+from gpustack.schemas.model_routes import (
+    ModelRoute,
+    ModelRouteTarget,
+    AccessPolicyEnum,
+)
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
     from gpustack.schemas.clusters import Cluster
-    from gpustack.schemas.users import User
 
 # Models
 
@@ -64,12 +66,6 @@ class BackendSourceEnum(str, Enum):
     CUSTOM = "custom"
     BUILT_IN = "built_in"
     COMMUNITY = "community"
-
-
-class AccessPolicyEnum(str, Enum):
-    PUBLIC = "public"
-    AUTHED = "authed"
-    ALLOWED_USERS = "allowed_users"
 
 
 class SpeculativeAlgorithmEnum(str, Enum):
@@ -225,7 +221,8 @@ class ModelSpecBase(SQLModel, ModelSource):
         sa_type=pydantic_column_type(SpeculativeConfig), default=None
     )
 
-    # Enable generic proxy for model
+    # Enable generic proxy for model, the control of generic proxy
+    # is migrated to ModelAccess. Keeping this field for backward compatibility
     generic_proxy: Optional[bool] = Field(default=False)
 
     @model_validator(mode="after")
@@ -243,6 +240,7 @@ class ModelSpecBase(SQLModel, ModelSource):
 
 class ModelBase(ModelSpecBase):
     cluster_id: Optional[int] = Field(default=None, foreign_key="clusters.id")
+    # Deprecated field, kept for backward compatibility
     access_policy: AccessPolicyEnum = Field(default=AccessPolicyEnum.AUTHED)
 
 
@@ -254,15 +252,28 @@ class Model(ModelBase, BaseModelMixin, table=True):
         sa_relationship_kwargs={"cascade": "delete", "lazy": "noload"},
         back_populates="model",
     )
-    users: List["User"] = Relationship(
-        back_populates="models",
-        link_model=ModelUserLink,
-        sa_relationship_kwargs={"lazy": "noload"},
-    )
 
     cluster: "Cluster" = Relationship(
         back_populates="cluster_models",
         sa_relationship_kwargs={"lazy": "noload"},
+    )
+
+    model_route_targets: List["ModelRouteTarget"] = Relationship(
+        back_populates="model",
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "overlaps": "models",
+            "cascade": "delete",
+        },
+    )
+
+    model_routes: List["ModelRoute"] = Relationship(
+        back_populates="models",
+        link_model=ModelRouteTarget,
+        sa_relationship_kwargs={
+            "lazy": "noload",
+            "overlaps": "model,model_route_targets,route_targets,model_route",
+        },
     )
 
 
@@ -279,7 +290,7 @@ class ModelListParams(ListParams):
 
 
 class ModelCreate(ModelBase):
-    pass
+    enable_model_route: Optional[bool] = Field(default=None)
 
 
 class ModelUpdate(ModelBase):
@@ -695,35 +706,3 @@ def get_mmproj_filename(model: Union[Model, ModelSource]) -> Optional[str]:
             return mmproj
 
     return "*mmproj*.gguf"
-
-
-class ModelUserAccess(BaseModel):
-    id: int
-    # More custom fields can be added here, e.g., quota, rate_limit, etc.
-
-
-class ModelAccessUpdate(BaseModel):
-    access_policy: Optional[AccessPolicyEnum] = None
-    users: List[ModelUserAccess]
-
-
-class ModelUserAccessExtended(ModelUserAccess):
-    username: Optional[str] = None
-    full_name: Optional[str] = None
-    avatar_url: Optional[str] = None
-    # More user fields can be added here. e.g. quota, rate_limit, etc.
-
-
-ModelAccessList = ItemList[ModelUserAccessExtended]
-
-
-class MyModel(ModelBase, SQLModel, BaseModelMixin, table=True):
-    __tablename__ = 'non_admin_user_models'
-    __mapper_args__ = {'primary_key': ["pid"]}
-    pid: str
-    id: int
-    user_id: int = Field(default=0)
-
-
-class MyModelPublic(ModelPublic):
-    pass
