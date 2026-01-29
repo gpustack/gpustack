@@ -30,6 +30,10 @@ class ApiKey(ApiKeyBase, BaseModelMixin, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     access_key: str = Field(unique=True, index=True)
     hashed_secret_key: str = Field(unique=True)
+    is_custom: bool = Field(default=False)  # Whether this is a custom API key
+    custom_key: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )  # Custom API key value
     user_id: int = Field(foreign_key='users.id', nullable=False)
     expires_at: Optional[datetime] = Field(sa_column=Column(UTCDateTime), default=None)
     user: Optional["User"] = Relationship(
@@ -49,6 +53,7 @@ class ApiKeyListParams(ListParams):
 
 class ApiKeyCreate(ApiKeyBase):
     expires_in: Optional[int] = None
+    custom_key: Optional[str] = None  # Custom API key value, if provided
 
 
 class ApiKeyPublic(ApiKeyBase):
