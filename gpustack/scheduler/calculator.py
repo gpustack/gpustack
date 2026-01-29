@@ -825,7 +825,25 @@ def get_pretrained_config_sync(  # noqa: C901
             # For sync fallback, we need to use asyncio.run
             # But this is only for the fallback path, not the main path
             try:
-                return asyncio.run(_fallback_read_config_json(model))
+                # Check if we're already in an event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop is not None:
+                    # Event loop already running, use ThreadPoolExecutor
+                    import concurrent.futures
+
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            asyncio.run,
+                            _fallback_read_config_json(model),
+                        )
+                        return future.result()
+                else:
+                    # No running event loop, can use asyncio.run directly
+                    return asyncio.run(_fallback_read_config_json(model))
             except Exception as fe:
                 logger.warning(f"Fallback to load config.json failed: {fe}")
 
