@@ -451,7 +451,9 @@ async def update_model(session: SessionDep, id: int, model_in: ModelUpdate):
 
 @router.delete("/{id}")
 async def delete_model(session: SessionDep, id: int):
-    model = await Model.one_by_id(session, id, options=[selectinload(Model.users)])
+    model = await Model.one_by_id(
+        session, id, options=[selectinload(Model.users), selectinload(Model.instances)]
+    )
     if not model:
         raise NotFoundException(message="Model not found")
 
