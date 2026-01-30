@@ -656,6 +656,29 @@ model_sets:
         - --logits_processors=vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor
         - --no-enable-prefix-caching
         - --mm-processor-cache-gb=0
+- name: PaddleOCR-VL-1.5
+  description: PaddleOCR-VL-1.5 is an advanced optical character recognition (OCR) vision-language model developed by PaddlePaddle. It is designed to accurately extract and understand text from images and documents.
+  home: https://www.paddleocr.com
+  icon: /static/catalog_icons/paddlepaddle.jpeg
+  size: 0.9
+  categories:
+    - llm
+  capabilities:
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-29"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: model_scope
+      model_scope_model_id: PaddlePaddle/PaddleOCR-VL-1.5
+      backend: vLLM
+      backend_parameters:
+        - --trust-remote-code
+        - --max-num-batched-tokens=16384
+        - --no-enable-prefix-caching
+        - --mm-processor-cache-gb=0
 - name: Deepseek-V3.2
   description: 'DeepSeek-V3.2 is a model that balances computational efficiency with strong reasoning and agent capabilities through three technical innovations: DeepSeek Sparse Attention (DSA), Scalable Reinforcement Learning Framework, Large-Scale Agentic Task Synthesis Pipeline.'
   home: https://www.deepseek.com
