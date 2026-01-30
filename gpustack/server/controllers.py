@@ -114,8 +114,7 @@ class ModelController:
         model: Model = event.data
         try:
             async with async_session() as session:
-                await set_default_worker_selector(session, model)
-                await sync_replicas(session, model, self._config)
+                await sync_replicas(session, model)
                 await distribute_models_to_user(session, model, event)
                 if self._disable_gateway:
                     return
@@ -198,22 +197,7 @@ class ModelInstanceController:
             )
 
 
-async def set_default_worker_selector(session: AsyncSession, model: Model):
-    if model.deleted_at is not None:
-        return
-
-    model = await Model.one_by_id(session, model.id)
-    if (
-        not model.worker_selector
-        and not model.gpu_selector
-        and get_backend(model) == BackendEnum.VLLM
-    ):
-        # vLLM models are only supported on Linux
-        model.worker_selector = {"os": "linux"}
-        await ModelService(session).update(model)
-
-
-async def sync_replicas(session: AsyncSession, model: Model, cfg: Config):
+async def sync_replicas(session: AsyncSession, model: Model):
     """
     Synchronize the replicas.
     """

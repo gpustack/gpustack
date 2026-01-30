@@ -346,16 +346,6 @@ async def validate_gpu_ids(  # noqa: C901
         if gpu:
             validate_gpu(gpu, model_backend=model_backend)
 
-        worker_os = (
-            worker.labels.get("os", "unknown")
-            if worker.labels is not None
-            else "unknown"
-        )
-        if model_backend == BackendEnum.VLLM and worker_os != "linux":
-            raise BadRequestException(
-                message=f'vLLM backend is only supported on Linux, but the selected worker "{worker.name}" is running on {worker_os.capitalize()}.'
-            )
-
         if model_backend == BackendEnum.VLLM and len(worker_name_set) > 1:
             await validate_distributed_vllm_limit_per_worker(session, model_in, worker)
 
