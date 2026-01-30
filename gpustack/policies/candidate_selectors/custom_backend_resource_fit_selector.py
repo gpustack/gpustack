@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Dict, List, Optional
 
@@ -16,72 +15,23 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.policies.utils import (
     get_worker_allocatable_resource,
-    get_local_model_weight_size,
     ListMessageBuilder,
     group_workers_by_gpu_type,
+    estimate_model_vram,
 )
 from gpustack.schemas.models import (
-    CategoryEnum,
     ComputedResourceClaim,
     Model,
     ModelInstance,
-    SourceEnum,
 )
 from gpustack.schemas.workers import Worker
 from gpustack.config import Config
-from gpustack.utils.hub import get_model_weight_size
 from gpustack.utils.unit import byte_to_gib
 
 logger = logging.getLogger(__name__)
 
 EVENT_ACTION_RESOURCE_ESTIMATION = "backend_resource_estimation_msg"
 EVENT_ACTION_CPU_ONLY = "backend_cpu_only_scheduling_msg"
-
-
-async def estimate_custom_backend_vram(
-    model: Model, token: Optional[str] = None, workers: Optional[List[Worker]] = None
-) -> int:
-    """
-    Estimate the VRAM requirement in bytes for custom backends.
-
-    Formula:
-        VRAM = WEIGHT * 1.2 + FRAMEWORK_FOOTPRINT
-
-    This follows the same approach as vLLM but with configurable framework overhead.
-    """
-    if model.env and 'GPUSTACK_MODEL_VRAM_CLAIM' in model.env:
-        # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
-        return int(model.env['GPUSTACK_MODEL_VRAM_CLAIM'])
-
-    # Custom backends may have different framework overhead
-    # Default to a conservative estimate
-    framework_overhead = (
-        1 * 1024**3  # 1 GiB for most custom backends
-        if not model.categories or CategoryEnum.LLM in model.categories
-        else 256 * 1024**2  # 256 MiB for non-LLM models
-    )
-
-    weight_size = 0
-    timeout_in_seconds = 15
-
-    try:
-        if (
-            model.source == SourceEnum.HUGGING_FACE
-            or model.source == SourceEnum.MODEL_SCOPE
-        ):
-            weight_size = await asyncio.wait_for(
-                asyncio.to_thread(get_model_weight_size, model, token),
-                timeout=timeout_in_seconds,
-            )
-        elif model.source == SourceEnum.LOCAL_PATH:
-            weight_size = await get_local_model_weight_size(model.local_path, workers)
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout when getting weight size for model {model.name}")
-    except Exception as e:
-        logger.warning(f"Cannot get weight size for model {model.name}: {e}")
-
-    # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
-    return int(weight_size * 1.2 + framework_overhead)
 
 
 class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
@@ -149,7 +99,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates that fit the GPU resources requirement.
         """
         # Estimate VRAM requirements using actual model weight
-        self._vram_claim = await estimate_custom_backend_vram(
+        self._vram_claim = await estimate_model_vram(
             self._model, self._config.huggingface_token, workers
         )
 

@@ -21,10 +21,12 @@ from gpustack.schemas.models import (
     SpeculativeAlgorithmEnum,
     SpeculativeConfig,
     ModelInstanceDeploymentMetadata,
+    is_omni_model,
 )
 from gpustack.utils import network
 from gpustack.utils.command import (
     find_parameter,
+    find_bool_parameter,
     find_int_parameter,
 )
 from gpustack.utils.envs import sanitize_env
@@ -467,6 +469,18 @@ class VLLMServer(InferenceServer):
                     "--enforce-eager",
                     "--dtype",
                     "float16",
+                ]
+            )
+
+        # Omni modalities
+        omni_enabled = find_bool_parameter(
+            self._model.backend_parameters,
+            ["omni"],
+        )
+        if is_omni_model(self._model) and not omni_enabled:
+            arguments.extend(
+                [
+                    "--omni",
                 ]
             )
 

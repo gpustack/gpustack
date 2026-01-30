@@ -49,6 +49,7 @@ from gpustack.schemas.models import (
     is_gguf_model,
     DistributedServerCoordinateModeEnum,
     SourceEnum,
+    is_omni_model,
 )
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
@@ -410,7 +411,8 @@ async def find_candidate(
             candidates_selector = AscendMindIEResourceFitSelector(
                 config, model, model_instances
             )
-        elif model.backend == BackendEnum.VLLM:
+        elif model.backend == BackendEnum.VLLM and not is_omni_model(model):
+            # Note: Route omni categories to CustomSelector for vLLM-Omni.
             candidates_selector = VLLMResourceFitSelector(
                 config, model, model_instances
             )
@@ -587,12 +589,10 @@ async def evaluate_diffusion_model(
     Returns:
         True if the model is a diffusion model, False otherwise
     """
-    # SGLang now supports Diffusers (image) models.
+    # vLLM/SGLang support Diffusers (image) models.
     # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
     # classify as IMAGE directly.
-    if model.backend != BackendEnum.SGLANG or (
-        model.categories and CategoryEnum.IMAGE not in model.categories
-    ):
+    if model.categories and CategoryEnum.IMAGE not in model.categories:
         return False
 
     hf_token = get_global_config().huggingface_token

@@ -14,6 +14,7 @@ from gpustack.schemas.models import (
     Model,
     CategoryEnum,
     SourceEnum,
+    is_llm_model,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.workers import Worker, GPUDevicesStatus, GPUDeviceStatus
@@ -307,19 +308,16 @@ async def estimate_model_vram(
         # Use as a potential workaround if the empirical vram estimation is far beyond the expected value.
         return env_vram_claim
 
-    # CUDA graphs can take additional 1~3 GiB memory
-    # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
-    # For non-LLM models like embedding, set a smaller overhead
-    framework_overhead = (
-        2 * 1024**3
-        if not model.categories or CategoryEnum.LLM in model.categories
-        else 512 * 1024**2
-    )
     weight_size = 0
     timeout_in_seconds = 15
 
     try:
-        if (
+        if model.categories and CategoryEnum.IMAGE in model.categories:
+            weight_size = await asyncio.wait_for(
+                get_diffusion_model_weight_size(model, token),
+                timeout=timeout_in_seconds,
+            )
+        elif (
             model.source == SourceEnum.HUGGING_FACE
             or model.source == SourceEnum.MODEL_SCOPE
         ):
@@ -343,7 +341,17 @@ async def estimate_model_vram(
         logger.warning(f"Cannot get weight size for model {model.name}: {e}")
 
     # Reference: https://blog.eleuther.ai/transformer-math/#total-inference-memory
-    return weight_size * 1.2 + framework_overhead
+    activation_overhead_factor = 1.2
+    if model.categories and CategoryEnum.TEXT_TO_SPEECH in model.categories:
+        # Emperical factor base on Qwen3-TTS
+        activation_overhead_factor = 3
+
+    # CUDA graphs can take additional 1~3 GiB memory
+    # https://github.com/vllm-project/vllm/blob/v0.6.1/vllm/worker/model_runner.py#L1313
+    # For non-LLM models like embedding, set a smaller overhead
+    framework_overhead = 2 * 1024**3 if is_llm_model(model) else 512 * 1024**2
+
+    return int(weight_size * activation_overhead_factor) + framework_overhead
 
 
 async def estimate_diffusion_model_vram(

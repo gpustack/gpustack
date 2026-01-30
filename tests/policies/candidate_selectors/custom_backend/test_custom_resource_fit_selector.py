@@ -20,7 +20,7 @@ from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector imp
             [linux_nvidia_4_4080_16gx4()],
             make_model(1, None, "Qwen/Qwen2.5-Omni-7B"),
             [
-                '- The model requires approximately 25.99 GiB of VRAM and 2.6 GiB of RAM.\n'
+                '- The model requires approximately 26.99 GiB of VRAM and 2.7 GiB of RAM.\n'
                 '- The current available GPU only has 15.99 GiB allocatable VRAM.'
             ],
         ),
@@ -37,7 +37,7 @@ from tests.policies.candidate_selectors.vllm.test_vllm_resource_fit_selector imp
                 "Qwen/Qwen3-8B",
             ),
             [
-                '- The model requires approximately 19.31 GiB of VRAM and 2.0 GiB of RAM.\n'
+                '- The model requires approximately 20.31 GiB of VRAM and 2.03 GiB of RAM.\n'
             ],
         ),
     ],

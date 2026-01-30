@@ -612,6 +612,29 @@ def is_audio_model(model: Model):
     return False
 
 
+def is_llm_model(model: Model):
+    """
+    Check if the model is an LLM model.
+    Args:
+        model: Model to check.
+    """
+    return not model.categories or CategoryEnum.LLM in model.categories
+
+
+def is_omni_model(model: Model):
+    """
+    Check if the model is an omni model (Image or Audio category).
+    Args:
+        model: Model to check.
+    """
+    OMNI_CATEGORIES = (
+        CategoryEnum.IMAGE,
+        CategoryEnum.TEXT_TO_SPEECH,
+        CategoryEnum.SPEECH_TO_TEXT,
+    )
+    return any(cat in model.categories for cat in OMNI_CATEGORIES)
+
+
 def is_image_model(model: Model):
     """
     Check if the model is an image model.
