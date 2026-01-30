@@ -42,6 +42,7 @@ from gpustack.logging import setup_logging
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
+from gpustack.worker.benchmark_manager import BenchmarkManager
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
@@ -56,6 +57,7 @@ from gpustack.worker.worker_gateway import WorkerGatewayController
 from gpustack.gateway.plugins import register as register_gateway_plugins
 from gpustack.gateway import init_async_k8s_config
 from gpustack.client.generated_http_client import default_versioned_prefix
+from gpustack.worker.workload_cleaner import WorkloadCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,8 @@ class Worker:
     _status_collector: WorkerStatusCollector
     _worker_manager: WorkerManager
     _serve_manager: ServeManager
+    _benchmark_manager: BenchmarkManager
+    _workload_cleaner: WorkloadCleaner
     _config: Config
     _worker_ip: Optional[str] = None
     _worker_ifname: Optional[str] = None
@@ -130,6 +134,17 @@ class Worker:
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
             cfg=self._config,
+        )
+
+        self._benchmark_manager = BenchmarkManager(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
+            cfg=self._config,
+        )
+
+        self._workload_cleaner = WorkloadCleaner(
+            worker_id_getter=self.worker_id,
+            clientset_getter=self.clientset,
         )
 
     def _get_worker_name(self):
@@ -271,12 +286,14 @@ class Worker:
             envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
         )
         run_periodically_in_thread(
-            self._serve_manager.cleanup_orphan_workloads, 120, 15
+            self._workload_cleaner.cleanup_orphan_workloads, 120, 15
         )
+        run_periodically_in_thread(self._benchmark_manager.sync_benchmark_state, 3, 15)
 
         self._create_async_task(self._serve_manager.watch_models())
         self._create_async_task(self._serve_manager.watch_model_instances_event())
         self._create_async_task(self._serve_manager.watch_model_instances())
+        self._create_async_task(self._benchmark_manager.watch_benchmarks_event())
 
         model_file_manager = ModelFileManager(
             worker_id=self._worker_id, clientset=self._clientset, cfg=self._config

@@ -11,7 +11,6 @@ import logging
 
 from gpustack_runtime.deployer import (
     get_workload,
-    list_workloads,
     WorkloadStatusStateEnum,
     delete_workload,
 )
@@ -19,7 +18,6 @@ from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.api.exceptions import NotFoundException
 from gpustack.config.config import Config
-from gpustack import envs
 from gpustack.config import registration
 from gpustack.logging import (
     RedirectStdoutStderr,
@@ -28,7 +26,6 @@ from gpustack.schemas.inference_backend import InferenceBackend, is_built_in_bac
 from gpustack.utils import network, platform
 from gpustack.utils.attrs import set_attr
 from gpustack.utils.command import find_int_parameter
-from gpustack.utils.datetimex import parse_iso8601_to_utc
 from gpustack.utils.process import terminate_process_tree, add_signal_handlers
 from gpustack.worker.backends.ascend_mindie import AscendMindIEServer
 from gpustack.worker.backends.sglang import SGLangServer
@@ -373,29 +370,6 @@ class ServeManager:
                     }
                 # Update model instance.
                 self._update_model_instance(model_instance.id, **patch_dict)
-
-    def cleanup_orphan_workloads(self):
-        current_instance_names = set()
-        model_instances_page = self._clientset.model_instances.list()
-        if model_instances_page.items:
-            for model_instance in model_instances_page.items:
-                deployment_metadata = model_instance.get_deployment_metadata(
-                    self._worker_id,
-                )
-                if deployment_metadata:
-                    current_instance_names.add(deployment_metadata.name)
-
-        workloads = list_workloads()
-        for w in workloads:
-            create_at = parse_iso8601_to_utc(w.created_at)
-            should_clean_orphan, _ = network.is_offline(
-                create_at, envs.WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD
-            )
-            if w.name not in current_instance_names and should_clean_orphan:
-                delete_workload(w.name)
-                logger.info(
-                    f"Deleted orphan workload {w.name}, created at {w.created_at}."
-                )
 
     @staticmethod
     def _serve_model_instance(

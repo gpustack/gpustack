@@ -419,3 +419,33 @@ async def get_serve_logs(
         ),
         media_type="application/octet-stream",
     )
+
+
+@router.get("/benchmark_logs/{id}")
+async def get_benchmark_logs(
+    request: Request,
+    session: SessionDep,
+    id: int,
+    log_options: LogOptionsDep,
+    benchmark_name: str = Query(default=""),
+):
+    log_dir = request.app.state.config.log_dir
+    main_log_path = Path(log_dir) / "benchmarks" / f"{id}.log"
+    workload_log_path = Path(log_dir) / "benchmarks" / f"{id}_workload.log"
+
+    try:
+        file.check_file_with_retries(main_log_path)
+        file_log_exists = True
+    except (FileNotFoundError, RetryError):
+        file_log_exists = False
+
+    return StreamingResponse(
+        combined_log_generator(
+            str(main_log_path),
+            str(workload_log_path),
+            log_options,
+            benchmark_name,
+            file_log_exists,
+        ),
+        media_type="application/octet-stream",
+    )

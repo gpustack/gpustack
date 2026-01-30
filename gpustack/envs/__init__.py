@@ -35,6 +35,9 @@ WORKER_HEARTBEAT_GRACE_PERIOD = int(
 WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD", 300)
 )  # 5 minutes in seconds
+WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD = int(
+    os.getenv("GPUSTACK_WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD", 300)
+)  # 5 minutes in seconds
 
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
@@ -79,3 +82,9 @@ DEFAULT_CLUSTER_KUBERNETES = (
 )
 
 AUTO_GENERATE_UUID = os.getenv("GPUSTACK_AUTO_GENERATE_UUID", "false").lower() == "true"
+
+# Benchmark configuration
+BENCHMARK_DATASET_SHAREGPT_PATH = os.getenv(
+    "GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH",
+    "/workspace/benchmark-runner/sharegpt_data/ShareGPT_V3_unfiltered_cleaned_split.json",
+)

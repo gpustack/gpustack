@@ -99,6 +99,8 @@ class Config(WorkerConfig, BaseSettings):
         ray_port_range: Port range for Ray services(vLLM distributed deployment using), specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. Default is '41000-41999'.
         log_dir: Directory to store logs.
         bin_dir: Directory to store additional binaries, e.g., versioned backend executables.
+        benchmark_dir: Directory to store benchmark results.
+        benchmark_max_duration_seconds: Max duration for a benchmark before timeout. Disabled when unset.
         pipx_path: Path to the pipx executable, used to install versioned backends.
         system_reserved: Reserved system resources.
         tools_download_base_url: Base URL to download dependency tools.
@@ -207,6 +209,9 @@ class Config(WorkerConfig, BaseSettings):
         )
         self.bin_dir = prepare_dir(self.bin_dir, os.path.join(self.data_dir, "bin"))
         self.log_dir = prepare_dir(self.log_dir, os.path.join(self.data_dir, "log"))
+        self.benchmark_dir = prepare_dir(
+            self.benchmark_dir, os.path.join(self.data_dir, "benchmarks")
+        )
 
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
@@ -303,6 +308,7 @@ class Config(WorkerConfig, BaseSettings):
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.bin_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.benchmark_dir, exist_ok=True)
         # prepare gateway dirs
         os.makedirs(
             os.getenv("GPUSTACK_GATEWAY_DIR", self.higress_base_dir()),

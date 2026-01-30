@@ -221,6 +221,7 @@ class ActiveRecordMixin:
         page: int = 1,
         per_page: int = 100,
         order_by: Optional[List[Tuple[Union[str, Any], str]]] = None,
+        options: Optional[List] = None,
     ) -> PaginatedList[SQLModel]:
         """
         Return a paginated and optionally sorted list of objects matching the given query criteria.
@@ -256,6 +257,9 @@ class ActiveRecordMixin:
 
         if extra_conditions:
             statement = statement.where(and_(*extra_conditions))
+
+        if options:
+            statement = statement.options(*options)
 
         if not order_by:
             order_by = [("created_at", "desc")]
