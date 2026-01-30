@@ -25,6 +25,8 @@ from gpustack.routes import (
     worker_pools,
     clusters,
     token,
+    benchmarks,
+    benchmark_profiles,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -82,6 +84,12 @@ model_routers = [
         "tags": ["Model Instances"],
     },
     {"router": model_files.router, "prefix": "/model-files", "tags": ["Model Files"]},
+    {"router": benchmarks.router, "prefix": "/benchmarks", "tags": ["Benchmarks"]},
+    {
+        "router": benchmark_profiles.router,
+        "prefix": "/benchmark-profiles",
+        "tags": ["Benchmark Profiles"],
+    },
 ]
 # worker client have full access to model and model instances
 worker_client_router = APIRouter()
