@@ -1277,8 +1277,10 @@ model_sets:
         vendor: nvidia
       source: model_scope
       model_scope_model_id: Tongyi-MAI/Z-Image-Turbo
-      backend: SGLang
-      backend_version: 0.5.6.post2
+      backend: vLLM
+      backend_version: 0.14.1
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "24696061952" # 23 GiB observed. Weight file size is 33 GiB in F32 while vLLM loads in BF16.
 - name: Qwen3-VL-8B-Instruct
   description: Qwen3-VL-8B-Instruct is a vision-language model that delivers comprehensive upgrades across text understanding, visual perception, and reasoning capabilities, supporting image/video/text unified understanding.
   home: https://qwen.ai
