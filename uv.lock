@@ -2001,7 +2001,7 @@ requires-dist = [
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
-    { name = "gpustack-runner", specifier = ">=0.1.24.post2" },
+    { name = "gpustack-runner", specifier = ">=0.1.24.post3" },
     { name = "gpustack-runtime", specifier = "==0.1.41.post3" },
     { name = "hf-transfer", specifier = ">=0.1.9" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -2078,16 +2078,16 @@ dev = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.24.post2"
+version = "0.1.24.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
     { name = "dataclasses-json" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/30/95876914d01296086cf724fbd65a25a8ec385f023cca4889fa672b3bf6df/gpustack_runner-0.1.24.post2.tar.gz", hash = "sha256:689278b58c87b0e07d7a69c61cfdcdd944f17c3c0d2ffa64a3e017ee76c9ff60", size = 13434863, upload-time = "2026-01-27T06:41:30.259Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/ba/255280387da87f1424632f34f5d667ebdb9c45d29d89d59d00949cfeef65/gpustack_runner-0.1.24.post3.tar.gz", hash = "sha256:5a242a32b1e7b8f8cce3ff6febca2bfe84ae95ed1cdcdfa5214200493910a56f", size = 13438555, upload-time = "2026-01-30T02:06:30.834Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/8b/cfb828afae1663a20899a75b106ccc907b5483b30134300b1411e86ea689/gpustack_runner-0.1.24.post2-py3-none-any.whl", hash = "sha256:b962d6e55f16f6aaf2b8a1fb26d9e7f3884c66e7f76d9a68ba37cb500d508db8", size = 28245, upload-time = "2026-01-27T06:41:25.887Z" },
+    { url = "https://files.pythonhosted.org/packages/06/3c/6dd7c5cfcdd69d94acdb55d4128a2e490d7264dcdfa29209232d3e8cf38d/gpustack_runner-0.1.24.post3-py3-none-any.whl", hash = "sha256:892049e28d2d40754854bf6fc0d925946042188aa9b51887b66e9882fb5a78b0", size = 28365, upload-time = "2026-01-30T02:06:28.735Z" },
 ]
 
 [[package]]
