@@ -5,7 +5,7 @@ from gpustack_runtime.detector import (
 )
 
 from gpustack.detectors.base import GPUDetector
-from gpustack.schemas import GPUDeviceInfo, GPUDevicesInfo
+from gpustack.schemas import GPUDeviceStatus, GPUDevicesStatus
 from gpustack.schemas.workers import GPUCoreInfo, MemoryInfo, GPUNetworkInfo
 from gpustack.utils.convert import safe_int
 
@@ -18,8 +18,8 @@ class Runtime(GPUDetector):
     def is_available(self) -> bool:
         return True
 
-    def gather_gpu_info(self) -> GPUDevicesInfo:
-        ret: GPUDevicesInfo = []
+    def gather_gpu_info(self) -> GPUDevicesStatus:
+        ret: GPUDevicesStatus = []
 
         # Detect devices.
         devs = detect_devices(fast=False)
@@ -28,7 +28,7 @@ class Runtime(GPUDetector):
 
         # Convert to GPUDevicesInfo.
         for dev in devs:
-            gpudev = GPUDeviceInfo(
+            gpudev = GPUDeviceStatus(
                 vendor=dev.manufacturer.value,
                 type=manufacturer_to_backend(dev.manufacturer),
                 index=dev.index,

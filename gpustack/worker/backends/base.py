@@ -21,12 +21,10 @@ from gpustack_runtime.detector.ascend import get_ascend_cann_variant
 from gpustack_runtime import envs as runtime_envs
 from gpustack_runtime.envs import (
     to_bool,
-    GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE,
-    GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE,
 )
 from gpustack_runtime.logging import setup_logging as setup_runtime_logging
 from gpustack_runtime.deployer.docker import DockerWorkloadPlan
-from gpustack_runtime.deployer import WorkloadPlan, DockerDeployer
+from gpustack_runtime.deployer import WorkloadPlan
 
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
@@ -40,12 +38,15 @@ from gpustack.schemas.models import (
     ModelUpdate,
     ModelInstanceDeploymentMetadata,
 )
-from gpustack.schemas.workers import GPUDevicesInfo
+from gpustack.schemas.workers import GPUDevicesStatus
 from gpustack.server.bus import Event
+from gpustack.utils.config import apply_registry_override_to_image
+from gpustack.utils.envs import filter_env_vars
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
 from gpustack.scheduler.calculator import get_pretrained_config_sync
 from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
+from gpustack.utils.runtime import transform_workload_plan
 
 logger = logging.getLogger(__name__)
 lock = threading.Lock()
@@ -279,58 +280,7 @@ class InferenceServer(ABC):
 
         env = {}
         if not runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT:
-            env = {
-                # Exclude the following env vars,
-                # which are reserved for gpustack internal use.
-                # - start with GPUSTACK_, PIP_, PIPX_, UV_, POETRY_, S6_, PGCONFIG_, POSTGRES_.
-                # - end with _VISIBLE_DEVICES, _DISABLE_REQUIRE, _DRIVER_CAPABILITIES, _PATH.
-                # - miscellaneous item.
-                #
-                # FIXME(thxCode): Make this configurable.
-                k: v
-                for k, v in os.environ.items()
-                if not (
-                    k.startswith(
-                        (
-                            "GPUSTACK_",
-                            "PIP_",
-                            "PIPX_",
-                            "POETRY_",
-                            "UV_",
-                            "S6_",
-                            "PGCONFIG_",
-                            "POSTGRES_",
-                        )
-                    )
-                    or k.endswith(
-                        (
-                            "_VISIBLE_DEVICES",
-                            "_DISABLE_REQUIRE",
-                            "_DRIVER_CAPABILITIES",
-                            "_PATH",
-                            "_HOME",
-                        )
-                    )
-                    or (
-                        k
-                        in (
-                            "DEBIAN_FRONTEND",
-                            "LANG",
-                            "LANGUAGE",
-                            "LC_ALL",
-                            "PYTHON_VERSION",
-                            "HOME",
-                            "HOSTNAME",
-                            "PWD",
-                            "_",
-                            "TERM",
-                            "SHLVL",
-                            "LS_COLORS",
-                            "PATH",
-                        )
-                    )
-                )
-            }
+            env = filter_env_vars(os.environ)
 
         if self._model.env:
             env.update(self._model.env)
@@ -338,7 +288,7 @@ class InferenceServer(ABC):
         return env
 
     @lru_cache
-    def _get_selected_gpu_devices(self) -> GPUDevicesInfo:
+    def _get_selected_gpu_devices(self) -> GPUDevicesStatus:
         """
         Get the GPU devices assigned to the model instance.
 
@@ -367,7 +317,7 @@ class InferenceServer(ABC):
             gpu_indexes = sorted(self._model_instance.gpu_indexes or [])
             gpu_type = self._model_instance.gpu_type
 
-        gpu_devices: GPUDevicesInfo = []
+        gpu_devices: GPUDevicesStatus = []
         if gpu_indexes and self._worker.status.gpu_devices:
             for index in gpu_indexes:
                 gpu_device = next(
@@ -631,7 +581,9 @@ $@
         # Update model backend service version at upper layer if we detected it
         if target_version:
             self._update_model_backend_service_version(target_version)
-        return self._apply_registry_override(image_name)
+        return apply_registry_override_to_image(
+            self._config, image_name, self._fallback_registry
+        )
 
     def _resolve_image(  # noqa: C901
         self,
@@ -812,49 +764,6 @@ $@
                 f"Failed to update model service version {service_version}: {e}"
             )
 
-    def _apply_registry_override(self, image: str) -> str:
-        """
-        1) If the image has an explicit registry, return it as is.
-        2) If the image does not have an explicit registry and a system default registry is configured,
-           prefix the image with the system default registry in config.
-        3) If the image does not have an explicit registry and no system default registry is configured,
-           using docker.io as default if image without "gpustack" prefix.
-        4) If the image does not have an explicit registry and no system default registry is configured,
-           and with "gpustack" prefix, using docker.io as default if docker.io is reachable.
-           Otherwise, using quay.io.
-        """
-        registry_cfg = (self._config.system_default_container_registry or "").strip()
-
-        parts = image.split("/", 1)
-        # 1) If the image has an explicit registry, return it as is.
-        has_explicit = len(parts) >= 2 and (
-            "." in parts[0] or ":" in parts[0] or parts[0] == "localhost"
-        )
-        if has_explicit:
-            return image
-        # 2) If the image does not have an explicit registry and a system default registry is configured,
-        #    prefix the image with the system default registry in config.
-        if registry_cfg:
-            registry = registry_cfg.rstrip("/")
-            final = f"{registry}/{image}"
-            logger.info(
-                f"Using system default registry '{registry}'; image resolved to: {final}"
-            )
-            return final
-
-        # 3) no explicit or configured, and not start with "gpustack" using "docker.io" as default.
-        if not image.startswith("gpustack"):
-            logger.info(
-                f"Using Docker Hub for non-gpustack image; image resolved to: {image}"
-            )
-            return image
-
-        # 4) Otherwise, use fallback registry if configured.
-        #    The fallback registry is Docker Hub or Quay.io depending on reachability.
-        #    If both are not reachable, use docker.io as default.
-        prefix = self._fallback_registry + "/" if self._fallback_registry else ""
-        return f"{prefix}{image}"
-
     def _flatten_backend_param(self) -> List[str]:
         """
         Flattens all backend parameter strings into a list of individual tokens.
@@ -879,18 +788,7 @@ $@
         If the deployer is docker, transform the generic WorkloadPlan to DockerWorkloadPlan,
         and fill the pause image and restart image with registry override.
         """
-        if not DockerDeployer().is_supported():
-            return workload
-        pause_image = self._apply_registry_override(GPUSTACK_RUNTIME_DOCKER_PAUSE_IMAGE)
-        restart_image = self._apply_registry_override(
-            GPUSTACK_RUNTIME_DOCKER_UNHEALTHY_RESTART_IMAGE
-        )
-        docker_workload = DockerWorkloadPlan(
-            pause_image=pause_image,
-            unhealthy_restart_image=restart_image,
-            **workload.__dict__,
-        )
-        return docker_workload
+        return transform_workload_plan(self._config, workload, self._fallback_registry)
 
 
 def _get_service_version_from_versioned_runner(
@@ -914,7 +812,7 @@ def _get_service_version_from_versioned_runner(
         return None
 
 
-def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
+def is_ascend_310p(devices: GPUDevicesStatus) -> bool:
     """
     Check if the model instance is running on VLLM Ascend 310P.
     """
@@ -926,7 +824,7 @@ def is_ascend_310p(devices: GPUDevicesInfo) -> bool:
     )
 
 
-def is_ascend(devices: GPUDevicesInfo) -> bool:
+def is_ascend(devices: GPUDevicesStatus) -> bool:
     """
     Check if all devices are Ascend.
     """

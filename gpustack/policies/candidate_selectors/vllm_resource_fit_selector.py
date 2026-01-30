@@ -33,7 +33,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstanceSubordinateWorker,
 )
-from gpustack.schemas.workers import GPUDevicesInfo, Worker
+from gpustack.schemas.workers import GPUDevicesStatus, Worker
 from gpustack.config import Config
 from gpustack.utils.command import find_parameter, find_int_parameter
 from gpustack.utils.unit import byte_to_gib
@@ -500,7 +500,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             self._largest_multi_gpu_total = len(worker.status.gpu_devices)
 
         # Sort by vram in descending order
-        sorted_gpu_devices: GPUDevicesInfo = sorted(
+        sorted_gpu_devices: GPUDevicesStatus = sorted(
             gpu_list,
             key=lambda gpu: allocatable.vram.get(gpu.index, 0),
             reverse=True,

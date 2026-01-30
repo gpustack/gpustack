@@ -25,7 +25,7 @@ from gpustack.schemas.models import (
     BackendEnum,
     ModelListParams,
 )
-from gpustack.schemas.workers import GPUDeviceInfo, Worker
+from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep, CurrentUserDep
 from gpustack.schemas.models import (
     Model,
@@ -359,7 +359,7 @@ async def validate_gpu_ids(  # noqa: C901
         )
 
 
-def validate_gpu(gpu_device: GPUDeviceInfo, model_backend: str = ""):
+def validate_gpu(gpu_device: GPUDeviceStatus, model_backend: str = ""):
     if (
         model_backend == BackendEnum.VOX_BOX
         and gpu_device.vendor != ManufacturerEnum.NVIDIA.value

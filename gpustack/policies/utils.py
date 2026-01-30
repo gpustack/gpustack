@@ -16,7 +16,7 @@ from gpustack.schemas.models import (
     SourceEnum,
 )
 from gpustack.schemas.model_files import ModelFileStateEnum
-from gpustack.schemas.workers import Worker, GPUDevicesInfo, GPUDeviceInfo
+from gpustack.schemas.workers import Worker, GPUDevicesStatus, GPUDeviceStatus
 from pydantic import BaseModel
 
 from gpustack.server.services import ModelFileService
@@ -32,7 +32,7 @@ class WorkerGPUInfo(BaseModel):
 
     worker_id: int
     worker_name: str
-    gpu_device: GPUDeviceInfo
+    gpu_device: GPUDeviceStatus
     allocatable_vram: int  # in bytes
 
 
@@ -131,7 +131,9 @@ def get_worker_allocatable_resource(  # noqa: C901
     return allocatable
 
 
-def group_gpu_devices_by_memory(gpu_devices: GPUDevicesInfo) -> List[GPUDevicesInfo]:
+def group_gpu_devices_by_memory(
+    gpu_devices: GPUDevicesStatus,
+) -> List[GPUDevicesStatus]:
     """
     Group GPU devices by allocatable memory size with the constraint that the minimum
     allocatable GPU memory in each group should not be less than 0.9 times the
@@ -153,7 +155,7 @@ def group_gpu_devices_by_memory(gpu_devices: GPUDevicesInfo) -> List[GPUDevicesI
     if not gpu_devices:
         return []
 
-    def get_allocatable_memory(gpu: GPUDeviceInfo) -> Optional[int]:
+    def get_allocatable_memory(gpu: GPUDeviceStatus) -> Optional[int]:
         """Calculate allocatable memory (total - allocated)"""
         if not gpu.memory or gpu.memory.total is None:
             return None
@@ -221,7 +223,7 @@ def group_workers_by_gpu_type(workers: List[Worker]) -> Dict[str, List[Worker]]:
             continue
 
         # Collect unique GPU types for this worker
-        gpus: Dict[str, GPUDevicesInfo] = {}
+        gpus: Dict[str, GPUDevicesStatus] = {}
         for gpu in worker.status.gpu_devices:
             gpus.setdefault(gpu.type, []).append(gpu)
 
