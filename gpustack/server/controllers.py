@@ -871,9 +871,7 @@ class InferenceBackendController:
         """Load community backends from community-backends.yaml into database."""
         try:
             # Get the path to community-backends.yaml
-            yaml_file = files("gpustack.assets").joinpath(
-                "community_backends/community-backends.yaml"
-            )
+            yaml_file = files("gpustack.assets").joinpath("community-backends.yaml")
 
             if not yaml_file.is_file():
                 logger.debug(
@@ -923,7 +921,7 @@ class InferenceBackendController:
             "health_check_path",
             "description",
             "icon",
-            "default_environment",
+            "default_env",
         ]
         backend_data = {k: config[k] for k in allowed_keys if k in config}
 
@@ -1003,19 +1001,16 @@ class InferenceBackendController:
             if existing.enabled:
                 backend_data['enabled'] = True
 
-            # 3. Merge default_environment (preserve user-added environment variables)
-            if existing.default_environment:
-                if (
-                    'default_environment' in backend_data
-                    and backend_data['default_environment']
-                ):
+            # 3. Merge default_env (preserve user-added environment variables)
+            if existing.default_env:
+                if 'default_env' in backend_data and backend_data['default_env']:
                     # Merge: YAML environment variables + user-added environment variables
-                    merged_env = dict(existing.default_environment)
-                    merged_env.update(backend_data['default_environment'])
-                    backend_data['default_environment'] = merged_env
+                    merged_env = dict(existing.default_env)
+                    merged_env.update(backend_data['default_env'])
+                    backend_data['default_env'] = merged_env
                 else:
                     # YAML doesn't define it, preserve user's
-                    backend_data['default_environment'] = existing.default_environment
+                    backend_data['default_env'] = existing.default_env
 
             # 4. Update database
             await existing.update(session, backend_data)
