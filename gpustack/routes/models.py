@@ -19,13 +19,12 @@ from gpustack.api.exceptions import (
     BadRequestException,
 )
 from gpustack.schemas.common import Pagination
-from gpustack.schemas.inference_backend import InferenceBackend, is_custom_backend
+from gpustack.schemas.inference_backend import is_custom_backend
 from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancesPublic,
     BackendEnum,
     ModelListParams,
-    BackendSourceEnum,
 )
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep, CurrentUserDep
@@ -55,28 +54,6 @@ from gpustack.utils.gpu import parse_gpu_id
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-
-async def ensure_backend_enabled(session: AsyncSession, model_in: ModelCreate):
-    """
-    If the model specifies a backend and the backend exists but is not enabled,
-    automatically enable it for model deployment from model-set.
-    """
-    backend_name = model_in.backend
-    if not backend_name:
-        return
-
-    backend = await InferenceBackend.one_by_field(session, "backend_name", backend_name)
-    if (
-        backend
-        and backend.backend_source == BackendSourceEnum.COMMUNITY
-        and not backend.enabled
-    ):
-        logger.info(
-            f"Auto-enabling backend '{backend_name}' for model '{model_in.name}' "
-            f"deployed from model-set."
-        )
-        await backend.update(session, {"enabled": True})
 
 
 class ModelStateFilterEnum(str, Enum):
@@ -431,8 +408,6 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
         )
 
     await validate_model_in(session, model_in)
-
-    await ensure_backend_enabled(session, model_in)
 
     try:
         await revoke_model_access_cache(session=session)

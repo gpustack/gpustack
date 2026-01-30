@@ -445,32 +445,32 @@ class InferenceServer(ABC):
         config = ContainerEnvConfig()
 
         # Read user ID
-        uid_str = env.get("GPUSTACK_CONTAINER_UID")
+        uid_str = env.get("GPUSTACK_MODEL_RUNTIME_UID")
         if uid_str:
             try:
                 config.user = int(uid_str)
             except ValueError:
                 logger.warning(
-                    f"Invalid GPUSTACK_CONTAINER_UID value: {uid_str}, ignoring"
+                    f"Invalid GPUSTACK_MODEL_RUNTIME_UID value: {uid_str}, ignoring"
                 )
 
         # Read group ID
-        gid_str = env.get("GPUSTACK_CONTAINER_GID")
+        gid_str = env.get("GPUSTACK_MODEL_RUNTIME_GID")
         if gid_str:
             try:
                 config.group = int(gid_str)
             except ValueError:
                 logger.warning(
-                    f"Invalid GPUSTACK_CONTAINER_GID value: {gid_str}, ignoring"
+                    f"Invalid GPUSTACK_MODEL_RUNTIME_GID value: {gid_str}, ignoring"
                 )
 
         # Read shared memory size in GiB
-        shm_str = env.get("GPUSTACK_CONTAINER_SHM_SIZE_GIB", "10")
+        shm_str = env.get("GPUSTACK_MODEL_RUNTIME_SHM_SIZE_GIB", "10")
         try:
             config.shm_size_gib = float(shm_str)
         except ValueError:
             logger.warning(
-                f"Invalid GPUSTACK_CONTAINER_SHM_SIZE_GIB value: {shm_str}, using default 10.0"
+                f"Invalid GPUSTACK_MODEL_RUNTIME_SHM_SIZE_GIB value: {shm_str}, using default 10.0"
             )
             config.shm_size_gib = 10.0
 

@@ -62,7 +62,7 @@ class BackendEnum(str, Enum):
 
 class BackendSourceEnum(str, Enum):
     CUSTOM = "custom"
-    BUILT_IN = "built-in"
+    BUILT_IN = "built_in"
     COMMUNITY = "community"
 
 

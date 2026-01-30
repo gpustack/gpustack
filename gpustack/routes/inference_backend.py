@@ -31,7 +31,6 @@ from gpustack.schemas.inference_backend import (
     is_built_in_backend,
 )
 from gpustack.schemas.models import BackendEnum, Model, BackendSourceEnum
-from gpustack.server.catalog import get_model_sets, get_model_set_specs
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack_runner import list_service_runners
 from gpustack_runtime.detector.ascend import get_ascend_cann_variant
@@ -347,7 +346,7 @@ async def list_backend_configs(  # noqa: C901
             if backend.version_configs and backend.version_configs.root:
                 versions = [
                     VersionListItem(
-                        version=version, environment=backend.get_backend_env(version)
+                        version=version, env=backend.get_backend_env(version)
                     )
                     for version in backend.version_configs.root.keys()
                 ]
@@ -372,7 +371,7 @@ async def list_backend_configs(  # noqa: C901
                             VersionListItem(
                                 version=version,
                                 is_deprecated=is_deprecated,
-                                environment=version_env,
+                                env=version_env,
                             )
                         )
 
@@ -391,7 +390,7 @@ async def list_backend_configs(  # noqa: C901
                     is_built_in=backend.is_built_in,
                     enabled=True,
                     backend_source=BackendSourceEnum.BUILT_IN,
-                    default_environment=backend.default_environment,
+                    default_env=backend.default_env,
                 )
             else:
                 if (
@@ -408,7 +407,7 @@ async def list_backend_configs(  # noqa: C901
                     is_built_in=False,
                     enabled=backend.enabled,
                     backend_source=backend.backend_source,
-                    default_environment=backend.default_environment,
+                    default_env=backend.default_env,
                 )
 
             items.append(backend_item)
@@ -422,7 +421,7 @@ async def list_backend_configs(  # noqa: C901
             is_built_in=False,
             enabled=True,
             backend_source=BackendSourceEnum.CUSTOM,
-            default_environment=None,
+            default_env=None,
         )
         items.append(custom_backend_item)
 
@@ -583,51 +582,6 @@ def _filter_community_backends(
     return filter_backends
 
 
-async def collect_recommend_models(
-    merged_backends: List[InferenceBackendPublic],
-    filter_backends: List[InferenceBackendPublic],
-) -> None:
-    """
-    Collect model names that use community backends and set recommend_models for each backend.
-
-    Args:
-        merged_backends: List of merged inference backends from database
-        filter_backends: List of backends to set recommend_models on
-    """
-    # Build a set of community backend names
-    community_backend_names = {
-        b.backend_name
-        for b in merged_backends
-        if b.backend_source == BackendSourceEnum.COMMUNITY
-    }
-
-    # Collect model names that use community backends from catalog specs
-    backend_recommend_models: Dict[str, List[str]] = {}
-
-    model_set_specs = get_model_set_specs()
-    model_sets = get_model_sets()
-
-    # Build a dictionary for efficient lookup: model_set_id -> model_set_name
-    model_set_dict = {ms.id: ms.name for ms in model_sets}
-
-    for model_set_id, specs in model_set_specs.items():
-        # Get the model_set name from the dictionary
-        model_set_name = model_set_dict.get(model_set_id, "")
-
-        # Collect models using community backends
-        for spec in specs:
-            if spec.backend and spec.backend in community_backend_names:
-                if spec.backend not in backend_recommend_models:
-                    backend_recommend_models[spec.backend] = []
-                backend_recommend_models[spec.backend].append(model_set_name)
-
-    # Set recommend_models for each backend
-    for backend in filter_backends:
-        backend.recommend_models = backend_recommend_models.get(
-            backend.backend_name, []
-        )
-
-
 @router.get("", response_model=InferenceBackendsPublic)
 async def get_inference_backends(  # noqa: C901
     session: SessionDep,
@@ -748,9 +702,6 @@ async def get_inference_backends(  # noqa: C901
         # Backend passed all filters, add to result list
         filter_backends.append(backend)
 
-    # Collect and set recommend_models for community backends
-    await collect_recommend_models(merged_backends, filter_backends)
-
     # Apply pagination to merged results
     total = len(filter_backends)
     start_idx = (params.page - 1) * params.perPage
@@ -854,7 +805,7 @@ async def create_inference_backend(
             default_entrypoint=backend_in.default_entrypoint,
             health_check_path=backend_in.health_check_path,
             description=backend_in.description,
-            default_environment=backend_in.default_environment,
+            default_env=backend_in.default_env,
             enabled=backend_in.enabled,
             backend_source=backend_in.backend_source,
         )
@@ -931,7 +882,7 @@ async def update_inference_backend(
             "default_entrypoint": backend_in.default_entrypoint,
             "health_check_path": backend_in.health_check_path,
             "description": backend_in.description,
-            "default_environment": backend_in.default_environment,
+            "default_env": backend_in.default_env,
             "backend_source": backend_in.backend_source,
         }
         if backend_in.backend_source == BackendSourceEnum.COMMUNITY:
@@ -1049,7 +1000,7 @@ async def create_inference_backend_from_yaml(
             "default_run_command",
             "health_check_path",
             "description",
-            "default_environment",
+            "default_env",
             "enabled",
             "backend_source",
         ]
@@ -1126,7 +1077,7 @@ async def update_inference_backend_from_yaml(  # noqa: C901
             "default_run_command",
             "health_check_path",
             "description",
-            "default_environment",
+            "default_env",
             "enabled",
             "backend_source",
         ]

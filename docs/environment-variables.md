@@ -108,7 +108,7 @@ The **Applies to** column indicates where the environment variable should be set
     These environment variables are **not** set when starting GPUStack. Instead, they should be configured in the **Advanced Options > Environment Variables** section when deploying a model. They are used to customize the model serving behavior.
 
 | <div style="width:180px">Variable</div>          | Description                                                                                                                                                                                    | Default | Applies to |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+|--------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|------------|
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED` | Disable the automatic serving command script execution. When set to `1` or `true`, the script that handles package installation and other setup tasks will not run.                            | `0`     | Model      |
 | `PYPI_PACKAGES_INSTALL`                          | Additional PyPI packages to install in the model serving environment. Multiple packages should be space-separated. The script will use `uv pip install` if available, otherwise `pip install`. | (empty) | Model      |
 | `GPUSTACK_MODEL_RAM_CLAIM`                       | User-declared RAM requirement (in Byte) for the model, used by the scheduler for capacity planning.                                                                                            | (empty) | Model      |
@@ -117,6 +117,9 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                 | Skips the model evaluation or validation step during deployment.                                                                                                                               | (empty) | Model      |
 | `GPUSTACK_DISABLE_METRICS`                       | Disables metric expose and collection for the model.                                                                                                                                           | (empty) | Model      |
 | `GPUSTACK_MODEL_HEALTH_CHECK_PATH`               | Specifies the HTTP health check path exposed by the model.                                                                                                                                     | (empty) | Model      |
+| `GPUSTACK_MODEL_RUNTIME_UID`                     | Control the user permissions of processes running inside the container.                                                                                                                        | (empty) | Model      |
+| `GPUSTACK_MODEL_RUNTIME_GID`                     | Control the group permissions of processes running inside the container.                                                                                                                       | (empty) | Model      |
+| `GPUSTACK_MODEL_RUNTIME_SHM_SIZE_GIB`            | Shared memory size for the container in GiB.                                                                                                                                                   | `10.0`  | Model      |
 
 #### Usage Example
 

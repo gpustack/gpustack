@@ -23,7 +23,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('backend_source', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
         batch_op.add_column(sa.Column('enabled', sa.Boolean(), nullable=True))
         batch_op.add_column(sa.Column('icon', sa.Text(), nullable=True))
-        batch_op.add_column(sa.Column('default_environment', sa.JSON(), nullable=True))
+        batch_op.add_column(sa.Column('default_env', sa.JSON(), nullable=True))
         # Change description column from String(255) to Text to support longer descriptions
         batch_op.alter_column('description',
                               existing_type=sa.String(length=255),
@@ -36,7 +36,7 @@ def downgrade() -> None:
         batch_op.drop_column('backend_source')
         batch_op.drop_column('enabled')
         batch_op.drop_column('icon')
-        batch_op.drop_column('default_environment')
+        batch_op.drop_column('default_env')
         # Revert description column back to String(255)
         batch_op.alter_column('description',
                               existing_type=sa.Text(),

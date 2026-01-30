@@ -31,7 +31,7 @@ class VersionConfig(BaseModel):
         entrypoint: Container entrypoint command that overrides the default image entrypoint. (Optional)
         built_in_frameworks: Only built-in backend will return this field, sourced from gpustack-runner configuration. (Optional)
         custom_framework: User-provided value (upon backend creation) used for deployment and compatibility checks. (Optional)
-        environment: Environment variables for this version (Optional, merges with default_environment)
+        env: Environment variables for this version (Optional, merges with default_env)
     """
 
     image_name: Optional[str] = Field(None)
@@ -39,7 +39,7 @@ class VersionConfig(BaseModel):
     entrypoint: Optional[str] = Field(None)
     built_in_frameworks: Optional[List[str]] = Field(None)
     custom_framework: Optional[str] = Field(None)
-    environment: Optional[Dict[str, str]] = Field(None)
+    env: Optional[Dict[str, str]] = Field(None)
 
 
 class VersionConfigDict(RootModel[Dict[str, VersionConfig]]):
@@ -90,7 +90,7 @@ class InferenceBackendBase(SQLModel):
     backend_source: Optional[BackendSourceEnum] = SQLField(default=None)
     enabled: Optional[bool] = SQLField(default=None)
     icon: Optional[str] = SQLField(default=None)
-    default_environment: Optional[Dict[str, str]] = SQLField(
+    default_env: Optional[Dict[str, str]] = SQLField(
         sa_column=Column(JSON), default=None
     )
 
@@ -159,14 +159,14 @@ class InferenceBackendBase(SQLModel):
         backend.version.env > backend.default_env
         """
         env_dict = {}
-        if self.default_environment:
-            for k, v in self.default_environment.items():
+        if self.default_env:
+            for k, v in self.default_env.items():
                 env_dict[k] = v
         if version:
             try:
                 version_config, _ = self.get_version_config(version)
-                if version_config.environment:
-                    for k, v in version_config.environment.items():
+                if version_config.env:
+                    for k, v in version_config.env.items():
                         env_dict[k] = v
             except Exception:
                 # built-in version may not include version config
@@ -195,9 +195,8 @@ class InferenceBackendBase(SQLModel):
 
         # Resolve environment variables using {{VAR_NAME}} syntax
         # Use provided env (from model) if available, otherwise fall back to backend env
-        env_dict = env if env is not None else self.get_backend_env(version)
-        if env_dict:
-            command = self._resolve_env_vars(command, env_dict)
+        if env:
+            command = self._resolve_env_vars(command, env)
 
         return command
 
@@ -289,7 +288,7 @@ class InferenceBackend(InferenceBackendBase, BaseModelMixin, table=True):
 class VersionListItem(BaseModel):
     version: str = Field(...)
     is_deprecated: bool = Field(default=False)
-    environment: Optional[Dict[str, str]] = Field(None)
+    env: Optional[Dict[str, str]] = Field(None)
 
 
 class InferenceBackendListItem(BaseModel):
@@ -304,7 +303,7 @@ class InferenceBackendListItem(BaseModel):
     )
     enabled: Optional[bool] = Field(None)
     backend_source: Optional[BackendSourceEnum] = Field(None)
-    default_environment: Optional[Dict[str, str]] = Field(None)
+    default_env: Optional[Dict[str, str]] = Field(None)
 
 
 class InferenceBackendResponse(BaseModel):
@@ -328,7 +327,6 @@ class InferenceBackendPublic(InferenceBackendBase):
     updated_at: Optional[datetime]
     built_in_version_configs: Optional[Dict[str, VersionConfig]] = {}
     framework_index_map: Optional[Dict[str, List[str]]] = {}
-    recommend_models: Optional[List[str]] = []
 
 
 InferenceBackendsPublic = PaginatedList[InferenceBackendPublic]
