@@ -80,19 +80,26 @@ The **Applies to** column indicates where the environment variable should be set
 
 ### Worker and Model Configuration
 
-| Variable                                               | Description                                                                                               | Default | Applies to |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                   | Worker heartbeat interval in seconds.                                                                     | `30`    | Worker     |
-| `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                 | Worker status synchronization interval in seconds.                                                        | `30`    | Worker     |
-| `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`               | Worker heartbeat grace period in seconds.                                                                 | `150`   | Server     |
-| `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`      | Model instance reschedule grace period in seconds.                                                        | `300`   | Server     |
-| `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`             | Maximum size of model evaluation cache.                                                                   | `1000`  | Server     |
-| `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                  | TTL of model evaluation cache in seconds.                                                                 | `3600`  | Server     |
-| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan workload cleanup grace period in seconds.                                                   | `300`   | Worker     |
-| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`   | Add debug log for slow worker status collection if it exceeds this time in seconds.                       | `180`   | Worker     |
-| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`        | Model instance health check interval in seconds.                                                          | `3`     | Worker     |
-| `GPUSTACK_DISABLE_OS_FILELOCK`                         | Disable OS file lock.                                                                                     | `false` | Worker     |
-| `GPUSTACK_AUTO_GENERATE_UUID`                          | If set to true, always generate a new worker UUID at startup instead of reading the UUID from the system. | `false` | Worker     |
+| Variable                                                         | Description                                                                                               | Default | Applies to |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                             | Worker heartbeat interval in seconds.                                                                     | `30`    | Worker     |
+| `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                           | Worker status synchronization interval in seconds.                                                        | `30`    | Worker     |
+| `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`                         | Worker heartbeat grace period in seconds.                                                                 | `150`   | Server     |
+| `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`                | Model instance reschedule grace period in seconds.                                                        | `300`   | Server     |
+| `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`                       | Maximum size of model evaluation cache.                                                                   | `1000`  | Server     |
+| `GPUSTACK_MODEL_EVALUATION_CACHE_TTL`                            | TTL of model evaluation cache in seconds.                                                                 | `3600`  | Server     |
+| `GPUSTACK_WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD`           | Worker orphan workload cleanup grace period in seconds.                                                   | `300`   | Worker     |
+| `GPUSTACK_WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD` | Worker orphan benchmark workload cleanup grace period in seconds.                                         | `300`   | Worker     |
+| `GPUSTACK_WORKER_STATUS_COLLECTION_LOG_SLOW_SECONDS`             | Add debug log for slow worker status collection if it exceeds this time in seconds.                       | `180`   | Worker     |
+| `GPUSTACK_MODEL_INSTANCE_HEALTH_CHECK_INTERVAL`                  | Model instance health check interval in seconds.                                                          | `3`     | Worker     |
+| `GPUSTACK_DISABLE_OS_FILELOCK`                                   | Disable OS file lock.                                                                                     | `false` | Worker     |
+| `GPUSTACK_AUTO_GENERATE_UUID`                                    | If set to true, always generate a new worker UUID at startup instead of reading the UUID from the system. | `false` | Worker     |
+
+### Benchmark Configuration
+
+| Variable                                   | Description                                                                                                                                      | Default                                                                               | Applies to |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | ---------- |
+| `GPUSTACK_BENCHMARK_DATASET_SHAREGPT_PATH` | ShareGPT dataset path used by the benchmark container when `dataset_name` is set to `ShareGPT`. The default image already includes this dataset. | `/workspace/benchmark-runner/sharegpt_data/ShareGPT_V3_unfiltered_cleaned_split.json` | Worker     |
 
 ### Model Deployment Configuration
 

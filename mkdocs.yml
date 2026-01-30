@@ -114,6 +114,7 @@ nav:
           - User Management: user-guide/user-management.md
           - Single Sign-On (SSO) Authentication: user-guide/sso.md
           - Observability: user-guide/observability.md
+          - Benchmarking: user-guide/benchmarking.md
       - Using Models:
           - Using Large Language Models: using-models/using-large-language-models.md
           - Using Vision Language Models: using-models/using-vision-language-models.md
