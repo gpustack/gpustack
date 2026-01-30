@@ -3,7 +3,7 @@ import os
 from typing import Optional
 
 from gpustack.schemas.workers import (
-    GPUDeviceInfo,
+    GPUDeviceStatus,
     MemoryInfo,
     SystemReserved,
     Worker,
@@ -320,7 +320,7 @@ def load_from_file(
         status.memory = MemoryInfo(**memory)
 
         if gpu_devices:
-            status.gpu_devices = [GPUDeviceInfo(**device) for device in gpu_devices]
+            status.gpu_devices = [GPUDeviceStatus(**device) for device in gpu_devices]
 
         worker = Worker(**dict)
         worker.status = status

@@ -27,7 +27,7 @@ from gpustack.schemas.models import (
     SourceEnum,
     ModelInstanceSubordinateWorker,
 )
-from gpustack.schemas.workers import GPUDeviceInfo, Worker
+from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.config import Config
 from gpustack.utils.convert import safe_int
 from gpustack.utils.hub import (
@@ -60,7 +60,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         # Temporary indexer for caching worker's allocatable, avoiding redundant database queries: {Worker ID: Allocatable}.
         self.__worker_alloc_idx: Dict[int, Allocatable] = {}
         # Temporary indexer for caching worker's devices that sort by VRAM size: {Worker ID: sorted([Device 0, Device 1, ...])}.
-        self.__worker_sorted_devices_idx: Dict[int, List[GPUDeviceInfo]] = {}
+        self.__worker_sorted_devices_idx: Dict[int, List[GPUDeviceStatus]] = {}
 
         # Store and format the abnormal message during scheduling, finally it will be extended to self._diagnostic_messages.
         self._scheduling_messages: ListMessageBuilder = ListMessageBuilder([])
@@ -396,8 +396,8 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
     async def _get_available_worker_devices_idx(  # noqa: C901
         self, workers, ram_request
-    ) -> Dict[Worker, Dict[int, GPUDeviceInfo]]:
-        available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceInfo]] = {}
+    ) -> Dict[Worker, Dict[int, GPUDeviceStatus]]:
+        available_worker_devices_idx: Dict[Worker, Dict[int, GPUDeviceStatus]] = {}
         for worker in workers:
             # Skip if the worker does not have devices.
             if not worker.status.gpu_devices:
@@ -420,7 +420,7 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
                 continue
 
             # Get selected devices of the worker: {Device Index: Device}.
-            selected_devices_idx: Dict[int, GPUDeviceInfo] = {
+            selected_devices_idx: Dict[int, GPUDeviceStatus] = {
                 device.index: device
                 for device in self.__worker_sorted_devices_idx[worker.id]
                 if device.type == "cann"

@@ -14,7 +14,7 @@ from gpustack.schemas.workers import (
     WorkerStatusPublic,
     WorkerStatus,
     SystemReserved,
-    GPUDevicesInfo,
+    GPUDevicesStatus,
     SystemInfo,
 )
 from gpustack.utils.profiling import time_decorator
@@ -31,11 +31,11 @@ class WorkerStatusCollector:
     _worker_ip_getter: Callable[[], str]
     _system_uuid: str
     _machine_id: str
-    _gpu_devices: GPUDevicesInfo
+    _gpu_devices: GPUDevicesStatus
     _system_info: SystemInfo
 
     @property
-    def gpu_devices(self) -> GPUDevicesInfo:
+    def gpu_devices(self) -> GPUDevicesStatus:
         return self._gpu_devices
 
     @property

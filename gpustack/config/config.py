@@ -17,7 +17,7 @@ from gpustack.utils import validators
 from gpustack.schemas.workers import (
     CPUInfo,
     FileSystemInfo,
-    GPUDeviceInfo,
+    GPUDeviceStatus,
     KernelInfo,
     MemoryInfo,
     MountPoint,
@@ -25,7 +25,7 @@ from gpustack.schemas.workers import (
     SwapInfo,
     SystemInfo,
     UptimeInfo,
-    GPUDevicesInfo,
+    GPUDevicesStatus,
     GPUNetworkInfo,
 )
 from gpustack.schemas.users import AuthProviderEnum
@@ -434,7 +434,7 @@ class Config(WorkerConfig, BaseSettings):
 
         return system_info
 
-    def get_gpu_devices(self) -> GPUDevicesInfo:  # noqa: C901
+    def get_gpu_devices(self) -> GPUDevicesStatus:  # noqa: C901
         """get gpu devices from resources
         resource example:
         ```yaml
@@ -460,7 +460,7 @@ class Config(WorkerConfig, BaseSettings):
                   mtu: 8192                # optional
         ```
         """
-        gpu_devices: GPUDevicesInfo = []
+        gpu_devices: GPUDevicesStatus = []
         if not self.resources:
             return None
 
@@ -522,7 +522,7 @@ class Config(WorkerConfig, BaseSettings):
                 )
 
             gpu_devices.append(
-                GPUDeviceInfo(
+                GPUDeviceStatus(
                     index=index,
                     arch_family=arch_family,
                     compute_capability=compute_capability,
