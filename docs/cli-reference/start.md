@@ -104,6 +104,8 @@ gpustack start [OPTIONS]
 | `--enable-hf-xet`                   | `False`                                | Enable downloading model files using Hugging Face Xet.                                                                                                                                          |
 | `--worker-ifname` value             | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                            |
 | `--proxy-mode` value                | (empty)                                | Proxy mode for server accessing model instances: direct (server connects directly) or worker (via worker proxy). Default value is direct for embedded worker, and worker for standalone worker. |
+| `--benchmark-image-repo` value      | `gpustack/benchmark-runner`            | Override the default benchmark image repo for the GPUStack benchmark container.                                                                                                                 |
+| `--benchmark-dir` value             | `<data-dir>/benchmarks`                | Directory to store benchmark results.                                                                                                                                                           |
 
 ### Available Environment Variables
 
@@ -121,6 +123,8 @@ advertise_address: exposed_server_or_worker_ip
 debug: false
 data_dir: /path/to/data_dir
 cache_dir: /path/to/cache_dir
+benchmark_dir: /path/to/benchmark_dir
+benchmark_image_repo: gpustack/benchmark-runner
 token: your_token
 huggingface_token: your_huggingface_token
 
