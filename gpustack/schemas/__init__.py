@@ -52,8 +52,8 @@ from gpustack.schemas.workers import (
     OperatingSystemInfo,
     FileSystemInfo,
     MountPoint,
-    GPUDevicesInfo,
-    GPUDeviceInfo,
+    GPUDevicesStatus,
+    GPUDeviceStatus,
     CPUInfo,
     MemoryInfo,
 )
@@ -62,6 +62,22 @@ from gpustack.schemas.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic, ApiKey
 from gpustack.schemas.system_load import SystemLoad
 from gpustack.schemas.model_usage import ModelUsage
 from gpustack.schemas.common import PaginatedList
+from gpustack.schemas.benchmark import (
+    ModelInstanceRuntimeInfo,
+    ModelInstanceSnapshot,
+    ModelInstanceSnapshots,
+    WorkerSnapshot,
+    WorkerSnapshots,
+    GPUSnapshot,
+    GPUSnapshots,
+    BenchmarkSnapshot,
+    BenchmarkMetrics,
+    Benchmark,
+    BenchmarkCreate,
+    BenchmarkUpdate,
+    BenchmarkPublic,
+    BenchmarksPublic,
+)
 from gpustack.schemas.filesystem import (
     FileExistsResponse,
 )
@@ -99,8 +115,8 @@ __all__ = [
     "FileSystemInfo",
     "PaginatedList",
     "MountPoint",
-    "GPUDevicesInfo",
-    "GPUDeviceInfo",
+    "GPUDevicesStatus",
+    "GPUDeviceStatus",
     "CPUInfo",
     "MemoryInfo",
     "SystemLoad",
@@ -128,5 +144,19 @@ __all__ = [
     "InferenceBackendsPublic",
     "InferenceBackendCreate",
     "InferenceBackendUpdate",
+    "Benchmark",
+    "BenchmarkCreate",
+    "BenchmarkUpdate",
+    "BenchmarkPublic",
+    "BenchmarksPublic",
+    "ModelInstanceRuntimeInfo",
+    "ModelInstanceSnapshot",
+    "ModelInstanceSnapshots",
+    "WorkerSnapshot",
+    "WorkerSnapshots",
+    "GPUSnapshot",
+    "GPUSnapshots",
+    "BenchmarkSnapshot",
+    "BenchmarkMetrics",
     "FileExistsResponse",
 ]

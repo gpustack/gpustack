@@ -5,6 +5,7 @@ Revises: 2aed534bd7b2
 Create Date: 2026-01-05 10:48:18.831340
 
 """
+from datetime import datetime, timezone
 from typing import Sequence, Union
 
 from alembic import op
@@ -50,7 +51,47 @@ def upgrade() -> None:
     )
        
     _migrate_model_gpu_selector(UPGRADE_GPU_TYPE_MAPPING)
-
+    
+    # Create benchmarks table
+    op.create_table('benchmarks',
+    sa.Column('created_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+    sa.Column('updated_at', gpustack.schemas.common.UTCDateTime(), nullable=False),
+    sa.Column('deleted_at', gpustack.schemas.common.UTCDateTime(), nullable=True),
+    sa.Column('raw_metrics', sa.JSON(), nullable=True),
+    sa.Column('requests_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('request_latency_mean', sa.Float(), nullable=True),
+    sa.Column('time_per_output_token_mean', sa.Float(), nullable=True),
+    sa.Column('inter_token_latency_mean', sa.Float(), nullable=True),
+    sa.Column('time_to_first_token_mean', sa.Float(), nullable=True),
+    sa.Column('tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('output_tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('input_tokens_per_second_mean', sa.Float(), nullable=True),
+    sa.Column('snapshot', gpustack.schemas.common.JSON(), nullable=True),
+    sa.Column('gpu_summary', sa.Text(), nullable=True),
+    sa.Column('gpu_vendor_summary', sa.Text(), nullable=True),
+    sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('profile', sqlmodel.sql.sqltypes.AutoString(), nullable=True, server_default="Custom"),
+    sa.Column('dataset_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('dataset_input_tokens', sa.Integer(), nullable=True),
+    sa.Column('dataset_output_tokens', sa.Integer(), nullable=True),
+    sa.Column('dataset_seed', sa.Integer(), nullable=True, server_default="42"),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('cluster_id', sa.Integer(), nullable=False),
+    sa.Column('model_id', sa.Integer(), nullable=True),
+    sa.Column('model_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('model_instance_name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('request_rate', sa.Integer(), nullable=False),
+    sa.Column('total_requests', sa.Integer(), nullable=True),
+    sa.Column('state', sa.Enum('PENDING', 'RUNNING', 'QUEUED', 'STOPPED', 'ERROR', 'UNREACHABLE', 'COMPLETED', name='benchmarkstateenum'), nullable=False),
+    sa.Column('state_message', sa.Text(), nullable=True),
+    sa.Column('progress', sa.Float(), nullable=True),
+    sa.Column('worker_id', sa.Integer(), nullable=True),
+    sa.Column('pid', sa.Integer(), nullable=True),
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('benchmarks', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_benchmarks_name'), ['name'], unique=True)
 
 
 def downgrade() -> None:
@@ -65,6 +106,10 @@ def downgrade() -> None:
     )
     
     _migrate_model_gpu_selector(DOWNGRADE_GPU_TYPE_MAPPING)
+        
+    with op.batch_alter_table('benchmarks', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_benchmarks_name'))
+    op.drop_table('benchmarks')
 
 def _migrate_model_gpu_selector(gpu_type_map: dict[str, str]) -> None:
     conn = op.get_bind()
