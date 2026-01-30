@@ -16,6 +16,7 @@ def main():
             "ModelFile",
             "User",
             "InferenceBackend",
+            "Benchmark",
         ]
     )
 
