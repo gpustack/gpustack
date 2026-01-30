@@ -4,12 +4,12 @@ from sqlmodel import SQLModel
 
 from gpustack.mixins import BaseModelMixin
 from gpustack.schemas.common import ListParams, PaginatedList
-from gpustack.schemas.workers import GPUDeviceInfo
+from gpustack.schemas.workers import GPUDeviceStatus
 
 # GPUDevice is a view created from the `workers` table.
 
 
-class GPUDeviceBase(GPUDeviceInfo, BaseModel):
+class GPUDeviceBase(GPUDeviceStatus, BaseModel):
     id: str
     worker_id: int
     worker_name: str
