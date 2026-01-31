@@ -68,12 +68,12 @@ def mutate_model_meta(model: Model, meta: Dict[str, Any]) -> None:
                 "Ono_Anna",
                 "Sohee",
             ],
-            "task_types": ["CustomVoice", "VoiceDesign", "Base"],
             "languages": ["Auto", "Chinese", "English", "Japanese", "Korean"],
         }
-        for task_type in qwen3_tts_meta["task_types"]:
+        QWEN3_TTS_TASK_TYPES = ["CustomVoice", "VoiceDesign", "Base"]
+        for task_type in QWEN3_TTS_TASK_TYPES:
             if task_type.lower() in readable_source:
-                qwen3_tts_meta["default_task_type"] = task_type
+                qwen3_tts_meta["task_type"] = task_type
                 break
         meta.update(qwen3_tts_meta)
 

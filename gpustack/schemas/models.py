@@ -21,7 +21,7 @@ from gpustack.schemas.links import (
     ModelInstanceModelFileLink,
     ModelUserLink,
 )
-from gpustack.utils.command import find_parameter
+from gpustack.utils.command import find_parameter, find_bool_parameter
 
 if TYPE_CHECKING:
     from gpustack.schemas.model_files import ModelFile
@@ -621,12 +621,18 @@ def is_llm_model(model: Model):
     return not model.categories or CategoryEnum.LLM in model.categories
 
 
-def is_omni_model(model: Model):
+def is_omni_model(model: Model) -> bool:
     """
     Check if the model is an omni model (Image or Audio category).
     Args:
         model: Model to check.
     """
+
+    if model.backend == BackendEnum.VLLM and find_bool_parameter(
+        model.backend_parameters, ["omni"]
+    ):
+        return True
+
     OMNI_CATEGORIES = (
         CategoryEnum.IMAGE,
         CategoryEnum.TEXT_TO_SPEECH,
