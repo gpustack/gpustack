@@ -17,9 +17,15 @@ from sqlalchemy.orm.state import InstanceState
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.server.bus import Event, EventType, event_bus
 from gpustack.server.db import async_session
+from gpustack import envs
 
 
 logger = logging.getLogger(__name__)
+
+# Semaphore to limit concurrent subscription initializations
+# This prevents exhausting the database connection pool when many workers
+# reconnect simultaneously (e.g., after server restart)
+_subscribe_init_semaphore = asyncio.Semaphore(envs.DB_SUBSCRIBE_INIT_CONCURRENCY)
 
 
 class CommitEvent:
@@ -671,8 +677,9 @@ class ActiveRecordMixin:
             id(subscriber),
         )
 
-        async with async_session() as session:
-            initial_items = await cls.all(session, options=options)
+        async with _subscribe_init_semaphore:
+            async with async_session() as session:
+                initial_items = await cls.all(session, options=options)
 
         for item in initial_items:
             yield Event(type=EventType.CREATED, data=item)
