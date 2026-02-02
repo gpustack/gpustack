@@ -65,6 +65,33 @@ function copy_extra_static() {
   fi
 }
 
+# Update community backends
+function make_community_backends() {
+  local tmp_dir
+  tmp_dir=$(mktemp -d -t gpustack-community-backends.XXXXXX)
+
+  # shellcheck disable=SC2064
+  trap "rm -rf \"${tmp_dir}\"" EXIT
+
+  local target_dir="${ROOT_DIR}/gpustack/assets/"
+
+  gpustack::log::info "pulling community backends"
+
+  # Clone the repository
+  git clone https://github.com/gpustack/community-inference-backends "${tmp_dir}"
+
+  # Build the community backends
+  (
+    cd "${tmp_dir}" && make
+  )
+
+  # Create target directory and copy the yaml file
+  mkdir -p "${target_dir}"
+  cp "${tmp_dir}/dist/community-backends.yaml" "${target_dir}/"
+
+  gpustack::log::info "community backends updated successfully"
+}
+
 #
 # main
 #
@@ -73,4 +100,5 @@ gpustack::log::info "+++ DEPENDENCIES +++"
 download_deps
 download_ui
 copy_extra_static
+make_community_backends
 gpustack::log::info "--- DEPENDENCIES ---"

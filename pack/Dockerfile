@@ -453,15 +453,6 @@ RUN --mount=type=cache,target=/root/.cache \
     export UV_SYSTEM_PYTHON=1
     export UV_LINK_MODE=copy
 
-    # Update community backends
-    git clone https://github.com/gpustack/community-inference-backends /tmp/community-inference-backends \
-        && cd /tmp/community-inference-backends \
-        && make \
-        && mkdir -p /workspace/gpustack/gpustack/assets/community_backends \
-        && cp community-backends.yaml /workspace/gpustack/gpustack/assets/community_backends/ \
-        && cd - \
-        && rm -rf /tmp/community-inference-backends
-
     # Build GPUStack
     cd /workspace/gpustack \
         && git config --global --add safe.directory /workspace/gpustack \
