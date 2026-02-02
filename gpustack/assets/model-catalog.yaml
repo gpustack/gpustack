@@ -1211,12 +1211,12 @@ model_sets:
   specs:
     - mode: standard
       quantization: "BF16"
-      gpu_filters:
-        vendor: nvidia
       source: huggingface
       huggingface_repo_id: Qwen/Qwen-Image
-      backend: SGLang
-      backend_version: 0.5.6.post2
+      backend: vLLM
+      backend_version: 0.14.1
+      backend_parameters:
+        - --omni
 - name: Qwen-Image-Edit
   description: Built upon the 20B Qwen-Image model, Qwen-Image-Edit successfully extends Qwen-Image's unique text rendering capabilities to image editing tasks, enabling precise text editing.
   home: https://qwen.ai
