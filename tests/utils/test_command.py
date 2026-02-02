@@ -37,6 +37,17 @@ def test_is_command_available_false(monkeypatch):
         (['--foo'], ['foo'], None),
         # key not present
         (['--bar=1', '--baz', '2'], ['foo'], None),
+        # Leading whitespace with = format (most common case)
+        ([' --max-model-len=8192'], ['max-model-len'], '8192'),
+        (['  --foo=bar'], ['foo'], 'bar'),
+        (['  --foo bar'], ['foo'], 'bar'),
+        # Trailing whitespace before =
+        (['--foo =bar'], ['foo'], 'bar'),
+        # Both leading and trailing whitespace
+        (['  --foo  =bar'], ['foo'], 'bar'),
+        # Multiple spaces around =
+        (['--foo  =  bar'], ['foo'], '  bar'),
+        (['--foo  ="  bar"'], ['foo'], '"  bar"'),
         (
             [
                 '--hf-overrides \'{"rope_scaling": {"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}}\''
@@ -69,6 +80,13 @@ def test_find_parameter(parameters, param_names, expected):
         # flag not present
         (['--bar'], ['foo'], False),
         ([], ['foo'], False),
+        # Leading whitespace
+        ([' --foo'], ['foo'], True),
+        (['  --enable-feature'], ['enable-feature'], True),
+        # Trailing whitespace
+        (['--foo  '], ['foo'], True),
+        # Both leading and trailing whitespace
+        (['  --foo  '], ['foo'], True),
     ],
 )
 def test_find_bool_parameter(parameters, param_names, expected):
