@@ -290,9 +290,13 @@ async def estimate_model_vram(
     This is the minimum requirement to help us decide how many GPUs are needed for the model.
     If users explicitly set parameters like tp & pp, this estimation is not needed.
 
-    Formula:
+    Formula for Diffusion (Image) models:
 
-        VRAM = WEIGHT * 1.2 + RESERVERD_FOOTPRINT
+        VRAM = WEIGHT_SIZE
+
+    Formula for LLM models:
+
+        VRAM = WEIGHT_SIZE * 1.2 + RESERVED_FOOTPRINT
 
     Reference for the 20% overhead: https://blog.eleuther.ai/transformer-math/#total-inference-memory
 
@@ -314,9 +318,10 @@ async def estimate_model_vram(
     try:
         if model.categories and CategoryEnum.IMAGE in model.categories:
             weight_size = await asyncio.wait_for(
-                get_diffusion_model_weight_size(model, token),
+                estimate_diffusion_model_vram(model, token, workers, session),
                 timeout=timeout_in_seconds,
             )
+            return weight_size
         elif (
             model.source == SourceEnum.HUGGING_FACE
             or model.source == SourceEnum.MODEL_SCOPE
