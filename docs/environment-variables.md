@@ -50,6 +50,7 @@ The **Applies to** column indicates where the environment variable should be set
 | `GPUSTACK_DB_POOL_SIZE`    | Database connection pool size.               | `10`     | Server     |
 | `GPUSTACK_DB_MAX_OVERFLOW` | Database connection pool max overflow.       | `10`    | Server     |
 | `GPUSTACK_DB_POOL_TIMEOUT` | Database connection pool timeout in seconds. | `30`    | Server     |
+| `GPUSTACK_DB_SUBSCRIBE_INIT_CONCURRENCY` | Maximum concurrent subscriptions that can perform initial DB list queries. | `20` | Server     |
 
 ### Network Configuration
 
@@ -68,7 +69,7 @@ The **Applies to** column indicates where the environment variable should be set
 
 | Variable                                  | Description                                                                         | Default | Applies to |
 | ----------------------------------------- | ----------------------------------------------------------------------------------- | ------- | ---------- |
-| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `3000`  | Server     |
+| `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`    | Higress external authentication timeout in milliseconds.                            | `30000` | Server     |
 | `GPUSTACK_GATEWAY_PORT_CHECK_INTERVAL`    | The interval in seconds of GPUStack Server checking embedded gateway listening port | `2`     | Server     |
 | `GPUSTACK_GATEWAY_PORT_CHECK_RETRY_COUNT` | The retry count of GPUStack Server checking embedded gateway listening port         | `300`   | Server     |
 
@@ -84,6 +85,7 @@ The **Applies to** column indicates where the environment variable should be set
 | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------- | ---------- |
 | `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                             | Worker heartbeat interval in seconds.                                                                     | `30`    | Worker     |
 | `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                           | Worker status synchronization interval in seconds.                                                        | `30`    | Worker     |
+| `GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE`                         | Worker unreachable check mode. Options: `auto`, `enabled`, `disabled`. `auto` disables check when worker count > 50. | `auto`  | Server     |
 | `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`                         | Worker heartbeat grace period in seconds.                                                                 | `150`   | Server     |
 | `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`                | Model instance reschedule grace period in seconds.                                                        | `300`   | Server     |
 | `GPUSTACK_MODEL_EVALUATION_CACHE_MAX_SIZE`                       | Maximum size of model evaluation cache.                                                                   | `1000`  | Server     |
