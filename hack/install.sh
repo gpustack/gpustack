@@ -87,7 +87,7 @@ function make_community_backends() {
 
   # Create target directory and copy the yaml file
   mkdir -p "${target_dir}"
-  cp "${tmp_dir}/dist/community-backends.yaml" "${target_dir}/"
+  cp "${tmp_dir}/dist/community-inference-backends.yaml" "${target_dir}/community-inference-backends.yaml"
 
   gpustack::log::info "community backends updated successfully"
 }

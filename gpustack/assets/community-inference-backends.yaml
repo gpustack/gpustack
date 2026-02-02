@@ -2,18 +2,10 @@
   version_configs:
     latest:
       image_name: ghcr.io/remsky/kokoro-fastapi-gpu:latest
-      run_command: null
-      entrypoint: null
       custom_framework: cuda
-  default_version: ''
-  default_backend_param: []
   default_run_command: python -m uvicorn api.src.main:app --host 0.0.0.0 --port {{port}}
     --log-level debug
-  default_entrypoint: ''
   is_built_in: false
-  description: null
-  health_check_path: null
-  built_in_version_configs: {}
   framework_index_map:
     cuda:
     - latest
@@ -22,37 +14,23 @@
   version_configs:
     cuda:
       image_name: ghcr.io/ggml-org/llama.cpp:server-cuda
-      run_command: null
-      entrypoint: null
       custom_framework: cuda
     cpu:
       image_name: ghcr.io/ggml-org/llama.cpp:server
-      run_command: null
-      entrypoint: null
       custom_framework: cpu
     vulkan:
       image_name: ghcr.io/ggml-org/llama.cpp:server-vulkan
-      run_command: ''
-      entrypoint: ''
       custom_framework: rocm
     musa:
       image_name: ghcr.io/ggml-org/llama.cpp:server-musa
-      run_command: ''
-      entrypoint: ''
       custom_framework: musa
     rocm:
       image_name: ghcr.io/ggml-org/llama.cpp:server-rocm
-      run_command: ''
-      entrypoint: ''
       custom_framework: rocm
   default_version: cpu
-  default_backend_param: []
   default_run_command: -m {{model_path}} --host 0.0.0.0 --port {{port}} --alias {{model_name}}
-  default_entrypoint: ''
   is_built_in: false
-  description: null
   health_check_path: /v1/models
-  built_in_version_configs: {}
   framework_index_map:
     cuda:
     - cuda
@@ -75,29 +53,19 @@
   version_configs:
     latest:
       image_name: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddlex-genai-vllm-server:latest
-      run_command: ''
-      entrypoint: null
       custom_framework: cuda
     latest-dcu:
       image_name: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-dcu
-      run_command: ''
-      entrypoint: ''
       custom_framework: dtk
     latest-metax-gpu:
       image_name: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-fastdeploy-server:latest-metax-gpu
       run_command: paddlex_genai_server --model_name {{model_name}} --model_dir {{model_path}}
         --host 0.0.0.0 --port {{port}} --backend fastdeploy
-      entrypoint: ''
       custom_framework: maca
   default_version: latest
-  default_backend_param: []
   default_run_command: paddlex_genai_server --model_name {{model_name}} --model_dir
     {{model_path}} --host 0.0.0.0 --port {{port}} --backend vllm
-  default_entrypoint: ''
   is_built_in: false
-  description: null
-  health_check_path: null
-  built_in_version_configs: {}
   framework_index_map:
     cuda:
     - latest
@@ -110,32 +78,20 @@
   version_configs:
     cpu-1.8:
       image_name: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
-      run_command: ''
-      entrypoint: ''
       custom_framework: cpu
     cuda-sm89-1.8:
       image_name: ghcr.io/huggingface/text-embeddings-inference:89-1.8
-      run_command: ''
-      entrypoint: ''
       custom_framework: cuda
     cuda-sm86-1.8:
       image_name: ghcr.io/huggingface/text-embeddings-inference:86-1.8
-      run_command: ''
-      entrypoint: ''
       custom_framework: cuda
     cuda-sm80-1.8:
       image_name: ghcr.io/huggingface/text-embeddings-inference:1.8
-      run_command: ''
-      entrypoint: ''
       custom_framework: cuda
   default_version: cpu-1.8
-  default_backend_param: []
   default_run_command: --model-id {{model_path}} --port {{port}}
-  default_entrypoint: ''
   is_built_in: false
-  description: null
   health_check_path: /health
-  built_in_version_configs: {}
   framework_index_map:
     cpu:
     - cpu-1.8

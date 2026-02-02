@@ -861,33 +861,39 @@ class InferenceBackendController:
                     )
 
     async def _init_community_backends(self, session: AsyncSession):
-        """Load community backends from community-backends.yaml into database."""
+        """Load community backends from community-inference-backends.yaml into database."""
         try:
-            # Get the path to community-backends.yaml
-            yaml_file = files("gpustack.assets").joinpath("community-backends.yaml")
+            # Get the path to community-inference-backends.yaml
+            yaml_file = files("gpustack.assets").joinpath(
+                "community-inference-backends.yaml"
+            )
 
             if not yaml_file.is_file():
                 logger.debug(
-                    "community-backends.yaml not found, skipping community backend initialization"
+                    "community-inference-backends.yaml not found, skipping community backend initialization"
                 )
                 return
 
             yaml_data = yaml.safe_load(yaml_file.read_text())
 
             if not yaml_data:
-                logger.debug("No community backends found in community-backends.yaml")
+                logger.debug(
+                    "No community backends found in community-inference-backends.yaml"
+                )
                 return
 
             if not isinstance(yaml_data, list):
                 logger.error(
-                    f"Invalid community-backends.yaml format: expected list, got {type(yaml_data).__name__}"
+                    f"Invalid community-inference-backends.yaml format: expected list, got {type(yaml_data).__name__}"
                 )
                 return
 
             for backend_config in yaml_data:
                 await self._upsert_community_backend(session, backend_config)
 
-            logger.debug("Community backends initialized from community-backends.yaml")
+            logger.debug(
+                "Community backends initialized from community-inference-backends.yaml"
+            )
 
         except (ModuleNotFoundError, FileNotFoundError):
             # community_backends directory or yaml file does not exist
