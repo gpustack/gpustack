@@ -24,7 +24,7 @@ JWT_TOKEN_EXPIRE_MINUTES = int(os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", 12
 
 # Higress plugin configuration
 HIGRESS_EXT_AUTH_TIMEOUT_MS = int(
-    os.getenv("GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS", 3000)
+    os.getenv("GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS", 30000)
 )
 
 # Worker configuration
