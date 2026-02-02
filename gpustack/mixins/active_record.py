@@ -514,8 +514,9 @@ class ActiveRecordMixin:
     @classmethod
     async def count(cls, session: AsyncSession) -> int:
         """Return the number of records in the model."""
-
-        return len(await cls.all(session))
+        statement = select(func.count()).select_from(cls)
+        result = await session.exec(statement)
+        return result.one()
 
     @classmethod
     async def count_by_field(cls, session: AsyncSession, field: str, value: Any) -> int:

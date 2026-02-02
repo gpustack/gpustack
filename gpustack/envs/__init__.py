@@ -43,6 +43,13 @@ WORKER_ORPHAN_WORKLOAD_CLEANUP_GRACE_PERIOD = int(
 WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD = int(
     os.getenv("GPUSTACK_WORKER_ORPHAN_BENCHMARK_WORKLOAD_CLEANUP_GRACE_PERIOD", 300)
 )  # 5 minutes in seconds
+# Worker unreachable check mode: auto, enabled, disabled
+# - auto: automatically disable check when worker count > 50 (default)
+# - enabled: always perform unreachable check
+# - disabled: never perform unreachable check
+WORKER_UNREACHABLE_CHECK_MODE = os.getenv(
+    "GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE", "auto"
+).lower()
 
 # Model instance configuration
 MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD = int(
