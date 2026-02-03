@@ -398,7 +398,7 @@ class ClusterRegistrationTokenPublic(BaseModel):
     server_url: str
     image: str
     env: Dict[str, str]
-    args: List[str]
+    args: List[List[str]]
 
 
 class CredentialType(str, Enum):
