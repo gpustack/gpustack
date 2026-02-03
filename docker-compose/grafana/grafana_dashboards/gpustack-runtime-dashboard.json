@@ -2653,14 +2653,14 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values(gpustack:generation_tokens_total{model_name=\"$model_name\", cluster_name=\"$cluster_name\"},model_instance_name)",
+        "definition": "label_values(gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"},model_instance_name)",
         "includeAll": true,
         "label": "Model Instance",
         "name": "model_instance_name",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(gpustack:generation_tokens_total{model_name=\"$model_name\", cluster_name=\"$cluster_name\"},model_instance_name)",
+          "query": "label_values(gpustack:model_instance_status{model_name=\"$model_name\", cluster_name=\"$cluster_name\"},model_instance_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
