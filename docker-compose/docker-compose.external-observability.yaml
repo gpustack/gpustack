@@ -1,7 +1,19 @@
 services:
-  
+  gpustack-server:
+    image: ${IMAGE_REGISTRY:-docker.io}/${GPUSTACK_IMAGE_NAMESPACE:-gpustack}/gpustack:${GPUSTACK_TAG:-latest}
+    container_name: gpustack-server
+    restart: unless-stopped
+    environment:
+      - GPUSTACK_DISABLE_BUILTIN_OBSERVABILITY=true
+      - GPUSTACK_GRAFANA_URL=${GPUSTACK_GRAFANA_URL:?set to browser-reachable Grafana URL}
+    volumes:
+      - gpustack-data:/var/lib/gpustack
+    ports:
+      - "80:80"
+      - "10161:10161"
+
   prometheus:
-    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-prom}/prometheus:${PROMETHEUS_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-docker.io}/${PROMETHEUS_IMAGE_NAMESPACE:-prom}/prometheus:${PROMETHEUS_TAG:-latest}
     container_name: gpustack-prometheus
     restart: unless-stopped
     ports:
@@ -10,11 +22,11 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--web.enable-remote-write-receiver'
     volumes:
-      - ./prometheus:/etc/prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom_data:/prometheus
 
   grafana:
-    image: ${IMAGE_REGISTRY:-docker.io}/${IMAGE_NAMESPACE:-grafana}/grafana:${GRAFANA_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-docker.io}/${GRAFANA_IMAGE_NAMESPACE:-grafana}/grafana:${GRAFANA_TAG:-latest}
     container_name: gpustack-grafana
     restart: unless-stopped
     ports:
@@ -28,7 +40,6 @@ services:
       - ./grafana/grafana_provisioning:/etc/grafana/provisioning:ro
       - ./grafana/grafana_dashboards:/etc/dashboards:ro
 
-
-
 volumes:
   prom_data: {}
+  gpustack-data: {}
