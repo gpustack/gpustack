@@ -1917,6 +1917,6 @@
   },
   "timezone": "browser",
   "title": "GPUStack Worker",
-  "uid": "f33ade9f-821d-4e96-a7f2-eb16c8b9c447",
+  "uid": "gpustack-worker",
   "version": 1
 }

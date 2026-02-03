@@ -2675,7 +2675,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "GPUStack Model & Model Instance",
-  "uid": "b281712d-8bff-41ef-9f3f-71ad43c05e9",
+  "title": "GPUStack Model",
+  "uid": "gpustack-model",
   "version": 1
 }
