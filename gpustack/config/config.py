@@ -121,6 +121,10 @@ class Config(WorkerConfig, BaseSettings):
         gateway_concurrency: Number of concurrent connections for the embedded gateway. Default is 16.
         gateway_namespace: The namespace where the gateway component is deployed.
         namespace: Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.
+        disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
+        grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
+        grafana_model_dashboard_uid: Grafana dashboard UID for model dashboard.
     """
 
     # Server options
@@ -182,6 +186,10 @@ class Config(WorkerConfig, BaseSettings):
     external_auth_post_logout_redirect_key: Optional[str] = None
     # Number of concurrent connections for the embedded gateway.
     gateway_concurrency: int = 16
+    disable_builtin_observability: bool = False
+    grafana_url: Optional[str] = None
+    grafana_worker_dashboard_uid: Optional[str] = "gpustack-worker"
+    grafana_model_dashboard_uid: Optional[str] = "gpustack-model"
 
     _set_worker_fields = {}
 
@@ -212,6 +220,8 @@ class Config(WorkerConfig, BaseSettings):
         self.benchmark_dir = prepare_dir(
             self.benchmark_dir, os.path.join(self.data_dir, "benchmarks")
         )
+        if isinstance(self.grafana_url, str) and not self.grafana_url.strip():
+            self.grafana_url = None
 
         if self.token is None:
             self.token = read_registration_token(self.data_dir)
@@ -287,6 +297,13 @@ class Config(WorkerConfig, BaseSettings):
             self.check_database_url()
 
         return self
+
+    def get_grafana_url(self) -> Optional[str]:
+        if self.grafana_url is not None:
+            return self.grafana_url
+        if self.disable_builtin_observability:
+            return None
+        return "http://127.0.0.1:3000"
 
     @staticmethod
     def check_port_range(port_range: str, diff: Optional[int] = None):
