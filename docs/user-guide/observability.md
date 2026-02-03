@@ -6,66 +6,65 @@ This document describes how to monitor GPUStack Server/Worker/LLM serving runtim
 
 GPUStack provides a comprehensive set of metrics for model serving and GPU resource management. By integrating Prometheus and Grafana, users can collect, store, and visualize these metrics in real time, enabling efficient monitoring and troubleshooting.
 
-## Deploy Observability Stack
+## Built-in Observability (Default)
 
-The observability stack consists of two components:
+By default, GPUStack starts with an embedded Prometheus and Grafana. You can access them via:
 
-- **Prometheus**: Scrapes metrics from GPUStack and stores them.
-- **Grafana**: Visualizes metrics from Prometheus.
+- **Prometheus**: `http://your_gpustack_server_host_ip/prometheus`
+- **Grafana**: `http://your_gpustack_server_host_ip/grafana`
 
-All components can be deployed together via Docker Compose for easy management.
+Built-in Grafana is configured for anonymous Viewer access and has the login form disabled. Admin credentials remain `admin` / `grafana` by default.
 
-### Deploying alongside GPUStack Server
+## External Observability (Optional)
 
-You can deploy GPUStack together with the observability stack using the provided `docker-compose.yaml` for a one-step setup. For details, refer to the [Installation via Docker Compose](../installation/installation.md#installation-via-docker-compose).
+If you want an external Prometheus/Grafana stack, we recommend using the provided Docker Compose files:
 
-### Deploying Separately
+Run the following commands to clone the latest stable release:
 
-If you started GPUStack using `docker run` (not Compose), you can deploy the observability components separately and connect them to your existing GPUStack server as follows:
+```bash
+LATEST_TAG=$(
+    curl -s "https://api.github.com/repos/gpustack/gpustack/releases" \
+    | grep '"tag_name"' \
+    | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' \
+    | grep -Ev 'rc|beta|alpha|preview' \
+    | head -1
+)
+echo "Latest stable release: $LATEST_TAG"
+git clone -b "$LATEST_TAG" https://github.com/gpustack/gpustack.git
+cd gpustack/docker-compose
+```
 
-#### Steps
+Before starting, set `GPUSTACK_GRAFANA_URL` to a browser-reachable Grafana URL (not a container-only hostname like `grafana`).
 
-1. **Get Docker Compose Directory**
+Start external Prometheus/Grafana (this disables the built-in stack):
 
-    Compose file directory: [docker-compose(GitHub)](https://github.com/gpustack/gpustack/tree/main/docker-compose)
+```bash
+sudo docker compose -f docker-compose.external-observability.yaml up -d
+```
 
-    ```bash
-    LATEST_TAG=$(
-        curl -s "https://api.github.com/repos/gpustack/gpustack/releases" \
-        | grep '"tag_name"' \
-        | sed -E 's/.*"tag_name": "([^"]+)".*/\1/' \
-        | grep -Ev 'rc|beta|alpha|preview' \
-        | head -1
-    )
-    echo "Latest stable release: $LATEST_TAG"
-    git clone -b "$LATEST_TAG" https://github.com/gpustack/gpustack.git
-    cd gpustack/docker-compose
-    ```
+If you already have an external Prometheus/Grafana stack, you can configure it manually instead:
 
-2. **Edit the Prometheus configuration file `prometheus.yml`**.
+1. **Configure Prometheus to scrape GPUStack metrics**  
+   Add targets for the GPUStack metrics endpoint (default `:10161`) and worker discovery endpoint. Example:
 
-    Edit `prometheus/prometheus.yml` to replace `<gpustack_server_host>` with the actual hostname or IP address of your GPUStack server. Ensure the metrics port is open and accessible, 10161 is the default metrics port, if you have changed it during server startup, please use the custom port.
+   ```yaml
+   scrape_configs:
+     - job_name: gpustack-worker-discovery
+       scrape_interval: 5s
+       http_sd_configs:
+         - url: "http://<gpustack_server_host>:10161/metrics/targets"
+           refresh_interval: 1m
+     - job_name: gpustack-server
+       scrape_interval: 10s
+       static_configs:
+         - targets: ["<gpustack_server_host>:10161"]
+   ```
+2. **Import GPUStack dashboards into Grafana**  
+   Use the dashboards provided in the `docker-compose/grafana/grafana_dashboards/` directory as a starting point.
+3. **Point GPUStack to your Grafana**  
+   Set `GPUSTACK_GRAFANA_URL` to the externally reachable Grafana URL so dashboard redirects work. This must be a browser-reachable URL.
 
-    ```yaml
-    scrape_configs:
-    - job_name: gpustack-worker-discovery
-        scrape_interval: 5s
-        http_sd_configs:
-        - url: "http://<gpustack_server_host>:10161/metrics/targets"
-            refresh_interval: 1m
-    - job_name: gpustack-server
-        scrape_interval: 10s
-        static_configs:
-        - targets: ["<gpustack_server_host>:10161"]
-    ```
-
-3. **Start the observability stack**
-
-    ```bash
-    sudo docker-compose -f docker-compose.observability.yaml up -d
-    ```
-
-### Accessing Metrics
+## Accessing Metrics
 
 - **GPUStack Metrics Endpoint**:  
   Access metrics at `http://<gpustack_server_host>:10161/metrics`
@@ -74,7 +73,17 @@ If you started GPUStack using `docker run` (not Compose), you can deploy the obs
 - **Prometheus UI**:  
   Access Prometheus at `http://<host>:9090`
 - **Grafana UI**:  
-  Access Grafana at `http://<host>:3000` (default user: `admin`, password: `grafana`)
+  Access Grafana at `http://<host>:3000`. Built-in Grafana is configured for anonymous Viewer access with the login form disabled. The admin credentials remain `admin` / `grafana` by default.
+
+## Migration from Older Compose Setups
+
+If you previously used Docker Compose to run Prometheus/Grafana alongside GPUStack:
+
+- **Keep external observability (recommended for continuity)**:  
+  Leave your existing Prometheus/Grafana containers running. Update Prometheus scrape targets to the new GPUStack metrics endpoint and set `GPUSTACK_GRAFANA_URL` to your existing Grafana.
+
+- **Switch to built-in observability**:  
+  Stop the old Prometheus/Grafana containers, then use the latest `docker-compose.server.yaml` (GPUStack only). Built-in Grafana/Prometheus will take over. Historical metrics from the old Prometheus will not be migrated unless you keep the old stack read-only.
 
 ## Customizing Metrics Mapping
 
