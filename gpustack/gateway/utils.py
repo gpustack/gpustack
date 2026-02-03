@@ -1105,3 +1105,23 @@ def compare_and_append_default_proxy_config(
             existing_providers.append(expected)
     existing_providers.sort(key=lambda p: p.get('id', ''))
     return existing_providers
+
+
+def compare_and_append_proxy_match_rules(
+    existing_rules: List[WasmPluginMatchRule],
+    expected_rules: List[WasmPluginMatchRule],
+    to_keep_provider_ids: Optional[List[str]] = [gpustack_default_ai_proxy_id],
+) -> List[WasmPluginMatchRule]:
+    to_keep_provider_ids = to_keep_provider_ids or []
+    to_keep_config = []
+    for rule in existing_rules:
+        provider_id = rule.config.get('activeProviderId', None)
+        if provider_id is None:
+            continue
+        if provider_id in to_keep_provider_ids:
+            to_keep_config.append(rule)
+
+    return_rules = expected_rules.copy()
+    return_rules.extend(to_keep_config)
+    return_rules.sort(key=lambda r: (r.config.get("activeProviderId", None) or ""))
+    return return_rules

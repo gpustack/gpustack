@@ -2081,7 +2081,11 @@ class ModelProviderController:
                     current_providers, provider_config_list
                 )
             )
-            existing_plugin.spec.matchRules = match_rules
+            existing_plugin.spec.matchRules = (
+                mcp_handler.compare_and_append_proxy_match_rules(
+                    existing_plugin.spec.matchRules, match_rules
+                )
+            )
             await self._higress_extension_api.edit_wasmplugin(
                 namespace=self._config.gateway_namespace,
                 name=mcp_handler.gpustack_ai_proxy_name,
