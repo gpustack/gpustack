@@ -1544,7 +1544,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.2",
                     "--trust-remote-code",
                 ],
             ),
@@ -1565,7 +1565,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.2",
                     "--trust-remote-code",
                 ],
             ),
@@ -1586,7 +1586,7 @@ async def test_select_candidates_4x_64gx8(config, m, expected):
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.2",
                     "--trust-remote-code",
                 ],
                 distributed_inference_across_workers=False,
@@ -1646,8 +1646,6 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
 
     resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
 
-    resource_fit_selector._serving_params.npu_memory_fraction = 0.2
-
     with (
         patch(
             "gpustack.policies.utils.get_worker_model_instances",
@@ -1675,7 +1673,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.9",
                     "--trust-remote-code",
                 ],
                 gpu_selector=GPUSelector(
@@ -1709,7 +1707,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.1",
                     "--trust-remote-code",
                 ],
                 gpu_selector=GPUSelector(
@@ -1743,7 +1741,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2_check_msg(
                 cpu_offloading=False,
                 backend_parameters=[
                     "--max-seq-len=32768",
-                    "--npu-memory-fraction=0.5",
+                    "--npu-memory-fraction=0.9",
                     "--trust-remote-code",
                 ],
                 gpu_selector=GPUSelector(
@@ -1850,21 +1848,8 @@ async def test_select_candidates_4x_64gx4_manually_check_msg(  # noqa: C901
         if gpu.memory.allocated
     ]
 
-    if index == 1:
-        resource_fit_selector = AscendMindIEResourceFitSelector(
-            config, m, model_instances
-        )
-        resource_fit_selector._serving_params.npu_memory_fraction = 0.9
-    elif index == 2:
-        resource_fit_selector = AscendMindIEResourceFitSelector(
-            config, m, model_instances
-        )
-        resource_fit_selector._serving_params.npu_memory_fraction = 0.1
-    elif index == 3:
-        resource_fit_selector = AscendMindIEResourceFitSelector(
-            config, m, model_instances
-        )
-        resource_fit_selector._serving_params.npu_memory_fraction = 0.9
+    resource_fit_selector = AscendMindIEResourceFitSelector(config, m, model_instances)
+    if index == 3:
         for worker in workers:
             worker.system_reserved.ram = worker.status.memory.total - 500
 

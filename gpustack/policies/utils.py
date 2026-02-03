@@ -377,7 +377,7 @@ async def estimate_diffusion_model_vram(
             or model.source == SourceEnum.MODEL_SCOPE
         ):
             weight_size = await asyncio.wait_for(
-                get_diffusion_model_weight_size(model, token),
+                asyncio.to_thread(get_diffusion_model_weight_size, model, token),
                 timeout=timeout_in_seconds,
             )
         elif model.source == SourceEnum.LOCAL_PATH:

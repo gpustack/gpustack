@@ -45,7 +45,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
     """
 
     def __init__(self, cfg: Config, model: Model, model_instances: List[ModelInstance]):
-        super().__init__(cfg, model, model_instances, parse_model_params=False)
+        super().__init__(cfg, model, model_instances)
         self._event_collector = EventCollector(model, logger)
         self._messages = []
 

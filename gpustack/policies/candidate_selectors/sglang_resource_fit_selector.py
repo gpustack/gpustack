@@ -82,6 +82,9 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
             SGLangResourceFitSelector.get_world_size_from_backend_parameters(model)
         )
         self._set_gpu_count(world_size, strategies)
+
+    async def _init_model_parameters(self, workers: List[Worker]):
+        await super()._init_model_parameters(workers)
         self._validate_and_set_arguments()
 
     @staticmethod
@@ -260,6 +263,10 @@ class SGLangResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement for SGLang.
         """
+
+        # Initialize model parameters.
+        await self._init_model_parameters(workers)
+
         if self._is_diffusion:
             self._vram_claim = await estimate_diffusion_model_vram(
                 self._model, self._config.huggingface_token, workers

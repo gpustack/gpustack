@@ -269,7 +269,7 @@ def match_model_scope_file_paths(
     return matching_paths
 
 
-async def read_repo_file_content(  # noqa: C901
+def read_repo_file_content(  # noqa: C901
     model: Model,
     file_path: str,
     token: Optional[str] = None,
@@ -343,8 +343,6 @@ async def read_repo_file_content(  # noqa: C901
                 with open(fp, "r", encoding="utf-8") as f:
                     return json.load(f)
 
-            # Path not exist locally, return None
-            # Worker broadcast logic has been moved to calculator.py
             return None
         else:
             return None
@@ -384,9 +382,7 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     )
 
 
-async def get_diffusion_model_weight_size(
-    model: Model, token: Optional[str] = None
-) -> int:
+def get_diffusion_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     """
     Get the size of the diffusion model weights.
     This is the sum of all weight files with extensions .safetensors, .bin, .pt, or .pth located in the root directory
@@ -410,7 +406,7 @@ async def get_diffusion_model_weight_size(
     # In different repositories, model files may be stored in different dir.
     # However, during runtime, the diffusers loads components from corresponding dir according to the pipeline defined in model_index.json.
     # We can follow the definition in model_index.json to determine which file weights should be included in the calculation.
-    pipeline_data = await read_repo_file_content(model, "model_index.json", token=token)
+    pipeline_data = read_repo_file_content(model, "model_index.json", token=token)
     if pipeline_data is None:
         raise ValueError(f"No model_index.json in repo {repo_id}")
     if isinstance(pipeline_data, list) and len(pipeline_data) > 0:
@@ -431,38 +427,30 @@ async def get_diffusion_model_weight_size(
     return sum_size
 
 
-def get_pretrained_config_from_hub(
-    model: Model,
-    trust_remote_code: bool = False,
-) -> Any:
+def get_pretrained_config(model: Model, **kwargs):
     """
-    Get pretrained config from Hugging Face or ModelScope hub.
-
-    This is a synchronous function that should be called via asyncio.to_thread()
-    in async contexts to avoid blocking the event loop.
-
+    Get the pretrained config of the model from Hugging Face or ModelScope.
     Args:
-        model: Model with source HUGGING_FACE or MODEL_SCOPE
-        trust_remote_code: Whether to trust remote code
-
-    Returns:
-        PretrainedConfig object
-
-    Raises:
-        ValueError: If model source is not HUGGING_FACE or MODEL_SCOPE
+        model: Model to get the pretrained config for.
     """
-    global_config = get_global_config()
 
+    trust_remote_code = False
+    if (
+        model.backend_parameters and "--trust-remote-code" in model.backend_parameters
+    ) or kwargs.get("trust_remote_code"):
+        trust_remote_code = True
+
+    global_config = get_global_config()
+    pretrained_config = None
     if model.source == SourceEnum.HUGGING_FACE:
         from transformers import AutoConfig
 
-        return AutoConfig.from_pretrained(
+        pretrained_config = AutoConfig.from_pretrained(
             model.huggingface_repo_id,
             token=global_config.huggingface_token,
             trust_remote_code=trust_remote_code,
             cache_dir=os.path.join(global_config.cache_dir, "huggingface"),
         )
-
     elif model.source == SourceEnum.MODEL_SCOPE:
         from modelscope import AutoConfig
 
@@ -475,46 +463,34 @@ def get_pretrained_config_from_hub(
         if os.path.exists(repo_cache_dir):
             local_files_only = True
             pretrained_model_name_or_path = repo_cache_dir
-
         with get_model_lock(model.model_scope_model_id):
-            return AutoConfig.from_pretrained(
+            pretrained_config = AutoConfig.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
                 allow_file_pattern=MODELSCOPE_CONFIG_ALLOW_FILE_PATTERN,
                 cache_dir=model_scope_cache_dir,
                 local_files_only=local_files_only,
             )
+    elif model.source == SourceEnum.LOCAL_PATH:
+        if not os.path.exists(model.local_path):
+            logger.warning(
+                f"Local Path: {model.readable_source} is not local to the server node and may reside on a worker node."
+            )
+            # Return an empty dict here to facilitate special handling by upstream methods.
+            return {}
+
+        from transformers import AutoConfig
+
+        pretrained_config = AutoConfig.from_pretrained(
+            model.local_path,
+            trust_remote_code=trust_remote_code,
+            local_files_only=True,
+        )
 
     else:
-        raise ValueError(
-            f"Unsupported model source for hub: {model.source}. "
-            f"Expected HUGGING_FACE or MODEL_SCOPE."
-        )
+        raise ValueError(f"Unsupported model source: {model.source}")
 
-
-async def _fallback_read_config_json(model: Model) -> Optional[Any]:
-    """
-    Fallback to reading config.json directly when AutoConfig fails.
-    Only applicable for Hub sources (HUGGING_FACE, MODEL_SCOPE).
-
-    Args:
-        model: Model with Hub source
-
-    Returns:
-        PretrainedConfig if successful, None otherwise
-    """
-    try:
-        # For Hub sources, we don't need session/workers
-        config_dict = await read_repo_file_content(
-            model,
-            "config.json",
-            token=get_global_config().huggingface_token,
-        )
-        if config_dict:
-            return PretrainedConfig.from_dict(config_dict)
-    except Exception as e:
-        logger.warning(f"Fallback to load config.json failed: {e}")
-    return None
+    return pretrained_config
 
 
 # Simplified from vllm.config._get_and_verify_max_len
@@ -678,7 +654,7 @@ def get_model_scope_model_min_gguf_path(
     return gguf_files[0]
 
 
-async def has_diffusers_model_index(  # noqa: C901
+def has_diffusers_model_index(
     model: Model,
     token: Optional[str] = None,
 ) -> bool:
@@ -702,7 +678,7 @@ async def has_diffusers_model_index(  # noqa: C901
         True if model_index.json contains _diffusers_version, False otherwise
     """
     try:
-        data = await read_repo_file_content(model, "model_index.json", token=token)
+        data = read_repo_file_content(model, "model_index.json", token=token)
         if data is None:
             return False
 

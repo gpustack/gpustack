@@ -64,7 +64,12 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
 
         # Store and format the abnormal message during scheduling, finally it will be extended to self._diagnostic_messages.
         self._scheduling_messages: ListMessageBuilder = ListMessageBuilder([])
+
+    async def _init_model_parameters(self, workers: List[Worker] = None):
+        await super()._init_model_parameters(workers)
+
         # Parse model params.
+        model = self._model
         max_seq_len = self._model_params.derived_max_seq_len
         if max_seq_len > 8192:
             max_seq_len = 8192
@@ -142,6 +147,9 @@ class AscendMindIEResourceFitSelector(ScheduleCandidatesSelector):
         1. Estimating the resource requirements.
         2. Constructing candidates that can accommodate the estimated resource requirements.
         """
+
+        # Initialize model parameters.
+        await self._init_model_parameters(workers)
 
         # Estimate resource usage.
         estimated_usage = await self._estimate_usage(workers)
