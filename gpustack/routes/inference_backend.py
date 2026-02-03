@@ -1086,54 +1086,32 @@ async def update_inference_backend_from_yaml(  # noqa: C901
 
         yaml_data = {k: req_yaml_data[k] for k in allowed_keys if k in req_yaml_data}
 
-        # Convert version_configs to VersionConfigDict if present
-        if 'version_configs' in yaml_data and yaml_data['version_configs']:
-            version_configs_dict = {}
-            for version, config in yaml_data['version_configs'].items():
-                if config.get('built_in_frameworks'):
-                    config['built_in_frameworks'] = None
-                version_configs_dict[version] = VersionConfig(**config)
-            yaml_data['version_configs'] = VersionConfigDict(root=version_configs_dict)
+        # Process version_configs if present
+        yaml_data['version_configs'] = _process_version_configs(
+            yaml_data.get('version_configs')
+        )
 
-        if 'version_configs' in yaml_data:
-            current_versions = {}
-            if backend.version_configs and backend.version_configs.root:
-                current_versions = backend.version_configs.root
+        # Check if any versions are being removed and validate they're not in use
+        await _validate_version_removal(
+            session, backend, yaml_data.get('version_configs')
+        )
 
-            new_versions = {}
-            if yaml_data['version_configs'] and yaml_data['version_configs'].root:
-                new_versions = yaml_data['version_configs'].root
-
-            removed_versions = set(current_versions.keys()) - set(new_versions.keys())
-            for version in removed_versions:
-                is_in_use, model_names = await check_backend_in_use(
-                    session, backend.backend_name, version
-                )
-                if is_in_use:
-                    raise BadRequestException(
-                        message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
-                    )
-
-        # Validate version names
+        # Validate version names based on backend source
         if backend.backend_source == BackendSourceEnum.CUSTOM or (
             backend.backend_source is None and not backend.is_built_in
         ):
             validate_custom_suffix(yaml_data['backend_name'], None)
         else:
-            validate_custom_suffix(None, yaml_data['version_configs'])
+            validate_custom_suffix(None, yaml_data.get('version_configs'))
 
-        if yaml_data.get('version_configs') and yaml_data['version_configs'].root:
-            for v in yaml_data['version_configs'].root.keys():
-                yaml_data['version_configs'].root[v].built_in_frameworks = None
+        # Clear built_in_frameworks for all versions in yaml_data
+        _clear_built_in_frameworks(yaml_data.get('version_configs'))
 
+        # Merge built-in versions for COMMUNITY backends
         if backend.backend_source == BackendSourceEnum.COMMUNITY:
-            built_in_version = {
-                k: v
-                for k, v in backend.version_configs.root.items()
-                if v.built_in_frameworks
-            }
-            built_in_version.update(yaml_data['version_configs'].root)
-            yaml_data['version_configs'].root = built_in_version
+            yaml_data['version_configs'] = _merge_community_versions(
+                backend, yaml_data.get('version_configs')
+            )
 
         # Update the backend from YAML data (after normalization)
         await backend.update(session, yaml_data)
@@ -1148,6 +1126,95 @@ async def update_inference_backend_from_yaml(  # noqa: C901
         raise InternalServerErrorException(
             message=f"Failed to update inference backend from YAML: {e}"
         )
+
+
+def _process_version_configs(
+    version_configs_data: Optional[dict],
+) -> VersionConfigDict:
+    """
+    Convert raw version_configs dict to VersionConfigDict.
+
+    Returns None if version_configs_data is None or empty.
+    """
+    version_configs_dict = {}
+    for version, config in version_configs_data.items() if version_configs_data else []:
+        # Clear built_in_frameworks during initial processing
+        if config.get('built_in_frameworks'):
+            config['built_in_frameworks'] = None
+        version_configs_dict[version] = VersionConfig(**config)
+
+    return VersionConfigDict(root=version_configs_dict)
+
+
+async def _validate_version_removal(
+    session,
+    backend: InferenceBackend,
+    new_version_configs: Optional[VersionConfigDict],
+):
+    """
+    Check if any versions are being removed and validate they're not in use.
+    """
+    # Get current versions (empty dict if none)
+    current_versions = {}
+    if backend.version_configs and backend.version_configs.root:
+        current_versions = backend.version_configs.root
+
+    # Get new versions (empty dict if none)
+    new_versions = {}
+    if new_version_configs and new_version_configs.root:
+        new_versions = new_version_configs.root
+
+    # Find removed versions
+    removed_versions = set(current_versions.keys()) - set(new_versions.keys())
+
+    # Check if removed versions are in use
+    for version in removed_versions:
+        is_in_use, model_names = await check_backend_in_use(
+            session, backend.backend_name, version
+        )
+        if is_in_use:
+            raise BadRequestException(
+                message=f"Cannot remove version name '{version}' of backend '{backend.backend_name}' because it is currently being used by the following models: {', '.join(model_names)}",
+            )
+
+
+def _clear_built_in_frameworks(version_configs: Optional[VersionConfigDict]):
+    """
+    Clear built_in_frameworks for all versions in version_configs.
+    """
+    if not version_configs or not version_configs.root:
+        return
+
+    for version_config in version_configs.root.values():
+        version_config.built_in_frameworks = None
+
+
+def _merge_community_versions(
+    backend: InferenceBackend,
+    new_version_configs: Optional[VersionConfigDict],
+) -> VersionConfigDict:
+    """
+    Merge built-in versions with new versions for COMMUNITY backends.
+
+    Returns:
+        VersionConfigDict: Merged version configurations with built-in versions preserved
+    """
+    # Extract built-in versions from current backend
+    built_in_versions = {}
+    if backend.version_configs and backend.version_configs.root:
+        built_in_versions = {
+            k: v
+            for k, v in backend.version_configs.root.items()
+            if v.built_in_frameworks
+        }
+
+    if not new_version_configs or not new_version_configs.root:
+        return VersionConfigDict(root=built_in_versions)
+
+    # Merge: built-in versions + new versions (new versions take precedence)
+    built_in_versions.update(new_version_configs.root or {})
+    new_version_configs.root = built_in_versions
+    return new_version_configs
 
 
 def validate_custom_suffix(
