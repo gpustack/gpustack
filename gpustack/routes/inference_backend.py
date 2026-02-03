@@ -420,7 +420,7 @@ async def list_backend_configs(  # noqa: C901
             versions=[],
             is_built_in=False,
             enabled=True,
-            backend_source=BackendSourceEnum.CUSTOM,
+            backend_source=BackendSourceEnum.BUILT_IN,
             default_env=None,
         )
         items.append(custom_backend_item)
