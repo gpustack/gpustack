@@ -37,6 +37,7 @@ HEADER_SKIPPED = [
     "server",
     "content-length",
     "transfer-encoding",
+    "content-encoding",
     "cookie",
     "x-forwarded-host",
     "x-forwarded-port",
