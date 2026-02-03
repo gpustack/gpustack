@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 import enum
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from gpustack.config import Config
 from gpustack.policies.event_recorder.recorder import EventCollector, EventLevelEnum
 from gpustack.schemas.models import (
@@ -16,7 +16,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import Worker
 from gpustack.utils.hub import get_hf_text_config, get_max_model_len
-from gpustack.scheduler.calculator import get_pretrained_config_sync
+from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from gpustack.utils.gpu import (
     abbreviate_worker_gpu_indexes,
     group_gpu_ids_by_worker,
@@ -85,18 +85,10 @@ class ModelParameters:
     is_multimodel: bool = False
     vision_config: Optional[Dict] = None
 
-    def from_model(self, model: Model):  # noqa: C901
+    def from_model_pretrained_config(self, model: Model, pretrained_config: Any):
         """
         Parse the model's (hyper)parameters from the model.
         """
-
-        try:
-            pretrained_config = get_pretrained_config_sync(
-                model, trust_remote_code=True
-            )
-        except Exception as e:
-            raise e
-
         if hasattr(pretrained_config, "vision_config"):
             self.is_multimodel = True
             self.vision_config = pretrained_config.vision_config
@@ -189,7 +181,6 @@ class ScheduleCandidatesSelector(ABC):
         config: Config,
         model: Model,
         model_instances: List[ModelInstance],
-        parse_model_params: bool = True,
     ):
         self._config = config
         self._model = model
@@ -201,10 +192,6 @@ class ScheduleCandidatesSelector(ABC):
         self._selected_gpu_indexes_by_gpu_type_and_worker = {}
         self._vram_totals_by_gpu_type_and_worker_and_gpu_idxs = {}
         self._workers_allocatable_resource_by_gpu_type = {}
-
-        if parse_model_params and not is_omni_model(self._model):
-            self._set_model_parameters()
-            self._num_attention_heads = self._model_params.num_attention_heads
 
     @abstractmethod
     def get_messages(self) -> List[str]:
@@ -225,9 +212,22 @@ class ScheduleCandidatesSelector(ABC):
         """
         pass
 
-    def _set_model_parameters(self):
+    async def _init_model_parameters(self, workers: List[Worker]):
+        if is_omni_model(self._model):
+            # Current model parameters are for llm-like models.
+            return
+
         try:
-            self._model_params.from_model(self._model)
+            pretrained_config = await get_pretrained_config_with_workers(
+                self._model,
+                workers,
+                trust_remote_code=True,
+            )
+
+            self._model_params.from_model_pretrained_config(
+                self._model, pretrained_config
+            )
+            self._num_attention_heads = self._model_params.num_attention_heads
         except Exception as e:
             raise ValueError(
                 f"Failed to parse model {self._model.name} hyperparameters: {e}"

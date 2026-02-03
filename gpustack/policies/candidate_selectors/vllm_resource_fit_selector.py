@@ -83,6 +83,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         self._set_gpu_count(world_size, strategies)
         self._set_gpu_memory_utilization()
 
+    async def _init_model_parameters(self, workers: List[Worker]):
+        await super()._init_model_parameters(workers)
         self._validate_arguments()
 
     @staticmethod
@@ -239,6 +241,9 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         """
         Get schedule candidates that fit the GPU resources requirement.
         """
+
+        # Initialize model parameters.
+        await self._init_model_parameters(workers)
 
         self._vram_claim = await estimate_model_vram(
             self._model, self._config.huggingface_token, workers

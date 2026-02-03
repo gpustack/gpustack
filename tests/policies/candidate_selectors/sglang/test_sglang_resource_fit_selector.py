@@ -952,11 +952,16 @@ async def test_auto_schedule_single_work_multi_gpu(
     resource_fit_selector = SGLangResourceFitSelector(config, m, mis)
     placement_scorer = PlacementScorer(m, mis)
 
-    if index == 1:
-        # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
-        resource_fit_selector._num_attention_heads = 25
-    if index == 3:
-        resource_fit_selector._model_params.vocab_size = 10001
+    original_init_model_params = resource_fit_selector._init_model_parameters
+
+    async def mock_init_model_parameters(self, workers):
+        if index == 1:
+            # Simulate a scenario where the model's num_attention_heads cannot be evenly divided by the gpu_count through auto-scheduling.
+            resource_fit_selector._num_attention_heads = 25
+        elif index == 3:
+            resource_fit_selector._model_params.vocab_size = 10001
+        else:
+            await original_init_model_params(workers)
 
     with (
         patch(
@@ -970,6 +975,11 @@ async def test_auto_schedule_single_work_multi_gpu(
         patch(
             'gpustack.policies.scorers.placement_scorer.async_session',
             return_value=AsyncMock(),
+        ),
+        patch.object(
+            SGLangResourceFitSelector,
+            '_init_model_parameters',
+            new=mock_init_model_parameters,
         ),
     ):
 

@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock
 from gpustack.scheduler.evaluator import evaluate_model_metadata
 from tests.utils.model import new_model
 from gpustack.scheduler.scheduler import evaluate_pretrained_config
@@ -211,7 +210,7 @@ async def test_evaluate_model_metadata(
 ):
     try:
         actual_compatible, actual_error = await evaluate_model_metadata(
-            config, AsyncMock(), model, []
+            config, model, []
         )
         assert (
             actual_compatible == expect_compatible

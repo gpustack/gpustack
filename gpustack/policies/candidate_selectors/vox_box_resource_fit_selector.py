@@ -43,9 +43,7 @@ class VoxBoxResourceFitSelector(ScheduleCandidatesSelector):
         model_instances: List[ModelInstance],
         cache_dir: str,
     ):
-        super().__init__(
-            config, model, model_instances=model_instances, parse_model_params=False
-        )
+        super().__init__(config, model, model_instances=model_instances)
         self._cache_dir = os.path.join(cache_dir, "vox-box")
         self._messages = []
 

@@ -9,13 +9,12 @@ from dataclasses import dataclass
 import time
 from typing import List, Optional, Dict, Tuple, Any
 from dataclasses_json import dataclass_json
+from transformers import PretrainedConfig
 
-from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.client.worker_filesystem_client import WorkerFilesystemClient
 from gpustack.config.config import get_global_config
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
-from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.models import (
     Model,
     SourceEnum,
@@ -23,7 +22,6 @@ from gpustack.schemas.models import (
     CategoryEnum,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.server.services import ModelFileService
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.convert import parse_duration, safe_int
 from gpustack.utils.hub import (
@@ -31,8 +29,8 @@ from gpustack.utils.hub import (
     list_repo,
     match_hugging_face_files,
     match_model_scope_file_paths,
-    _fallback_read_config_json,
-    get_pretrained_config_from_hub,
+    get_pretrained_config,
+    read_repo_file_content,
 )
 from gpustack.utils import platform
 
@@ -539,7 +537,7 @@ class GGUFParserCommandMutableParameters:
                     command.append(f"--{attr_name.replace('_', '-')}={str(attr_value)}")
 
 
-async def _gguf_parser_command(  # noqa: C901
+async def _gguf_parser_command(
     model: Model, offload: GPUOffloadEnum = GPUOffloadEnum.Full, **kwargs
 ):
     bin_path = pkg_resources.files("gpustack.third_party.bin.gguf-parser").joinpath(
@@ -592,39 +590,6 @@ async def _gguf_parser_command(  # noqa: C901
     command.extend(source_args)
 
     return command
-
-
-async def get_workers_with_model_file(
-    session: Optional[AsyncSession],
-    model: Model,
-    workers: List[Worker],
-    is_single: bool = False,
-) -> List[Worker]:
-    """
-    Get workers that likely have the model file from ModelFile.
-    """
-    if not session:
-        return []
-
-    source_index = model.model_source_index
-    if not source_index:
-        return []
-
-    model_files = await ModelFileService(session).get_by_source_index(source_index)
-    if not model_files:
-        return []
-
-    worker_ids = set()
-
-    # Collect worker_ids from READY or DOWNLOADING files
-    for mf in model_files:
-        if mf.state == ModelFileStateEnum.READY and mf.worker_id:
-            worker_ids.add(mf.worker_id)
-            if is_single:
-                break
-
-    # Filter workers by collected worker_ids
-    return [w for w in workers if w.id in worker_ids]
 
 
 async def _try_parse_on_workers(
@@ -687,9 +652,8 @@ async def _try_parse_on_workers(
     return None
 
 
-async def get_pretrained_config(
+async def get_pretrained_config_with_workers(
     model: Model,
-    session: Optional[AsyncSession] = None,
     workers: Optional[List[Worker]] = None,
     trust_remote_code: bool = False,
 ) -> Optional[Any]:
@@ -697,12 +661,11 @@ async def get_pretrained_config(
     Unified async entry point for getting pretrained config.
 
     Handles all model sources with appropriate fallback strategies:
-    - Hub sources (HUGGING_FACE, MODEL_SCOPE): AutoConfig → config.json
-    - Worker sources (LOCAL_PATH): target workers → all workers
+    - For LOCAL_PATH model which is not available locally, get from workers
+    - For others, AutoConfig and fallback to config.json
 
     Args:
         model: Model to get config for
-        session: Database session (for LOCAL_PATH worker optimization)
         workers: Available workers (for LOCAL_PATH)
         trust_remote_code: Whether to trust remote code
 
@@ -713,45 +676,41 @@ async def get_pretrained_config(
         ValueError: If config is required but cannot be loaded
     """
     pretrained_config = None
+    timeout_in_seconds = 15
 
     try:
-        if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
-            # Hub sources: run in thread pool to avoid blocking event loop
-            pretrained_config = await asyncio.to_thread(
-                get_pretrained_config_from_hub,
-                model,
-                trust_remote_code,
-            )
-
-        elif model.source == SourceEnum.LOCAL_PATH:
-            # Worker sources: direct async call
+        if model.source == SourceEnum.LOCAL_PATH and not os.path.exists(
+            model.local_path
+        ):
             pretrained_config = await get_pretrained_config_from_workers(
                 model,
-                workers or [],
-                session,
-                trust_remote_code,
+                workers,
             )
-            if pretrained_config is None:
-                logger.warning(
-                    f"Local Path: {model.readable_source} is not local to the server node "
-                    f"and may reside on a worker node."
-                )
         else:
-            raise ValueError(f"Unsupported model source: {model.source}")
-
+            pretrained_config = await asyncio.wait_for(
+                asyncio.to_thread(
+                    get_pretrained_config, model, trust_remote_code=trust_remote_code
+                ),
+                timeout=timeout_in_seconds,
+            )
     except Exception as e:
-        # Fallback logic ONLY for Hub sources
-        if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
-            if model.backend_version is not None or isinstance(e, ImportError):
-                logger.debug(
-                    "Fallback to load config.json after AutoConfig.from_pretrained failed"
-                )
-                pretrained_config = await _fallback_read_config_json(model)
+        if should_fallback_load_config_json(e, model):
+            config_dict = await asyncio.wait_for(
+                asyncio.to_thread(
+                    read_repo_file_content,
+                    model,
+                    "config.json",
+                    token=get_global_config().huggingface_token,
+                ),
+                timeout=timeout_in_seconds,
+            )
+            if config_dict:
+                return PretrainedConfig.from_dict(config_dict)
 
-        # Error handling for different model categories
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             return pretrained_config
 
+        # Error handling for different model categories
         if any(
             cat in model.categories
             for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
@@ -766,108 +725,28 @@ async def get_pretrained_config(
     return pretrained_config
 
 
-def get_pretrained_config_sync(  # noqa: C901
-    model: Model,
-    trust_remote_code: bool = False,
-) -> Optional[Any]:
+def should_fallback_load_config_json(e: Exception, model: Model) -> bool:
     """
-    Unified sync entry point for getting pretrained config.
-
-    This is optimized for synchronous contexts (worker backends, candidate selectors).
-    For LOCAL_PATH models, it will convert to async call using asyncio.run.
+    Determine whether to fallback to loading config.json based on the exception and model.
 
     Args:
-        model: Model to get config for
-        trust_remote_code: Whether to trust remote code
-
+        e: The exception encountered during loading
+        model: The model being processed
     Returns:
-        PretrainedConfig object or None
-
-    Raises:
-        ValueError: If config cannot be loaded
+        bool: True if should fallback to loading config.json, False otherwise
     """
-    # For LOCAL_PATH, convert to async call
-    if model.source == SourceEnum.LOCAL_PATH:
-        try:
-            return asyncio.run(
-                get_pretrained_config(
-                    model,
-                    session=None,  # No session available in sync context
-                    workers=None,  # No workers available in sync context
-                    trust_remote_code=trust_remote_code,
-                )
-            )
-        except RuntimeError:
-            # Event loop already running, try with new thread
-            import concurrent.futures
+    if model.source not in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
+        return False
 
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    get_pretrained_config(
-                        model,
-                        session=None,
-                        workers=None,
-                        trust_remote_code=trust_remote_code,
-                    ),
-                )
-                return future.result()
+    if model.backend_version is not None or isinstance(e, ImportError):
+        return True
 
-    try:
-        return get_pretrained_config_from_hub(model, trust_remote_code)
-
-    except Exception as e:
-        # Fallback to config.json
-        if model.backend_version is not None or isinstance(e, ImportError):
-            logger.debug(
-                "Fallback to load config.json after AutoConfig.from_pretrained failed"
-            )
-            # For sync fallback, we need to use asyncio.run
-            # But this is only for the fallback path, not the main path
-            try:
-                # Check if we're already in an event loop
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = None
-
-                if loop is not None:
-                    # Event loop already running, use ThreadPoolExecutor
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(
-                            asyncio.run,
-                            _fallback_read_config_json(model),
-                        )
-                        return future.result()
-                else:
-                    # No running event loop, can use asyncio.run directly
-                    return asyncio.run(_fallback_read_config_json(model))
-            except Exception as fe:
-                logger.warning(f"Fallback to load config.json failed: {fe}")
-
-        # Error handling
-        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
-            return None
-
-        if any(
-            cat in model.categories
-            for cat in [CategoryEnum.IMAGE, CategoryEnum.UNKNOWN]
-        ):
-            return None
-
-        if CategoryEnum.LLM in model.categories or isinstance(e, ValueError):
-            raise e
-
-        return None
+    return False
 
 
 async def check_diffusers_model_index_from_workers(
     model: Model,
     workers: List[Worker],
-    session: Optional[AsyncSession] = None,
-    token: Optional[str] = None,
 ) -> bool:
     """
     Check if a LOCAL_PATH model is a diffusers model by querying workers.
@@ -878,8 +757,6 @@ async def check_diffusers_model_index_from_workers(
     Args:
         model: Model with source LOCAL_PATH
         workers: List of workers to query
-        session: Optional database session for querying ModelFile
-        token: Optional Hugging Face API token (unused for LOCAL_PATH)
 
     Returns:
         True if model_index.json contains _diffusers_version, False otherwise
@@ -888,9 +765,7 @@ async def check_diffusers_model_index_from_workers(
         return False
 
     # Read model_index.json from workers
-    data = await read_local_path_file_from_workers(
-        model, "model_index.json", workers, session
-    )
+    data = await read_local_path_file_from_workers(model, "model_index.json", workers)
 
     if data is None:
         return False
@@ -910,21 +785,18 @@ async def read_local_path_file_from_workers(  # noqa: C901
     model: Model,
     file_path: str,
     workers: List[Worker],
-    session: Optional[AsyncSession] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Read a file from LOCAL_PATH model by querying workers.
 
-    This function implements a multi-tier strategy:
-    1. Try workers that are known to have the model file (from ModelFile)
-    2. Apply filters (GPU selector, label selector) to reduce broadcast scope
-    3. Broadcast to filtered workers
+    Steps:
+    1. Apply filters (GPU selector, label selector) to reduce broadcast scope
+    2. Broadcast to filtered workers
 
     Args:
         model: Model with source LOCAL_PATH
         file_path: Relative path to the file (e.g., "config.json", "model_index.json")
         workers: List of workers to query
-        session: Optional database session for querying ModelFile
 
     Returns:
         File content as dict if successful, None otherwise
@@ -951,19 +823,7 @@ async def read_local_path_file_from_workers(  # noqa: C901
             logger.debug(f"Failed to read {file_path} from worker {worker.id}: {e}")
             return None
 
-    # Tier 1: Try workers that likely have the file first
-    target_workers = await get_workers_with_model_file(session, model, workers)
-    if target_workers:
-        logger.info(
-            f"Trying to read {file_path} from {len(target_workers)} known workers first"
-        )
-        tasks = [try_read_from_worker(worker) for worker in target_workers]
-        for completed_task in asyncio.as_completed(tasks):
-            result = await completed_task
-            if result:
-                return result
-
-    # Tier 1.5: Apply filters to reduce broadcast scope
+    # Step 1: Apply filters to reduce broadcast scope
     filtered_workers = workers
     messages = []
 
@@ -983,7 +843,7 @@ async def read_local_path_file_from_workers(  # noqa: C901
         for msg in messages:
             logger.info(f"Worker filtering for {file_path} read: {msg}")
 
-    # Tier 2: Broadcast to filtered workers
+    # Step 2: Broadcast to filtered workers
     if not filtered_workers:
         logger.warning(f"No workers available after filtering for {file_path}")
         return None
@@ -1001,22 +861,16 @@ async def read_local_path_file_from_workers(  # noqa: C901
     return None
 
 
-async def get_pretrained_config_from_workers(  # noqa: C901
+async def get_pretrained_config_from_workers(
     model: Model,
     workers: List[Worker],
-    session: Optional[AsyncSession] = None,
-    trust_remote_code: bool = False,
 ) -> Optional[Any]:
     """
     Get pretrained config from remote workers for LOCAL_PATH models.
 
-    This function now reuses read_local_path_file_from_workers for consistency.
-
     Args:
         model: Model with source LOCAL_PATH
         workers: List of workers to query
-        session: Optional database session for querying ModelFile
-        trust_remote_code: Whether to trust remote code
 
     Returns:
         PretrainedConfig object if successful, None otherwise
@@ -1024,30 +878,7 @@ async def get_pretrained_config_from_workers(  # noqa: C901
     if not workers:
         return None
 
-    # Check if the model path exists locally on the server
-    if os.path.exists(model.local_path):
-        try:
-            config_path = os.path.join(model.local_path, "config.json")
-            if os.path.exists(config_path):
-                # Read file in thread pool to avoid blocking event loop
-                def read_config_json():
-                    import json
-
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        return json.load(f)
-
-                config_dict = await asyncio.to_thread(read_config_json)
-                from transformers import PretrainedConfig
-
-                return PretrainedConfig.from_dict(config_dict)
-        except Exception as e:
-            logger.warning(f"Failed to load config from local path: {e}")
-            return None
-
-    # Read config.json from workers using the new unified function
-    config_dict = await read_local_path_file_from_workers(
-        model, "config.json", workers, session
-    )
+    config_dict = await read_local_path_file_from_workers(model, "config.json", workers)
 
     if not config_dict:
         return None
@@ -1057,48 +888,25 @@ async def get_pretrained_config_from_workers(  # noqa: C901
     return PretrainedConfig.from_dict(config_dict)
 
 
-async def _calculate_on_worker(  # noqa: C901
+async def _calculate_from_workers(  # noqa: C901
     model: Model,
     workers: List[Worker],
     offload: GPUOffloadEnum,
-    session: Optional[AsyncSession] = None,
     **kwargs,
 ) -> Optional[ModelResourceClaim]:
     """
     Calculate model resource claim by running gguf-parser on a worker.
 
-    Optimization: Try to find workers that likely have the file first (from
-    ModelFile), then apply filters, then fall back to broadcasting.
-    This significantly reduces network overhead in most scenarios.
-
     Args:
         model: Model to calculate the resource claim for.
         workers: List of available workers.
         offload: GPU offload strategy.
-        session: Optional database session for querying cached worker info.
         kwargs: Additional arguments to pass to the GGUF parser.
 
     Returns:
         ModelResourceClaim if successful, None otherwise.
     """
-
-    # Tier 1: Try to find workers from ModelFile
-    if session:
-        target_workers = await get_workers_with_model_file(
-            session, model, workers, is_single=True
-        )
-        if target_workers:
-            logger.info(
-                f"Found {len(target_workers)} workers from ModelFile, "
-                f"trying them first for model {model.name}"
-            )
-            result = await _try_parse_on_workers(
-                model, target_workers, offload, **kwargs
-            )
-            if result:
-                return result
-
-    # Tier 1.5: Apply filters before broadcasting
+    # Step 1: Apply worker filters before broadcasting
     filtered_workers = workers
     messages = []
 
@@ -1126,7 +934,7 @@ async def _calculate_on_worker(  # noqa: C901
         for msg in messages:
             logger.info(f"Worker filtering for GGUF parsing: {msg}")
 
-    # Tier 2: Fall back to broadcasting to filtered workers
+    # Step 2: Broadcasting to filtered workers
     if not filtered_workers:
         logger.warning("No workers available after filtering for GGUF parsing")
         return None
@@ -1142,7 +950,6 @@ async def calculate_model_resource_claim(
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
     workers: Optional[List[Worker]] = None,
-    session: Optional[AsyncSession] = None,
     **kwargs,
 ) -> ModelResourceClaim:
     """
@@ -1151,7 +958,6 @@ async def calculate_model_resource_claim(
         model: Model to calculate the resource claim for.
         offload: GPU offload strategy.
         workers: Optional list of available workers for remote parsing.
-        session: Optional database session for querying cached worker info.
         kwargs: Additional arguments to pass to the GGUF parser.
     """
 
@@ -1159,8 +965,8 @@ async def calculate_model_resource_claim(
         # Try to calculate on worker if workers are provided
         if workers:
             try:
-                result = await _calculate_on_worker(
-                    model, workers, offload, session=session, **kwargs
+                result = await _calculate_from_workers(
+                    model, workers, offload, **kwargs
                 )
                 if result:
                     return result
@@ -1251,9 +1057,7 @@ def clear_vram_claim(claim: GGUFParserOutput):
             ]
 
 
-async def _gguf_parser_command_args_from_source(  # noqa: C901
-    model: Model, **kwargs
-) -> List[str]:
+async def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[str]:
     """
     Get the model url based on the model source.
     Args:

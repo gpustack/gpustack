@@ -93,6 +93,12 @@ async def evaluate_models(
 
     model_instances = await ModelInstance.all_by_fields(session, fields=fields)
 
+    if len(model_specs) == 1:
+        # Sort worker for single-model evaluation only. No need for batch evaluation.
+        workers = await scheduler.prioritize_workers_with_model_files(
+            session, model_specs[0], workers
+        )
+
     async def evaluate(model: ModelSpec):
         return await evaluate_model_with_cache(
             config, session, model, workers, model_instances
@@ -188,7 +194,7 @@ async def evaluate_model(
 
     evaluations = [
         (evaluate_model_input, (session, model)),
-        (evaluate_model_metadata, (config, session, model, workers)),
+        (evaluate_model_metadata, (config, model, workers)),
         (evaluate_environment, (model, workers)),
     ]
     for evaluation, args in evaluations:
@@ -324,7 +330,6 @@ async def evaluate_environment(
 
 async def evaluate_model_metadata(
     config: Config,
-    session: AsyncSession,
     model: ModelSpec,
     workers: List[Worker],
 ) -> Tuple[bool, List[str]]:
@@ -379,13 +384,11 @@ async def evaluate_model_metadata(
                 )
 
         if is_gguf_model(model):
-            await scheduler.evaluate_gguf_model(config, model)
+            await scheduler.evaluate_gguf_model(model, workers=workers)
         elif model.backend == BackendEnum.VOX_BOX:
             await scheduler.evaluate_vox_box_model(config, model)
         elif not is_audio_model(model):
-            await scheduler.evaluate_pretrained_config(
-                model, session=session, workers=workers
-            )
+            await scheduler.evaluate_pretrained_config(model, workers=workers)
     except Exception as e:
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")

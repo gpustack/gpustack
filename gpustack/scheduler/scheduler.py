@@ -51,18 +51,24 @@ from gpustack.schemas.models import (
     SourceEnum,
     is_omni_model,
 )
+from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_model_resource_claim,
+    check_diffusers_model_index_from_workers,
 )
-from gpustack.server.services import ModelInstanceService, ModelService
+from gpustack.server.services import (
+    ModelInstanceService,
+    ModelService,
+    ModelFileService,
+)
 from gpustack.utils.command import find_parameter
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
-from gpustack.scheduler.calculator import get_pretrained_config
+from gpustack.scheduler.calculator import get_pretrained_config_with_workers
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -156,12 +162,15 @@ class Scheduler:
 
                 # Get available workers for potential remote parsing
                 workers = await Worker.all(session)
+                sorted_workers = prioritize_workers_with_model_files(
+                    session, model, workers
+                )
 
                 should_update_model = False
                 try:
                     if is_gguf_model(model):
                         should_update_model = await evaluate_gguf_model(
-                            self._config, model, workers, session
+                            model, sorted_workers
                         )
                         if await self.check_model_distributability(
                             session, model, instance
@@ -174,8 +183,7 @@ class Scheduler:
                     else:
                         should_update_model = await evaluate_pretrained_config(
                             model,
-                            session=session,
-                            workers=workers,
+                            workers=sorted_workers,
                             raise_raw=True,
                         )
                 except Exception as e:
@@ -471,17 +479,14 @@ def pick_highest_score_candidate(candidates: List[ModelInstanceScheduleCandidate
 
 
 async def evaluate_gguf_model(
-    config: Config,
     model: Model,
     workers: Optional[List[Worker]] = None,
-    session: Optional[AsyncSession] = None,
 ) -> bool:
 
     task_output = await calculate_model_resource_claim(
         model,
         offload=GPUOffloadEnum.Full,
         workers=workers,
-        session=session,
     )
     if (
         task_output.resource_architecture
@@ -576,7 +581,6 @@ async def evaluate_vox_box_model(
 async def evaluate_diffusion_model(
     model: Model,
     workers: Optional[List[Worker]] = None,
-    session: Optional[AsyncSession] = None,
 ):
     """
     Evaluate diffusion model and update model categories.
@@ -584,7 +588,6 @@ async def evaluate_diffusion_model(
     Args:
         model: Model to evaluate
         workers: Optional list of workers (for LOCAL_PATH remote read)
-        session: Optional database session (for LOCAL_PATH worker optimization)
 
     Returns:
         True if the model is a diffusion model, False otherwise
@@ -600,24 +603,20 @@ async def evaluate_diffusion_model(
     # For Hub sources and local files, use hub.py function
     if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
         is_diffusers = await asyncio.wait_for(
-            has_diffusers_model_index(model, token=hf_token), timeout=10
+            asyncio.to_thread(has_diffusers_model_index, model, token=hf_token),
+            timeout=10,
         )
     # For LOCAL_PATH, try local first, then workers
     elif model.source == SourceEnum.LOCAL_PATH:
         # Try local read first
         is_diffusers = await asyncio.wait_for(
-            has_diffusers_model_index(model, token=hf_token), timeout=10
+            asyncio.to_thread(has_diffusers_model_index, model, token=hf_token),
+            timeout=10,
         )
         # If not found locally and workers are provided, query workers
         if not is_diffusers and workers:
-            from gpustack.scheduler.calculator import (
-                check_diffusers_model_index_from_workers,
-            )
-
             is_diffusers = await asyncio.wait_for(
-                check_diffusers_model_index_from_workers(
-                    model, workers, session, hf_token
-                ),
+                check_diffusers_model_index_from_workers(model, workers),
                 timeout=10,
             )
     else:
@@ -629,9 +628,45 @@ async def evaluate_diffusion_model(
     return False
 
 
+async def prioritize_workers_with_model_files(
+    session: AsyncSession, model: Model, workers: List[Worker]
+) -> List[Worker]:
+    """
+    Prioritize workers that have the model files. This helps optimization for getting model config from remote worker local paths.
+
+    Args:
+        session: Database session for querying worker files.
+        model: Model to check for.
+        workers: List of workers to prioritize.
+
+    Returns:
+        List of prioritized workers.
+    """
+    if not workers:
+        return []
+
+    source_index = model.model_source_index
+    if not source_index:
+        return workers
+
+    model_files = await ModelFileService(session).get_by_source_index(source_index)
+    if not model_files:
+        return workers
+
+    worker_ids_with_ready_files = {
+        mf.worker_id for mf in model_files if mf.state == ModelFileStateEnum.READY
+    }
+
+    # Put workers with ready model files at the front
+    sorted_workers = sorted(
+        workers,
+        key=lambda w: 0 if w.id in worker_ids_with_ready_files else 1,
+    )
+    return sorted_workers
+
+
 async def evaluate_pretrained_config(
     model: Model,
-    session: Optional[AsyncSession] = None,
     workers: Optional[List[Worker]] = None,
     raise_raw: bool = False,
 ) -> bool:
@@ -639,7 +674,6 @@ async def evaluate_pretrained_config(
     evaluate the model's pretrained config to determine its type.
     Args:
         model: Model to evaluate.
-        session: Optional database session (for LOCAL_PATH worker optimization).
         workers: Optional list of workers (for LOCAL_PATH).
         raise_raw: If True, raise the raw exception.
     Returns:
@@ -647,9 +681,7 @@ async def evaluate_pretrained_config(
     """
     # 1) try to evaluate as diffusion model
     try:
-        is_image_category = await evaluate_diffusion_model(
-            model, workers=workers, session=session
-        )
+        is_image_category = await evaluate_diffusion_model(model, workers=workers)
         if is_image_category:
             return True
     except Exception:
@@ -659,9 +691,8 @@ async def evaluate_pretrained_config(
     if not architectures:
         try:
             trust_remote_code = _extract_trust_remote_code(model)
-            pretrained_config = await get_pretrained_config(
+            pretrained_config = await get_pretrained_config_with_workers(
                 model,
-                session=session,
                 workers=workers,
                 trust_remote_code=trust_remote_code,
             )
