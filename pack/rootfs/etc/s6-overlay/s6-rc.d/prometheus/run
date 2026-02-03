@@ -1,0 +1,29 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+# shellcheck disable=SC1091,SC1090
+# ================================
+# Prometheus longrun service
+# ================================
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+set -e
+
+PROM_LOG_DIR="${LOG_DIR}/prometheus"
+createDir "$PROMETHEUS_DATA_DIR"
+createDir "$PROM_LOG_DIR"
+
+if [ ! -f "$PROMETHEUS_CONFIG_FILE" ]; then
+    echo "[ERROR] Prometheus config missing at $PROMETHEUS_CONFIG_FILE."
+    exit 1
+fi
+
+echo "[INFO] Starting Prometheus."
+exec /usr/local/bin/prometheus \
+    --config.file="$PROMETHEUS_CONFIG_FILE" \
+    --storage.tsdb.path="$PROMETHEUS_DATA_DIR" \
+    --web.listen-address="0.0.0.0:${PROMETHEUS_PORT}" \
+    --web.external-url="/prometheus" \
+    --web.route-prefix="/prometheus"

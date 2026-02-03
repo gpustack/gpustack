@@ -18,6 +18,7 @@ from gpustack.utils.s6_services import (
     gateway_services,
     postgres_services,
     migration_services,
+    observability_services,
     all_dependent_services,
     all_services,
     gpustack_service_name,
@@ -69,6 +70,8 @@ def run(args: argparse.Namespace):
             prepare_postgres_config(cfg)
         if cfg.gateway_mode == GatewayModeEnum.embedded:
             prepare_gateway_config(cfg)
+        if use_builtin_grafana(cfg):
+            prepare_prometheus_config(cfg)
         logger.info("Pre-run checks and setup completed successfully.")
     except Exception as e:
         logger.fatal(f"Failed to pre-check the configuration: {e}")
@@ -85,6 +88,9 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
 
     if cfg.gateway_mode == GatewayModeEnum.embedded:
         gateway_services.set_ports(cfg, ports)
+
+    if use_builtin_grafana(cfg):
+        observability_services.set_ports(cfg, ports)
 
     # gpustack server/worker
     gateway_disabled = cfg.gateway_mode == GatewayModeEnum.disabled
@@ -242,6 +248,31 @@ current-context: higress
             )
 
 
+def prepare_prometheus_config(cfg: Config):
+    config_path = os.getenv("PROMETHEUS_CONFIG_FILE", "/etc/prometheus/prometheus.yml")
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w") as f:
+        f.write(
+            f"""# Managed by GPUStack
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: gpustack-worker-discovery
+    scrape_interval: 5s
+    http_sd_configs:
+      - url: "http://127.0.0.1:{cfg.metrics_port}/metrics/targets"
+        refresh_interval: 1m
+  - job_name: gpustack-server
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - 127.0.0.1:{cfg.metrics_port}
+"""
+        )
+
+
 def determine_enabled_services(cfg: Config) -> List[str]:
     services = []
     # embedded database
@@ -255,7 +286,24 @@ def determine_enabled_services(cfg: Config) -> List[str]:
     if cfg.gateway_mode == GatewayModeEnum.embedded:
         services.extend(gateway_services.all_services())
 
+    # embedded observability
+    if use_builtin_grafana(cfg):
+        services.extend(observability_services.all_services())
+
     return services
+
+
+def use_builtin_grafana(cfg: Config) -> bool:
+    if cfg.disable_builtin_observability:
+        return False
+    if cfg.grafana_url is not None:
+        return False
+
+    server_role = cfg.server_role() in [
+        Config.ServerRole.SERVER,
+        Config.ServerRole.BOTH,
+    ]
+    return server_role
 
 
 def determine_dependency_services(cfg: Config) -> List[str]:

@@ -26,6 +26,8 @@ ARG GPUSTACK_RUNTIME_ROCM_VERSION=7.0.2
 ARG GPUSTACK_RUNTIME_DOCKER_MIRRORED_NAME_FILTER_LABELS
 ARG HIGRESS_VERSION=2.1.8
 ARG HIGRESS_APISERVER_VERSION=0.0.25
+ARG PROMETHEUS_VERSION=3.5.1
+ARG GRAFANA_VERSION=12.2.4
 
 # Stage Base
 #
@@ -387,6 +389,7 @@ RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
 EOF
 # Initialize configurations
 COPY pack/rootfs/ /
+COPY docker-compose/grafana/grafana_dashboards/ /etc/dashboards/
 ENV GPUSTACK_HIGRESS_PLUGIN_DIR=/usr/local/share/gpustack-higress/plugins
 ## END Install Higress standalone components
 
@@ -436,6 +439,53 @@ RUN <<EOF
     fi
 
     # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
+EOF
+
+## Install Prometheus and Grafana
+
+ARG PROMETHEUS_VERSION
+ARG GRAFANA_VERSION
+RUN <<EOF
+    set -eux
+
+    apt-get update -y && apt-get install -y --no-install-recommends \
+        fontconfig
+
+    case "${TARGETARCH}" in
+        amd64)
+            PROM_ARCH="amd64"
+            GRAFANA_ARCH="amd64"
+            ;;
+        arm64)
+            PROM_ARCH="arm64"
+            GRAFANA_ARCH="arm64"
+            ;;
+        *)
+            echo "Unsupported TARGETARCH: ${TARGETARCH}"
+            exit 1
+            ;;
+    esac
+
+    curl --retry 3 --retry-connrefused -fL \
+        "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-${PROM_ARCH}.tar.gz" \
+        | tar -zx -C /opt
+    mv "/opt/prometheus-${PROMETHEUS_VERSION}.linux-${PROM_ARCH}" /opt/prometheus
+    ln -s /opt/prometheus/prometheus /usr/local/bin/prometheus
+    ln -s /opt/prometheus/promtool /usr/local/bin/promtool
+
+    curl --retry 3 --retry-connrefused -fL \
+        "https://dl.grafana.com/oss/release/grafana-${GRAFANA_VERSION}.linux-${GRAFANA_ARCH}.tar.gz" \
+        | tar -zx -C /opt
+    mv "/opt/grafana-${GRAFANA_VERSION}" /opt/grafana
+    ln -s /opt/grafana/bin/grafana-server /usr/local/bin/grafana-server
+    ln -s /opt/grafana/bin/grafana-cli /usr/local/bin/grafana-cli
+
+    mkdir -p /etc/grafana
+    cp /opt/grafana/conf/sample.ini /etc/grafana/grafana.ini.sample
+
     rm -rf /var/tmp/* \
         && rm -rf /tmp/* \
         && rm -rf /var/cache/apt
