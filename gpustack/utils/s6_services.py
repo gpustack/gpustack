@@ -81,6 +81,11 @@ postgres_services = S6Services(
 migration_services = S6Services(
     S6Service("gpustack-migration", [], True, False),
 )
+observability_services = S6Services(
+    S6Service("grafana", [3000]),
+    S6Service("prometheus", [9090]),
+    support_pipeline=True,
+)
 
 
 def all_dependent_services() -> List[str]:
@@ -88,6 +93,7 @@ def all_dependent_services() -> List[str]:
         *gateway_services.dep_services,
         *postgres_services.dep_services,
         *migration_services.dep_services,
+        *observability_services.dep_services,
     ]
 
 
@@ -96,6 +102,7 @@ def all_services() -> List[str]:
         *gateway_services.all_services(),
         *postgres_services.all_services(),
         *migration_services.all_services(),
+        *observability_services.all_services(),
     ]
 
 

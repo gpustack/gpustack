@@ -1,0 +1,44 @@
+#!/command/with-contenv /bin/bash
+# shellcheck shell=bash
+# shellcheck disable=SC1091,SC1090
+# ================================
+# Grafana longrun service
+# ================================
+
+SCRIPT_ROOT=/etc/s6-overlay/scripts
+source "$SCRIPT_ROOT/base.sh"
+source "$SCRIPT_ROOT/default-variables.sh"
+
+set -e
+
+GRAFANA_LOG_DIR="${LOG_DIR}/grafana"
+createDir "$GRAFANA_DATA_DIR"
+createDir "$GRAFANA_LOG_DIR"
+createDir "$GRAFANA_PLUGINS_DIR"
+
+GRAFANA_CONFIG_DIR="$(dirname "$GRAFANA_CONFIG_FILE")"
+createDir "$GRAFANA_CONFIG_DIR"
+
+if [ -f "$GRAFANA_CONFIG_FILE" ]; then
+    echo "[INFO] Using existing Grafana config at $GRAFANA_CONFIG_FILE."
+fi
+
+export GF_PATHS_DATA="$GRAFANA_DATA_DIR"
+export GF_PATHS_LOGS="$GRAFANA_LOG_DIR"
+export GF_PATHS_PLUGINS="$GRAFANA_PLUGINS_DIR"
+export GF_PATHS_PROVISIONING="$GRAFANA_PROVISIONING_DIR"
+export GF_PATHS_CONFIG="$GRAFANA_CONFIG_FILE"
+export GF_SERVER_HTTP_PORT="$GRAFANA_PORT"
+export GF_SERVER_ROOT_URL="%(protocol)s://%(domain)s:%(http_port)s/grafana"
+export GF_SERVER_SERVE_FROM_SUB_PATH="true"
+export GF_SECURITY_ADMIN_USER="$GRAFANA_ADMIN_USER"
+export GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD"
+export GF_AUTH_ANONYMOUS_ENABLED="$GRAFANA_ANONYMOUS_ENABLED"
+export GF_AUTH_ANONYMOUS_ORG_ROLE="$GRAFANA_ANONYMOUS_ROLE"
+export GF_AUTH_DISABLE_LOGIN_FORM="$GRAFANA_DISABLE_LOGIN_FORM"
+
+echo "[INFO] Starting Grafana."
+exec /usr/local/bin/grafana-server \
+    --homepath /opt/grafana \
+    --config "$GRAFANA_CONFIG_FILE" \
+    --packaging=gpustack
