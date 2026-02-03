@@ -2,8 +2,9 @@ import secrets
 import datetime
 import base64
 from typing import Optional
-from fastapi import APIRouter, Depends, Response
-from fastapi.responses import StreamingResponse
+from urllib.parse import urlencode
+from fastapi import APIRouter, Depends, Response, Request
+from fastapi.responses import StreamingResponse, RedirectResponse
 
 from gpustack.api.exceptions import (
     AlreadyExistsException,
@@ -41,6 +42,7 @@ from gpustack.schemas.config import (
 from gpustack.security import get_secret_hash, API_KEY_PREFIX
 from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
+from gpustack.utils.grafana import resolve_grafana_base_url
 
 router = APIRouter()
 system_name_prefix = "system/worker"
@@ -125,6 +127,41 @@ async def get_worker(
     if user.worker is not None and user.worker.id == worker.id:
         return to_worker_public(worker, True)
     return worker
+
+
+@router.get("/{id}/dashboard")
+async def get_worker_dashboard(
+    user: CurrentUserDep,
+    session: SessionDep,
+    id: int,
+    request: Request,
+):
+    worker = await Worker.one_by_id(session, id)
+    if not worker:
+        raise NotFoundException(message="worker not found")
+
+    cfg = get_global_config()
+    if not cfg.get_grafana_url() or not cfg.grafana_worker_dashboard_uid:
+        raise InternalServerErrorException(
+            message="Grafana dashboard settings are not configured"
+        )
+
+    cluster = None
+    if worker.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, worker.cluster_id)
+
+    query_params = {}
+    if cluster is not None:
+        query_params["var-cluster_name"] = cluster.name
+    query_params["var-worker_name"] = worker.name
+
+    grafana_base = resolve_grafana_base_url(cfg, request)
+    slug = "gpustack-worker"
+    dashboard_url = f"{grafana_base}/d/{cfg.grafana_worker_dashboard_uid}/{slug}"
+    if query_params:
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+
+    return RedirectResponse(url=dashboard_url, status_code=302)
 
 
 def update_worker_data(

@@ -30,6 +30,8 @@ from gpustack.routes import (
     model_provider,
     rerank,
     model_routes,
+    grafana,
+    prometheus,
 )
 
 from gpustack.api.exceptions import error_responses, openai_api_error_responses
@@ -43,6 +45,18 @@ from gpustack.api.auth import (
 versioned_prefix = "/v2"
 
 api_router = APIRouter(responses=error_responses)
+api_router.include_router(
+    grafana.router,
+    prefix="/grafana",
+    dependencies=[Depends(get_admin_user)],
+    include_in_schema=False,
+)
+api_router.include_router(
+    prometheus.router,
+    prefix="/prometheus",
+    dependencies=[Depends(get_admin_user)],
+    include_in_schema=False,
+)
 api_router.include_router(probes.router, tags=["Probes"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(

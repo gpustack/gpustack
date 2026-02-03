@@ -268,6 +268,30 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         help="Number of concurrent connections for the embedded gateway. The default is 16.",
         default=get_gpustack_env("GATEWAY_CONCURRENCY"),
     )
+    group.add_argument(
+        "--disable-builtin-observability",
+        action=OptionalBoolAction,
+        help="Disable embedded Grafana and Prometheus services.",
+        default=get_gpustack_env_bool("DISABLE_BUILTIN_OBSERVABILITY"),
+    )
+    group.add_argument(
+        "--grafana-url",
+        type=str,
+        help="Grafana base URL for dashboard redirects and proxying. Must be browser-reachable (not a container-only hostname). If set, embedded Grafana and Prometheus will be disabled. Only required for external Grafana.",
+        default=get_gpustack_env("GRAFANA_URL"),
+    )
+    group.add_argument(
+        "--grafana-worker-dashboard-uid",
+        type=str,
+        help="Grafana dashboard UID for worker dashboard redirects.",
+        default=get_gpustack_env("GRAFANA_WORKER_DASHBOARD_UID"),
+    )
+    group.add_argument(
+        "--grafana-model-dashboard-uid",
+        type=str,
+        help="Grafana dashboard UID for model dashboard redirects.",
+        default=get_gpustack_env("GRAFANA_MODEL_DASHBOARD_UID"),
+    )
 
     group = parser_server.add_argument_group("Worker settings")
     group.add_argument(
@@ -700,6 +724,10 @@ def set_server_options(args, config_data: dict):
         "saml_security",
         "server_external_url",
         "gateway_concurrency",
+        "disable_builtin_observability",
+        "grafana_url",
+        "grafana_worker_dashboard_uid",
+        "grafana_model_dashboard_uid",
     ]
 
     for option in options:

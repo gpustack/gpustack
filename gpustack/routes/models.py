@@ -1,8 +1,9 @@
 import logging
 import math
 from typing import List, Optional, Union
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import RedirectResponse, StreamingResponse
+from urllib.parse import urlencode
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlalchemy.orm import selectinload
 from sqlmodel import and_, or_
@@ -23,6 +24,7 @@ from gpustack.schemas.models import (
     BackendEnum,
     ModelListParams,
 )
+from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import GPUDeviceStatus, Worker
 from gpustack.server.deps import ListParamsDep, SessionDep
 from gpustack.schemas.models import (
@@ -48,6 +50,8 @@ from gpustack.routes.model_common import (
     build_category_conditions,
     categories_filter,
 )
+from gpustack.config.config import get_global_config
+from gpustack.utils.grafana import resolve_grafana_base_url
 
 router = APIRouter()
 
@@ -135,6 +139,45 @@ async def get_models(
 
 @router.get("/{id}", response_model=ModelPublic)
 async def get_model(
+    session: SessionDep,
+    id: int,
+):
+    return await _get_model(session=session, id=id)
+
+
+@router.get("/{id}/dashboard")
+async def get_model_dashboard(
+    session: SessionDep,
+    id: int,
+    request: Request,
+):
+    model = await _get_model(session=session, id=id)
+
+    cfg = get_global_config()
+    if not cfg.get_grafana_url() or not cfg.grafana_model_dashboard_uid:
+        raise InternalServerErrorException(
+            message="Grafana dashboard settings are not configured"
+        )
+
+    cluster = None
+    if model.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, model.cluster_id)
+
+    query_params = {}
+    if cluster is not None:
+        query_params["var-cluster_name"] = cluster.name
+    query_params["var-model_name"] = model.name
+
+    grafana_base = resolve_grafana_base_url(cfg, request)
+    slug = "gpustack-model"
+    dashboard_url = f"{grafana_base}/d/{cfg.grafana_model_dashboard_uid}/{slug}"
+    if query_params:
+        dashboard_url = f"{dashboard_url}?{urlencode(query_params)}"
+
+    return RedirectResponse(url=dashboard_url, status_code=302)
+
+
+async def _get_model(
     session: SessionDep,
     id: int,
 ):
