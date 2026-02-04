@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 def setup_download_tools_cmd(subparsers: argparse._SubParsersAction):
     parser: argparse.ArgumentParser = subparsers.add_parser(
         "download-tools",
-        help="Download dependency tools.",
         description="Download dependency tools.",
     )
 

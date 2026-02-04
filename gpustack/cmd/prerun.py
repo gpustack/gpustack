@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 def setup_prerun_cmd(subparsers: argparse._SubParsersAction):
     parser_server: argparse.ArgumentParser = subparsers.add_parser(
         "prerun",
-        help="Perform pre-run checks and setup s6-overlay configuration for GPUStack.",
         description="Perform pre-run checks and setup s6-overlay configuration for GPUStack.",
     )
     # following args are hidden and used for debugging or advanced usage
