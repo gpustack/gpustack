@@ -88,8 +88,7 @@ def expected_candidate(
         # Check point:
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -107,6 +106,14 @@ def expected_candidate(
                     "worker_name": "ascend_0",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,
                     "vram": {0: 54975581388},
                 },
@@ -406,8 +413,7 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
         # Check point:
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected
         (
             new_model(
                 id=1,
@@ -425,6 +431,14 @@ async def test_select_candidates_2x_64gx4_2x_64gx2(config, m, expected):
                     "worker_name": "ascend_0",
                     "gpu_indexes": [0],
                     "gpu_addresses": ["29.17.48.39"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
                     "ram": 536870912,
                     "vram": {0: 54975581388},
                 },
@@ -594,8 +608,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         #   it has sorted to the list end.
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -617,6 +630,14 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "ram": 536870912,
                     "vram": {1: 54975581388},
                 },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0],
+                    "gpu_addresses": ["29.17.48.41"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388},
+                },
             ],
         ),
         # Semi-automatic single worker selection.
@@ -626,8 +647,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
         # - Specify tensor parallel size to enforce the selection of multi-devices.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -650,6 +670,14 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "ram": 536870912,
                     "vram": {1: 54975581388, 2: 54975581388},
                 },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0, 1],
+                    "gpu_addresses": ["29.17.48.41", "29.17.57.32"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388, 1: 54975581388},
+                },
             ],
         ),
         # Semi-automatic single worker selection 2.
@@ -659,8 +687,7 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
         # - All devices of 2nd worker have allocated 40%,
         #   it should not be selected.
         # - Specify data parallel size to enforce the selection of multi-devices.
-        # - There are two candidates be selected,
-        #   but with quick fit, it should only select the first one.
+        # - There are two candidates be selected.
         (
             new_model(
                 id=1,
@@ -682,6 +709,14 @@ async def test_select_candidates_3x_64gx2(config, m, expected):
                     "gpu_addresses": ["29.17.57.31", "29.17.51.57"],
                     "ram": 536870912,
                     "vram": {1: 54975581388, 2: 54975581388},
+                },
+                {
+                    "worker_id": 3,
+                    "worker_name": "ascend_2",
+                    "gpu_indexes": [0, 1],
+                    "gpu_addresses": ["29.17.48.41", "29.17.57.32"],
+                    "ram": 536870912,
+                    "vram": {0: 54975581388, 1: 54975581388},
                 },
             ],
         ),
