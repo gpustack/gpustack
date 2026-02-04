@@ -1,4 +1,6 @@
 import httpx
+import logging
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -15,6 +17,7 @@ from gpustack.schemas.model_provider import (
     TestProviderModelInput,
     TestProviderModelResult,
 )
+from gpustack.schemas.models import CategoryEnum
 from gpustack.api.exceptions import (
     AlreadyExistsException,
     InternalServerErrorException,
@@ -26,6 +29,7 @@ from openai.types import Model as OAIModel
 from openai.pagination import SyncPage
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=ModelProvidersPublic, response_model_exclude_none=True)
@@ -120,38 +124,70 @@ async def delete_model_provider(session: SessionDep, id: int):
         )
 
 
+def get_model_name(model: Dict[str, Any]) -> Optional[str]:
+    return model.get("id", model.get("name", None))
+
+
+categories_to_infer = [
+    CategoryEnum.IMAGE,
+    CategoryEnum.EMBEDDING,
+    CategoryEnum.RERANKER,
+]
+
+category_values = {e.value for e in CategoryEnum}
+
+
+def determine_model_category(
+    provider_type: ModelProviderTypeEnum,
+    model: Dict[str, Any],
+) -> List[str]:
+    if provider_type == ModelProviderTypeEnum.DOUBAO:
+        domain: str = model.get("domain", "").lower()
+        if domain in category_values:
+            return [domain]
+    model_id: str = get_model_name(model) or ""
+    model_name = model_id.rsplit("/", 1)[-1]
+
+    for category_enum in categories_to_infer:
+        if category_enum.value in model_name:
+            return [category_enum.value]
+
+    return [CategoryEnum.LLM.value]
+
+
+class CustomOAIModel(OAIModel):
+    categories: Optional[List[str]] = None
+    accessible: Optional[bool] = None
+
+
 @router.post("/get-models")
 async def get_models_from_provider(
     input: ProviderModelsInput,
 ):
-    if input.config.type not in [
-        ModelProviderTypeEnum.QWEN,
-        ModelProviderTypeEnum.DOUBAO,
-        ModelProviderTypeEnum.DEEPSEEK,
-        ModelProviderTypeEnum.OPENAI,
-        ModelProviderTypeEnum.CLAUDE,
-    ]:
-        raise InvalidException(
-            message=f"provider type {input.config.type} not supported for fetching models"
+    result = SyncPage[CustomOAIModel](data=[], object="list")
+    try:
+        input.config.check_required_fields()
+    except ValueError as e:
+        logger.error(f"{e}")
+        raise InvalidException(message=f"{e}")
+    base_url, model_uri = input.config.get_model_url()
+    if not base_url or not model_uri:
+        logger.warning(
+            f"provider type {input.config.type} not supported for fetching models"
         )
-    endpoint = input.config.get_base_url()
-    prefix = ""
-    if input.config.type == ModelProviderTypeEnum.DOUBAO:
-        prefix = "api/v3/"
-    elif input.config.type == ModelProviderTypeEnum.QWEN:
-        prefix = "compatible-mode/v1/"
-    data = None
-    async with httpx.AsyncClient(base_url=f"{endpoint}/{prefix}") as client:
+        return result
+    data = []
+    async with httpx.AsyncClient(base_url=base_url) as client:
         headers = {}
         if input.config.type == ModelProviderTypeEnum.CLAUDE:
             headers["X-API-Key"] = input.api_token
         else:
             headers["Authorization"] = f"Bearer {input.api_token}"
         try:
-            response = await client.get(url="models", headers=headers, timeout=30)
+            response = await client.get(url=model_uri, headers=headers, timeout=30)
             response.raise_for_status()
             content = response.json()
-            data = content.get("data") or []
+            data: List[Dict[str, Any]] = content.get("data") or []
         except httpx.HTTPStatusError as exc:
             raise InvalidException(
                 message=f"Failed to get models from {input.config.type}: {exc.response.status_code} {exc.response.text}"
@@ -161,17 +197,24 @@ async def get_models_from_provider(
                 message=f"Network error: {exc.__class__.__name__}: {exc}"
             )
     fallback_created = int(datetime.now(timezone.utc).timestamp())
-    result = SyncPage[OAIModel](data=[], object="list")
     for item in data:
         if input.config.type == ModelProviderTypeEnum.DOUBAO:
             status = item.get("status", None)
             if status is not None:
                 continue
-        model = OAIModel(
-            id=item.get("id"),
+        model_id = get_model_name(item)
+        if not model_id:
+            continue
+        categories = determine_model_category(input.config.type, item)
+        model = CustomOAIModel(
+            id=model_id,
             created=item.get("created") or fallback_created,
             object=item.get("object") or "model",
             owned_by=item.get("owned_by") or input.config.type.value,
+            categories=categories,
+            accessible=(
+                None if input.config.type == ModelProviderTypeEnum.DOUBAO else True
+            ),
         )
         result.data.append(model)
     return result
