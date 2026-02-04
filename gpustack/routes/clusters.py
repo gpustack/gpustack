@@ -1,6 +1,6 @@
 import math
 import secrets
-from typing import Any, Callable, Optional, Union, List
+from typing import Any, Callable, Optional, Union
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from enum import Enum
@@ -13,7 +13,6 @@ from gpustack.api.exceptions import (
     InvalidException,
     ConflictException,
 )
-from gpustack.config.registration import determine_default_registry
 from gpustack.schemas.common import PaginatedList, Pagination
 from gpustack.schemas.config import parse_base_model_to_env_vars
 from gpustack.server.deps import SessionDep
@@ -379,39 +378,6 @@ async def create_worker_pool(session: SessionDep, id: int, input: WorkerPoolCrea
         raise InternalServerErrorException(message=f"Failed to create worker pool: {e}")
 
 
-def get_worker_args(config: dict) -> List[List[str]]:
-    """
-    Get worker command-line arguments as a list of [key, value] pairs.
-
-    This is a general-purpose method for building worker arguments. Each argument
-    is represented as a list:
-    - For key-value arguments: ['--flag-name', 'value']
-    - For boolean flags: ['--flag-name'] (single element)
-    Add any new worker arguments that need to be propagated here.
-
-    Args:
-        config: Worker configuration dictionary
-
-    Returns:
-        List of argument pairs, e.g., [['--system-default-container-registry', 'quay.io'], ['--debug']]
-    """
-    args = []
-
-    # Propagate system_default_container_registry from global config if not set in worker_config
-    if not config.get("system_default_container_registry"):
-        global_config = get_global_config()
-        registry = None
-        if global_config and global_config.system_default_container_registry:
-            registry = global_config.system_default_container_registry
-        else:
-            registry = determine_default_registry()
-
-        if registry:
-            args.append(['--system-default-container-registry', registry])
-
-    return args
-
-
 def get_registration_from_cluster(
     request: Request, cluster: Cluster
 ) -> ClusterRegistrationTokenPublic:
@@ -426,7 +392,7 @@ def get_registration_from_cluster(
             cluster.worker_config
         ),  # Default image, can be customized
         env=parse_base_model_to_env_vars(sensitive_registration),
-        args=get_worker_args(config),
+        args=[],
     )
 
 
