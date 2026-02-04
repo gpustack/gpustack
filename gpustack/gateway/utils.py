@@ -1214,7 +1214,7 @@ async def cleanup_ai_proxy_config(
         }
         filtered_rules = [
             r
-            for r in existing_plugin.spec.matchRules
+            for r in existing_plugin.spec.matchRules or []
             if r.config.get("activeProviderId") in filtered_provider_ids
         ]
         existing_plugin.spec.matchRules = filtered_rules
