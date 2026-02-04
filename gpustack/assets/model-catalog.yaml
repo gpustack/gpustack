@@ -690,6 +690,28 @@ model_sets:
         - --max-num-batched-tokens=16384
         - --no-enable-prefix-caching
         - --mm-processor-cache-gb=0
+- name: LightOnOCR-2-1B
+  description: LightOnOCR-2-1B is an efficient end-to-end vision-language model for optical character recognition (OCR), converting documents (PDFs, scans, images) into clean, naturally ordered text. It achieves state-of-the-art performance on OlmOCR-Bench while being significantly faster and more cost-effective than competitors.
+  home: https://www.lighton.ai
+  icon: /static/catalog_icons/lighton.png
+  size: 1
+  categories:
+    - llm
+  capabilities:
+    - vision
+  licenses:
+    - apache-2.0
+  release_date: "2026-01-19"
+  specs:
+    - mode: standard
+      quantization: "BF16"
+      source: huggingface
+      huggingface_repo_id: lightonai/LightOnOCR-2-1B
+      backend: vLLM
+      backend_parameters:
+        - '--limit-mm-per-prompt={"image": 1}'
+        - --mm-processor-cache-gb=0
+        - --no-enable-prefix-caching
 - name: Deepseek-V3.2
   description: 'DeepSeek-V3.2 is a model that balances computational efficiency with strong reasoning and agent capabilities through three technical innovations: DeepSeek Sparse Attention (DSA), Scalable Reinforcement Learning Framework, Large-Scale Agentic Task Synthesis Pipeline.'
   home: https://www.deepseek.com
