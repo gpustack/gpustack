@@ -48,7 +48,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 query_conditions.add(
                     (gpu.type, gpu.runtime_version, self.model.backend_version, variant)
                 )
-        if not query_conditions:
+        if not query_conditions or self.model.cpu_offloading:
             query_conditions.add(("cpu", None, self.model.backend_version, None))
         return list(query_conditions)
 
