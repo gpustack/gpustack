@@ -31,8 +31,6 @@ from gpustack.gateway.utils import (
     default_mcp_bridge_name,
     openai_model_prefixes,
     gpustack_ai_proxy_name,
-    deployment_ai_proxy_id,
-    gpustack_default_ai_proxy_id,
     mcp_ingress_equal,
     get_default_mcpbridge_ref,
     ensure_wasm_plugin,
@@ -40,8 +38,6 @@ from gpustack.gateway.utils import (
 from gpustack.gateway.plugins import (
     get_plugin_url_with_name_and_version,
 )
-from gpustack.gateway.ai_proxy_types import AIProxyDefaultConfig, EnableState
-from gpustack.schemas.model_provider import ModelProviderTypeEnum
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +48,7 @@ supported_openai_routes = [
 ]
 
 async_gateway_config: Configuration = None
+router_header_key = "x-gpustack-model"
 
 
 def init_async_k8s_config(cfg: Config):
@@ -406,7 +403,7 @@ def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     enabled_paths.append("/model/proxy")
     expected_spec = WasmPluginSpec(
         defaultConfig={
-            'modelToHeader': 'x-gpustack-model',
+            'modelToHeader': router_header_key,
             'enableOnPathSuffix': enabled_paths,
         },
         defaultConfigDisable=False,
@@ -431,7 +428,7 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "headers": [
                         {
                             "newKey": "x-higress-llm-model",
-                            "oldKey": "x-gpustack-model",
+                            "oldKey": router_header_key,
                         }
                     ],
                     "operate": "rename",
@@ -440,7 +437,7 @@ def transformer_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
                     "headers": [
                         {
                             "key": "x-higress-llm-model",
-                            "strategy": "RETAIN_UNIQUE",
+                            "strategy": "RETAIN_FIRST",
                         }
                     ],
                     "operate": "dedupe",
@@ -480,38 +477,13 @@ def token_usage_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 
 
 def ai_proxy_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
-    default_registry = get_gpustack_higress_registry(cfg=cfg)
     resource_name = gpustack_ai_proxy_name
     expected_spec = WasmPluginSpec(
-        defaultConfig={
-            "activeProviderId": deployment_ai_proxy_id,
-            "providers": [
-                AIProxyDefaultConfig(
-                    id=deployment_ai_proxy_id,
-                    type=ModelProviderTypeEnum.OPENAI,
-                    failover=EnableState(enabled=False),
-                    retryOnFailure=EnableState(enabled=False),
-                ).model_dump(exclude_unset=True, exclude_none=True),
-                AIProxyDefaultConfig(
-                    id=gpustack_default_ai_proxy_id,
-                    type=ModelProviderTypeEnum.GENERIC,
-                    failover=EnableState(enabled=False),
-                    retryOnFailure=EnableState(enabled=False),
-                ).model_dump(exclude_unset=True, exclude_none=True),
-            ],
-        },
+        defaultConfig={},
         defaultConfigDisable=False,
         failStrategy="FAIL_OPEN",
         imagePullPolicy="UNSPECIFIED_POLICY",
-        matchRules=[
-            WasmPluginMatchRule(
-                config={
-                    "activeProviderId": gpustack_default_ai_proxy_id,
-                },
-                configDisable=False,
-                service=[default_registry.get_service_name()],
-            ),
-        ],
+        matchRules=[],
         priority=100,
         phase="UNSPECIFIED_PHASE",
         url=get_plugin_url_with_name_and_version(
@@ -638,11 +610,13 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             await ensure_mcp_resources(cfg=cfg, api_client=api_client)
             await ensure_ingress_resources(cfg=cfg, api_client=api_client)
             for plugin_name, plugin_spec in plugin_list:
+                create_only = plugin_name == gpustack_ai_proxy_name
                 await ensure_wasm_plugin(
                     api=gw_client.ExtensionsHigressIoV1Api(api_client),
                     name=plugin_name,
                     namespace=cfg.gateway_namespace,
                     expected=plugin_spec,
+                    create_only=create_only,
                 )
 
         try:

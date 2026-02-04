@@ -96,13 +96,26 @@ class ModelRouteTargetUpdate(SQLModel):
 
 
 class ModelRouteTargetCreate(ModelRouteTargetUpdate):
-    fallback_status_codes: Optional[List[FallbackStatusEnum]] = Field(
+    fallback_status_codes: Optional[List[str]] = Field(
         default=None,
         sa_column=Column(
             JSON,
             nullable=True,
         ),
     )
+
+    @field_validator("fallback_status_codes", mode="before")
+    def validate_fallback_status_codes(cls, v):
+        if v is None:
+            return v
+        deduped: Set[str] = set(v)
+        for status in deduped:
+            if status not in [
+                FallbackStatusEnum.ERROR_400,
+                FallbackStatusEnum.ERROR_500,
+            ]:
+                raise ValueError(f"Invalid fallback status code: {status}")
+        return list(deduped)
 
 
 class ModelRouteTargetBase(ModelRouteTargetCreate):
@@ -270,7 +283,7 @@ class ModelRouteListParams(ListParams):
 
 
 class SetFallbackTargetInput(BaseModel):
-    fallback_status_codes: Optional[List[FallbackStatusEnum]] = Field(
+    fallback_status_codes: Optional[List[str]] = Field(
         default=None,
         sa_column=Column(
             JSON,

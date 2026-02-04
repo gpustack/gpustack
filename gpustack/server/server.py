@@ -21,6 +21,7 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster, ClusterProvider, ClusterStateEnum
 from gpustack.schemas.model_routes import ModelRoute, ModelRouteTarget
+from gpustack.schemas.model_provider import ModelProvider
 from gpustack.security import (
     JWTManager,
     generate_secure_password,
@@ -66,6 +67,7 @@ from gpustack.gateway.utils import (
     cleanup_ingresses,
     cleanup_selected_wasm_plugins,
     cleanup_fallback_filters,
+    cleanup_ai_proxy_config,
 )
 from gpustack.gateway import get_async_k8s_config
 from gpustack.envs import (
@@ -588,6 +590,10 @@ class Server:
             session=session,
             fields={"deleted_at": None},
         )
+        providers = await ModelProvider.all_by_fields(
+            session=session,
+            fields={"deleted_at": None},
+        )
         fallback_route_ids = [
             ep.route_id
             for ep in route_targets
@@ -629,6 +635,12 @@ class Server:
             expected_names=expected_names,
             cleanup_prefix=model_route_ingress_prefix,
             reason="orphaned",
+            k8s_config=k8s_config,
+        )
+        await cleanup_ai_proxy_config(
+            namespace=self.config.gateway_namespace,
+            providers=providers,
+            routes=model_routes,
             k8s_config=k8s_config,
         )
 

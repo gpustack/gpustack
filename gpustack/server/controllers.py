@@ -93,7 +93,7 @@ from gpustack.gateway.client.networking_higress_io_v1_api import (
 )
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     ExtensionsHigressIoV1Api,
-    WasmPlugin,
+    WasmPluginMatchRule,
 )
 from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     NetworkingIstioIoV1Alpha3Api,
@@ -104,6 +104,7 @@ from gpustack.schemas.model_provider import (
     ModelProvider,
 )
 from gpustack.gateway.plugins import get_plugin_url_with_name_and_version
+
 
 logger = logging.getLogger(__name__)
 
@@ -575,6 +576,8 @@ async def get_cluster_registry(
     return {100: cluster_registry}
 
 
+# Type alias for destination tuples
+# Each tuple contains (weight: int, model_name: str, registry: McpBridgeRegistry)
 DestinationTupleList = List[Tuple[int, str, McpBridgeRegistry]]
 
 
@@ -640,6 +643,82 @@ async def sync_model_route_mapper(
     )
 
 
+async def ensure_route_ai_proxy_config(
+    cfg: Config,
+    model_route_id: int,
+    extensions_api: ExtensionsHigressIoV1Api,
+    route_destinations: DestinationTupleList,
+    fallback_destinations: DestinationTupleList,
+):
+    service_namespace_prefix = cfg.get_namespace() + "/"
+    if cfg.get_namespace() == cfg.gateway_namespace:
+        service_namespace_prefix = ""
+    operating_id = mcp_handler.model_route_cleanup_prefix(model_route_id)
+    ingress_name = mcp_handler.model_route_ingress_name(model_route_id)
+    fallback_ingress_name = mcp_handler.fallback_ingress_name(ingress_name)
+
+    def destination_contains_provider(input: DestinationTupleList) -> bool:
+        for _, _, registry in input:
+            # the provider registry starts with the provider id prefix
+            if registry.name.startswith(mcp_handler.provider_id_prefix):
+                return True
+        return False
+
+    has_provider = destination_contains_provider(route_destinations)
+    fallback_has_provider = destination_contains_provider(fallback_destinations)
+    expected_providers = []
+    expected_match_rules = []
+    # cross provider needs to configure ai_proxy
+    if has_provider != fallback_has_provider:
+        unique_registry_services: Set[str] = set(
+            registry.get_service_name()
+            for _, _, registry in route_destinations
+            if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+        )
+        unique_fallback_registry_services: Set[str] = set(
+            registry.get_service_name()
+            for _, _, registry in fallback_destinations
+            if (not registry.name.startswith(mcp_handler.provider_id_prefix))
+        )
+        if len(unique_registry_services) > 0:
+            expected_providers.append(
+                mcp_handler.ai_proxy_openai_provider_config(operating_id)
+            )
+            expected_match_rules.append(
+                WasmPluginMatchRule(
+                    config={
+                        "activeProviderId": operating_id,
+                    },
+                    configDisable=False,
+                    service=list(unique_registry_services),
+                    ingress=[f"{service_namespace_prefix}{ingress_name}"],
+                )
+            )
+        # same logic for fallback
+        if len(unique_fallback_registry_services) > 0:
+            expected_providers.append(
+                mcp_handler.ai_proxy_openai_provider_config(f"{operating_id}-fallback")
+            )
+            expected_match_rules.append(
+                WasmPluginMatchRule(
+                    config={
+                        "activeProviderId": f"{operating_id}-fallback",
+                    },
+                    configDisable=False,
+                    service=list(unique_fallback_registry_services),
+                    ingress=[f"{service_namespace_prefix}{fallback_ingress_name}"],
+                )
+            )
+
+    await mcp_handler.ensure_gpustack_ai_proxy_config(
+        extensions_api=extensions_api,
+        namespace=cfg.gateway_namespace,
+        expected_providers=expected_providers,
+        expected_match_rules=expected_match_rules,
+        operating_id_prefix=operating_id,
+    )
+
+
 async def sync_gateway(
     session: AsyncSession,
     event: Event,
@@ -702,6 +781,14 @@ async def sync_gateway(
         ingress_name=ingress_name,
         namespace=cfg.get_namespace(),
         networking_istio_api=istio_networking_api,
+    )
+    # ensure ai proxy config
+    await ensure_route_ai_proxy_config(
+        cfg=cfg,
+        model_route_id=model_route.id,
+        extensions_api=extensions_api,
+        route_destinations=destinations,
+        fallback_destinations=fallback_destinations,
     )
 
 
@@ -2032,7 +2119,9 @@ class ModelProviderController:
             provider_registry is None or event.type == EventType.DELETED
         )
         to_delete_prefix = (
-            f"provider-{model_provider.id}" if registry_to_remove else None
+            f"{mcp_handler.provider_id_prefix}{model_provider.id}"
+            if registry_to_remove
+            else None
         )
         desired_registries = [] if registry_to_remove else [provider_registry]
 
@@ -2061,11 +2150,6 @@ class ModelProviderController:
 
     async def _ensure_provider_ai_proxy_config(self):
         try:
-            ai_proxy_data = await self._higress_extension_api.get_wasmplugin(
-                namespace=self._config.gateway_namespace,
-                name=mcp_handler.gpustack_ai_proxy_name,
-            )
-            existing_plugin = WasmPlugin.model_validate(ai_proxy_data)
             async with async_session() as session:
                 providers = await ModelProvider.all_by_field(
                     session,
@@ -2075,27 +2159,13 @@ class ModelProviderController:
                 provider_config_list, match_rules = (
                     mcp_handler.provider_proxy_plugin_spec(*providers)
                 )
-            current_providers = existing_plugin.spec.defaultConfig.get("providers", [])
-            existing_plugin.spec.defaultConfig["providers"] = (
-                mcp_handler.compare_and_append_default_proxy_config(
-                    current_providers, provider_config_list
+                await mcp_handler.ensure_gpustack_ai_proxy_config(
+                    extensions_api=self._higress_extension_api,
+                    namespace=self._config.gateway_namespace,
+                    expected_providers=provider_config_list,
+                    expected_match_rules=match_rules,
+                    operating_id_prefix=mcp_handler.provider_id_prefix,
                 )
-            )
-            existing_plugin.spec.matchRules = (
-                mcp_handler.compare_and_append_proxy_match_rules(
-                    existing_plugin.spec.matchRules, match_rules
-                )
-            )
-            await self._higress_extension_api.edit_wasmplugin(
-                namespace=self._config.gateway_namespace,
-                name=mcp_handler.gpustack_ai_proxy_name,
-                body=existing_plugin,
-            )
-        except k8s_client.ApiException as e:
-            logger.error(
-                f"Failed to get gpustack AI proxy wasmplugin {mcp_handler.gpustack_ai_proxy_name}: {e}"
-            )
-            raise
         except Exception as e:
             logger.error(f"Failed to ensure provider's ai_proxy config: {e}")
             raise

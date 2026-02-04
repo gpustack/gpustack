@@ -30,7 +30,9 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.model_provider import (
     ModelProvider,
+    ModelProviderTypeEnum,
 )
+from gpustack.schemas.model_routes import ModelRoute
 from gpustack.server.bus import EventType
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
@@ -47,8 +49,7 @@ gpustack_ai_proxy_name = "gpustack-ai-proxy"
 model_ingress_prefix = "ai-route-model-"
 model_route_ingress_prefix = "ai-route-route-"
 model_route_selector = {"gpustack.ai/route": "true"}
-deployment_ai_proxy_id = "gpustack-deployment"
-gpustack_default_ai_proxy_id = "gpustack-default"
+provider_id_prefix = "provider-"
 
 
 @dataclass
@@ -236,7 +237,7 @@ def cluster_registry(cluster: Cluster) -> Optional[McpBridgeRegistry]:
 
 
 def provider_registry_name(id: int) -> str:
-    return f"provider-{id}"
+    return f"{provider_id_prefix}{id}"
 
 
 def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
@@ -256,11 +257,12 @@ def provider_registry(provider: ModelProvider) -> Optional[McpBridgeRegistry]:
         port = 80
     elif result.port is not None:
         port = result.port
-    proxyName = f"provider-{provider.id}-proxy" if provider.proxy_url else None
+    registry_name = provider_registry_name(provider.id)
+    proxyName = f"{registry_name}-proxy" if provider.proxy_url else None
     return McpBridgeRegistry(
         domain=domain,
         port=port,
-        name=provider_registry_name(provider.id),
+        name=registry_name,
         protocol=protocol,
         type=registry_type,
         proxyName=proxyName,
@@ -749,6 +751,7 @@ async def ensure_wasm_plugin(
     namespace: str,
     expected: WasmPluginSpec,
     extra_labels: Optional[Dict[str, str]] = None,
+    create_only: bool = False,
 ):
     labels = copy.deepcopy(managed_labels)
     if extra_labels:
@@ -776,7 +779,9 @@ async def ensure_wasm_plugin(
             body=wasm_plugin_body,
         )
         logger.info(f"Created WasmPlugin {name} in namespace {namespace}.")
-    elif match_labels(current_plugin.metadata.get("labels", {}), labels):
+    elif not create_only and match_labels(
+        current_plugin.metadata.get("labels", {}), labels
+    ):
         current_spec = (
             current_plugin.spec.model_dump(exclude_none=True)
             if current_plugin.spec
@@ -975,7 +980,7 @@ def model_route_mapper_plugin_spec(
         priority=800,
         url=url,
         defaultConfigDisable=True,
-        defaultConfig=None,
+        defaultConfig={},
         matchRules=match_rules,
         failStrategy="FAIL_OPEN",
     )
@@ -1089,39 +1094,137 @@ async def ensure_fallback_filter(
             )
 
 
+def ai_proxy_openai_provider_config(id: str) -> Dict[str, Any]:
+    return ai_proxy_types.AIProxyDefaultConfig(
+        type=ModelProviderTypeEnum.OPENAI,
+        id=id,
+        failover=ai_proxy_types.EnableState(enabled=False),
+        retryOnFailure=ai_proxy_types.EnableState(enabled=False),
+    ).model_dump(exclude_none=True, exclude_unset=True)
+
+
 def compare_and_append_default_proxy_config(
     existing_providers: List[Dict[str, Any]],
     expected_providers: List[Dict[str, Any]],
-    to_keep_ids: Optional[List[str]] = [
-        deployment_ai_proxy_id,
-        gpustack_default_ai_proxy_id,
-    ],
+    operating_id_prefix: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    existing_ids = {p.get('id') for p in existing_providers}
-    to_keep_ids = to_keep_ids or []
-    for expected in expected_providers:
-        expected_id = expected.get('id')
-        if expected_id not in existing_ids and expected_id not in to_keep_ids:
-            existing_providers.append(expected)
-    existing_providers.sort(key=lambda p: p.get('id', ''))
-    return existing_providers
+    to_keep_config = []
+    for provider in existing_providers:
+        provider_id: Optional[str] = provider.get('id', None)
+        if (
+            provider_id is None
+            or operating_id_prefix is None
+            or not provider_id.startswith(operating_id_prefix)
+        ):
+            to_keep_config.append(provider)
+            continue
+    return_providers = expected_providers.copy()
+    return_providers.extend(to_keep_config)
+    return_providers.sort(key=lambda p: p.get("id", ""))
+    return return_providers
 
 
 def compare_and_append_proxy_match_rules(
     existing_rules: List[WasmPluginMatchRule],
     expected_rules: List[WasmPluginMatchRule],
-    to_keep_provider_ids: Optional[List[str]] = [gpustack_default_ai_proxy_id],
+    operating_id_prefix: Optional[str] = None,
 ) -> List[WasmPluginMatchRule]:
-    to_keep_provider_ids = to_keep_provider_ids or []
     to_keep_config = []
     for rule in existing_rules:
-        provider_id = rule.config.get('activeProviderId', None)
-        if provider_id is None:
-            continue
-        if provider_id in to_keep_provider_ids:
+        provider_id: Optional[str] = rule.config.get('activeProviderId', None)
+        if (
+            provider_id is None
+            or operating_id_prefix is None
+            or not provider_id.startswith(operating_id_prefix)
+        ):
             to_keep_config.append(rule)
+            continue
 
     return_rules = expected_rules.copy()
     return_rules.extend(to_keep_config)
     return_rules.sort(key=lambda r: (r.config.get("activeProviderId", None) or ""))
     return return_rules
+
+
+async def ensure_gpustack_ai_proxy_config(
+    extensions_api: ExtensionsHigressIoV1Api,
+    namespace: str,
+    expected_providers: List[Dict[str, Any]],
+    expected_match_rules: List[WasmPluginMatchRule],
+    operating_id_prefix: str = "",
+):
+    try:
+        ai_proxy_data = await extensions_api.get_wasmplugin(
+            namespace=namespace,
+            name=gpustack_ai_proxy_name,
+        )
+        existing_plugin = WasmPlugin.model_validate(ai_proxy_data)
+        current_providers = existing_plugin.spec.defaultConfig.get("providers", [])
+        existing_plugin.spec.defaultConfig["providers"] = (
+            compare_and_append_default_proxy_config(
+                current_providers, expected_providers, operating_id_prefix
+            )
+        )
+        existing_plugin.spec.matchRules = compare_and_append_proxy_match_rules(
+            existing_plugin.spec.matchRules, expected_match_rules, operating_id_prefix
+        )
+        await extensions_api.edit_wasmplugin(
+            namespace=namespace,
+            name=gpustack_ai_proxy_name,
+            body=existing_plugin,
+        )
+    except k8s_client.ApiException as e:
+        logger.error(
+            f"Failed to operate gpustack AI proxy wasmplugin {gpustack_ai_proxy_name}: {e}"
+        )
+        raise
+
+
+async def cleanup_ai_proxy_config(
+    providers: List[ModelProvider],
+    routes: List[ModelRoute],
+    k8s_config: k8s_client.Configuration,
+    namespace: str,
+):
+    prefixes_to_keep = {model_route_cleanup_prefix(route.id) for route in routes}
+    prefixes_to_keep.update(
+        {provider_registry_name(provider.id) for provider in providers}
+    )
+
+    def should_keep(provider_id: str) -> bool:
+        for prefix in prefixes_to_keep:
+            if provider_id.startswith(prefix):
+                return True
+        return False
+
+    try:
+        extensions_api = ExtensionsHigressIoV1Api(k8s_client.ApiClient(k8s_config))
+        ai_proxy_data = await extensions_api.get_wasmplugin(
+            namespace=namespace,
+            name=gpustack_ai_proxy_name,
+        )
+        existing_plugin = WasmPlugin.model_validate(ai_proxy_data)
+        current_providers = existing_plugin.spec.defaultConfig.get("providers", [])
+        filtered_providers = [
+            p for p in current_providers if p.get("id") and should_keep(p.get("id"))
+        ]
+        existing_plugin.spec.defaultConfig["providers"] = filtered_providers
+        filtered_provider_ids = {
+            p.get("id") for p in filtered_providers if p.get("id") is not None
+        }
+        filtered_rules = [
+            r
+            for r in existing_plugin.spec.matchRules
+            if r.config.get("activeProviderId") in filtered_provider_ids
+        ]
+        existing_plugin.spec.matchRules = filtered_rules
+        await extensions_api.edit_wasmplugin(
+            namespace=namespace,
+            name=gpustack_ai_proxy_name,
+            body=existing_plugin,
+        )
+    except k8s_client.ApiException as e:
+        logger.error(
+            f"Failed to cleanup gpustack AI proxy wasmplugin {gpustack_ai_proxy_name}: {e}"
+        )
+        raise

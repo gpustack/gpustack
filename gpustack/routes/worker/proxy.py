@@ -11,12 +11,11 @@ from gpustack.api.auth import worker_auth
 from gpustack.api.exceptions import GatewayTimeoutException, ServiceUnavailableException
 from gpustack import envs
 from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.gateway import router_header_key
 
 router = APIRouter(dependencies=[Depends(worker_auth)])
 
 logger = logging.getLogger(__name__)
-
-router_header_key = "x-gpustack-model"
 
 
 @router.api_route(
