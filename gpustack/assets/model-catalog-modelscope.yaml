@@ -229,6 +229,39 @@ model_sets:
       backend_parameters:
         - --reasoning-parser=deepseek_r1
         - --max-model-len=32768
+- name: Qwen3-Coder-Next
+  description: Qwen3-Coder-Next is a super-efficient coding model with 80B total parameters and 3B activated parameters (MoE architecture). It achieves performance comparable to models with 10-20x more active parameters, excelling at long-horizon reasoning, complex tool usage, and IDE integration.
+  home: https://qwenlm.github.io
+  icon: /static/catalog_icons/qwen.png
+  size: 80
+  activated_size: 3
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - tools
+  licenses:
+    - apache-2.0
+  release_date: "2026-02-03"
+  specs:
+    - mode: throughput
+      quantization: FP8
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-Coder-Next-FP8
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --enable-auto-tool-choice
+        - --tool-call-parser=qwen3_coder
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: Qwen/Qwen3-Coder-Next
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --enable-auto-tool-choice
+        - --tool-call-parser=qwen3_coder
 - name: Qwen3-30B-A3B-Instruct-2507
   description: Qwen3 is a family of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support.
   home: https://qwenlm.github.io
@@ -822,6 +855,33 @@ model_sets:
         - --reasoning-parser=minimax_m2_append_think
         - --tool-call-parser=minimax_m2
         - --enable-auto-tool-choice
+        - --trust-remote-code
+- name: Kimi-K2.5
+  description: Kimi-K2.5 is a multimodal mixture-of-experts model with 1T total parameters and 32B activated parameters. It features native INT4 quantization, vision support, dual operating modes (thinking/instant), agent swarm capabilities, and excels at visual reasoning, coding with vision, and complex tool orchestration.
+  home: https://www.moonshot.ai
+  icon: /static/catalog_icons/kimi.png
+  size: 1000
+  activated_size: 32
+  categories:
+    - llm
+  capabilities:
+    - context/256K
+    - vision
+    - tools
+  licenses:
+    - modified-mit
+  release_date: "2026-01-26"
+  specs:
+    - mode: standard
+      quantization: INT4
+      source: model_scope
+      model_scope_model_id: MoonshotAI/Kimi-K2.5
+      backend: vLLM
+      backend_parameters:
+        - --max-model-len=65536
+        - --mm-encoder-tp-mode=data
+        - --tool-call-parser=kimi_k2
+        - --reasoning-parser=kimi_k2
         - --trust-remote-code
 # Embedding models
 - name: Qwen3-Embedding-0.6B
