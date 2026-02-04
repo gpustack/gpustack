@@ -131,7 +131,6 @@ async def get_worker(
 
 @router.get("/{id}/dashboard")
 async def get_worker_dashboard(
-    user: CurrentUserDep,
     session: SessionDep,
     id: int,
     request: Request,
