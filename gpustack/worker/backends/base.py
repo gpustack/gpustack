@@ -821,13 +821,22 @@ $@
         arguments. This method splits them and returns a single flattened list.
         e.g.
             self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
+            self._model.backend_parameters = [" --ctx-size=1024"] -> ["--ctx-size=1024"]
+            self._model.backend_parameters = ["--ctx-size =1024"] -> ["--ctx-size=1024"]
         """
         result = []
         for param in self._model.backend_parameters or []:
-            if "=" in param:
-                result.append(param)
+            # Strip leading/trailing whitespace
+            param_stripped = param.strip()
+
+            if "=" in param_stripped:
+                # Handle cases like "--foo = bar" or "--foo  =bar"
+                # Split by = and strip whitespace around it
+                key, value = map(str.strip, param_stripped.split("=", 1))
+                result.append(f"{key}={value}")
                 continue
-            result.extend(shlex.split(param))
+
+            result.extend(shlex.split(param_stripped))
         return result
 
     def _transform_workload_plan(

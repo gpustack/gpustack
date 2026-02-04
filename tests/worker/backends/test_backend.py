@@ -111,6 +111,35 @@ async def test_apply_registry_override(
                 """--hf-overrides={"architectures": ["NewModel"]}""",
             ],
         ),
+        # Test cases for whitespace handling
+        (
+            [" --ctx-size=1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["--ctx-size =1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["  --ctx-size  =1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["--ctx-size  =  1024"],
+            ["--ctx-size=1024"],
+        ),
+        (
+            ["  --ctx-size 1024"],
+            ["--ctx-size", "1024"],
+        ),
+        (
+            [" --max-model-len=8192"],
+            ["--max-model-len=8192"],
+        ),
+        (
+            ["--foo =bar", "  --baz  =  qux"],
+            ["--foo=bar", "--baz=qux"],
+        ),
         (
             None,
             [],
