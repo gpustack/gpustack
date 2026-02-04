@@ -15,6 +15,8 @@ WHITELIST_CONFIG_FIELDS = {
 READ_ONLY_CONFIG_FIELDS = WHITELIST_CONFIG_FIELDS.union(
     {
         "server_external_url",
+        "grafana_url",
+        "disable_builtin_observability",
     }
 )
 logger = logging.getLogger(__name__)
