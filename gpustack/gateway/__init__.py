@@ -623,6 +623,7 @@ def initialize_gateway(cfg: Config, timeout: int = 60, interval: int = 5):
             ai_statistics_plugin(cfg=cfg),
             model_router_plugin(cfg=cfg),
             ai_proxy_plugin(cfg=cfg),
+            model_pre_route_plugin(cfg=cfg),
         ]
         if cfg.server_role() != Config.ServerRole.WORKER:
             plugin_list.append(transformer_plugin(cfg=cfg))
