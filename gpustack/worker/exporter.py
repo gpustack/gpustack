@@ -204,10 +204,16 @@ class MetricExporter(Collector):
 
         # memory
         if status.memory is not None:
-            memory_total.add_metric(worker_label_values, status.memory.total)
-            memory_used.add_metric(worker_label_values, status.memory.used)
+            if status.memory.total is not None:
+                memory_total.add_metric(worker_label_values, status.memory.total)
+            if status.memory.used is not None:
+                memory_used.add_metric(worker_label_values, status.memory.used)
 
-            if status.memory.total != 0 and status.memory.used is not None:
+            if (
+                status.memory.total is not None
+                and status.memory.used is not None
+                and status.memory.total != 0
+            ):
                 memory_utilization_rate.add_metric(
                     worker_label_values,
                     _rate(status.memory.used, status.memory.total),
@@ -244,11 +250,19 @@ class MetricExporter(Collector):
                     gpu_temperature.add_metric(gpu_label_values, d.temperature)
 
                 if d.memory is not None:
-                    gram_total.add_metric(gpu_label_values, d.memory.total)
-                    gram_allocated.add_metric(gpu_label_values, d.memory.allocated or 0)
-                    gram_used.add_metric(gpu_label_values, d.memory.used)
+                    if d.memory.total is not None:
+                        gram_total.add_metric(gpu_label_values, d.memory.total)
 
-                    if d.memory.total != 0 and d.memory.used is not None:
+                    if d.memory.allocated is not None:
+                        gram_allocated.add_metric(gpu_label_values, d.memory.allocated)
+                    if d.memory.used is not None:
+                        gram_used.add_metric(gpu_label_values, d.memory.used)
+
+                    if (
+                        d.memory.total is not None
+                        and d.memory.used is not None
+                        and d.memory.total != 0
+                    ):
                         gram_utilization_rate.add_metric(
                             gpu_label_values,
                             _rate(d.memory.used, d.memory.total),
@@ -257,14 +271,16 @@ class MetricExporter(Collector):
         # filesystem
         if status.filesystem is not None:
             for _, d in enumerate(status.filesystem):
-                filesystem_total.add_metric(
-                    worker_label_values + [d.mount_point], d.total
-                )
-                filesystem_used.add_metric(
-                    worker_label_values + [d.mount_point], d.used
-                )
+                if d.total is not None:
+                    filesystem_total.add_metric(
+                        worker_label_values + [d.mount_point], d.total
+                    )
+                if d.used is not None:
+                    filesystem_used.add_metric(
+                        worker_label_values + [d.mount_point], d.used
+                    )
 
-                if d.total != 0 and d.used is not None:
+                if d.total is not None and d.used is not None and d.total != 0:
                     filesystem_utilization_rate.add_metric(
                         worker_label_values + [d.mount_point],
                         _rate(d.used, d.total),
