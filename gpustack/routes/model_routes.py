@@ -649,7 +649,9 @@ def model_access_list(model: ModelRoute) -> List[ModelUserAccessExtended]:
 
 @router.get("/{id}/access", response_model=ModelAuthorizationList)
 async def get_model_authorization_list(session: SessionDep, id: int):
-    model: ModelRoute = await ModelRoute.one_by_id(session, id)
+    model: ModelRoute = await ModelRoute.one_by_id(
+        session, id, options=[selectinload(ModelRoute.users)]
+    )
     if not model:
         raise NotFoundException(message="Model not found")
 
@@ -660,7 +662,9 @@ async def get_model_authorization_list(session: SessionDep, id: int):
 async def add_model_authorization(
     session: SessionDep, id: int, access_request: ModelAuthorizationUpdate
 ):
-    model = await ModelRoute.one_by_id(session, id)
+    model = await ModelRoute.one_by_id(
+        session, id, options=[selectinload(ModelRoute.users)]
+    )
     if not model:
         raise NotFoundException(message="Model not found")
     extra_conditions = [
