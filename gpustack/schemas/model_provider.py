@@ -1,3 +1,4 @@
+from typing import Tuple
 from urllib.parse import urlparse
 from enum import Enum
 from typing import (
@@ -9,7 +10,13 @@ from typing import (
     Literal,
     Mapping,
 )
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_validator,
+    model_validator,
+    Field as PydanticField,
+)
 from sqlmodel import (
     Field,
     Column,
@@ -80,6 +87,7 @@ class BaseProviderConfig(BaseModel):
     }
     _public_endpoint: Optional[str] = None
     _default_schema = "https"
+    _model_uri = None
 
     def get_service_registry(self) -> Optional[str]:
         return self._public_endpoint
@@ -89,6 +97,26 @@ class BaseProviderConfig(BaseModel):
             return f"{self._default_schema}://{self._public_endpoint}"
         return None
 
+    def check_required_fields(self):
+        missing_fields = []
+        for name, field in self.__class__.model_fields.items():
+            schema_extra = field.json_schema_extra or {}
+            if schema_extra.get("required", False):
+                value = getattr(self, name)
+                if value is None:
+                    missing_fields.append(name)
+        if missing_fields:
+            raise ValueError(
+                f"Missing required fields for provider {self.type}: {', '.join(missing_fields)}"
+            )
+        return self
+
+    def get_model_url(self) -> Tuple[Optional[str], Optional[str]]:
+        base_url = self.get_base_url()
+        if base_url:
+            base_url = base_url.rstrip("/")
+        return base_url, self._model_uri
+
 
 class Ai360Config(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.AI360]
@@ -97,7 +125,9 @@ class Ai360Config(BaseProviderConfig):
 
 class AzureOpenAIConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.AZURE]
-    azureServiceUrl: str
+    azureServiceUrl: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
 
     def get_service_registry(self) -> Optional[str]:
         if self.azureServiceUrl:
@@ -111,18 +141,26 @@ class AzureOpenAIConfig(BaseProviderConfig):
 class BaichuanConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.BAICHUAN]
     _public_endpoint: str = "api.baichuan-ai.com"
+    _model_uri = "/v1/models"
 
 
 class BaiduConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.BAIDU]
     _public_endpoint: str = "qianfan.baidubce.com"
+    _model_uri = "/v1/models"
 
 
 class BedrockConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.BEDROCK]
-    awsAccessKey: str
-    awsSecretKey: str
-    awsRegion: str
+    awsAccessKey: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
+    awsSecretKey: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
+    awsRegion: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
     bedrockAdditionalFields: Optional[dict] = None
 
     def get_service_registry(self) -> Optional[str]:
@@ -133,13 +171,17 @@ class ClaudeConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.CLAUDE]
     claudeVersion: Optional[str] = None
     _public_endpoint: str = "api.anthropic.com"
+    _model_uri = "/v1/models"
 
 
 class CloudflareConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.CLOUDFLARE]
-    cloudflareAccountId: str
+    cloudflareAccountId: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
 
     _public_endpoint: str = "api.cloudflare.com"
+    _model_uri = None
 
 
 class CohereConfig(BaseProviderConfig):
@@ -154,13 +196,16 @@ class CozeConfig(BaseProviderConfig):
 
 class DeeplConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.DEEPL]
-    targetLang: str
+    targetLang: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
     _public_endpoint: str = "api-free.deepl.com"
 
 
 class DeepseekConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.DEEPSEEK]
     _public_endpoint: str = "api.deepseek.com"
+    _model_uri = "/v1/models"
 
 
 class DifyConfig(BaseProviderConfig):
@@ -188,6 +233,7 @@ class DoubaoConfig(BaseProviderConfig):
     doubaoDomain: Optional[str] = None
 
     _public_endpoint: str = "ark.cn-beijing.volces.com"
+    _model_uri = "/api/v3/models"
 
     def get_service_registry(self) -> Optional[str]:
         if self.doubaoDomain:
@@ -198,6 +244,7 @@ class DoubaoConfig(BaseProviderConfig):
 class FireworksConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.FIREWORKS]
     _public_endpoint: str = "api.fireworks.ai"
+    _model_uri = "/v1/models"
 
 
 class GeminiConfig(BaseProviderConfig):
@@ -233,14 +280,19 @@ class GroqConfig(BaseProviderConfig):
 
 class HunyuanConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.HUNYUAN]
-    hunyuanAuthId: str
-    hunyuanAuthKey: str
+    hunyuanAuthId: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
+    hunyuanAuthKey: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
     _public_endpoint: str = "hunyuan.tencentcloudapi.com"
 
 
 class LongcatConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.LONGCAT]
     _public_endpoint: str = "api.longcat.chat"
+    _model_uri = "/v1/models"
 
 
 class MinimaxConfig(BaseProviderConfig):
@@ -259,13 +311,19 @@ class MoonshotConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.MOONSHOT]
     moonshotFileId: Optional[str] = None
     _public_endpoint: str = "api.moonshot.cn"
+    _model_uri = "/v1/models"
 
 
 class OllamaConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.OLLAMA]
-    ollamaServerHost: str
-    ollamaServerPort: int
+    ollamaServerHost: Optional[str] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
+    ollamaServerPort: Optional[int] = PydanticField(
+        default=None, json_schema_extra={"required": True}
+    )
     _default_schema = "http"
+    _model_uri = "/v1/models"
 
     def get_service_registry(self) -> Optional[str]:
         return f"{self.ollamaServerHost}:{self.ollamaServerPort}"
@@ -276,6 +334,7 @@ class OpenAIConfig(BaseProviderConfig):
     openaiCustomUrl: Optional[str] = None
     responseJsonSchema: Optional[dict] = None
     _public_endpoint: str = "api.openai.com"
+    _model_uri = "/v1/models"
 
     def get_service_registry(self) -> Optional[str]:
         if self.openaiCustomUrl:
@@ -300,6 +359,7 @@ class QwenConfig(BaseProviderConfig):
     qwenFileIds: Optional[List[str]] = None
     qwenEnableCompatible: Optional[bool] = False
     _public_endpoint: str = "dashscope.aliyuncs.com"
+    _model_uri = "/compatible-mode/v1/models"
 
 
 class SparkConfig(BaseProviderConfig):
