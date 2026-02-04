@@ -73,10 +73,9 @@ gpustack_metrics:
 # -----------------------------
 runtime_mapping:
   vLLM:
-    "*": # 0.11.0
+    "*": # 0.14.1
       vllm:num_requests_running: gpustack:num_requests_running
       vllm:num_requests_waiting: gpustack:num_requests_waiting
-      vllm:num_requests_swapped: gpustack:num_requests_swapped
       vllm:prefix_cache_hits: gpustack:prefix_cache_hits
       vllm:prefix_cache_queries: gpustack:prefix_cache_queries
       vllm:kv_cache_usage_perc: gpustack:kv_cache_usage_ratio
@@ -89,6 +88,8 @@ runtime_mapping:
       vllm:request_prompt_tokens: gpustack:request_prompt_tokens
       vllm:request_generation_tokens: gpustack:request_generation_tokens
       vllm:inter_token_latency_seconds: gpustack:inter_token_latency_seconds
+    "<0.11.1":
+      vllm:num_requests_swapped: gpustack:num_requests_swapped
     "<0.11.0":
       vllm:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
     "<0.9.2":
@@ -97,7 +98,7 @@ runtime_mapping:
        vllm:gpu_cache_usage_perc: gpustack:kv_cache_usage_ratio
 
   SGLang:
-    "*": # 0.5.4
+    "*": # 0.5.8
       sglang:num_running_reqs: gpustack:num_requests_running
       sglang:num_queue_reqs: gpustack:num_requests_waiting
       sglang:cached_tokens_total: gpustack:prefix_cache_hits
@@ -112,7 +113,7 @@ runtime_mapping:
       sglang:time_per_output_token_seconds: gpustack:time_per_output_token_seconds
       
   MindIE:
-    "*": # 2.1.RC2
+    "*": # 2.3.0
       num_requests_running: gpustack:num_requests_running
       num_requests_waiting: gpustack:num_requests_waiting
       num_requests_swapped: gpustack:num_requests_swapped
