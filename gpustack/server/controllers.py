@@ -2124,15 +2124,8 @@ class ModelProviderController:
 class ModelRouteTargetController:
     def __init__(self, config: Config):
         self._config = config
-        self._disable_gateway = config.gateway_mode == GatewayModeEnum.disabled
-        self._k8s_config = get_async_k8s_config(cfg=config)
 
     async def start(self):
-        if self._disable_gateway:
-            return
-
-        # k8s related clients can be initialized here if needed in future
-
         async for event in ModelRouteTarget.subscribe(
             source="model_route_target_controller"
         ):
