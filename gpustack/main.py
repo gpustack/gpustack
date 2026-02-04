@@ -22,17 +22,17 @@ def main():
     )
     subparsers = parser.add_subparsers(
         help="sub-command help",
-        metavar='{start,chat,download-tools,version,reload-config}',
+        metavar='{start,reload-config,list-images,save-images,copy-images,load-images,reset-admin-password,version}',
     )
 
     setup_start_cmd(subparsers)
     setup_reload_config_cmd(subparsers)
     setup_download_tools_cmd(subparsers)
-    setup_version_cmd(subparsers)
-    setup_reset_admin_password_cmd(subparsers)
     setup_migrate_cmd(subparsers)
     setup_images_cmd(subparsers)
     setup_prerun_cmd(subparsers)
+    setup_reset_admin_password_cmd(subparsers)
+    setup_version_cmd(subparsers)
 
     args = parser.parse_args()
     if hasattr(args, "func"):
