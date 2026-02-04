@@ -162,7 +162,7 @@ class Scheduler:
 
                 # Get available workers for potential remote parsing
                 workers = await Worker.all(session)
-                sorted_workers = prioritize_workers_with_model_files(
+                sorted_workers = await prioritize_workers_with_model_files(
                     session, model, workers
                 )
 
