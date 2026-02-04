@@ -140,6 +140,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: GPUSTACK_WORKER_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
             - name: GPUSTACK_RUNTIME_DEPLOY
               value: "Kubernetes"
             - name: GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT
