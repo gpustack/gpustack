@@ -129,7 +129,7 @@ async def test_schedule_to_single_worker_single_gpu(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -218,7 +218,7 @@ async def test_schedule_to_single_worker_multi_gpu(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -278,7 +278,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_deepseek_r1(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim_for_deepseek_r1,
         ),
         patch(
@@ -394,7 +394,7 @@ async def test_schedule_to_single_worker_multi_gpu_with_binpack_spread(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -541,7 +541,7 @@ async def test_schedule_to_single_worker_multi_gpu_partial_offload(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -648,7 +648,7 @@ async def test_schedule_to_cpu_with_binpack_spread(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -738,7 +738,7 @@ async def test_schedule_to_multi_worker_multi_gpu(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -831,7 +831,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -929,7 +929,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1(config
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim_for_deepseek_r1,
         ),
         patch(
@@ -1061,7 +1061,7 @@ async def test_manual_schedule_to_multi_worker_multi_gpu_with_deepseek_r1_distil
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim_for_deepseek_r1,
         ),
         patch(
@@ -1186,7 +1186,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu(config):
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -1276,7 +1276,7 @@ async def test_manual_schedule_to_single_worker_multi_gpu_partial_offload(config
 
     with (
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_calculate_model_resource_claim,
         ),
         patch(
@@ -1399,7 +1399,7 @@ async def test_schedule_candidates_1x_197gx1(config, m, expected):
             return_value=workers,
         ),
         patch(
-            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_model_resource_claim',
+            'gpustack.policies.candidate_selectors.gguf_resource_fit_selector.calculate_gguf_model_resource_claim',
             side_effect=mock_resource_claim,
         ),
         patch(

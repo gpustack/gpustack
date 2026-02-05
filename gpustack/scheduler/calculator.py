@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import dataclasses
+import json
 from enum import Enum
 import logging
 import os
@@ -946,7 +947,7 @@ async def _calculate_from_workers(  # noqa: C901
     return await _try_parse_on_workers(model, filtered_workers, offload, **kwargs)
 
 
-async def calculate_model_resource_claim(
+async def calculate_gguf_model_resource_claim(
     model: Model,
     offload: GPUOffloadEnum = GPUOffloadEnum.Full,
     workers: Optional[List[Worker]] = None,
@@ -1130,6 +1131,167 @@ async def _gguf_parser_command_args_from_source(model: Model, **kwargs) -> List[
         raise Exception(
             f"Failed to get the file for model {model.name or model.readable_source}, error: {e}"
         )
+
+
+def read_model_index_json(path: str) -> dict:
+    """
+    Read and parse model_index.json from local directory.
+
+    Args:
+        path: Directory path containing model_index.json
+
+    Returns:
+        Parsed JSON data from model_index.json, or None if not found
+
+    Raises:
+        json.JSONDecodeError: If model_index.json is invalid
+        PermissionError: If permission denied
+        OSError: For other I/O errors
+    """
+    model_index_path = os.path.join(path, "model_index.json")
+
+    if not os.path.exists(model_index_path):
+        return None
+
+    try:
+        with open(model_index_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except PermissionError:
+        logger.error(f"Permission denied reading model_index.json: {model_index_path}")
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse model_index.json: {e}")
+        raise
+    except OSError as e:
+        logger.error(f"Failed to read model_index.json: {e}")
+        raise
+
+
+def calculate_llm_model_weight_size(path: str) -> int:
+    """
+    Calculate total size of LLM model weights in root directory.
+
+    Args:
+        path: Directory path to scan
+
+    Returns:
+        Total size in bytes of weight files
+
+    Raises:
+        FileNotFoundError: If path doesn't exist
+        NotADirectoryError: If path is not a directory
+        PermissionError: If permission denied
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"The specified path '{path}' does not exist.")
+
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"The specified path '{path}' is not a directory.")
+
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+    total_size = 0
+
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.endswith(weight_file_extensions):
+                    total_size += entry.stat().st_size
+    except PermissionError:
+        logger.error(f"Permission denied when accessing '{path}'.")
+        raise
+
+    return total_size
+
+
+def calculate_diffusion_model_weight_size(path: str) -> int:
+    """
+    Calculate total size of diffusion model weights.
+
+    Logic:
+    1. Read model_index.json to get pipeline components
+    2. Scan subdirectories defined in pipeline
+    3. Sum up weight files (.safetensors, .bin, .pt, .pth)
+
+    Args:
+        path: Directory path containing model_index.json
+
+    Returns:
+        Total size in bytes of weight files
+
+    Raises:
+        FileNotFoundError: If model_index.json not found or path doesn't exist
+        NotADirectoryError: If path is not a directory
+        PermissionError: If permission denied
+        json.JSONDecodeError: If model_index.json is invalid
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"The specified path '{path}' does not exist.")
+
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"The specified path '{path}' is not a directory.")
+
+    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+
+    # Read pipeline definition
+    pipeline_data = read_model_index_json(path)
+
+    if pipeline_data is None:
+        raise FileNotFoundError(f"model_index.json not found in {path}")
+
+    if not isinstance(pipeline_data, dict):
+        raise TypeError(f"model_index.json in {path} is not a valid JSON object.")
+
+    # Remove metadata keys (starting with _)
+    component_dirs = {key for key in pipeline_data.keys() if not key.startswith('_')}
+
+    total_size = 0
+
+    # Scan each component directory
+    for component_dir in component_dirs:
+        component_path = os.path.join(path, component_dir)
+
+        if not os.path.isdir(component_path):
+            continue
+
+        # Scan files in component directory
+        try:
+            with os.scandir(component_path) as entries:
+                for entry in entries:
+                    if entry.is_file() and entry.name.endswith(weight_file_extensions):
+                        total_size += entry.stat().st_size
+        except PermissionError:
+            logger.error(f"Permission denied scanning directory: {component_path}")
+            raise
+        except OSError as e:
+            logger.error(f"Error scanning directory {component_path}: {e}")
+            raise
+
+    return total_size
+
+
+def calculate_local_model_weight_size(path: str, is_diffusion: bool = False) -> int:
+    """
+    Calculate model weight size based on model type.
+
+    Unified entry point for calculating model weight sizes.
+
+    Args:
+        path: Directory path to scan
+        is_diffusion: Whether this is a diffusion model (default: False)
+
+    Returns:
+        Total size in bytes of weight files
+
+    Raises:
+        FileNotFoundError: If path doesn't exist
+        NotADirectoryError: If path is not a directory
+        PermissionError: If permission denied
+        json.JSONDecodeError: If model_index.json is invalid (diffusion only)
+    """
+    if is_diffusion:
+        return calculate_diffusion_model_weight_size(path)
+    else:
+        return calculate_llm_model_weight_size(path)
 
 
 def hf_model_filename(

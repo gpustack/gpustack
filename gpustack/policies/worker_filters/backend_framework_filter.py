@@ -112,7 +112,7 @@ class BackendFrameworkFilter(WorkerFilter):
                 # Check if gpu_type is supported by built_in_frameworks
                 is_built_in_supported = version_config.built_in_frameworks and (
                     "cpu" in version_config.built_in_frameworks
-                    and gpu_type in version_config.built_in_frameworks
+                    or gpu_type in version_config.built_in_frameworks
                 )
 
                 # GPU is supported if either custom or built-in framework supports it
