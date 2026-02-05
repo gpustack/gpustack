@@ -1729,6 +1729,89 @@ model_sets:
       source: model_scope
       model_scope_model_id: gpustack/faster-whisper-small
       backend: VoxBox
+- name: Whisper-Large-V3-Turbo
+  description: Whisper large-v3-turbo is a finetuned version of a pruned Whisper large-v3. In other words, it's the exact same model, except that the number of decoding layers have reduced from 32 to 4. As a result, the model is way faster, at the expense of a minor quality degradation.
+  home: https://openai.com
+  icon: /static/catalog_icons/openai.png
+  size: 809
+  size_unit: M
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2024-10-01"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: openai/whisper-large-v3-turbo
+      backend: vLLM
+- name: Whisper-Large-V3
+  description: Whisper is a state-of-the-art model for automatic speech recognition (ASR) and speech translation. Trained on 5M hours of labeled data, Whisper large-v3 demonstrates strong ability to generalise to many datasets and domains in a zero-shot setting.
+  home: https://openai.com
+  icon: /static/catalog_icons/openai.png
+  size: 1.55
+  categories:
+    - speech_to_text
+  licenses:
+    - mit
+  release_date: "2023-11-06"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: openai/whisper-large-v3
+      backend: vLLM
+      env:
+        GPUSTACK_MODEL_VRAM_CLAIM: "4294967296" # 4 GiB. The repo stores weight files in multiple formats so explicitly set VRAM claim to avoid over-allocation.
+- name: Voxtral-Mini-3B-2507
+  description: Voxtral-Mini-3B-2507 is a speech-to-text model from Mistral AI, designed for automatic speech recognition with high accuracy and efficiency.
+  home: https://mistral.ai
+  icon: /static/catalog_icons/mistral.png
+  size: 3
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2025-07-18"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: mistralai/Voxtral-Mini-3B-2507
+      backend: vLLM
+- name: Granite-Speech-3.3-2B
+  description: Granite-Speech-3.3-2B is a speech-to-text model from IBM, part of the Granite series, designed for automatic speech recognition with strong multilingual capabilities.
+  home: https://www.ibm.com
+  icon: /static/catalog_icons/ibm.png
+  size: 2
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-19"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ibm-granite/granite-speech-3.3-2b
+      backend: vLLM
+- name: Granite-Speech-3.3-8B
+  description: Granite-Speech-3.3-8B is a speech-to-text model from IBM, part of the Granite series, designed for automatic speech recognition with enhanced accuracy and multilingual support.
+  home: https://www.ibm.com
+  icon: /static/catalog_icons/ibm.png
+  size: 8
+  categories:
+    - speech_to_text
+  licenses:
+    - apache-2.0
+  release_date: "2025-06-19"
+  specs:
+    - mode: standard
+      quantization: BF16
+      source: model_scope
+      model_scope_model_id: ibm-granite/granite-speech-3.3-8b
+      backend: vLLM
 - name: Dia-1.6B
   description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
   home: https://narilabs.org
