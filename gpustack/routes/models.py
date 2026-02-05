@@ -362,14 +362,20 @@ async def create_model(session: SessionDep, model_in: ModelCreate):
             message=f"Model '{model_in.name}' already exists. "
             "Please choose a different name or check the existing model."
         )
-
+    should_create_route = (
+        model_in.enable_model_route is not None and model_in.enable_model_route
+    )
+    if should_create_route:
+        existing_route = await ModelRoute.one_by_field(session, "name", model_in.name)
+        if existing_route:
+            raise AlreadyExistsException(
+                message=f"Model route '{model_in.name}' already exists. "
+                "Please choose a different name or check the existing model route."
+            )
     await validate_model_in(session, model_in)
     model_in_dict = model_in.model_dump(exclude={"enable_model_route"})
 
     try:
-        should_create_route = (
-            model_in.enable_model_route is not None and model_in.enable_model_route
-        )
         model: Model = await Model.create(
             session, source=model_in_dict, auto_commit=(not should_create_route)
         )
