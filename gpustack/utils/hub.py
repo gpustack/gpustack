@@ -368,6 +368,9 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
         int: The size of the model weights
     """
     weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
+    # consolidated.safetensors is usually a duplicate of other weight files. Exclude by default.
+    # Example: https://huggingface.co/mistralai/Voxtral-Small-24B-2507
+    exclude_files = ["consolidated.safetensors"]
     if model.source == SourceEnum.HUGGING_FACE:
         repo_id = model.huggingface_repo_id
     elif model.source == SourceEnum.MODEL_SCOPE:
@@ -378,7 +381,10 @@ def get_model_weight_size(model: Model, token: Optional[str] = None) -> int:
     return sum(
         file.get("size", 0)
         for file in repo_file_infos
-        if file.get("name", "").endswith(weight_file_extensions)
+        if (
+            file.get("name", "").endswith(weight_file_extensions)
+            and file.get("name", "") not in exclude_files
+        )
     )
 
 
