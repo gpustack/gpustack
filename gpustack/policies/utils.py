@@ -9,6 +9,7 @@ from gpustack.policies.base import (
     Allocatable,
     Allocated,
 )
+from gpustack.scheduler.calculator import calculate_local_model_weight_size
 from gpustack.schemas.models import (
     ModelInstance,
     Model,
@@ -338,7 +339,7 @@ async def estimate_model_vram(
             else:
                 # Fall back to querying workers
                 weight_size = await get_local_model_weight_size(
-                    model.local_path, workers
+                    model.local_path, workers, is_diffusion=False
                 )
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
@@ -386,9 +387,9 @@ async def estimate_diffusion_model_vram(
             if cached_size:
                 weight_size = cached_size
             else:
-                # Fall back to querying workers
+                # Fall back to querying workers with is_diffusion=True
                 weight_size = await get_local_model_weight_size(
-                    model.local_path, workers
+                    model.local_path, workers, is_diffusion=True
                 )
     except asyncio.TimeoutError:
         logger.warning(f"Timeout when getting weight size for model {model.name}")
@@ -487,10 +488,12 @@ def get_model_num_attention_heads(pretrained_config) -> Optional[int]:
 
 
 async def get_local_model_weight_size(
-    local_path: str, workers: Optional[List[Worker]] = None
+    local_path: str,
+    workers: Optional[List[Worker]] = None,
+    is_diffusion: bool = False,
 ) -> int:
     """
-    Get the local model weight size in bytes. Estimate by the total size of files in the top-level (depth 1) of the directory.
+    Get the local model weight size in bytes.
 
     If the model exists locally (on the server), calculate it locally.
     Otherwise, if workers are provided, check if the model exists on any worker and get the size from there.
@@ -498,30 +501,23 @@ async def get_local_model_weight_size(
     Args:
         local_path: Path to the model directory
         workers: Optional list of workers to check
+        is_diffusion: Whether this is a diffusion model (default: False)
 
     Returns:
         Total size in bytes
     """
-    weight_file_extensions = (".safetensors", ".bin", ".pt", ".pth")
-
     if os.path.exists(local_path):
         if not os.path.isdir(local_path):
             raise NotADirectoryError(
                 f"The specified path '{local_path}' is not a directory."
             )
-
-        total_size = 0
         try:
-            with os.scandir(local_path) as entries:
-                for entry in entries:
-                    if entry.is_file() and entry.name.endswith(weight_file_extensions):
-                        total_size += entry.stat().st_size
-            return total_size
-        except PermissionError:
-            raise PermissionError(f"Permission denied when accessing '{local_path}'.")
+            # Use utility function to calculate size
+            return calculate_local_model_weight_size(local_path, is_diffusion)
         except Exception as e:
             logger.error(f"Failed to calculate size locally for {local_path}: {e}")
             raise e
+
     if not workers:
         raise FileNotFoundError(f"The specified path '{local_path}' does not exist.")
 
@@ -529,7 +525,10 @@ async def get_local_model_weight_size(
         """Try to get model weight size from a single worker."""
         try:
             async with WorkerFilesystemClient() as fs_client:
-                size = await fs_client.get_model_weight_size(worker, local_path)
+                # Pass is_diffusion parameter to worker
+                size = await fs_client.get_model_weight_size(
+                    worker, local_path, is_diffusion
+                )
                 if isinstance(size, int):
                     logger.info(
                         f"Successfully got model weight size from worker {worker.id}: {size} bytes"

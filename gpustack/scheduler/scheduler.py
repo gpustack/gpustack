@@ -56,7 +56,7 @@ from gpustack.server.bus import EventType
 from gpustack.server.db import async_session
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
-    calculate_model_resource_claim,
+    calculate_gguf_model_resource_claim,
     check_diffusers_model_index_from_workers,
 )
 from gpustack.server.services import (
@@ -483,10 +483,8 @@ async def evaluate_gguf_model(
     workers: Optional[List[Worker]] = None,
 ) -> bool:
 
-    task_output = await calculate_model_resource_claim(
-        model,
-        offload=GPUOffloadEnum.Full,
-        workers=workers,
+    task_output = await calculate_gguf_model_resource_claim(
+        model, offload=GPUOffloadEnum.Full, workers=workers
     )
     if (
         task_output.resource_architecture

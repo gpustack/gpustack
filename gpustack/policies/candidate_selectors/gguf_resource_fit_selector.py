@@ -12,7 +12,7 @@ from gpustack.scheduler.calculator import (
     ModelResourceClaim,
     Estimate,
     MemoryEstimate,
-    calculate_model_resource_claim,
+    calculate_gguf_model_resource_claim,
 )
 from gpustack.policies.base import (
     Allocatable,
@@ -2235,11 +2235,11 @@ class GGUFResourceFitSelector(ScheduleCandidatesSelector):
     async def _calculate_model_resource_claim(
         self, offload: GPUOffloadEnum = GPUOffloadEnum.Partial, **kwargs
     ) -> ModelResourceClaim:
-        return await calculate_model_resource_claim(
+        return await calculate_gguf_model_resource_claim(
             self._model,
             offload,
-            cache_dir=self._cache_dir,
             workers=self._workers,
+            cache_dir=self._cache_dir,
             **kwargs,
         )
 

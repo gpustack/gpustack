@@ -136,6 +136,7 @@ class WorkerFilesystemClient:
         self,
         worker: Worker,
         path: str,
+        is_diffusion: bool = False,
     ) -> int:
         """
         Get the size of model weight files in a directory on a worker.
@@ -143,12 +144,15 @@ class WorkerFilesystemClient:
         Args:
             worker: The worker to query
             path: The directory path to scan
+            is_diffusion: Whether this is a diffusion model (default: False)
 
         Returns:
             The total size in bytes
         """
         url = f"http://{worker.advertise_address or worker.ip}:{worker.port}/files/model-weight-size"
         params = {"path": path}
+        if is_diffusion:
+            params["is_diffusion"] = 1
         headers = {"Authorization": f"Bearer {worker.token}"}
 
         use_proxy_env = use_proxy_env_for_url(url)
