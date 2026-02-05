@@ -101,7 +101,7 @@ class BaseProviderConfig(BaseModel):
         missing_fields = []
         for name, field in self.__class__.model_fields.items():
             schema_extra = field.json_schema_extra or {}
-            if schema_extra.get("required", False):
+            if schema_extra.get("field_required", False):
                 value = getattr(self, name)
                 if value is None:
                     missing_fields.append(name)
@@ -126,7 +126,7 @@ class Ai360Config(BaseProviderConfig):
 class AzureOpenAIConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.AZURE]
     azureServiceUrl: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
 
     def get_service_registry(self) -> Optional[str]:
@@ -153,13 +153,13 @@ class BaiduConfig(BaseProviderConfig):
 class BedrockConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.BEDROCK]
     awsAccessKey: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     awsSecretKey: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     awsRegion: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     bedrockAdditionalFields: Optional[dict] = None
 
@@ -177,7 +177,7 @@ class ClaudeConfig(BaseProviderConfig):
 class CloudflareConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.CLOUDFLARE]
     cloudflareAccountId: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
 
     _public_endpoint: str = "api.cloudflare.com"
@@ -197,7 +197,7 @@ class CozeConfig(BaseProviderConfig):
 class DeeplConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.DEEPL]
     targetLang: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     _public_endpoint: str = "api-free.deepl.com"
 
@@ -281,10 +281,10 @@ class GroqConfig(BaseProviderConfig):
 class HunyuanConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.HUNYUAN]
     hunyuanAuthId: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     hunyuanAuthKey: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     _public_endpoint: str = "hunyuan.tencentcloudapi.com"
 
@@ -317,10 +317,10 @@ class MoonshotConfig(BaseProviderConfig):
 class OllamaConfig(BaseProviderConfig):
     type: Literal[ModelProviderTypeEnum.OLLAMA]
     ollamaServerHost: Optional[str] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     ollamaServerPort: Optional[int] = PydanticField(
-        default=None, json_schema_extra={"required": True}
+        default=None, json_schema_extra={"field_required": True}
     )
     _default_schema = "http"
     _model_uri = "/v1/models"
