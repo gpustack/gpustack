@@ -29,7 +29,11 @@ from gpustack_runtime.deployer import WorkloadPlan
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config, set_global_config
 from gpustack.logging import setup_logging
-from gpustack.schemas.inference_backend import InferenceBackend, ContainerEnvConfig
+from gpustack.schemas.inference_backend import (
+    InferenceBackend,
+    ContainerEnvConfig,
+    ParameterFormatEnum,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -813,9 +817,53 @@ $@
                 f"Failed to update model service version {service_version}: {e}"
             )
 
+    def _parse_parameter_key_value(self, param: str) -> Tuple[str, Optional[str]]:
+        """Parse a parameter string into key and value."""
+        # Handle equal sign format
+        if "=" in param:
+            key, value = map(str.strip, param.split("=", 1))
+            return key, value
+
+        # Handle space-separated format
+        tokens = shlex.split(param)
+        if not tokens:
+            return "", None
+        return tokens[0], " ".join(tokens[1:]) if len(tokens) > 1 else None
+
+    def _parse_parameter_default(self, param: str) -> List[str]:
+        """Default parameter parsing (current behavior)."""
+        if "=" in param:
+            key, value = map(str.strip, param.split("=", 1))
+            return [f"{key}={value}"]
+        return shlex.split(param)
+
+    def _convert_parameter_format(
+        self, param: str, target_format: Optional[ParameterFormatEnum]
+    ) -> List[str]:
+        """Convert a parameter string to the target format."""
+        # No conversion if target_format is None
+        if target_format is None:
+            return self._parse_parameter_default(param)
+
+        # Parse the parameter to extract key and value
+        key, value = self._parse_parameter_key_value(param)
+
+        # If no value (flag parameter), return as-is
+        if value is None:
+            return [f"--{key.strip().lstrip('-')}"]
+
+        # Convert to target format
+        if target_format == ParameterFormatEnum.SPACE:
+            return [f"--{key.strip().lstrip('-')}", value]
+        elif target_format == ParameterFormatEnum.EQUAL:
+            return [f"--{key.strip().lstrip('-')}={value}"]
+        else:
+            return self._parse_parameter_default(param)
+
     def _flatten_backend_param(self) -> List[str]:
         """
-        Flattens all backend parameter strings into a list of individual tokens.
+        Flattens all backend parameter strings into a list of individual tokens
+        with automatic format conversion based on backend configuration.
 
         Each entry in `backend_parameters` may contain one or more whitespace-separated
         arguments. This method splits them and returns a single flattened list.
@@ -823,20 +871,27 @@ $@
             self._model.backend_parameters = ["--ctx-size 1024"] -> ["--ctx-size", "1024"]
             self._model.backend_parameters = [" --ctx-size=1024"] -> ["--ctx-size=1024"]
             self._model.backend_parameters = ["--ctx-size =1024"] -> ["--ctx-size=1024"]
+
+        If parameter_format is configured in the backend version config:
+            - 'space': converts to --key value format
+            - 'equal': converts to --key=value format
+            - None: uses default parsing (current behavior)
         """
         result = []
-        for param in self._model.backend_parameters or []:
-            # Strip leading/trailing whitespace
-            param_stripped = param.strip()
+        parameter_format = (
+            self.inference_backend.parameter_format if self.inference_backend else None
+        )
 
-            if "=" in param_stripped:
-                # Handle cases like "--foo = bar" or "--foo  =bar"
-                # Split by = and strip whitespace around it
-                key, value = map(str.strip, param_stripped.split("=", 1))
-                result.append(f"{key}={value}")
+        for param in self._model.backend_parameters or []:
+            param_stripped = param.strip()
+            if not param_stripped:
                 continue
 
-            result.extend(shlex.split(param_stripped))
+            converted_params = self._convert_parameter_format(
+                param_stripped, parameter_format
+            )
+            result.extend(converted_params)
+
         return result
 
     def _transform_workload_plan(
