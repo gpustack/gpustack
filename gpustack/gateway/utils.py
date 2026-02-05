@@ -1166,7 +1166,9 @@ async def ensure_gpustack_ai_proxy_config(
             )
         )
         existing_plugin.spec.matchRules = compare_and_append_proxy_match_rules(
-            existing_plugin.spec.matchRules, expected_match_rules, operating_id_prefix
+            existing_plugin.spec.matchRules or [],
+            expected_match_rules,
+            operating_id_prefix,
         )
         await extensions_api.edit_wasmplugin(
             namespace=namespace,
